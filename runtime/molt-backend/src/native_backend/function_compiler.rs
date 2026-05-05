@@ -487,9 +487,10 @@ fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>)
         "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" | "floordiv"
         | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor"
         | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" | "lshift" | "rshift"
-        | "shl" | "shr" => op.args.as_ref().is_some_and(|args| {
-            args.len() >= 2 && args.iter().all(|a| candidates.contains(a))
-        }),
+        | "shl" | "shr" => op
+            .args
+            .as_ref()
+            .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
         // store_var is handled by `store_var_targets_all_sources_in` outside
         // this predicate — its target's raw-ness is a function of EVERY
         // store_var op for that target, not a single op.
@@ -656,60 +657,26 @@ fn infer_scalar_lane(
     }
 }
 
-#[cfg(feature = "native-backend")]
-#[inline]
-fn shadow_value_for(
-    builder: &mut FunctionBuilder<'_>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_int_shadow_vals: &BTreeMap<String, Value>,
-    name: &str,
-) -> Option<Value> {
-    raw_int_shadow_vals
-        .get(name)
-        .copied()
-        .or_else(|| raw_int_shadow.get(name).map(|&var| builder.use_var(var)))
-}
-
-#[cfg(feature = "native-backend")]
-#[inline]
-fn shadow_value_var_only(
-    builder: &mut FunctionBuilder<'_>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    name: &str,
-) -> Option<Value> {
-    raw_int_shadow.get(name).map(|&var| builder.use_var(var))
-}
-
-/// Phase 1b: recover a raw i64 operand inside a loop body without falling
-/// to the boxed slow path.
+/// Phase 1d typed-IR: recover a raw i64 operand from a variable that holds
+/// raw i64 in its main Cranelift Variable.  The static `int_primary_vars`
+/// set (Step 0's operand-recursive fixpoint) is the single source of truth:
+/// `name ∈ int_primary_vars ⇒ use_var(vars[name])` yields a raw i64.
 ///
-/// `shadow_value_var_only` returns `Some` only when a Variable-tier shadow
-/// exists. Constants and other raw-primary values populated via the const
-/// handler (`raw_primary_int.insert + def_var(main, raw_iconst)`) carry
-/// their raw i64 in the *main* Variable, but never receive a Variable-tier
-/// shadow — `loop_start` clears the Value-tier shadow on entry, so the
-/// `add` / `sub` / `mul` proven-int fast path used to fail eligibility on
-/// `total += i; i += 1` style loops (the `i + 1` ran the slow
-/// unbox-add-box-overflow chain because `_v6 = const 1` had no shadow).
-///
-/// The structural fix: `raw_primary_int` membership is itself proof that
-/// `use_var(vars[name])` produces a raw i64. Try the shadow first
-/// (cheaper when present), fall back to the main Variable when the name is
-/// raw-primary. Both produce the same Cranelift `Value` for the same
-/// underlying SSA — the choice is which Variable to read from.
+/// Cranelift's FunctionBuilder caches `use_var` within a block AND inserts
+/// phi nodes automatically at block boundaries when a Variable has multiple
+/// defs, so a single static-set lookup replaces the legacy two-tier shadow
+/// plumbing (`raw_int_shadow_vals` for in-block SSA values, `raw_int_shadow`
+/// Variable-tier for cross-block phi, dynamic `raw_primary_int` for
+/// membership).
 #[cfg(feature = "native-backend")]
 #[inline]
-fn raw_int_value_for_arith(
+fn int_raw_value(
     builder: &mut FunctionBuilder<'_>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_primary_int: &BTreeSet<String>,
     vars: &BTreeMap<String, Variable>,
+    int_primary_vars: &BTreeSet<String>,
     name: &str,
 ) -> Option<Value> {
-    if let Some(&v) = raw_int_shadow.get(name) {
-        return Some(builder.use_var(v));
-    }
-    if raw_primary_int.contains(name)
+    if int_primary_vars.contains(name)
         && let Some(&var) = vars.get(name)
     {
         return Some(builder.use_var(var));
@@ -717,22 +684,57 @@ fn raw_int_value_for_arith(
     None
 }
 
-/// Produce a correctly NaN-boxed value for a variable that may carry a
-/// raw-int shadow exceeding the 47-bit inline range.  When the variable
-/// has no raw shadow, falls back to `var_get` (the normal boxed path).
+/// Define a known-inline integer result under the Phase 1d representation
+/// invariant:
 ///
-/// This is the deferred overflow guard emitted at boxing escape points
-/// (function return, call arguments, heap stores) to compensate for the
-/// branchless iadd optimisation that skips per-operation overflow checks.
+/// - `out ∈ int_primary_vars` stores raw i64 in the main Variable.
+/// - every other output stores a NaN-boxed Python int in the main Variable.
+#[cfg(feature = "native-backend")]
+#[inline]
+fn def_inline_int_value(
+    builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    int_primary_vars: &BTreeSet<String>,
+    out: &str,
+    raw_value: Value,
+    boxed_value: i64,
+) {
+    if int_primary_vars.contains(out) {
+        def_var_named(builder, vars, out, raw_value);
+    } else {
+        let boxed = builder.ins().iconst(types::I64, boxed_value);
+        def_var_named(builder, vars, out, boxed);
+    }
+}
+
+/// Generic two-tier shadow lookup, retained for the bool and float shadow
+/// systems that have not yet been migrated to the typed-IR Phase 1d
+/// static-set approach (Phase 2 = bool, Phase 3 = float).
+#[cfg(feature = "native-backend")]
+#[inline]
+fn shadow_lookup(
+    builder: &mut FunctionBuilder<'_>,
+    shadow_vars: &BTreeMap<String, Variable>,
+    shadow_vals: &BTreeMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    shadow_vals
+        .get(name)
+        .copied()
+        .or_else(|| shadow_vars.get(name).map(|&var| builder.use_var(var)))
+}
+
+/// Produce a correctly NaN-boxed value for a variable in `int_primary_vars`
+/// whose raw i64 may exceed the 47-bit inline range.
 ///
-/// On the fast path (value fits 47-bit inline range), this emits a single
-/// compare + a well-predicted conditional branch into `box_int_value_hoisted`.
-/// On the cold path, it calls `molt_int_from_i64` to allocate a BigInt.
+/// Deferred overflow guard emitted at boxing escape points (return, call
+/// args, heap stores) to compensate for the branchless iadd optimisation
+/// that skips per-op overflow checks. On the fast path (fits inline) emits
+/// a compare + branch into `box_int_value_hoisted`; on the cold path calls
+/// `molt_int_from_i64` to allocate a BigInt.
 ///
-/// When a variable is raw-primary (main Variable holds unboxed i64) but
-/// has no shadow (e.g. after block boundary clears tier-2 values for a
-/// non-loop variable), the raw value is read directly from the main
-/// Variable and overflow-safe boxed.
+/// Falls back to `var_get` (the normal boxed path) when the variable is
+/// not raw-primary.
 #[cfg(feature = "native-backend")]
 fn ensure_boxed_overflow_safe(
     module: &mut ObjectModule,
@@ -740,25 +742,13 @@ fn ensure_boxed_overflow_safe(
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_int_shadow_vals: &BTreeMap<String, Value>,
     vars: &BTreeMap<String, Variable>,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
-    raw_primary_int: &std::collections::BTreeSet<String>,
+    int_primary_vars: &std::collections::BTreeSet<String>,
     name: &str,
 ) -> Value {
-    // Try shadow first (tier 2 value or tier 1 variable).
-    let raw_from_shadow = shadow_value_for(builder, raw_int_shadow, raw_int_shadow_vals, name);
-    // If no shadow but the variable IS raw-primary, read the main Variable
-    // directly — it holds the same unboxed i64.
-    let raw_val = raw_from_shadow.or_else(|| {
-        if raw_primary_int.contains(name) {
-            vars.get(name).map(|&var| builder.use_var(var))
-        } else {
-            None
-        }
-    });
+    let raw_val = int_raw_value(builder, vars, int_primary_vars, name);
     if let Some(raw_val) = raw_val {
         let fits = int_value_fits_inline(builder, raw_val);
         let fast_blk = builder.create_block();
@@ -797,31 +787,14 @@ fn ensure_boxed_overflow_safe(
     }
 }
 
-/// Phase 1d Step 0.5 — overflow-safe sibling of `var_get_boxed` for use at
-/// boxing escape points (function return, call arguments, heap stores,
-/// runtime print/repr/str, exception rebind, def_var_global).
-///
-/// `var_get_boxed` (in lib.rs) emits inline-only `box_int_value_hoisted` for
-/// every name in `raw_primary_int`; that boxing OR-folds the 47-bit raw i64
-/// payload into the QNAN | TAG_INT mask in a single instruction. **It is only
-/// correct for values that fit the 47-bit signed inline range.** Values
-/// exceeding 2^46 produce a NaN-box whose high bits collide with the QNAN
-/// tag — readers see a denormal f64 instead of a tagged i64.
-///
-/// Pre-Step-0, the dynamic `raw_primary_int` set was populated only by
-/// codegen paths that proved inline-fits at every emit site; the inline-only
-/// box was therefore safe at every escape. Post-Step-0 the static analog
-/// `int_primary_vars` is operand-recursive and includes IV accumulators
-/// (e.g. `bench_sum`'s `total` reaching 49999995000000) whose raw i64 may
-/// exceed 2^46. Phase 1d Step 1 will swap the dynamic set for the static set
-/// across the entire codebase; this sibling makes the boxing escape
-/// invariant agnostic to whether the raw i64 fits inline, so the swap is
-/// provably semantics-preserving.
+/// Phase 1d typed-IR: overflow-safe sibling of `var_get_boxed` for boxing
+/// escape points (function return, call arguments, heap stores, runtime
+/// print/repr/str, exception rebind, def_var_global).
 ///
 /// Internally dispatches int-primary names to `ensure_boxed_overflow_safe`
 /// (which has a fits-inline fast path + a cold `molt_int_from_i64` BigInt
-/// slow path), float-primary names to a bitcast (same as `var_get_boxed`),
-/// and otherwise returns the already-NaN-boxed main Variable verbatim.
+/// slow path), float-primary names to a bitcast, and otherwise returns the
+/// already-NaN-boxed main Variable verbatim.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 fn var_get_boxed_overflow_safe(
@@ -830,33 +803,25 @@ fn var_get_boxed_overflow_safe(
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_int_shadow_vals: &BTreeMap<String, Value>,
     vars: &BTreeMap<String, Variable>,
     name: &str,
-    raw_primary_int: &std::collections::BTreeSet<String>,
+    int_primary_vars: &std::collections::BTreeSet<String>,
     raw_primary_float: &std::collections::BTreeSet<String>,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
 ) -> Option<crate::VarValue> {
     use crate::VarValue;
-    if raw_primary_int.contains(name) {
-        // Overflow-safe boxing: fits-inline fast path + BigInt cold path.
-        // ensure_boxed_overflow_safe consults the shadows first (preserving
-        // the existing pre-Phase-1d behavior where shadows hold the raw i64
-        // for join-slot accumulators) and falls back to the main Variable.
+    if int_primary_vars.contains(name) {
         let boxed = ensure_boxed_overflow_safe(
             module,
             import_ids,
             builder,
             import_refs,
             sealed_blocks,
-            raw_int_shadow,
-            raw_int_shadow_vals,
             vars,
             box_int_mask_var,
             box_int_tag_var,
-            raw_primary_int,
+            int_primary_vars,
             name,
         );
         Some(VarValue(boxed))
@@ -874,28 +839,19 @@ fn var_get_boxed_overflow_safe(
 
 /// Box a known-bool variable's raw 0/1 value into a TAG_BOOL NaN-box.
 ///
-/// Bool-typed variables (proven by static lane inference, e.g. `const_bool`,
-/// comparisons, `not`, `bool()`) carry their raw 0/1 in `raw_int_shadow_vals`
-/// and the bool-specific `raw_bool_values` / `raw_bool_shadow_vars`.  They
-/// must be re-boxed as TAG_BOOL — never TAG_INT — so that the runtime's
-/// `as_bool()` predicate (and CPython-equivalent `__bool__` validators) can
-/// recognize them.  The previous code went through `ensure_boxed_overflow_safe`
-/// which unconditionally TAG_INT-boxed any value found in `raw_int_shadow_vals`,
-/// silently demoting `False`/`True` returns from `__bool__` methods to ints
-/// and triggering a false-positive `TypeError: __bool__ should return bool,
-/// returned int` at runtime.
+/// Bool-typed variables carry their raw 0/1 in the bool-specific
+/// `raw_bool_values` / `raw_bool_shadow_vars` (Phase 2 will mirror Phase 1d
+/// for bool, replacing these with a static `bool_primary_vars` set).
 #[cfg(feature = "native-backend")]
 fn ensure_boxed_bool_safe(
     builder: &mut FunctionBuilder<'_>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_int_shadow_vals: &BTreeMap<String, Value>,
     raw_bool_values: &std::collections::BTreeMap<String, Value>,
     raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
     vars: &BTreeMap<String, Variable>,
+    int_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
     name: &str,
 ) -> Option<Value> {
-    // Prefer bool-specific shadows (tier 2 value, then tier 1 Variable).
     let raw_val = raw_bool_values
         .get(name)
         .copied()
@@ -904,13 +860,10 @@ fn ensure_boxed_bool_safe(
                 .get(name)
                 .map(|&var| builder.use_var(var))
         })
-        .or_else(|| shadow_value_for(builder, raw_int_shadow, raw_int_shadow_vals, name));
+        .or_else(|| int_raw_value(builder, vars, int_primary_vars, name));
     if let Some(raw_val) = raw_val {
-        // raw_val is 0 or 1 (an i64). Re-box as TAG_BOOL.
         return Some(box_bool_value(builder, raw_val, nbc));
     }
-    // Fall back to whatever the variable holds. For const_bool, this is the
-    // already-TAG_BOOL-boxed value emitted at the const_bool site.
     var_get(builder, vars, name).map(|v| v.0)
 }
 
@@ -922,8 +875,6 @@ fn ensure_boxed_primitive_safe(
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_int_shadow_vals: &BTreeMap<String, Value>,
     raw_bool_values: &std::collections::BTreeMap<String, Value>,
     raw_bool_shadow_vars: &std::collections::BTreeMap<String, Variable>,
     bool_like_vars: &BTreeSet<String>,
@@ -931,7 +882,7 @@ fn ensure_boxed_primitive_safe(
     nbc: &crate::NanBoxConsts,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
-    raw_primary_int: &std::collections::BTreeSet<String>,
+    int_primary_vars: &std::collections::BTreeSet<String>,
     raw_primary_float: &std::collections::BTreeSet<String>,
     name: &str,
 ) -> Value {
@@ -942,28 +893,21 @@ fn ensure_boxed_primitive_safe(
             builder,
             import_refs,
             sealed_blocks,
-            raw_int_shadow,
-            raw_int_shadow_vals,
             vars,
             name,
-            raw_primary_int,
+            int_primary_vars,
             raw_primary_float,
             box_int_mask_var,
             box_int_tag_var,
         )
         .expect("float escape var not found")
     } else if bool_like_vars.contains(name) {
-        // Bool-typed variable: must re-box as TAG_BOOL, not TAG_INT.  Falling
-        // through to ensure_boxed_overflow_safe would silently demote bool
-        // values found in raw_int_shadow_vals to ints (the source of the
-        // "__bool__ should return bool, returned int" false positive).
         ensure_boxed_bool_safe(
             builder,
-            raw_int_shadow,
-            raw_int_shadow_vals,
             raw_bool_values,
             raw_bool_shadow_vars,
             vars,
+            int_primary_vars,
             nbc,
             name,
         )
@@ -975,18 +919,16 @@ fn ensure_boxed_primitive_safe(
             builder,
             import_refs,
             sealed_blocks,
-            raw_int_shadow,
-            raw_int_shadow_vals,
             vars,
             box_int_mask_var,
             box_int_tag_var,
-            raw_primary_int,
+            int_primary_vars,
             name,
         )
     }
 }
 
-// --- Raw f64 shadow lookup functions (mirrors raw_int_shadow) ---
+// --- Raw f64 shadow lookup functions (Phase 3 will mirror Phase 1d for float) ---
 
 #[cfg(feature = "native-backend")]
 #[inline]
@@ -1051,9 +993,7 @@ fn float_value_for_mixed(
     raw_primary_float: &std::collections::BTreeSet<String>,
     raw_float_shadow: &BTreeMap<String, Variable>,
     raw_float_shadow_vals: &BTreeMap<String, Value>,
-    raw_int_shadow: &BTreeMap<String, Variable>,
-    raw_int_shadow_vals: &BTreeMap<String, Value>,
-    raw_primary_int: &std::collections::BTreeSet<String>,
+    int_primary_vars: &std::collections::BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -1074,39 +1014,25 @@ fn float_value_for_mixed(
     }
 
     // 2. Operand is int — get raw i64 and convert to f64.
-    if name_is_int_like(name, int_like_vars, bool_like_vars) || raw_primary_int.contains(name) {
-        // Try int shadow first (cheaper than unboxing).
-        let raw_i =
-            shadow_value_for(builder, raw_int_shadow, raw_int_shadow_vals, name).or_else(|| {
-                if raw_primary_int.contains(name) {
-                    vars.get(name).map(|&var| builder.use_var(var))
-                } else {
-                    None
-                }
-            });
-        if let Some(raw_int_val) = raw_i {
+    if name_is_int_like(name, int_like_vars, bool_like_vars) || int_primary_vars.contains(name) {
+        // Phase 1d: int_primary_vars members hold raw i64 in the main
+        // Variable; reading via int_raw_value avoids the box/unbox detour.
+        if let Some(raw_int_val) = int_raw_value(builder, vars, int_primary_vars, name) {
             return builder.ins().fcvt_from_sint(types::F64, raw_int_val);
         }
-        // Phase 1d Step 0.6: this site is reached only when `name` is NOT in
-        // `raw_primary_int` (the early-return above fires otherwise), so the
-        // int-box branch of var_get_boxed_overflow_safe never executes here —
-        // only the identity branch returning the already-NaN-boxed main
-        // Variable.  Migrating to var_get_boxed_overflow_safe is an asymmetry
-        // fix per CLAUDE.md "asymmetric coverage of a structural fix" — Step 1
-        // (atomic Phase 1d) needs every var_get_boxed_overflow_safe call site
-        // to use the overflow-safe variant for forward-compat with the static
-        // int_primary_vars set including large IV accumulators.
+        // Fallback: name is int-typed but not in int_primary_vars → vars[name]
+        // holds the already-NaN-boxed value.  Use overflow-safe boxing for
+        // forward-compat (the int-box branch is reached only when name IS in
+        // int_primary_vars, but we keep the call symmetric for safety).
         let boxed = var_get_boxed_overflow_safe(
             module,
             import_ids,
             builder,
             import_refs,
             sealed_blocks,
-            raw_int_shadow,
-            raw_int_shadow_vals,
             vars,
             name,
-            raw_primary_int,
+            int_primary_vars,
             raw_primary_float,
             box_int_mask_var,
             box_int_tag_var,
@@ -1123,11 +1049,9 @@ fn float_value_for_mixed(
         builder,
         import_refs,
         sealed_blocks,
-        raw_int_shadow,
-        raw_int_shadow_vals,
         vars,
         name,
-        raw_primary_int,
+        int_primary_vars,
         raw_primary_float,
         box_int_mask_var,
         box_int_tag_var,
@@ -1251,6 +1175,7 @@ fn collect_slot_backed_join_names(
 }
 
 #[cfg(feature = "native-backend")]
+#[cfg(test)]
 fn live_exception_rebind_vars_for_op(
     vars: &BTreeMap<String, Variable>,
     transport_last_use: &BTreeMap<String, usize>,
@@ -1275,9 +1200,6 @@ fn switch_to_block_with_rebind(
     block: Block,
     is_block_filled: &mut bool,
     _has_exception_labels: bool,
-    _vars: &BTreeMap<String, Variable>,
-    _shadow_vars: &BTreeMap<String, Variable>,
-    _shadow_names: &BTreeSet<String>,
 ) {
     crate::switch_to_block_tracking(builder, block, is_block_filled);
     // Do not synthesize implicit SSA transport here.
@@ -1326,7 +1248,6 @@ struct FunctionPreanalysis {
     has_store: bool,
     var_names: Vec<String>,
     last_use: BTreeMap<String, usize>,
-    transport_last_use: BTreeMap<String, usize>,
     alias_roots: BTreeMap<String, String>,
     if_to_end_if: BTreeMap<usize, usize>,
     if_to_else: BTreeMap<usize, usize>,
@@ -1802,7 +1723,6 @@ fn preanalyze_function_ir(
     // ops sit inside the range; variables they reference are extended.
     // At loop_break, drain_cleanup_tracked sees last_use > op_idx and
     // keeps variables alive; they propagate to after_block for later cleanup.
-    let transport_last_use = last_use.clone();
     let mut loop_body_out_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     let mut loop_body_init_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     {
@@ -2273,7 +2193,6 @@ fn preanalyze_function_ir(
         has_store,
         var_names,
         last_use,
-        transport_last_use,
         alias_roots,
         if_to_end_if,
         if_to_else,
@@ -2346,12 +2265,12 @@ fn cleanup_name_excluded(
     name: &str,
     protected_names: Option<&BTreeSet<String>>,
     param_name_set: &BTreeSet<&str>,
-    raw_primary_int: &BTreeSet<String>,
+    int_primary_vars: &BTreeSet<String>,
     raw_primary_float: &BTreeSet<String>,
 ) -> bool {
     protected_names.is_some_and(|protected| protected.contains(name))
         || param_name_set.contains(name)
-        || raw_primary_int.contains(name)
+        || int_primary_vars.contains(name)
         || raw_primary_float.contains(name)
 }
 
@@ -2535,7 +2454,6 @@ impl SimpleBackend {
             has_store,
             var_names,
             last_use,
-            transport_last_use,
             alias_roots,
             if_to_end_if,
             if_to_else,
@@ -2598,39 +2516,6 @@ impl SimpleBackend {
             cranelift_codegen::ir::StackSlot,
         > = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
-        let mut rebind_var_names: BTreeSet<String> = func_ir
-            .params
-            .iter()
-            .filter(|name| name.as_str() != "none")
-            .cloned()
-            .collect();
-        let mut entry_defined_var_names: BTreeSet<String> = BTreeSet::new();
-        for op in &func_ir.ops {
-            if matches!(op.kind.as_str(), "label" | "state_label") {
-                break;
-            }
-            if let Some(out) = op.out.as_ref()
-                && out != "none"
-            {
-                entry_defined_var_names.insert(out.clone());
-            }
-            if op.kind == "store_var"
-                && let Some(name) = op.var.as_ref()
-                && name != "none"
-            {
-                entry_defined_var_names.insert(name.clone());
-            }
-        }
-        for op in &func_ir.ops {
-            if op.kind == "store_var"
-                && let Some(name) = op.var.as_ref()
-                && name != "none"
-                && is_join_slot_name(name)
-                && exception_label_ids.is_empty()
-            {
-                rebind_var_names.insert(name.clone());
-            }
-        }
         // Variables proven to be always float AND not function parameters
         // are declared as F64 so the primary Cranelift Variable carries the raw
         // f64 value.  This eliminates bitcast(f64->i64) on every store and
@@ -2727,7 +2612,7 @@ impl SimpleBackend {
         // Typed IR Phase 1a: build int_primary_vars as the immutable static
         // analog of float_primary_vars for proven-int variables. A var is in
         // int_primary_vars only when every definition site produces raw i64
-        // (no NaN-boxed source). raw_primary_int (the dynamic, mutated set
+        // (no NaN-boxed source). int_primary_vars (the dynamic, mutated set
         // queried by var_get_boxed) must converge to a subset of this.
         // Phase 1a does not yet drive codegen decisions off this set — it is
         // the foundation for Phases 1b/1c/1d.
@@ -2805,10 +2690,7 @@ impl SimpleBackend {
                         &float_like_vars,
                         &str_like_vars,
                     );
-                    let proven_int = matches!(
-                        lane,
-                        Some(ScalarLane::Int) | Some(ScalarLane::Bool)
-                    );
+                    let proven_int = matches!(lane, Some(ScalarLane::Int) | Some(ScalarLane::Bool));
                     if !proven_int && int_like_vars.contains(out) {
                         non_int.insert(out.clone());
                     }
@@ -2816,73 +2698,71 @@ impl SimpleBackend {
             }
             non_int
         };
-        let int_primary_vars: BTreeSet<String> =
-            if is_cold_module_chunk_function(&func_ir.name) {
-                // Cold-module chunks already opt out of every scalar fast
-                // path (`scalar_fast_paths_enabled` is `!is_cold_module_chunk_function`),
-                // so the static set is empty for them too.
-                BTreeSet::new()
-            } else {
-                // Phase 1d Step 0: operand-recursive fixpoint.  A name is in
-                // int_primary_vars iff (a) it passes the structural filter
-                // (int_like, not param, not unsafe, not non-int-def, not
-                // float-like) AND (b) every op that defines it produces raw
-                // i64 in codegen — which (recursively) requires every operand
-                // of that op to itself be in int_primary_vars (see
-                // `op_produces_raw_i64_for_int_primary`).  store_var targets
-                // additionally require ALL store_var sources to be in the
-                // candidate set, computed by `store_var_targets_all_sources_in`.
-                //
-                // Without this tightening, the filter-only approach
-                // over-approximates: an op like `add(param1, param2)` (params
-                // excluded from int_primary_vars) would still mark its output
-                // as int_primary_vars, but the dynamic codegen takes the
-                // boxed proven-int fallback path and `def_var`s the boxed
-                // form into `vars[out]`, violating the Phase 1d invariant
-                // `name ∈ int_primary_vars ⇒ vars[name] holds raw i64`.
-                //
-                // Mirrors the existing `int_valued_outputs` fixpoint at the
-                // int pre-decl section but with a stricter operand predicate
-                // (this fixpoint requires operands to be in candidates, not
-                // merely int-like by name).
-                let passes_filter = |name: &str| {
-                    int_like_vars.contains(name)
-                        && !param_name_set.contains(name)
-                        && !int_unsafe_outputs.contains(name)
-                        && !vars_with_non_int_defs.contains(name)
-                        && !float_like_vars.contains(name)
-                };
-                let mut candidates: BTreeSet<String> = BTreeSet::new();
-                let mut changed = true;
-                while changed {
-                    changed = false;
-                    // Propagate through store_var targets (target raw iff
-                    // every store_var source is raw).
-                    let proven_targets =
-                        store_var_targets_all_sources_in(&func_ir, &candidates);
-                    for target in proven_targets {
-                        if passes_filter(&target) && candidates.insert(target) {
-                            changed = true;
-                        }
-                    }
-                    // Propagate through ops that produce raw i64.
-                    for op in &func_ir.ops {
-                        if op.kind == "store_var" {
-                            continue;
-                        }
-                        let Some(ref out) = op.out else { continue };
-                        if candidates.contains(out) || !passes_filter(out) {
-                            continue;
-                        }
-                        if op_produces_raw_i64_for_int_primary(op, &candidates)
-                            && candidates.insert(out.clone())
-                        {
-                            changed = true;
-                        }
+        let int_primary_vars: BTreeSet<String> = if is_cold_module_chunk_function(&func_ir.name) {
+            // Cold-module chunks already opt out of every scalar fast
+            // path (`scalar_fast_paths_enabled` is `!is_cold_module_chunk_function`),
+            // so the static set is empty for them too.
+            BTreeSet::new()
+        } else {
+            // Phase 1d Step 0: operand-recursive fixpoint.  A name is in
+            // int_primary_vars iff (a) it passes the structural filter
+            // (int_like, not param, not unsafe, not non-int-def, not
+            // float-like) AND (b) every op that defines it produces raw
+            // i64 in codegen — which (recursively) requires every operand
+            // of that op to itself be in int_primary_vars (see
+            // `op_produces_raw_i64_for_int_primary`).  store_var targets
+            // additionally require ALL store_var sources to be in the
+            // candidate set, computed by `store_var_targets_all_sources_in`.
+            //
+            // Without this tightening, the filter-only approach
+            // over-approximates: an op like `add(param1, param2)` (params
+            // excluded from int_primary_vars) would still mark its output
+            // as int_primary_vars, but the dynamic codegen takes the
+            // boxed proven-int fallback path and `def_var`s the boxed
+            // form into `vars[out]`, violating the Phase 1d invariant
+            // `name ∈ int_primary_vars ⇒ vars[name] holds raw i64`.
+            //
+            // Mirrors the existing `int_valued_outputs` fixpoint at the
+            // int pre-decl section but with a stricter operand predicate
+            // (this fixpoint requires operands to be in candidates, not
+            // merely int-like by name).
+            let passes_filter = |name: &str| {
+                int_like_vars.contains(name)
+                    && !param_name_set.contains(name)
+                    && !int_unsafe_outputs.contains(name)
+                    && !vars_with_non_int_defs.contains(name)
+                    && !float_like_vars.contains(name)
+            };
+            let mut candidates: BTreeSet<String> = BTreeSet::new();
+            let mut changed = true;
+            while changed {
+                changed = false;
+                // Propagate through store_var targets (target raw iff
+                // every store_var source is raw).
+                let proven_targets = store_var_targets_all_sources_in(&func_ir, &candidates);
+                for target in proven_targets {
+                    if passes_filter(&target) && candidates.insert(target) {
+                        changed = true;
                     }
                 }
-                candidates
-            };
+                // Propagate through ops that produce raw i64.
+                for op in &func_ir.ops {
+                    if op.kind == "store_var" {
+                        continue;
+                    }
+                    let Some(ref out) = op.out else { continue };
+                    if candidates.contains(out) || !passes_filter(out) {
+                        continue;
+                    }
+                    if op_produces_raw_i64_for_int_primary(op, &candidates)
+                        && candidates.insert(out.clone())
+                    {
+                        changed = true;
+                    }
+                }
+            }
+            candidates
+        };
         for name in var_names.iter() {
             let var_type = if float_primary_vars.contains(name) {
                 types::F64
@@ -2892,10 +2772,6 @@ impl SimpleBackend {
             let var = builder.declare_var(var_type);
             vars.insert(name.clone(), var);
         }
-        let rebind_vars: BTreeMap<String, Variable> = rebind_var_names
-            .iter()
-            .filter_map(|name| vars.get(name).copied().map(|var| (name.clone(), var)))
-            .collect();
         let mut first_defined_at: BTreeMap<String, usize> = BTreeMap::new();
         for name in func_ir.params.iter().filter(|name| name.as_str() != "none") {
             first_defined_at.entry(name.clone()).or_insert(0);
@@ -2913,14 +2789,6 @@ impl SimpleBackend {
                 first_defined_at.entry(name.clone()).or_insert(idx);
             }
         }
-        let live_rebind_vars_for_op = |op_idx: usize| -> BTreeMap<String, Variable> {
-            vars.iter()
-                .filter_map(|(name, var)| {
-                    let last = transport_last_use.get(name).copied().unwrap_or(usize::MAX);
-                    (last > op_idx).then_some((name.clone(), *var))
-                })
-                .collect()
-        };
         let trace_ops = should_trace_ops(&func_ir.name);
         let trace_stride = trace_ops.as_ref().map(|cfg| cfg.stride);
         let debug_loop_cfg = std::env::var("MOLT_DEBUG_LOOP_CFG")
@@ -2962,7 +2830,6 @@ impl SimpleBackend {
         let mut tracked_obj_vars_set: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut entry_vars: BTreeMap<String, Value> = BTreeMap::new();
-        let mut callargs_source_names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut state_blocks = BTreeMap::new();
         let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
         let mut reachable_blocks: BTreeSet<Block> = BTreeSet::new();
@@ -3020,24 +2887,15 @@ impl SimpleBackend {
                 }
             };
 
-        // Raw int shadow: two-tier unboxed i64 tracking.
-        //
-        // Tier 1 (Variable-backed): named variables that cross block boundaries
-        // (loop induction variables via store_var/load_var).  Pre-declared at
-        // entry; Cranelift inserts phis at loop headers automatically.
-        //
-        // Tier 2 (Value-based): SSA intermediates within a single basic block
-        // (const_int → add → compare chains).  Cheap, no pre-declaration needed.
-        // Cleared at block boundaries (label, if, else, end_if).
-        //
-        // Read order: try Tier 2 first (no function call), fall back to Tier 1
-        // (use_var).  Write order: write to both tiers on every def.
-        let mut raw_int_shadow: std::collections::BTreeMap<String, Variable> =
-            std::collections::BTreeMap::new();
-        let mut raw_int_shadow_vals: std::collections::BTreeMap<String, Value> =
-            std::collections::BTreeMap::new();
+        // Phase 1d: int shadow plumbing eliminated. The main Cranelift
+        // Variable IS the raw i64 carrier for int_primary_vars members.
+        // Cranelift's FunctionBuilder inserts phi nodes automatically at
+        // block boundaries when a Variable has multiple defs, so the legacy
+        // two-tier shadow plumbing is redundant. Reading via
+        // `int_raw_value(builder, vars, int_primary_vars, name)` returns the
+        // raw i64 directly when name is a static member.
 
-        // Raw float shadow: two-tier unboxed f64 tracking (mirrors raw_int_shadow).
+        // Raw float shadow: two-tier unboxed f64 tracking (Phase 3 will mirror Phase 1d).
         //
         // Tier 1 (Variable-backed): named variables that cross block boundaries
         // (loop induction variables via store_var/load_var).  Pre-declared at
@@ -3053,13 +2911,10 @@ impl SimpleBackend {
             std::collections::BTreeMap::new();
         let mut raw_float_shadow_vals: std::collections::BTreeMap<String, Value> =
             std::collections::BTreeMap::new();
-        // Raw-primary tracking: variables whose primary Cranelift Variable MAY
-        // hold a raw (unboxed) value in a future phase.  var_get_boxed checks
-        // these sets to decide whether boxing is needed.  Currently all
-        // variables still store NaN-boxed values, so these sets prepare the
-        // call-site plumbing without changing codegen.
-        let mut raw_primary_int: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        // Phase 1d: int_primary_vars (declared above ~line 2665 via the
+        // operand-recursive fixpoint) is the immutable source of truth for
+        // "vars[name] holds raw i64". The dynamic int_primary_vars set was
+        // eliminated. Float remains a dynamic set pending the Phase 3 mirror.
         let mut raw_primary_float: std::collections::BTreeSet<String> = float_primary_vars.clone();
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
@@ -3258,16 +3113,6 @@ impl SimpleBackend {
                 &func_ir,
                 &int_valued_outputs,
             ));
-            let zero = builder.ins().iconst(types::I64, 0);
-            // Pre-declare shadow Variables ONLY for store_var targets (loop variables).
-            // These need phi resolution across loop back-edges.  SSA-internal
-            // outputs (const_int, arithmetic) don't cross block boundaries and
-            // are handled by lazy declaration at the def_var site.
-            for name in &int_store_targets {
-                let v = builder.declare_var(types::I64);
-                builder.def_var(v, zero);
-                raw_int_shadow.insert(name.clone(), v);
-            }
             if std::env::var("MOLT_DUMP_INT_STORE_TARGETS").as_deref() == Ok(func_ir.name.as_str())
             {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
@@ -3418,7 +3263,7 @@ impl SimpleBackend {
         // creating massive block parameter lists.
         if scalar_fast_paths_enabled && exception_label_ids.is_empty() && !stateful {
             slot_backed_join_names.retain(|name| {
-                let is_scalar = raw_int_shadow.contains_key(name)
+                let is_scalar = int_primary_vars.contains(name)
                     || int_like_vars.contains(name)
                     || float_like_vars.contains(name)
                     || bool_like_vars.contains(name);
@@ -3615,11 +3460,9 @@ impl SimpleBackend {
                 &mut builder,
                 &mut import_refs,
                 &mut sealed_blocks,
-                &raw_int_shadow,
-                &raw_int_shadow_vals,
                 &vars,
                 "self",
-                &raw_primary_int,
+                &int_primary_vars,
                 &raw_primary_float,
                 box_int_mask_var,
                 box_int_tag_var,
@@ -3729,6 +3572,9 @@ impl SimpleBackend {
                         match op.kind.as_str() {
                             "const" => {
                                 let val = op.value.unwrap_or(0);
+                                if int_primary_vars.contains(out) {
+                                    return Some((out.clone(), val));
+                                }
                                 const INLINE_MAX: i64 = (1_i64 << 46) - 1;
                                 const INLINE_MIN: i64 = -(1_i64 << 46);
                                 if (INLINE_MIN..=INLINE_MAX).contains(&val) {
@@ -3758,6 +3604,12 @@ impl SimpleBackend {
                 if float_primary_vars.contains(name) {
                     // Float-primary: Variable is F64, initialize with f64 zero.
                     builder.def_var(*var, float_zero);
+                } else if int_primary_vars.contains(name) {
+                    // Int-primary: the main Variable is raw i64, including
+                    // entry pre-materialization for loop phis.
+                    let raw = const_int_defs.get(name).copied().unwrap_or(0);
+                    let val = builder.ins().iconst(types::I64, raw);
+                    builder.def_var(*var, val);
                 } else if let Some(&bits) = const_int_defs.get(name) {
                     // Pre-materialize constant in entry block so loop header
                     // phis pick up the correct value on the first iteration.
@@ -4225,19 +4077,16 @@ impl SimpleBackend {
                     const INLINE_MIN: i64 = -(1_i64 << 46);
                     const INLINE_MAX: i64 = (1_i64 << 46) - 1;
                     if (INLINE_MIN..=INLINE_MAX).contains(&val) {
-                        // Typed IR: raw i64 is PRIMARY.  Integer constants
-                        // always fit in 47-bit inline range, so the raw value
-                        // is unconditionally correct.  Boxing is deferred to
-                        // escape points (return, call args, heap stores) via
-                        // var_get_boxed / ensure_boxed_overflow_safe.
-                        let raw_val = builder.ins().iconst(types::I64, val);
                         if let Some(ref out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, raw_val);
-                            raw_primary_int.insert(out__.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                builder.def_var(shadow_var, raw_val);
-                            }
-                            raw_int_shadow_vals.insert(out__.clone(), raw_val);
+                            let raw_val = builder.ins().iconst(types::I64, val);
+                            def_inline_int_value(
+                                &mut builder,
+                                &vars,
+                                &int_primary_vars,
+                                out__,
+                                raw_val,
+                                box_int(val),
+                            );
                         }
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
@@ -4307,10 +4156,6 @@ impl SimpleBackend {
                         // Bool constants are 0/1 — add to raw_int_shadow so
                         // list_int setitem can use them without NaN-unboxing.
                         let raw = builder.ins().iconst(types::I64, val);
-                        if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                            builder.def_var(shadow_var, raw);
-                        }
-                        raw_int_shadow_vals.insert(out__.clone(), raw);
                         // Also store in raw_bool_values for proven-bool consumers.
                         raw_bool_values.insert(out__.clone(), raw);
                         if let Some(&bvar) = raw_bool_shadow_vars.get(out__.as_str()) {
@@ -4498,11 +4343,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -4514,11 +4357,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -4555,9 +4396,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -4575,9 +4414,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -4611,41 +4448,19 @@ impl SimpleBackend {
                         let in_active_loop = !loop_stack.is_empty();
                         // Phase 1b: inside loops, accept either a Variable-tier
                         // shadow (phi-correct across back-edges) OR a
-                        // raw_primary_int main Variable (loop-invariant
+                        // int_primary_vars main Variable (loop-invariant
                         // constants and non-phi raw values). This widens fast
                         // path eligibility for `i + 1` patterns where the
-                        // const is in raw_primary_int but never shadowed.
+                        // const is in int_primary_vars but never shadowed.
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_primary_int,
-                                &vars,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_primary_int,
-                                &vars,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         let callee = Self::import_func_id_split(
@@ -4668,11 +4483,6 @@ impl SimpleBackend {
                             let sum = builder.ins().iadd(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, sum);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, sum);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), sum);
                             }
                             continue;
                         } else {
@@ -4686,11 +4496,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -4702,11 +4510,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -4746,13 +4552,6 @@ impl SimpleBackend {
                             switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             let merged_boxed = builder.block_params(merge_block)[0];
-                            let merged_raw = builder.block_params(merge_block)[1];
-                            if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), merged_raw);
-                            }
                             merged_boxed
                         }
                     } else {
@@ -4762,11 +4561,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -4778,11 +4575,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -4879,11 +4674,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -4895,11 +4688,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -4929,9 +4720,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -4949,9 +4738,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -4986,24 +4773,14 @@ impl SimpleBackend {
                         // instead of panicking on unwrap.
                         let in_loop = !loop_stack.is_empty();
                         let lhs_val = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[0],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                         };
                         let rhs_val = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         };
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_val, rhs_val) {
                             // Typed IR: raw i64 is PRIMARY.  Branchless iadd
@@ -5011,11 +4788,6 @@ impl SimpleBackend {
                             let raw_result = builder.ins().iadd(lhs_raw, rhs_raw);
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, raw_result);
-                                raw_primary_int.insert(out_name.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                    builder.def_var(shadow_var, raw_result);
-                                }
-                                raw_int_shadow_vals.insert(out_name.clone(), raw_result);
                             }
                             continue;
                         }
@@ -5029,11 +4801,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -5045,11 +4815,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -5097,13 +4865,6 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
-                        if let Some(ref out_name) = op.out {
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
-                        }
                         merge_res
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -5112,11 +4873,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -5128,11 +4887,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -5223,11 +4980,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5239,11 +4994,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5271,11 +5024,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5287,11 +5038,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5319,11 +5068,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5335,11 +5082,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5351,11 +5096,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5383,11 +5126,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5399,11 +5140,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5415,11 +5154,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5447,11 +5184,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5463,11 +5198,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5495,11 +5228,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5511,11 +5242,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5543,11 +5272,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5559,11 +5286,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5591,11 +5316,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5607,11 +5330,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5639,11 +5360,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5655,11 +5374,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5671,11 +5388,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5703,11 +5418,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5719,11 +5432,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5735,11 +5446,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5767,11 +5476,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5783,11 +5490,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5815,11 +5520,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5831,11 +5534,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5863,11 +5564,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5879,11 +5578,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5911,11 +5608,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5927,11 +5622,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5959,11 +5652,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5975,11 +5666,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -5991,11 +5680,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6023,11 +5710,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6039,11 +5724,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6055,11 +5738,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6087,11 +5768,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6103,11 +5782,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6135,11 +5812,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6151,11 +5826,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6183,11 +5856,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6199,11 +5870,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6215,11 +5884,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6247,11 +5914,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6263,11 +5928,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6279,11 +5942,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6311,11 +5972,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6327,11 +5986,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6359,11 +6016,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6375,11 +6030,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6407,11 +6060,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6423,11 +6074,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6439,11 +6088,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6471,11 +6118,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6487,11 +6132,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6503,11 +6146,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -6544,9 +6185,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -6564,9 +6203,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -6603,24 +6240,14 @@ impl SimpleBackend {
                             // (phi-correct across back-edges). Value-tier
                             // shadows may hold stale SSA values from a
                             // previous block/iteration.
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         let callee = Self::import_func_id_split(
@@ -6643,11 +6270,6 @@ impl SimpleBackend {
                             let diff = builder.ins().isub(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, diff);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, diff);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), diff);
                             }
                             continue;
                         } else {
@@ -6661,11 +6283,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -6679,11 +6299,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -6725,13 +6343,6 @@ impl SimpleBackend {
                             switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             let merged_boxed = builder.block_params(merge_block)[0];
-                            let merged_raw = builder.block_params(merge_block)[1];
-                            if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), merged_raw);
-                            }
                             merged_boxed
                         }
                     } else {
@@ -6741,11 +6352,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -6757,11 +6366,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -6863,9 +6470,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -6883,9 +6488,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -6910,10 +6513,8 @@ impl SimpleBackend {
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
                         }
-                    } else if (raw_int_shadow_vals.contains_key(&args[0])
-                        || raw_int_shadow.contains_key(&args[0]))
-                        && (raw_int_shadow_vals.contains_key(&args[1])
-                            || raw_int_shadow.contains_key(&args[1]))
+                    } else if (int_primary_vars.contains(args[0].as_str()))
+                        && (int_primary_vars.contains(args[1].as_str()))
                         && op_prefers_int_lane(&op)
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
@@ -6921,25 +6522,15 @@ impl SimpleBackend {
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let lhs_val = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[0],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                         }
                         .unwrap();
                         let rhs_val = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         }
                         .unwrap();
                         // Typed IR: raw i64 is PRIMARY.  Branchless isub
@@ -6947,11 +6538,6 @@ impl SimpleBackend {
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, raw_result);
-                            raw_primary_int.insert(out_name.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, raw_result);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), raw_result);
                         }
                         continue;
                     } else if op_prefers_int_lane(&op) {
@@ -6962,11 +6548,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -6980,11 +6564,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7034,13 +6616,6 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
-                        if let Some(ref out_name) = op.out {
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
-                        }
                         merge_res
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -7049,11 +6624,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7065,11 +6638,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7169,9 +6740,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -7189,9 +6758,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -7228,24 +6795,14 @@ impl SimpleBackend {
                             // (phi-correct across back-edges). Value-tier
                             // shadows may hold stale SSA values from a
                             // previous block/iteration.
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         let callee = Self::import_func_id_split(
@@ -7268,11 +6825,6 @@ impl SimpleBackend {
                             let prod = builder.ins().imul(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, prod);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, prod);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), prod);
                             }
                             continue;
                         } else {
@@ -7286,11 +6838,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -7302,11 +6852,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -7343,13 +6891,6 @@ impl SimpleBackend {
                             switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             let merged_boxed = builder.block_params(merge_block)[0];
-                            let merged_raw = builder.block_params(merge_block)[1];
-                            if let Some(ref out__) = op.out {
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, merged_raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), merged_raw);
-                            }
                             merged_boxed
                         }
                     } else {
@@ -7359,11 +6900,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7375,11 +6914,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7480,9 +7017,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -7500,9 +7035,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -7527,35 +7060,23 @@ impl SimpleBackend {
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
                         }
-                    } else if (raw_int_shadow_vals.contains_key(&args[0])
-                        || raw_int_shadow.contains_key(&args[0]))
-                        && (raw_int_shadow_vals.contains_key(&args[1])
-                            || raw_int_shadow.contains_key(&args[1]))
+                    } else if (int_primary_vars.contains(args[0].as_str()))
+                        && (int_primary_vars.contains(args[1].as_str()))
                         && op_prefers_int_lane(&op)
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let lhs_val = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[0],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                         }
                         .unwrap();
                         let rhs_val = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         }
                         .unwrap();
                         // Typed IR: raw i64 is PRIMARY.  Branchless imul
@@ -7563,11 +7084,6 @@ impl SimpleBackend {
                         let raw_result = builder.ins().imul(lhs_val, rhs_val);
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, raw_result);
-                            raw_primary_int.insert(out_name.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, raw_result);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), raw_result);
                         }
                         continue;
                     } else if op_prefers_int_lane(&op) {
@@ -7578,11 +7094,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7594,11 +7108,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7643,13 +7155,6 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
-                        if let Some(ref out_name) = op.out {
-                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
-                                builder.def_var(shadow_var, merge_raw);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
-                        }
                         merge_res
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -7658,11 +7163,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7674,11 +7177,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7767,24 +7268,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
@@ -7793,11 +7284,6 @@ impl SimpleBackend {
                             let raw = builder.ins().bor(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, raw);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), raw);
                             }
                             continue;
                         } else {
@@ -7807,11 +7293,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -7823,11 +7307,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -7883,11 +7365,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7899,11 +7379,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -7973,11 +7451,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -7989,11 +7465,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8105,24 +7579,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
@@ -8130,11 +7594,6 @@ impl SimpleBackend {
                             let raw = builder.ins().band(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, raw);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), raw);
                             }
                             continue;
                         } else {
@@ -8144,11 +7603,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -8160,11 +7617,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -8220,11 +7675,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -8236,11 +7689,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -8310,11 +7761,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8326,11 +7775,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8442,24 +7889,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
@@ -8467,11 +7904,6 @@ impl SimpleBackend {
                             let raw = builder.ins().bxor(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, raw);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), raw);
                             }
                             continue;
                         } else {
@@ -8481,11 +7913,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -8497,11 +7927,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -8557,11 +7985,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -8573,11 +7999,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -8647,11 +8071,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8663,11 +8085,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8779,24 +8199,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
@@ -8805,11 +8215,6 @@ impl SimpleBackend {
                             let raw = builder.ins().ishl(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, raw);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), raw);
                             }
                             continue;
                         }
@@ -8821,11 +8226,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8837,11 +8240,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8868,24 +8269,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
@@ -8894,11 +8285,6 @@ impl SimpleBackend {
                             let raw = builder.ins().sshr(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, raw);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, raw);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), raw);
                             }
                             continue;
                         }
@@ -8910,11 +8296,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8926,11 +8310,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8958,11 +8340,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -8974,11 +8354,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -9024,9 +8402,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -9044,9 +8420,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -9075,11 +8449,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9091,11 +8463,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9162,11 +8532,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9178,11 +8546,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9272,11 +8638,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9288,11 +8652,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9416,24 +8778,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         let callee = Self::import_func_id_split(
@@ -9481,11 +8833,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9497,11 +8847,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9518,11 +8866,6 @@ impl SimpleBackend {
                             let result = builder.block_params(merge_block)[0];
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, result);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, result);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), result);
                             }
                             continue;
                         } else {
@@ -9532,11 +8875,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9548,11 +8889,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9617,11 +8956,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9633,11 +8970,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9729,24 +9064,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         let callee = Self::import_func_id_split(
@@ -9791,11 +9116,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9807,11 +9130,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9827,11 +9148,6 @@ impl SimpleBackend {
                             let result = builder.block_params(merge_block)[0];
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, result);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, result);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), result);
                             }
                             continue;
                         } else {
@@ -9841,11 +9157,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9857,11 +9171,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -9924,11 +9236,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -9940,11 +9250,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -10030,11 +9338,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10046,11 +9352,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10143,24 +9447,14 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let in_active_loop = !loop_stack.is_empty();
                         let lhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, lhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                lhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, rhs_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                rhs_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
 
                         let callee = Self::import_func_id_split(
@@ -10225,11 +9519,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -10241,11 +9533,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -10261,11 +9551,6 @@ impl SimpleBackend {
                             let result = builder.block_params(merge_block)[0];
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, result);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, result);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), result);
                             }
                             continue;
                         }
@@ -10276,11 +9561,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -10292,11 +9575,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -10392,11 +9673,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -10408,11 +9687,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -10441,11 +9718,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10457,11 +9732,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10473,11 +9746,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10505,11 +9776,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10521,11 +9790,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10537,11 +9804,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10571,11 +9836,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10599,16 +9862,17 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Stack-tuple fast path: length is known at compile time.
                     if let Some(elems) = scalarized_tuples.get(&args[0]) {
-                        // Typed IR: raw i64 is PRIMARY.  Compile-time constant
-                        // length always fits in 47-bit inline range.
-                        let raw_len = builder.ins().iconst(types::I64, elems.len() as i64);
                         if let Some(ref out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, raw_len);
-                            raw_primary_int.insert(out__.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(out__.as_str()) {
-                                builder.def_var(shadow_var, raw_len);
-                            }
-                            raw_int_shadow_vals.insert(out__.clone(), raw_len);
+                            let len = elems.len() as i64;
+                            let raw_len = builder.ins().iconst(types::I64, len);
+                            def_inline_int_value(
+                                &mut builder,
+                                &vars,
+                                &int_primary_vars,
+                                out__,
+                                raw_len,
+                                box_int(len),
+                            );
                         }
                     } else {
                         let val = var_get_boxed_overflow_safe(
@@ -10617,11 +9881,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -10648,17 +9910,13 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*val]);
                         let boxed_res = builder.inst_results(call)[0];
-                        // Typed IR: unbox runtime result and store raw i64
-                        // as PRIMARY.  len() always returns a non-negative
-                        // integer that fits in 47-bit inline range.
-                        let raw_res = unbox_int(&mut builder, boxed_res, &nbc);
                         if let Some(ref out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, raw_res);
-                            raw_primary_int.insert(out__.clone());
-                            if let Some(&shadow_var) = raw_int_shadow.get(out__.as_str()) {
-                                builder.def_var(shadow_var, raw_res);
+                            if int_primary_vars.contains(out__) {
+                                let raw_res = unbox_int(&mut builder, boxed_res, &nbc);
+                                def_var_named(&mut builder, &vars, out__, raw_res);
+                            } else {
+                                def_var_named(&mut builder, &vars, out__, boxed_res);
                             }
-                            raw_int_shadow_vals.insert(out__.clone(), raw_res);
                         }
                     }
                 }
@@ -10670,11 +9928,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10702,11 +9958,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10734,11 +9988,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10762,7 +10014,6 @@ impl SimpleBackend {
                     let Some(out_name) = op.out else {
                         continue;
                     };
-                    callargs_source_names.insert(out_name.to_string(), BTreeSet::new());
                     let zero = builder.ins().iconst(types::I64, 0);
                     let local_callee = import_func_ref(
                         &mut self.module,
@@ -10813,11 +10064,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -10858,11 +10107,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10874,11 +10121,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10900,23 +10145,15 @@ impl SimpleBackend {
                 }
                 "callargs_push_pos" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if let Some(builder_name) = args.first()
-                        && let Some(source_name) = args.get(1)
-                        && let Some(names) = callargs_source_names.get_mut(builder_name)
-                    {
-                        names.insert(source_name.clone());
-                    }
                     let builder_ptr = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10928,11 +10165,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10947,28 +10182,23 @@ impl SimpleBackend {
                         &[types::I64, types::I64],
                         &[types::I64],
                     );
-                    builder.ins().call(local_callee, &[*builder_ptr, *val]);
+                    let call = builder.ins().call(local_callee, &[*builder_ptr, *val]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "callargs_push_kw" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if let Some(builder_name) = args.first()
-                        && let Some(names) = callargs_source_names.get_mut(builder_name)
-                    {
-                        for source_name in args.iter().skip(1) {
-                            names.insert(source_name.clone());
-                        }
-                    }
                     let builder_ptr = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10980,11 +10210,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -10996,11 +10224,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11014,29 +10240,25 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder
+                    let call = builder
                         .ins()
                         .call(local_callee, &[*builder_ptr, *name, *val]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "callargs_expand_star" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if let Some(builder_name) = args.first()
-                        && let Some(source_name) = args.get(1)
-                        && let Some(names) = callargs_source_names.get_mut(builder_name)
-                    {
-                        names.insert(source_name.clone());
-                    }
                     let builder_ptr = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11048,11 +10270,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11066,27 +10286,23 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*builder_ptr, *iterable]);
+                    let call = builder.ins().call(local_callee, &[*builder_ptr, *iterable]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "callargs_expand_kwstar" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if let Some(builder_name) = args.first()
-                        && let Some(source_name) = args.get(1)
-                        && let Some(names) = callargs_source_names.get_mut(builder_name)
-                    {
-                        names.insert(source_name.clone());
-                    }
                     let builder_ptr = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11098,11 +10314,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11116,7 +10330,11 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*builder_ptr, *mapping]);
+                    let call = builder.ins().call(local_callee, &[*builder_ptr, *mapping]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "range_new" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -11126,11 +10344,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11142,11 +10358,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11158,11 +10372,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11190,11 +10402,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11206,11 +10416,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11222,11 +10430,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11262,11 +10468,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -11292,11 +10496,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -11336,11 +10538,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11395,11 +10595,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11412,8 +10610,6 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &raw_bool_values,
                         &raw_bool_shadow_vars,
                         &bool_like_vars,
@@ -11421,7 +10617,7 @@ impl SimpleBackend {
                         &nbc,
                         box_int_mask_var,
                         box_int_tag_var,
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         &args[1],
                     );
@@ -11452,11 +10648,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11468,11 +10662,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11505,11 +10697,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11521,11 +10711,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11558,11 +10746,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11574,11 +10760,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11590,11 +10774,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11628,11 +10810,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11644,11 +10824,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11682,11 +10860,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11714,11 +10890,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11746,11 +10920,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11778,11 +10950,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11794,11 +10964,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11826,11 +10994,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11842,11 +11008,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11874,11 +11038,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11890,11 +11052,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11906,11 +11066,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11922,11 +11080,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -11956,11 +11112,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12015,11 +11169,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &pair[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -12031,11 +11183,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &pair[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -12054,11 +11204,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12113,11 +11261,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -12166,11 +11312,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -12192,11 +11336,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12208,11 +11350,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12224,11 +11364,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12256,11 +11394,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12272,11 +11408,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12288,11 +11422,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12320,11 +11452,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12336,11 +11466,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12352,11 +11480,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12384,11 +11510,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12400,11 +11524,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12416,11 +11538,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12448,11 +11568,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12464,11 +11582,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12480,11 +11596,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12514,11 +11628,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12530,11 +11642,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12546,11 +11656,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12562,11 +11670,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12596,11 +11702,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12612,11 +11716,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12628,11 +11730,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12644,11 +11744,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12678,11 +11776,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12694,11 +11790,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12710,11 +11804,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12742,11 +11834,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12758,11 +11848,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12790,11 +11878,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12806,11 +11892,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12838,11 +11922,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12870,11 +11952,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12902,11 +11982,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12934,11 +12012,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12950,11 +12026,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12982,11 +12056,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -12998,11 +12070,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13030,11 +12100,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13046,11 +12114,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13078,11 +12144,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13094,11 +12158,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13126,11 +12188,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13142,11 +12202,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13174,11 +12232,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13206,11 +12262,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13222,11 +12276,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13254,11 +12306,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13270,11 +12320,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13302,11 +12350,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13318,11 +12364,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13350,11 +12394,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13366,11 +12408,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13398,11 +12438,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13430,11 +12468,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13462,11 +12498,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13494,11 +12528,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13510,11 +12542,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13542,11 +12572,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13558,11 +12586,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13590,11 +12616,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13622,11 +12646,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13638,11 +12660,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13654,11 +12674,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13688,11 +12706,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13723,11 +12739,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -13852,11 +12866,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14043,11 +13055,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14075,11 +13085,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14122,11 +13130,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14138,11 +13144,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14170,11 +13174,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14186,11 +13188,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14218,11 +13218,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14250,11 +13248,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14282,11 +13278,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14314,11 +13308,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -14362,11 +13354,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -14378,11 +13368,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -14400,14 +13388,9 @@ impl SimpleBackend {
                             // Falls back to the safe runtime function otherwise.
                             // Inside loops, use Variable-only shadows (phi-correct).
                             let raw_idx_lookup = if !loop_stack.is_empty() {
-                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                             } else {
-                                shadow_value_for(
-                                    &mut builder,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
-                                    &args[1],
-                                )
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                             };
                             if let Some(raw_idx) = raw_idx_lookup {
                                 // Extract storage_ptr, data_ptr, len (cached across loop iterations).
@@ -14493,10 +13476,6 @@ impl SimpleBackend {
                                     );
                                     if let Some(ref out__) = op.out {
                                         def_var_named(&mut builder, &vars, out__, boxed_res);
-                                        if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                            builder.def_var(shadow_var, raw_result);
-                                        }
-                                        raw_int_shadow_vals.insert(out__.clone(), raw_result);
                                     }
                                 } else {
                                     // Bounds check: 0 <= raw_idx < len.
@@ -14561,13 +13540,12 @@ impl SimpleBackend {
                                     let merged_boxed = builder.block_params(merge_block)[0];
                                     let merged_raw = builder.block_params(merge_block)[1];
                                     if let Some(ref out__) = op.out {
-                                        def_var_named(&mut builder, &vars, out__, merged_boxed);
-                                        // Propagate raw shadow — both fast and slow paths
-                                        // provide the true unboxed i64 value.
-                                        if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                            builder.def_var(shadow_var, merged_raw);
-                                        }
-                                        raw_int_shadow_vals.insert(out__.clone(), merged_raw);
+                                        let merged = if int_primary_vars.contains(out__.as_str()) {
+                                            merged_raw
+                                        } else {
+                                            merged_boxed
+                                        };
+                                        def_var_named(&mut builder, &vars, out__, merged);
                                     }
                                 }
                             } else {
@@ -14599,14 +13577,9 @@ impl SimpleBackend {
                             // can branch between u64-load (regular list) and u8-load+NaN-box
                             // (list_bool) without re-loading the header.
                             let raw_idx_lookup = if !loop_stack.is_empty() {
-                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                             } else {
-                                shadow_value_for(
-                                    &mut builder,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
-                                    &args[1],
-                                )
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                             };
                             if let Some(raw_idx) = raw_idx_lookup {
                                 let vec_layout = vec_u64_layout();
@@ -15119,11 +14092,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15135,11 +14106,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15151,11 +14120,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15167,21 +14134,14 @@ impl SimpleBackend {
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let raw_idx_opt = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         };
                         let raw_val_opt = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[2])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
                         } else {
-                            raw_int_shadow_vals.get(&args[2]).copied().or_else(|| {
-                                raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v))
-                            })
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
                         };
                         if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
                             // Extract storage_ptr, data_ptr, len (cached).
@@ -15323,14 +14283,9 @@ impl SimpleBackend {
                         // Inline list setitem — handles both TYPE_ID_LIST (Vec<u64>)
                         // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
                         let raw_idx_opt = if !loop_stack.is_empty() {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         };
                         if let Some(raw_idx) = raw_idx_opt {
                             let vec_layout = vec_u64_layout();
@@ -15477,7 +14432,7 @@ impl SimpleBackend {
                                 switch_to_block_materialized(&mut builder, bool_store_bce);
                                 seal_block_once(&mut builder, &mut sealed_blocks, bool_store_bce);
                                 let baddr = builder.ins().iadd(data_ptr, raw_idx);
-                                let bv = if let Some(rb) = shadow_value_for(
+                                let bv = if let Some(rb) = shadow_lookup(
                                     &mut builder,
                                     &raw_bool_shadow_vars,
                                     &raw_bool_values,
@@ -15549,7 +14504,7 @@ impl SimpleBackend {
                                         bool_store_block,
                                     );
                                     let bool_elem_addr = builder.ins().iadd(data_ptr, raw_idx);
-                                    let byte_val = if let Some(raw_val) = shadow_value_for(
+                                    let byte_val = if let Some(raw_val) = shadow_lookup(
                                         &mut builder,
                                         &raw_bool_shadow_vars,
                                         &raw_bool_values,
@@ -15693,8 +14648,6 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &raw_bool_values,
                             &raw_bool_shadow_vars,
                             &bool_like_vars,
@@ -15702,7 +14655,7 @@ impl SimpleBackend {
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             &args[2],
                         );
@@ -15729,11 +14682,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15745,11 +14696,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15761,11 +14710,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15780,21 +14727,14 @@ impl SimpleBackend {
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
                         let raw_key_opt = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &args[1],
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         };
                         let raw_val_opt = if in_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[2])
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
                         } else {
-                            raw_int_shadow_vals.get(&args[2]).copied().or_else(|| {
-                                raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v))
-                            })
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
                         };
                         if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
                             let callee = Self::import_func_id_split(
@@ -15862,11 +14802,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15878,11 +14816,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15894,11 +14830,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15928,11 +14862,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15944,11 +14876,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15976,11 +14906,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -15992,11 +14920,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16008,11 +14934,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16040,11 +14964,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16056,11 +14978,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16072,11 +14992,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16104,11 +15022,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16120,11 +15036,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16152,11 +15066,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16168,11 +15080,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16184,11 +15094,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16200,11 +15108,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16216,11 +15122,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16232,11 +15136,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16274,11 +15176,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16290,11 +15190,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16322,11 +15220,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16338,11 +15234,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16354,11 +15248,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16370,11 +15262,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16386,11 +15276,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16402,11 +15290,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16444,11 +15330,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16460,11 +15344,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16476,11 +15358,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16492,11 +15372,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16526,11 +15404,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16542,11 +15418,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16574,11 +15448,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16590,11 +15462,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16606,11 +15476,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16622,11 +15490,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16638,11 +15504,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16654,11 +15518,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16696,11 +15558,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16712,11 +15572,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16744,11 +15602,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16760,11 +15616,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16792,11 +15646,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16808,11 +15660,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16824,11 +15674,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16840,11 +15688,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16856,11 +15702,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16872,11 +15716,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16914,11 +15756,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16930,11 +15770,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16962,11 +15800,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16978,11 +15814,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -16994,11 +15828,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17010,11 +15842,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17026,11 +15856,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17042,11 +15870,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17084,11 +15910,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17100,11 +15924,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17132,11 +15954,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17148,11 +15968,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17164,11 +15982,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17180,11 +15996,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17196,11 +16010,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17212,11 +16024,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17254,11 +16064,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17270,11 +16078,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17302,11 +16108,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17318,11 +16122,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17334,11 +16136,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17350,11 +16150,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17366,11 +16164,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17382,11 +16178,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17424,11 +16218,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17440,11 +16232,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17472,11 +16262,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17488,11 +16276,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17504,11 +16290,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17520,11 +16304,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17536,11 +16318,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17552,11 +16332,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17594,11 +16372,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17610,11 +16386,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17642,11 +16416,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17658,11 +16430,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17674,11 +16444,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17690,11 +16458,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17706,11 +16472,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17722,11 +16486,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17764,11 +16526,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17780,11 +16540,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17812,11 +16570,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17828,11 +16584,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17860,11 +16614,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17876,11 +16628,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17908,11 +16658,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17924,11 +16672,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17940,11 +16686,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17956,11 +16700,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17972,11 +16714,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -17988,11 +16728,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18030,11 +16768,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18046,11 +16782,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18062,11 +16796,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18078,11 +16810,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18094,11 +16824,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18110,11 +16838,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18152,11 +16878,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18168,11 +16892,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18184,11 +16906,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18200,11 +16920,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18216,11 +16934,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18232,11 +16948,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18274,11 +16988,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18290,11 +17002,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18322,11 +17032,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18338,11 +17046,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18370,11 +17076,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18386,11 +17090,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18418,11 +17120,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18434,11 +17134,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18450,11 +17148,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18484,11 +17180,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18500,11 +17194,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18516,11 +17208,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18532,11 +17222,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18548,11 +17236,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18582,11 +17268,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18598,11 +17282,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18614,11 +17296,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18630,11 +17310,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18646,11 +17324,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18680,11 +17356,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18712,11 +17386,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18744,11 +17416,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18776,11 +17446,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18792,11 +17460,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18824,11 +17490,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18840,11 +17504,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18872,11 +17534,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18888,11 +17548,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18920,11 +17578,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18936,11 +17592,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18952,11 +17606,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -18968,11 +17620,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19002,11 +17652,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19018,11 +17666,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19050,11 +17696,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19066,11 +17710,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19082,11 +17724,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19116,11 +17756,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19132,11 +17770,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19164,11 +17800,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19180,11 +17814,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19196,11 +17828,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19230,11 +17860,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19246,11 +17874,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19262,11 +17888,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19278,11 +17902,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19312,11 +17934,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19328,11 +17948,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19344,11 +17962,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19360,11 +17976,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19394,11 +18008,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19426,11 +18038,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19442,11 +18052,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19458,11 +18066,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19492,11 +18098,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19524,11 +18128,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19540,11 +18142,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19556,11 +18156,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19590,11 +18188,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19622,11 +18218,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19638,11 +18232,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19654,11 +18246,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19686,11 +18276,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19702,11 +18290,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19718,11 +18304,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19750,11 +18334,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19782,11 +18364,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19814,11 +18394,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19846,11 +18424,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19862,11 +18438,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19878,11 +18452,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19894,11 +18466,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19928,11 +18498,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19944,11 +18512,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19960,11 +18526,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -19992,11 +18556,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20008,11 +18570,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20024,11 +18584,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20056,11 +18614,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20072,11 +18628,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20088,11 +18642,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20104,11 +18656,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20136,11 +18686,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20152,11 +18700,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20184,11 +18730,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20216,11 +18760,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20248,11 +18790,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20280,11 +18820,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20296,11 +18834,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20312,11 +18848,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20328,11 +18862,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20362,11 +18894,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20378,11 +18908,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20410,11 +18938,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20426,11 +18952,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20442,11 +18966,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20474,11 +18996,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20490,11 +19010,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -20520,24 +19038,14 @@ impl SimpleBackend {
                     let lr = if in_active_loop {
                         // Variable-backed shadows are phi-correct across loop
                         // back-edges; Value-tier may be stale.
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     };
                     let rr = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     };
                     // Helper: propagate raw bool shadow from a Cranelift icmp/fcmp
                     // result (i8) so downstream loop_break_if_true/false and `if`
@@ -20557,11 +19065,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -20576,11 +19082,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -20606,9 +19110,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -20626,9 +19128,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -20646,11 +19146,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -20662,11 +19160,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -20684,11 +19180,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -20700,11 +19194,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -20783,24 +19275,14 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let lr = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     };
                     let rr = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     };
                     let mut le_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lr, rr) {
@@ -20815,11 +19297,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -20834,11 +19314,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -20864,9 +19342,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -20884,9 +19360,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -20904,11 +19378,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -20920,11 +19392,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -20945,11 +19415,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -20961,11 +19429,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21045,24 +19511,14 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     };
                     let rhs_shadow = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     };
                     let mut gt_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
@@ -21078,11 +19534,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21097,11 +19551,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21127,9 +19579,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21147,9 +19597,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21167,11 +19615,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21183,11 +19629,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21207,11 +19651,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21223,11 +19665,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21306,24 +19746,14 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let lhs_shadow = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     };
                     let rhs_shadow = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     };
                     let mut ge_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
@@ -21339,11 +19769,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21358,11 +19786,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21388,9 +19814,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21408,9 +19832,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21428,11 +19850,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21444,11 +19864,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21469,11 +19887,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21485,11 +19901,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21571,24 +19985,14 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let eq_lr = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     };
                     let eq_rr = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     };
                     let mut eq_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (eq_lr, eq_rr) {
@@ -21606,11 +20010,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21625,11 +20027,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21655,9 +20055,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21675,9 +20073,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21696,11 +20092,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21712,11 +20106,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21734,11 +20126,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21750,11 +20140,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21813,24 +20201,14 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let in_active_loop = !loop_stack.is_empty();
                     let ne_lr = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     };
                     let ne_rr = if in_active_loop {
-                        raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[1])
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     } else {
-                        shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[1],
-                        )
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                     };
                     let mut ne_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (ne_lr, ne_rr) {
@@ -21847,11 +20225,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21866,11 +20242,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -21896,9 +20270,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21916,9 +20288,7 @@ impl SimpleBackend {
                             &raw_primary_float,
                             &raw_float_shadow,
                             &raw_float_shadow_vals,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
@@ -21937,11 +20307,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21953,11 +20321,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21975,11 +20341,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -21991,11 +20355,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22058,11 +20420,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22074,11 +20434,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22107,11 +20465,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22123,11 +20479,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22149,7 +20503,7 @@ impl SimpleBackend {
                 }
                 "not" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let res = if let Some(raw_val) = shadow_value_for(
+                    let res = if let Some(raw_val) = shadow_lookup(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -22176,11 +20530,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22205,11 +20557,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22241,11 +20591,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -22275,14 +20623,9 @@ impl SimpleBackend {
                         let src_name = &args[0];
                         let in_active_loop = !loop_stack.is_empty();
                         let src_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, src_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                src_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
                         };
 
                         if let Some(src_raw) = src_raw {
@@ -22291,11 +20634,6 @@ impl SimpleBackend {
                             let negated = builder.ins().isub(zero, src_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, negated);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, negated);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), negated);
                             }
                             continue;
                         } else {
@@ -22305,11 +20643,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -22365,11 +20701,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22397,14 +20731,9 @@ impl SimpleBackend {
                         let src_name = &args[0];
                         let in_active_loop = !loop_stack.is_empty();
                         let src_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, src_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                src_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
                         };
 
                         if let Some(src_raw) = src_raw {
@@ -22415,11 +20744,6 @@ impl SimpleBackend {
                             let abs_val = builder.ins().select(is_neg, negated, src_raw);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, abs_val);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, abs_val);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), abs_val);
                             }
                             continue;
                         } else {
@@ -22429,11 +20753,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -22491,11 +20813,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22523,14 +20843,9 @@ impl SimpleBackend {
                         let src_name = &args[0];
                         let in_active_loop = !loop_stack.is_empty();
                         let src_raw = if in_active_loop {
-                            raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, src_name)
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
                         } else {
-                            shadow_value_for(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                src_name,
-                            )
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
                         };
 
                         if let Some(src_raw) = src_raw {
@@ -22539,11 +20854,6 @@ impl SimpleBackend {
                             let inverted = builder.ins().bxor(src_raw, minus_one);
                             if let Some(ref out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, inverted);
-                                raw_primary_int.insert(out__.clone());
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, inverted);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), inverted);
                             }
                             continue;
                         } else {
@@ -22553,11 +20863,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -22580,11 +20888,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22608,7 +20914,7 @@ impl SimpleBackend {
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let mut bool_raw: Option<Value> = None;
-                    let res = if let Some(raw_val) = shadow_value_for(
+                    let res = if let Some(raw_val) = shadow_lookup(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -22623,31 +20929,25 @@ impl SimpleBackend {
                     } else if op_prefers_int_lane(&op) {
                         // For known ints, bool(x) is simply x != 0.
                         // Use raw shadow if available to skip unboxing.
-                        let int_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap_or_else(|| {
-                            let val = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &vars,
-                                &args[0],
-                                &raw_primary_int,
-                                &raw_primary_float,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("Value not found");
-                            unbox_int(&mut builder, *val, &nbc)
-                        });
+                        let int_val =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                                .unwrap_or_else(|| {
+                                    let val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &args[0],
+                                        &int_primary_vars,
+                                        &raw_primary_float,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .expect("Value not found");
+                                    unbox_int(&mut builder, *val, &nbc)
+                                });
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
                         bool_raw = Some(builder.ins().uextend(types::I64, is_nonzero));
@@ -22660,11 +20960,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22690,11 +20988,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -22723,11 +21019,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22739,17 +21033,15 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
                     .expect("RHS not found");
-                    let cond = if let Some(raw_val) = shadow_value_for(
+                    let cond = if let Some(raw_val) = shadow_lookup(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -22759,13 +21051,9 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_int_lane(&op) {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
+                        let raw_val =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                                .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_bool_lane(&op) {
                         // Known bool: extract bit 0.
@@ -22805,11 +21093,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22821,17 +21107,15 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
                     .expect("RHS not found");
-                    let cond = if let Some(raw_val) = shadow_value_for(
+                    let cond = if let Some(raw_val) = shadow_lookup(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -22841,13 +21125,9 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_int_lane(&op) {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
+                        let raw_val =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                                .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op_prefers_bool_lane(&op) {
                         // Known bool: extract bit 0.
@@ -22883,11 +21163,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22899,11 +21177,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22939,11 +21215,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -22977,11 +21251,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23017,11 +21289,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &format!("{}_len", arg_name),
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23032,11 +21302,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &format!("{}_ptr", arg_name),
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23048,11 +21316,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 arg_name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -23099,11 +21365,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23134,11 +21398,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23168,11 +21430,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &format!("{}_len", arg_name),
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23183,11 +21443,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &format!("{}_ptr", arg_name),
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23199,11 +21457,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 arg_name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -23250,11 +21506,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23285,11 +21539,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23319,11 +21571,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &format!("{}_len", arg_name),
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23334,11 +21584,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &format!("{}_ptr", arg_name),
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23350,11 +21598,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 arg_name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -23401,11 +21647,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23436,11 +21680,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             arg_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -23469,11 +21711,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23527,9 +21767,6 @@ impl SimpleBackend {
                         fallback_block,
                         &mut is_block_filled,
                         false,
-                        &rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                 }
                 "state_transition" => {
@@ -23540,11 +21777,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23560,11 +21795,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[1],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -23580,11 +21813,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[1],
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -23597,11 +21828,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[2],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -23616,11 +21845,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         "self",
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23675,9 +21902,6 @@ impl SimpleBackend {
                         pending_path,
                         &mut is_block_filled,
                         false,
-                        &rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     seal_block_once(&mut builder, &mut sealed_blocks, pending_path);
                     let sleep_callee = Self::import_func_id_split(
@@ -23697,9 +21921,6 @@ impl SimpleBackend {
                         ready_path,
                         &mut is_block_filled,
                         false,
-                        &rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     seal_block_once(&mut builder, &mut sealed_blocks, ready_path);
                     if let Some(bits) = slot_bits {
@@ -23737,9 +21958,6 @@ impl SimpleBackend {
                         next_block,
                         &mut is_block_filled,
                         false,
-                        &rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                 }
                 "state_yield" => {
@@ -23750,11 +21968,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23767,11 +21983,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         "self",
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23809,9 +22023,6 @@ impl SimpleBackend {
                             next_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                     } else {
                         is_block_filled = true;
@@ -23825,11 +22036,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23841,11 +22050,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23857,11 +22064,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23874,11 +22079,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         "self",
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23935,9 +22138,6 @@ impl SimpleBackend {
                         ready_path,
                         &mut is_block_filled,
                         false,
-                        &rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     seal_block_once(&mut builder, &mut sealed_blocks, ready_path);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
@@ -23963,9 +22163,6 @@ impl SimpleBackend {
                             next_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                     } else {
                         is_block_filled = true;
@@ -23979,11 +22176,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -23995,11 +22190,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24012,11 +22205,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         "self",
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24073,9 +22264,6 @@ impl SimpleBackend {
                         ready_path,
                         &mut is_block_filled,
                         false,
-                        &rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     seal_block_once(&mut builder, &mut sealed_blocks, ready_path);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
@@ -24101,9 +22289,6 @@ impl SimpleBackend {
                             next_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                     } else {
                         is_block_filled = true;
@@ -24117,11 +22302,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24149,11 +22332,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24178,11 +22359,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24206,11 +22385,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24238,11 +22415,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24266,11 +22441,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24294,11 +22467,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24322,11 +22493,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24350,11 +22519,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24366,11 +22533,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24394,11 +22559,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24437,11 +22600,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24453,11 +22614,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24481,11 +22640,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24497,11 +22654,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24525,11 +22680,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24541,11 +22694,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24557,11 +22708,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24591,11 +22740,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24607,11 +22754,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24635,11 +22780,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24667,11 +22810,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -24747,11 +22888,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -24768,11 +22907,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -24833,11 +22970,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     arg_name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -25042,11 +23177,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         closure_name,
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25158,11 +23291,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25174,11 +23305,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25190,11 +23319,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25206,11 +23333,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25222,11 +23347,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[4],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25238,11 +23361,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[5],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25254,11 +23375,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[6],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25270,11 +23389,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[7],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25323,11 +23440,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25353,11 +23468,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25413,11 +23526,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25429,11 +23540,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25489,11 +23598,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25505,11 +23612,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25615,11 +23720,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -25710,11 +23813,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -25748,11 +23849,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -25791,11 +23890,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25824,11 +23921,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25840,11 +23935,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -25887,13 +23980,7 @@ impl SimpleBackend {
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out.as_ref() {
                         def_var_named(&mut builder, &vars, out__, res);
-                        if op.kind != "gpu_barrier" {
-                            let raw = unbox_int(&mut builder, res, &nbc);
-                            if let Some(&shadow_var) = raw_int_shadow.get(out__.as_str()) {
-                                builder.def_var(shadow_var, raw);
-                            }
-                            raw_int_shadow_vals.insert(out__.clone(), raw);
-                        }
+                        if op.kind != "gpu_barrier" {}
                     }
                 }
                 "call" => {
@@ -25910,8 +23997,6 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &raw_bool_values,
                             &raw_bool_shadow_vars,
                             &bool_like_vars,
@@ -25919,7 +24004,7 @@ impl SimpleBackend {
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             name,
                         );
@@ -25988,11 +24073,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             func_obj_var,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -26276,11 +24359,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -26303,11 +24384,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -26405,11 +24484,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -26428,11 +24505,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             func_obj_var,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -26535,11 +24610,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             src_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -26564,11 +24637,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             src_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -26598,11 +24669,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             src_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -26641,11 +24710,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         src_name,
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -26686,11 +24753,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     src_name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -26711,11 +24776,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 src_name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -26738,11 +24801,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -26757,11 +24818,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -26780,11 +24839,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             func_obj_var,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -27105,11 +25162,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -27124,11 +25179,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -27378,11 +25431,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -27397,11 +25448,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -27483,11 +25532,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -27499,80 +25546,15 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
                     )
                     .expect("Callargs not found");
                     let callargs_name = &args_names[1];
-                    let mut callargs_arg_cleanup = Vec::new();
-                    let mut callargs_arg_cleanup_names = BTreeSet::new();
-                    let mut callargs_arg_cleanup_roots = BTreeSet::new();
-                    if let Some(source_names) = callargs_source_names.remove(callargs_name) {
-                        for source_name in source_names {
-                            if param_name_set.contains(source_name.as_str()) {
-                                continue;
-                            }
-                            let last = last_use.get(&source_name).copied().unwrap_or(usize::MAX);
-                            if last > op_idx {
-                                continue;
-                            }
-                            let val = entry_vars.get(&source_name).copied().or_else(|| {
-                                var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
-                                    &vars,
-                                    &source_name,
-                                    &raw_primary_int,
-                                    &raw_primary_float,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .map(|v| *v)
-                            });
-                            let Some(val) = val else {
-                                continue;
-                            };
-                            let root = alias_root_name(&alias_roots, &source_name).to_string();
-                            callargs_arg_cleanup_names.insert(source_name);
-                            if callargs_arg_cleanup_roots.insert(root.clone()) {
-                                callargs_arg_cleanup.push(val);
-                                already_decrefed.insert(root);
-                            }
-                        }
-                    }
-                    if std::env::var("MOLT_DEBUG_CALLARGS_CLEANUP").as_deref() == Ok("1")
-                        && std::env::var("MOLT_DEBUG_FUNC_FILTER")
-                            .ok()
-                            .is_none_or(|f| func_ir.name.contains(&f))
-                        && std::env::var("MOLT_DEBUG_OP_INDEX")
-                            .ok()
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .is_none_or(|target| target == op_idx)
-                    {
-                        let _ = crate::debug_artifacts::append_debug_artifact(
-                            "native/callargs_cleanup_debug.txt",
-                            format!(
-                                "func={} op_idx={} kind={} builder={} source_names={:?} roots={:?}\n",
-                                func_ir.name,
-                                op_idx,
-                                op.kind,
-                                callargs_name,
-                                callargs_arg_cleanup_names,
-                                callargs_arg_cleanup_roots,
-                            ),
-                        );
-                    }
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -27642,33 +25624,6 @@ impl SimpleBackend {
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
                     );
-                    if !callargs_arg_cleanup_roots.is_empty() {
-                        for val in &callargs_arg_cleanup {
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
-                        }
-                        let cleared_val = builder.ins().iconst(types::I64, box_none());
-                        for name in &callargs_arg_cleanup_names {
-                            if raw_primary_float.contains(name.as_str()) {
-                                continue;
-                            }
-                            if let Some(var) = vars.get(name) {
-                                builder.def_var(*var, cleared_val);
-                                raw_primary_int.remove(name.as_str());
-                                raw_int_shadow_vals.remove(name.as_str());
-                                raw_bool_values.remove(name.as_str());
-                            }
-                        }
-                        scrub_tracked_roots(
-                            &callargs_arg_cleanup_roots,
-                            &mut tracked_vars,
-                            &mut tracked_obj_vars,
-                            &mut tracked_vars_set,
-                            &mut tracked_obj_vars_set,
-                            &mut entry_vars,
-                            &mut block_tracked_obj,
-                            &mut block_tracked_ptr,
-                        );
-                    }
                 }
                 "call_method" => {
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -27678,11 +25633,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args_names[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -27697,11 +25650,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -27884,11 +25835,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -27916,11 +25865,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -27956,11 +25903,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -27979,11 +25924,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1 + i],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -28006,11 +25949,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[attrs_base + i * 2],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -28022,11 +25963,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[attrs_base + i * 2 + 1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -28088,11 +26027,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28120,11 +26057,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28152,11 +26087,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28184,11 +26117,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28216,11 +26147,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28232,11 +26161,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28268,11 +26195,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28284,11 +26209,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28300,11 +26223,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28336,11 +26257,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28352,11 +26271,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28384,11 +26301,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28400,11 +26315,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28466,11 +26379,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28537,11 +26448,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28662,11 +26571,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28678,11 +26585,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28710,11 +26615,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28742,11 +26645,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28758,11 +26659,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28790,11 +26689,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28822,11 +26719,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28854,11 +26749,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28870,11 +26763,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28886,11 +26777,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28920,11 +26809,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28937,11 +26824,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -28969,11 +26854,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29001,11 +26884,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29037,11 +26918,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29053,11 +26932,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29083,11 +26960,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29111,11 +26986,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29150,11 +27023,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -29188,11 +27059,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29204,11 +27073,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29236,11 +27103,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29252,11 +27117,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29286,11 +27149,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29302,11 +27163,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29334,11 +27193,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29353,11 +27210,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -29370,11 +27225,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29405,11 +27258,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29421,11 +27272,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29449,11 +27298,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29481,11 +27328,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29513,11 +27358,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29529,11 +27372,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29561,11 +27402,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29593,11 +27432,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29640,11 +27477,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29656,11 +27491,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29763,11 +27596,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29797,11 +27628,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29876,11 +27705,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29908,11 +27735,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -29955,11 +27780,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30002,11 +27825,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30018,11 +27839,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30050,11 +27869,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30066,11 +27883,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30098,11 +27913,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30114,11 +27927,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30146,11 +27957,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30193,11 +28002,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30225,11 +28032,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30257,11 +28062,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30289,11 +28092,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30305,11 +28106,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30337,11 +28136,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30369,11 +28166,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30385,11 +28180,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30417,11 +28210,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30449,11 +28240,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30556,11 +28345,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -30613,11 +28400,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -30648,12 +28433,6 @@ impl SimpleBackend {
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    let check_exception_fallthrough_rebind_vars = live_exception_rebind_vars_for_op(
-                        &vars,
-                        &transport_last_use,
-                        &first_defined_at,
-                        op_idx,
-                    );
                     let call = builder.ins().call(local_exc_pending_fast, &[]);
                     let pending = builder.inst_results(call)[0];
                     let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
@@ -30672,9 +28451,6 @@ impl SimpleBackend {
                         fallthrough,
                         &mut is_block_filled,
                         true,
-                        &check_exception_fallthrough_rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     // check_exception's fallthrough is always a fresh empty
                     // block — force-clear is_block_filled so subsequent ops
@@ -30712,11 +28488,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30728,11 +28502,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30760,11 +28532,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30776,11 +28546,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30808,11 +28576,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30824,11 +28590,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30856,11 +28620,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30888,11 +28650,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30920,11 +28680,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -30960,11 +28718,10 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, dead);
                         is_block_filled = false;
                     }
-                    raw_int_shadow_vals.clear();
                     raw_float_shadow_vals.clear();
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Inline truthiness for bool/int types to avoid function call overhead.
-                    let cond_bool = if let Some(raw_val) = shadow_value_for(
+                    let cond_bool = if let Some(raw_val) = shadow_lookup(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -30981,11 +28738,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -30997,31 +28752,25 @@ impl SimpleBackend {
                     } else if op_prefers_int_lane(&op) {
                         // NaN-boxed int: unbox and check != 0.
                         // If we have a raw shadow, use that directly.
-                        let raw_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap_or_else(|| {
-                            let cond = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &vars,
-                                &args[0],
-                                &raw_primary_int,
-                                &raw_primary_float,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("Cond not found");
-                            unbox_int(&mut builder, *cond, &nbc)
-                        });
+                        let raw_val =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                                .unwrap_or_else(|| {
+                                    let cond = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &args[0],
+                                        &int_primary_vars,
+                                        &raw_primary_float,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .expect("Cond not found");
+                                    unbox_int(&mut builder, *cond, &nbc)
+                                });
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
                         let cond = var_get_boxed_overflow_safe(
@@ -31030,11 +28779,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -31341,11 +29088,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -31391,15 +29136,11 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, else_block);
                     }
 
-                    let branch_rebind_vars = live_rebind_vars_for_op(op_idx);
                     switch_to_block_with_rebind(
                         &mut builder,
                         then_block,
                         &mut is_block_filled,
                         false,
-                        &branch_rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     if_stack.push(IfFrame {
                         else_block,
@@ -31417,7 +29158,6 @@ impl SimpleBackend {
                 "else" => {
                     // Variable-backed shadows are phi-correct; value-tier raw
                     // snapshots must be cleared when switching branch blocks.
-                    raw_int_shadow_vals.clear();
                     raw_float_shadow_vals.clear();
                     let frame = if_stack.last_mut().expect("No if on stack");
                     frame.then_terminal = is_block_filled;
@@ -31459,11 +29199,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         then_name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -31482,11 +29220,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         then_name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -31504,11 +29240,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -31633,22 +29367,17 @@ impl SimpleBackend {
                         }
                     }
 
-                    let else_rebind_vars = live_rebind_vars_for_op(op_idx);
                     switch_to_block_with_rebind(
                         &mut builder,
                         frame.else_block.expect("else without placeholder block"),
                         &mut is_block_filled,
                         false,
-                        &else_rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     frame.has_else = true;
                 }
                 "end_if" => {
                     // Variable-backed shadows are phi-correct; value-tier raw
                     // snapshots must not survive the branch merge.
-                    raw_int_shadow_vals.clear();
                     raw_float_shadow_vals.clear();
                     let mut frame = if_stack.pop().expect("No if on stack");
                     if frame.phi_ops.is_empty() {
@@ -31685,11 +29414,9 @@ impl SimpleBackend {
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -31711,11 +29438,9 @@ impl SimpleBackend {
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -31735,11 +29460,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -31875,11 +29598,9 @@ impl SimpleBackend {
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             then_name,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -31901,11 +29622,9 @@ impl SimpleBackend {
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             then_name,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -31925,11 +29644,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -32047,15 +29764,11 @@ impl SimpleBackend {
                         }
 
                         if let Some(else_block) = frame.else_block {
-                            let synthetic_else_rebind_vars = live_rebind_vars_for_op(op_idx);
                             switch_to_block_with_rebind(
                                 &mut builder,
                                 else_block,
                                 &mut is_block_filled,
                                 false,
-                                &synthetic_else_rebind_vars,
-                                &raw_int_shadow,
-                                &int_store_target_names,
                             );
                             if is_block_filled {
                                 frame.else_terminal = true;
@@ -32072,11 +29785,9 @@ impl SimpleBackend {
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -32098,11 +29809,9 @@ impl SimpleBackend {
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             else_name,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -32122,11 +29831,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -32266,19 +29973,11 @@ impl SimpleBackend {
                             maybe_debug_seal("if_merge", op_idx, frame.merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, frame.merge_block);
                         }
-                        let merge_rebind_vars = if frame.phi_ops.is_empty() {
-                            BTreeMap::new()
-                        } else {
-                            rebind_vars.clone()
-                        };
                         switch_to_block_with_rebind(
                             &mut builder,
                             frame.merge_block,
                             &mut is_block_filled,
                             false,
-                            &merge_rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                         if !is_block_filled
                             && frame.phi_ops.is_empty()
@@ -32421,18 +30120,16 @@ impl SimpleBackend {
                     // targets — their Variables are phi-correct across
                     // back-edges.  Re-populate from use_var so the first
                     // iteration sees the pre-loop value, not the init zero.
-                    raw_int_shadow_vals.clear();
                     raw_float_shadow_vals.clear();
                     // Value-tier raw bools are stale across loop back-edges.
                     raw_bool_values.clear();
                     // Remove aliases (entries that share a Variable with a store target)
                     // by keeping only entries that were in the original pre-declaration.
                     // The simplest correct approach: clear aliases, keep store targets.
-                    raw_int_shadow.retain(|k, _| int_store_target_names.contains(k));
                     raw_float_shadow.retain(|k, _| float_store_target_names.contains(k));
                     raw_bool_shadow_vars.retain(|k, _| bool_store_target_names.contains(k));
 
-                    // Demote phi join slots from raw_primary_int/float at
+                    // Demote phi join slots from int_primary_vars/float at
                     // loop entry.  A phi variable initialized as raw before
                     // the loop may be reassigned with a NaN-boxed value on
                     // the back-edge (e.g. `total = total + data[i]` where
@@ -32451,7 +30148,7 @@ impl SimpleBackend {
                         // edges of the loop-header phi, so re-boxing here
                         // would re-introduce the very mismatch this demote
                         // was added to prevent.
-                        let demote_int: Vec<String> = raw_primary_int
+                        let demote_int: Vec<String> = int_primary_vars
                             .iter()
                             .filter(|name| {
                                 is_join_slot_name(name) && !int_primary_vars.contains(name.as_str())
@@ -32459,7 +30156,6 @@ impl SimpleBackend {
                             .cloned()
                             .collect();
                         for name in &demote_int {
-                            raw_primary_int.remove(name);
                             if let Some(&var) = vars.get(name) {
                                 let raw_val = builder.use_var(var);
                                 let boxed = box_int_value_hoisted(
@@ -32533,11 +30229,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -32580,11 +30274,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -32657,9 +30349,6 @@ impl SimpleBackend {
                             loop_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                     } else {
                         is_block_filled = true;
@@ -32670,7 +30359,6 @@ impl SimpleBackend {
                         after_block,
                         index_name: None,
                         next_index: None,
-                        next_index_raw: None,
                         linearized: false,
                     });
                     loop_depth += 1;
@@ -32764,11 +30452,9 @@ impl SimpleBackend {
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             out,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -32830,7 +30516,6 @@ impl SimpleBackend {
                                 after_block: dummy,
                                 index_name: Some(out_name),
                                 next_index: None,
-                                next_index_raw: None,
                                 linearized: true,
                             });
                             // Note: loop_depth NOT incremented for linearized loops;
@@ -32863,37 +30548,28 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
                             .expect("Loop index start not found")
                         });
-                        let start_raw = args.first().and_then(|name| {
-                            raw_int_shadow_vals.get(name).copied().or_else(|| {
-                                raw_int_shadow.get(name).map(|&var| builder.use_var(var))
-                            })
-                        });
-                        // Step 1: define counter Variable with initial value
+                        let start = if int_primary_vars.contains(out_name.as_str()) {
+                            args.first()
+                                .and_then(|name| {
+                                    int_raw_value(&mut builder, &vars, &int_primary_vars, name)
+                                })
+                                .unwrap_or_else(|| unbox_int_or_bool(&mut builder, start, &nbc))
+                        } else {
+                            start
+                        };
+                        // Step 1: define counter Variable with initial value.
+                        // For int_primary_vars the main Variable is the raw i64
+                        // carrier; Cranelift SSA provides the loop phi.
                         def_var_named(&mut builder, &vars, out_name.clone(), start);
-                        if let Some(raw_start) = start_raw {
-                            let shadow_var =
-                                if let Some(&shadow_var) = raw_int_shadow.get(&out_name) {
-                                    shadow_var
-                                } else {
-                                    let shadow_var = builder.declare_var(types::I64);
-                                    let zero = builder.ins().iconst(types::I64, 0);
-                                    builder.def_var(shadow_var, zero);
-                                    raw_int_shadow.insert(out_name.clone(), shadow_var);
-                                    shadow_var
-                                };
-                            builder.def_var(shadow_var, raw_start);
-                        }
                         // Initialize loop-body output variables to None (0)
                         // before entering the loop header -- see loop_start
                         // for the full rationale.
@@ -32931,11 +30607,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -32978,11 +30652,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     list_name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -33065,28 +30737,22 @@ impl SimpleBackend {
 
                                 // Get the initial accumulator value (raw i64).
                                 let init_acc = {
-                                    let raw = shadow_value_var_only(
+                                    int_raw_value(
                                         &mut builder,
-                                        &raw_int_shadow,
+                                        &vars,
+                                        &int_primary_vars,
                                         &reduction.acc_operand_name,
                                     )
-                                    .or_else(|| {
-                                        raw_int_shadow_vals
-                                            .get(&reduction.acc_operand_name)
-                                            .copied()
-                                    });
-                                    raw.unwrap_or_else(|| {
+                                    .unwrap_or_else(|| {
                                         let boxed = var_get_boxed_overflow_safe(
                                             &mut self.module,
                                             &mut self.import_ids,
                                             &mut builder,
                                             &mut import_refs,
                                             &mut sealed_blocks,
-                                            &raw_int_shadow,
-                                            &raw_int_shadow_vals,
                                             &vars,
                                             &reduction.acc_operand_name,
-                                            &raw_primary_int,
+                                            &int_primary_vars,
                                             &raw_primary_float,
                                             box_int_mask_var,
                                             box_int_tag_var,
@@ -33101,8 +30767,18 @@ impl SimpleBackend {
 
                                 // Get raw start index (i64). For list iteration
                                 // this is typically 0, produced by iter_devirt.
-                                let raw_start_idx = start_raw
-                                    .unwrap_or_else(|| unbox_int(&mut builder, start, &nbc));
+                                let raw_start_idx = args
+                                    .first()
+                                    .and_then(|name| {
+                                        int_raw_value(&mut builder, &vars, &int_primary_vars, name)
+                                    })
+                                    .unwrap_or_else(|| {
+                                        if int_primary_vars.contains(out_name.as_str()) {
+                                            start
+                                        } else {
+                                            unbox_int(&mut builder, start, &nbc)
+                                        }
+                                    });
 
                                 // Declare Cranelift Variables for the loop-carried state.
                                 let idx_loop_var = builder.declare_var(types::I64);
@@ -33212,56 +30888,38 @@ impl SimpleBackend {
                                 seal_block_once(&mut builder, &mut sealed_blocks, after_all);
                                 let final_acc = builder.use_var(acc_loop_var);
 
-                                // Box the result and store into the accumulator variables.
-                                let boxed_acc = box_int_value_hoisted(
-                                    &mut builder,
-                                    final_acc,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
+                                // Update the accumulator variables as raw i64.
+                                // The reduction scanner only accepts proven-int
+                                // loop shapes; if the static fixpoint misses one
+                                // of these names, the typed-IR invariant is too
+                                // narrow and should fail during verification.
+                                debug_assert!(
+                                    int_primary_vars.contains(reduction.add_out_name.as_str())
                                 );
-                                // Update the add output variable.
+                                debug_assert!(
+                                    int_primary_vars.contains(reduction.acc_store_slot.as_str())
+                                );
+                                debug_assert!(
+                                    int_primary_vars.contains(reduction.acc_operand_name.as_str())
+                                );
                                 def_var_named(
                                     &mut builder,
                                     &vars,
                                     &reduction.add_out_name,
-                                    boxed_acc,
+                                    final_acc,
                                 );
-                                if let Some(&sv) = raw_int_shadow.get(&reduction.add_out_name) {
-                                    builder.def_var(sv, final_acc);
-                                }
-                                raw_int_shadow_vals
-                                    .insert(reduction.add_out_name.clone(), final_acc);
-                                raw_primary_int.insert(reduction.add_out_name.clone());
-
-                                // Update the store slot variable.
                                 def_var_named(
                                     &mut builder,
                                     &vars,
                                     &reduction.acc_store_slot,
-                                    boxed_acc,
+                                    final_acc,
                                 );
-                                if let Some(&sv) = raw_int_shadow.get(&reduction.acc_store_slot) {
-                                    builder.def_var(sv, final_acc);
-                                }
-                                raw_int_shadow_vals
-                                    .insert(reduction.acc_store_slot.clone(), final_acc);
-                                raw_primary_int.insert(reduction.acc_store_slot.clone());
-
-                                // Also update the accumulator operand variable (the live-in
-                                // accumulator that the next use after the loop will read).
                                 def_var_named(
                                     &mut builder,
                                     &vars,
                                     &reduction.acc_operand_name,
-                                    boxed_acc,
+                                    final_acc,
                                 );
-                                if let Some(&sv) = raw_int_shadow.get(&reduction.acc_operand_name) {
-                                    builder.def_var(sv, final_acc);
-                                }
-                                raw_int_shadow_vals
-                                    .insert(reduction.acc_operand_name.clone(), final_acc);
-                                raw_primary_int.insert(reduction.acc_operand_name.clone());
-
                                 // Skip all ops from (op_idx+1) through loop_end_idx.
                                 for skip_i in (op_idx + 1)..=reduction.loop_end_idx {
                                     skip_ops.insert(skip_i);
@@ -33292,9 +30950,6 @@ impl SimpleBackend {
                             loop_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                         loop_stack.push(LoopFrame {
                             loop_block,
@@ -33302,7 +30957,6 @@ impl SimpleBackend {
                             after_block,
                             index_name: Some(out_name),
                             next_index: None,
-                            next_index_raw: None,
                             linearized: false,
                         });
                         if debug_loop_cfg.is_some() {
@@ -33324,7 +30978,6 @@ impl SimpleBackend {
                             after_block,
                             index_name: Some(out_name),
                             next_index: None,
-                            next_index_raw: None,
                             linearized: false,
                         });
                         if debug_loop_cfg.is_some() {
@@ -33375,7 +31028,7 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(raw_val) = shadow_value_for(
+                        let cond_bool = if let Some(raw_val) = shadow_lookup(
                             &mut builder,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
@@ -33391,11 +31044,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -33408,14 +31059,9 @@ impl SimpleBackend {
                             // NaN-boxed int: unbox and check != 0.
                             // Inside loops, use Variable-only shadows (phi-correct).
                             let raw_val = if !loop_stack.is_empty() {
-                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                             } else {
-                                shadow_value_for(
-                                    &mut builder,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
-                                    &args[0],
-                                )
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                             }
                             .unwrap_or_else(|| {
                                 let cond = var_get_boxed_overflow_safe(
@@ -33424,11 +31070,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[0],
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -33444,11 +31088,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -33491,9 +31133,6 @@ impl SimpleBackend {
                             cleanup_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                         if exception_label_ids.is_empty() && sealed_blocks.insert(cleanup_block) {
                             maybe_debug_seal("loop_break_true_cleanup", op_idx, cleanup_block);
@@ -33529,9 +31168,6 @@ impl SimpleBackend {
                             frame.body_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                         // Seal body_block now — its only predecessor is the brif above.
                         if exception_label_ids.is_empty() && sealed_blocks.insert(frame.body_block)
@@ -33601,7 +31237,7 @@ impl SimpleBackend {
                         let cond_name = &args[0];
                         let cond_is_bool_typed = var_is_bool(cond_name);
                         let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
-                        let cond_bool = if let Some(raw_val) = shadow_value_for(
+                        let cond_bool = if let Some(raw_val) = shadow_lookup(
                             &mut builder,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
@@ -33617,11 +31253,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -33634,14 +31268,9 @@ impl SimpleBackend {
                             // NaN-boxed int: unbox and check != 0.
                             // Inside loops, use Variable-only shadows (phi-correct).
                             let raw_val = if !loop_stack.is_empty() {
-                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                             } else {
-                                shadow_value_for(
-                                    &mut builder,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
-                                    &args[0],
-                                )
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                             }
                             .unwrap_or_else(|| {
                                 let cond = var_get_boxed_overflow_safe(
@@ -33650,11 +31279,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[0],
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -33670,11 +31297,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 &args[0],
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -33717,9 +31342,6 @@ impl SimpleBackend {
                             cleanup_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                         if exception_label_ids.is_empty() && sealed_blocks.insert(cleanup_block) {
                             maybe_debug_seal("loop_break_false_cleanup", op_idx, cleanup_block);
@@ -33755,9 +31377,6 @@ impl SimpleBackend {
                             frame.body_block,
                             &mut is_block_filled,
                             false,
-                            &rebind_vars,
-                            &raw_int_shadow,
-                            &int_store_target_names,
                         );
                         // Seal body_block now — its only predecessor is the brif
                         // above.  Early sealing helps Cranelift resolve SSA variables
@@ -33809,11 +31428,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -33843,11 +31460,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -33874,11 +31489,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -33891,16 +31504,29 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out_name, *next_idx);
                     } else {
                         let frame = loop_stack.last_mut().unwrap();
-                        frame.next_index = Some(*next_idx);
-                        frame.next_index_raw = args.first().and_then(|name| {
-                            raw_int_shadow_vals.get(name).copied().or_else(|| {
-                                raw_int_shadow.get(name).map(|&var| builder.use_var(var))
-                            })
+                        let next_raw = args.first().and_then(|name| {
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, name)
                         });
+                        let next_value = if frame
+                            .index_name
+                            .as_deref()
+                            .is_some_and(|name| int_primary_vars.contains(name))
+                        {
+                            next_raw
+                                .unwrap_or_else(|| unbox_int_or_bool(&mut builder, *next_idx, &nbc))
+                        } else {
+                            *next_idx
+                        };
+                        frame.next_index = Some(next_value);
                         if let Some(out_name) = op.out.as_ref()
                             && frame.index_name.as_ref() != Some(out_name)
                         {
-                            def_var_named(&mut builder, &vars, out_name.clone(), *next_idx);
+                            let out_value = if int_primary_vars.contains(out_name.as_str()) {
+                                next_raw.unwrap_or(next_value)
+                            } else {
+                                *next_idx
+                            };
+                            def_var_named(&mut builder, &vars, out_name.clone(), out_value);
                         }
                     }
                 }
@@ -33939,23 +31565,15 @@ impl SimpleBackend {
                                                 &mut builder,
                                                 &mut import_refs,
                                                 &mut sealed_blocks,
-                                                &raw_int_shadow,
-                                                &raw_int_shadow_vals,
                                                 &vars,
                                                 src_name,
-                                                &raw_primary_int,
+                                                &int_primary_vars,
                                                 &raw_primary_float,
                                                 box_int_mask_var,
                                                 box_int_tag_var,
                                             )
                                         {
                                             frame.next_index = Some(*next_idx);
-                                            frame.next_index_raw = raw_int_shadow
-                                                .get(src_name.as_str())
-                                                .map(|&v| builder.use_var(v))
-                                                .or_else(|| {
-                                                    raw_int_shadow_vals.get(src_name).copied()
-                                                });
                                             break;
                                         }
                                     }
@@ -33986,11 +31604,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -34020,11 +31636,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -34044,11 +31658,6 @@ impl SimpleBackend {
                             && let Some(name) = frame.index_name.as_ref()
                         {
                             def_var_named(&mut builder, &vars, name, next_idx);
-                            if let Some(next_raw) = frame.next_index_raw.take()
-                                && let Some(&shadow_var) = raw_int_shadow.get(name)
-                            {
-                                builder.def_var(shadow_var, next_raw);
-                            }
                         } else if let Some(name) = frame.index_name.as_ref()
                             && let Some(current) = var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -34056,21 +31665,23 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
                             )
                         {
-                            def_var_named(&mut builder, &vars, name, *current);
-                            if let Some(&shadow_var) = raw_int_shadow.get(name) {
-                                let raw_current = builder.use_var(shadow_var);
-                                builder.def_var(shadow_var, raw_current);
-                            }
+                            let current = if int_primary_vars.contains(name.as_str()) {
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, name)
+                                    .unwrap_or_else(|| {
+                                        unbox_int_or_bool(&mut builder, *current, &nbc)
+                                    })
+                            } else {
+                                *current
+                            };
+                            def_var_named(&mut builder, &vars, name, current);
                         }
                         jump_block(&mut builder, frame.loop_block, &[]);
                         is_block_filled = true;
@@ -34123,9 +31734,6 @@ impl SimpleBackend {
                                 frame.after_block,
                                 &mut is_block_filled,
                                 false,
-                                &rebind_vars,
-                                &raw_int_shadow,
-                                &int_store_target_names,
                             );
                             if exception_label_ids.is_empty()
                                 && builder.func.layout.is_block_inserted(frame.after_block)
@@ -34194,11 +31802,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34230,11 +31836,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34266,11 +31870,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34344,11 +31946,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -34397,17 +31997,38 @@ impl SimpleBackend {
                 }
                 "store" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let origin_block = builder
+                        .current_block()
+                        .expect("store requires an active block");
+                    let mut origin_obj_live =
+                        block_tracked_obj.remove(&origin_block).unwrap_or_default();
+                    let origin_obj_cleanup = drain_cleanup_tracked_dedup(
+                        &mut origin_obj_live,
+                        &last_use,
+                        &alias_roots,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
+                    let mut origin_ptr_live =
+                        block_tracked_ptr.remove(&origin_block).unwrap_or_default();
+                    let origin_ptr_cleanup = drain_cleanup_tracked_dedup(
+                        &mut origin_ptr_live,
+                        &last_use,
+                        &alias_roots,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     let obj = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34419,11 +32040,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34435,6 +32054,76 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                        for name in origin_obj_cleanup {
+                            if cleanup_name_excluded(
+                                &name,
+                                None,
+                                &param_name_set,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                            ) {
+                                continue;
+                            }
+                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &vars,
+                                    &name,
+                                    &int_primary_vars,
+                                    &raw_primary_float,
+                                    box_int_mask_var,
+                                    box_int_tag_var,
+                                )
+                                .map(|v| *v)
+                            }) {
+                                builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                            }
+                        }
+                        for name in origin_ptr_cleanup {
+                            if cleanup_name_excluded(
+                                &name,
+                                None,
+                                &param_name_set,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                            ) {
+                                continue;
+                            }
+                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &vars,
+                                    &name,
+                                    &int_primary_vars,
+                                    &raw_primary_float,
+                                    box_int_mask_var,
+                                    box_int_tag_var,
+                                )
+                                .map(|v| *v)
+                            }) {
+                                builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                            }
+                        }
+                        if !origin_obj_live.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_obj.entry(origin_block).or_default(),
+                                origin_obj_live,
+                            );
+                        }
+                        if !origin_ptr_live.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_ptr.entry(origin_block).or_default(),
+                                origin_ptr_live,
+                            );
+                        }
                         if let Some(out_name) = op.out.as_ref()
                             && out_name != "none"
                         {
@@ -34582,6 +32271,76 @@ impl SimpleBackend {
                     // for the "side-effect, no value" contract.
                     switch_to_block_materialized(&mut builder, merge_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                    if !origin_obj_live.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(merge_block).or_default(),
+                            origin_obj_live,
+                        );
+                    }
+                    if !origin_ptr_live.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_ptr.entry(merge_block).or_default(),
+                            origin_ptr_live,
+                        );
+                    }
+                    for name in origin_obj_cleanup {
+                        if cleanup_name_excluded(
+                            &name,
+                            None,
+                            &param_name_set,
+                            &int_primary_vars,
+                            &raw_primary_float,
+                        ) {
+                            continue;
+                        }
+                        if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                &name,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .map(|v| *v)
+                        }) {
+                            builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                        }
+                    }
+                    for name in origin_ptr_cleanup {
+                        if cleanup_name_excluded(
+                            &name,
+                            None,
+                            &param_name_set,
+                            &int_primary_vars,
+                            &raw_primary_float,
+                        ) {
+                            continue;
+                        }
+                        if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                &name,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .map(|v| *v)
+                        }) {
+                            builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                        }
+                    }
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
@@ -34591,17 +32350,38 @@ impl SimpleBackend {
                 }
                 "store_init" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let origin_block = builder
+                        .current_block()
+                        .expect("store_init requires an active block");
+                    let mut origin_obj_live =
+                        block_tracked_obj.remove(&origin_block).unwrap_or_default();
+                    let origin_obj_cleanup = drain_cleanup_tracked_dedup(
+                        &mut origin_obj_live,
+                        &last_use,
+                        &alias_roots,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
+                    let mut origin_ptr_live =
+                        block_tracked_ptr.remove(&origin_block).unwrap_or_default();
+                    let origin_ptr_cleanup = drain_cleanup_tracked_dedup(
+                        &mut origin_ptr_live,
+                        &last_use,
+                        &alias_roots,
+                        op_idx,
+                        None,
+                        Some(&mut already_decrefed),
+                    );
                     let obj = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34613,11 +32393,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34629,6 +32407,76 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                        for name in origin_obj_cleanup {
+                            if cleanup_name_excluded(
+                                &name,
+                                None,
+                                &param_name_set,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                            ) {
+                                continue;
+                            }
+                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &vars,
+                                    &name,
+                                    &int_primary_vars,
+                                    &raw_primary_float,
+                                    box_int_mask_var,
+                                    box_int_tag_var,
+                                )
+                                .map(|v| *v)
+                            }) {
+                                builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                            }
+                        }
+                        for name in origin_ptr_cleanup {
+                            if cleanup_name_excluded(
+                                &name,
+                                None,
+                                &param_name_set,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                            ) {
+                                continue;
+                            }
+                            if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                                var_get_boxed_overflow_safe(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    &mut sealed_blocks,
+                                    &vars,
+                                    &name,
+                                    &int_primary_vars,
+                                    &raw_primary_float,
+                                    box_int_mask_var,
+                                    box_int_tag_var,
+                                )
+                                .map(|v| *v)
+                            }) {
+                                builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                            }
+                        }
+                        if !origin_obj_live.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_obj.entry(origin_block).or_default(),
+                                origin_obj_live,
+                            );
+                        }
+                        if !origin_ptr_live.is_empty() {
+                            extend_unique_tracked(
+                                block_tracked_ptr.entry(origin_block).or_default(),
+                                origin_ptr_live,
+                            );
+                        }
                         if let Some(out_name) = op.out.as_ref()
                             && out_name != "none"
                         {
@@ -34684,6 +32532,76 @@ impl SimpleBackend {
                     // Merge: continue.
                     switch_to_block_materialized(&mut builder, merge_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                    if !origin_obj_live.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(merge_block).or_default(),
+                            origin_obj_live,
+                        );
+                    }
+                    if !origin_ptr_live.is_empty() {
+                        extend_unique_tracked(
+                            block_tracked_ptr.entry(merge_block).or_default(),
+                            origin_ptr_live,
+                        );
+                    }
+                    for name in origin_obj_cleanup {
+                        if cleanup_name_excluded(
+                            &name,
+                            None,
+                            &param_name_set,
+                            &int_primary_vars,
+                            &raw_primary_float,
+                        ) {
+                            continue;
+                        }
+                        if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                &name,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .map(|v| *v)
+                        }) {
+                            builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                        }
+                    }
+                    for name in origin_ptr_cleanup {
+                        if cleanup_name_excluded(
+                            &name,
+                            None,
+                            &param_name_set,
+                            &int_primary_vars,
+                            &raw_primary_float,
+                        ) {
+                            continue;
+                        }
+                        if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
+                            var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                &name,
+                                &int_primary_vars,
+                                &raw_primary_float,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .map(|v| *v)
+                        }) {
+                            builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
+                        }
+                    }
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
@@ -34699,11 +32617,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34735,11 +32651,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34770,11 +32684,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34786,11 +32698,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34820,11 +32730,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34851,11 +32759,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34868,11 +32774,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34884,11 +32788,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34954,11 +32856,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34971,11 +32871,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -34987,11 +32885,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35003,11 +32899,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35076,11 +32970,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35093,11 +32985,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35109,11 +32999,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35125,11 +33013,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[3],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35200,7 +33086,7 @@ impl SimpleBackend {
                         let val_name = args.first().map(String::as_str).unwrap_or("");
                         if (tag == "int"
                             && (int_like_vars.contains(val_name)
-                                || raw_primary_int.contains(val_name)))
+                                || int_primary_vars.contains(val_name)))
                             || (tag == "float" && float_like_vars.contains(val_name))
                             || (tag == "bool" && bool_like_vars.contains(val_name))
                             || (tag == "str" && str_like_vars.contains(val_name))
@@ -35214,8 +33100,8 @@ impl SimpleBackend {
                     // an int value always matches an int tag.  Skip the
                     // runtime call entirely.
                     if scalar_fast_paths_enabled
-                        && raw_primary_int.contains(&args[0])
-                        && raw_primary_int.contains(&args[1])
+                        && int_primary_vars.contains(&args[0])
+                        && int_primary_vars.contains(&args[1])
                     {
                         // Static guard: int matches int.  No-op.
                     } else {
@@ -35225,11 +33111,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -35241,11 +33125,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[1],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -35270,11 +33152,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35287,11 +33167,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35303,11 +33181,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35337,11 +33213,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35473,11 +33347,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35539,11 +33411,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35596,11 +33466,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35614,11 +33482,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35650,11 +33516,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35668,11 +33532,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35684,11 +33546,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35718,11 +33578,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35736,11 +33594,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35768,11 +33624,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35786,11 +33640,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35802,11 +33654,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[2],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35834,11 +33684,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35853,11 +33701,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35906,11 +33752,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35924,11 +33768,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -35977,11 +33819,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -36033,11 +33873,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -36088,11 +33926,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[0],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -36106,11 +33942,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         &args[1],
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -36160,7 +33994,7 @@ impl SimpleBackend {
                                         &name,
                                         None,
                                         &param_name_set,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                     ) || !mark_cleanup_root_once(
                                         &alias_roots,
@@ -36190,7 +34024,7 @@ impl SimpleBackend {
                                         &name,
                                         None,
                                         &param_name_set,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                     ) || !mark_cleanup_root_once(
                                         &alias_roots,
@@ -36220,7 +34054,7 @@ impl SimpleBackend {
                                 name,
                                 None,
                                 &param_name_set,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                             ) {
                                 continue;
@@ -36231,11 +34065,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -36252,7 +34084,7 @@ impl SimpleBackend {
                                 name,
                                 None,
                                 &param_name_set,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                             ) {
                                 continue;
@@ -36263,11 +34095,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -36296,8 +34126,6 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &raw_bool_values,
                         &raw_bool_shadow_vars,
                         &bool_like_vars,
@@ -36305,7 +34133,7 @@ impl SimpleBackend {
                         &nbc,
                         box_int_mask_var,
                         box_int_tag_var,
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         var_name,
                     );
@@ -36328,7 +34156,7 @@ impl SimpleBackend {
                                     &name,
                                     Some(&protected_return_aliases),
                                     &param_name_set,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
@@ -36344,11 +34172,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -36367,7 +34193,7 @@ impl SimpleBackend {
                                     &name,
                                     Some(&protected_return_aliases),
                                     &param_name_set,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
@@ -36383,11 +34209,9 @@ impl SimpleBackend {
                                         &mut builder,
                                         &mut import_refs,
                                         &mut sealed_blocks,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
                                         &vars,
                                         &name,
-                                        &raw_primary_int,
+                                        &int_primary_vars,
                                         &raw_primary_float,
                                         box_int_mask_var,
                                         box_int_tag_var,
@@ -36412,7 +34236,7 @@ impl SimpleBackend {
                             name,
                             Some(&protected_return_aliases),
                             &param_name_set,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                         ) {
                             continue;
@@ -36424,11 +34248,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -36446,7 +34268,7 @@ impl SimpleBackend {
                             name,
                             Some(&protected_return_aliases),
                             &param_name_set,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                         ) {
                             continue;
@@ -36458,11 +34280,9 @@ impl SimpleBackend {
                                 &mut builder,
                                 &mut import_refs,
                                 &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
                                 &vars,
                                 name,
-                                &raw_primary_int,
+                                &int_primary_vars,
                                 &raw_primary_float,
                                 box_int_mask_var,
                                 box_int_tag_var,
@@ -36492,7 +34312,7 @@ impl SimpleBackend {
                                     &name,
                                     None,
                                     &param_name_set,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
@@ -36518,7 +34338,7 @@ impl SimpleBackend {
                                     &name,
                                     None,
                                     &param_name_set,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                 ) || !mark_cleanup_root_once(
                                     &alias_roots,
@@ -36544,7 +34364,7 @@ impl SimpleBackend {
                             name,
                             None,
                             &param_name_set,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                         ) {
                             continue;
@@ -36560,7 +34380,7 @@ impl SimpleBackend {
                             name,
                             None,
                             &param_name_set,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                         ) {
                             continue;
@@ -36604,11 +34424,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -36644,11 +34462,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -36689,7 +34505,7 @@ impl SimpleBackend {
                     // cond is NaN-boxed — dispatch based on type hint to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
                     let cond_name = &args[0];
-                    let cond_bool = if let Some(raw_val) = shadow_value_for(
+                    let cond_bool = if let Some(raw_val) = shadow_lookup(
                         &mut builder,
                         &raw_bool_shadow_vars,
                         &raw_bool_values,
@@ -36706,11 +34522,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -36721,31 +34535,25 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
                     } else if var_is_int(cond_name) {
                         // NaN-boxed int: unbox and check != 0.
-                        let raw_val = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        )
-                        .unwrap_or_else(|| {
-                            let cond = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &raw_int_shadow,
-                                &raw_int_shadow_vals,
-                                &vars,
-                                &args[0],
-                                &raw_primary_int,
-                                &raw_primary_float,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("Cond not found");
-                            unbox_int(&mut builder, *cond, &nbc)
-                        });
+                        let raw_val =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                                .unwrap_or_else(|| {
+                                    let cond = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &args[0],
+                                        &int_primary_vars,
+                                        &raw_primary_float,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .expect("Cond not found");
+                                    unbox_int(&mut builder, *cond, &nbc)
+                                });
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
                         let cond = var_get_boxed_overflow_safe(
@@ -36754,11 +34562,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -36923,9 +34729,6 @@ impl SimpleBackend {
                         fallthrough_block,
                         &mut is_block_filled,
                         false,
-                        &rebind_vars,
-                        &raw_int_shadow,
-                        &int_store_target_names,
                     );
                     if exception_label_ids.is_empty() && sealed_blocks.insert(fallthrough_block) {
                         maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
@@ -36943,39 +34746,13 @@ impl SimpleBackend {
                         .filter(|name| !slot_backed_join_slots.contains_key(name.as_str()))
                         .filter_map(|name| vars.get(name).copied().map(|var| (name.clone(), var)))
                         .collect();
-                    let label_live_shadow_names: BTreeSet<String> = label_join_slots
-                        .get(&label_id)
-                        .into_iter()
-                        .flat_map(|names| names.iter())
-                        .filter(|name| {
-                            !slot_backed_join_slots.contains_key(name.as_str())
-                                && raw_int_shadow.contains_key(name.as_str())
-                        })
-                        .cloned()
-                        .collect();
-                    let rebind_label_join_state = |builder: &mut FunctionBuilder,
-                                                   raw_int_shadow_vals: &mut BTreeMap<
-                        String,
-                        Value,
-                    >| {
+                    let rebind_label_join_state = |builder: &mut FunctionBuilder| {
                         if builder.block_params(block).is_empty() && !is_function_exception_label {
                             return;
                         }
-                        for (name, var) in &label_live_join_vars {
+                        for (_, var) in &label_live_join_vars {
                             let value = builder.use_var(*var);
                             builder.def_var(*var, value);
-                            if label_live_shadow_names.contains(name) {
-                                let raw = if var_is_bool(name) {
-                                    let one = builder.ins().iconst(types::I64, 1);
-                                    builder.ins().band(value, one)
-                                } else {
-                                    unbox_int(builder, value, &nbc)
-                                };
-                                raw_int_shadow_vals.insert(name.clone(), raw);
-                                if let Some(&shadow_var) = raw_int_shadow.get(name.as_str()) {
-                                    builder.def_var(shadow_var, raw);
-                                }
-                            }
                         }
                     };
 
@@ -36998,7 +34775,7 @@ impl SimpleBackend {
                         reachable_blocks.insert(block);
                         materialize_label_block(&mut builder, block, &mut is_block_filled);
                         if !is_block_filled {
-                            rebind_label_join_state(&mut builder, &mut raw_int_shadow_vals);
+                            rebind_label_join_state(&mut builder);
                         }
                         if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
                             == Ok(func_ir.name.as_str())
@@ -37019,7 +34796,7 @@ impl SimpleBackend {
                         // branches may still target it.
                         materialize_label_block(&mut builder, block, &mut is_block_filled);
                         if !is_block_filled {
-                            rebind_label_join_state(&mut builder, &mut raw_int_shadow_vals);
+                            rebind_label_join_state(&mut builder);
                         }
                         if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
                             == Ok(func_ir.name.as_str())
@@ -37067,7 +34844,7 @@ impl SimpleBackend {
                         // AND destination is proven-int, transfer the raw i64 directly.
                         // This eliminates box+unbox round-trips in tight loops like
                         // `total += i; i += 1` where both sides are proven-int.
-                        if raw_primary_int.contains(&args[0])
+                        if int_primary_vars.contains(&args[0])
                             && scalar_fast_paths_enabled
                             && int_like_vars.contains(name)
                             && !slot_backed_join_slots.contains_key(name)
@@ -37076,14 +34853,9 @@ impl SimpleBackend {
                             let raw_val = {
                                 let in_loop = !loop_stack.is_empty();
                                 if in_loop {
-                                    raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                                    int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                                 } else {
-                                    shadow_value_for(
-                                        &mut builder,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
-                                        &args[0],
-                                    )
+                                    int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                                 }
                             }
                             .unwrap_or_else(|| {
@@ -37120,13 +34892,8 @@ impl SimpleBackend {
                                 def_var_named(&mut builder, &vars, name, boxed);
                             } else {
                                 def_var_named(&mut builder, &vars, name, raw_val);
-                                raw_primary_int.insert(name.to_string());
                             }
                             // Propagate shadow to destination (both tiers).
-                            if let Some(&dst_var) = raw_int_shadow.get(name) {
-                                builder.def_var(dst_var, raw_val);
-                            }
-                            raw_int_shadow_vals.insert(name.to_string(), raw_val);
                             // No refcount ops needed -- raw i64 is not a heap pointer.
                             continue;
                         }
@@ -37154,11 +34921,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     &args[0],
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -37183,11 +34948,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -37198,7 +34961,6 @@ impl SimpleBackend {
                             emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
                             builder.ins().stack_store(*val, slot, 0);
                             builder.ins().call(local_dec_ref_obj, &[old]);
-                            raw_int_shadow_vals.remove(name);
                             raw_float_shadow_vals.remove(name);
                             continue;
                         }
@@ -37250,45 +35012,12 @@ impl SimpleBackend {
                             builder.ins().call(inc_local, &[*val]);
                         }
                         def_var_named(&mut builder, &vars, name, *val);
-                        // If the source is NOT raw-primary, the destination
-                        // must no longer be treated as raw-primary either.
-                        // This prevents the load_var fast path from reading
-                        // a NaN-boxed value as if it were a raw i64.
-                        if !raw_primary_int.contains(&args[0]) {
-                            raw_primary_int.remove(name);
-                        }
                         if !raw_primary_float.contains(&args[0]) {
                             raw_primary_float.remove(name);
                         }
-                        // Propagate raw_int_shadow through store_var:
-                        // Value-level (within this block) + Variable-level (across back-edges).
-                        if let Some(raw_val) = shadow_value_for(
-                            &mut builder,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
-                            &args[0],
-                        ) {
-                            // def_var the pre-declared shadow Variable so it
-                            // survives phi merges at loop back-edges.
-                            if let Some(&dst_var) = raw_int_shadow.get(name) {
-                                builder.def_var(dst_var, raw_val);
-                            }
-                            raw_int_shadow_vals.insert(name.to_string(), raw_val);
-                        } else if let Some(&dst_var) = raw_int_shadow.get(name) {
-                            // Source has NO raw shadow but destination has a
-                            // Variable-backed shadow (loop phi).  The value
-                            // being stored is NaN-boxed.  Unbox it so the
-                            // shadow Variable carries the correct raw i64
-                            // across the loop back-edge.  Without this, the
-                            // shadow retains a stale value from a prior
-                            // iteration or the pre-loop initialization.
-                            let unboxed = unbox_int(&mut builder, *val, &nbc);
-                            builder.def_var(dst_var, unboxed);
-                            raw_int_shadow_vals.insert(name.to_string(), unboxed);
-                        }
                         // Propagate raw_bool_shadow through store_var:
-                        // Same two-tier pattern as int shadows.
-                        if let Some(raw_val) = shadow_value_for(
+                        // Same two-tier pattern as other non-int shadows.
+                        if let Some(raw_val) = shadow_lookup(
                             &mut builder,
                             &raw_bool_shadow_vars,
                             &raw_bool_values,
@@ -37324,11 +35053,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -37360,7 +35087,6 @@ impl SimpleBackend {
                                 } else {
                                     def_var_named(&mut builder, &vars, out_name, val);
                                 }
-                                raw_int_shadow_vals.remove(out_name);
                                 if !float_primary_vars.contains(out_name) {
                                     raw_float_shadow_vals.remove(out_name);
                                 }
@@ -37370,20 +35096,15 @@ impl SimpleBackend {
                         // --- Raw-primary int fast path ---
                         // When source is raw-primary and output is proven-int,
                         // transfer raw i64 directly -- no boxing, no refcount.
-                        if raw_primary_int.contains(var_name.as_str())
+                        if int_primary_vars.contains(var_name.as_str())
                             && scalar_fast_paths_enabled
                             && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
                         {
                             let in_loop = !loop_stack.is_empty();
                             let raw_val = if in_loop {
-                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, var_name)
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, var_name)
                             } else {
-                                shadow_value_for(
-                                    &mut builder,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
-                                    var_name,
-                                )
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, var_name)
                             }
                             .unwrap_or_else(|| {
                                 let var = *vars
@@ -37393,27 +35114,6 @@ impl SimpleBackend {
                             });
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_val);
-                            raw_primary_int.insert(out_name.clone());
-                            // Propagate Variable-backed shadow so loop bodies
-                            // (which use shadow_value_var_only) can access the
-                            // raw value without falling back to boxed codegen.
-                            let dst_shadow_var =
-                                if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
-                                    dst_var
-                                } else if raw_int_shadow.contains_key(var_name.as_str()) {
-                                    // Source has a Variable-backed shadow (loop phi)
-                                    // but output does not yet — create one.
-                                    let dst_var = builder.declare_var(types::I64);
-                                    builder.def_var(dst_var, raw_val);
-                                    raw_int_shadow.insert(out_name.clone(), dst_var);
-                                    dst_var
-                                } else {
-                                    // No Variable-backed shadow needed; use value-tier.
-                                    raw_int_shadow_vals.insert(out_name.clone(), raw_val);
-                                    continue;
-                                };
-                            builder.def_var(dst_shadow_var, raw_val);
-                            raw_int_shadow_vals.remove(out_name);
                             continue;
                         }
                         // --- Raw-primary float fast path ---
@@ -37439,11 +35139,9 @@ impl SimpleBackend {
                                     &mut builder,
                                     &mut import_refs,
                                     &mut sealed_blocks,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
                                     &vars,
                                     var_name,
-                                    &raw_primary_int,
+                                    &int_primary_vars,
                                     &raw_primary_float,
                                     box_int_mask_var,
                                     box_int_tag_var,
@@ -37466,11 +35164,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             var_name,
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -37478,36 +35174,6 @@ impl SimpleBackend {
                         .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            // Propagate shadow from source var to output name.
-                            // If the source is Variable-backed (loop/store SSA),
-                            // the destination must also be Variable-backed or
-                            // loop headers will freeze on a stale value-tier
-                            // snapshot from the first iteration.
-                            let src_shadow_var = raw_int_shadow.get(var_name.as_str()).copied();
-                            let raw_val = src_shadow_var
-                                .map(|v| builder.use_var(v))
-                                .or_else(|| raw_int_shadow_vals.get(var_name.as_str()).copied());
-                            if let Some(raw_val) = raw_val {
-                                if src_shadow_var.is_some() {
-                                    let dst_shadow_var = if let Some(&dst_var) =
-                                        raw_int_shadow.get(out_name.as_str())
-                                    {
-                                        dst_var
-                                    } else {
-                                        let dst_var = builder.declare_var(types::I64);
-                                        builder.def_var(dst_var, raw_val);
-                                        raw_int_shadow.insert(out_name.clone(), dst_var);
-                                        dst_var
-                                    };
-                                    builder.def_var(dst_shadow_var, raw_val);
-                                    raw_int_shadow_vals.remove(out_name);
-                                } else {
-                                    if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
-                                        builder.def_var(dst_var, raw_val);
-                                    }
-                                    raw_int_shadow_vals.insert(out_name.clone(), raw_val);
-                                }
-                            }
                             // Propagate bool shadow: same two-tier pattern.
                             let src_bool_var = raw_bool_shadow_vars.get(var_name.as_str()).copied();
                             let raw_bool_val = src_bool_var
@@ -37572,26 +35238,20 @@ impl SimpleBackend {
                             emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, val);
-                                raw_int_shadow_vals.remove(out_name);
                                 raw_float_shadow_vals.remove(out_name);
                             }
                             continue;
                         }
                         // --- Raw-primary int fast path (args-based copy_var) ---
-                        if raw_primary_int.contains(&args[0])
+                        if int_primary_vars.contains(&args[0])
                             && scalar_fast_paths_enabled
                             && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
                         {
                             let in_loop = !loop_stack.is_empty();
                             let raw_val = if in_loop {
-                                raw_int_value_for_arith(&mut builder, &raw_int_shadow, &raw_primary_int, &vars, &args[0])
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                             } else {
-                                shadow_value_for(
-                                    &mut builder,
-                                    &raw_int_shadow,
-                                    &raw_int_shadow_vals,
-                                    &args[0],
-                                )
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                             }
                             .unwrap_or_else(|| {
                                 let var =
@@ -37600,11 +35260,6 @@ impl SimpleBackend {
                             });
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_val);
-                            raw_primary_int.insert(out_name.clone());
-                            if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
-                                builder.def_var(dst_var, raw_val);
-                            }
-                            raw_int_shadow_vals.insert(out_name.clone(), raw_val);
                             continue;
                         }
                         let val = var_get_boxed_overflow_safe(
@@ -37613,11 +35268,9 @@ impl SimpleBackend {
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
-                            &raw_int_shadow,
-                            &raw_int_shadow_vals,
                             &vars,
                             &args[0],
-                            &raw_primary_int,
+                            &int_primary_vars,
                             &raw_primary_float,
                             box_int_mask_var,
                             box_int_tag_var,
@@ -37625,37 +35278,6 @@ impl SimpleBackend {
                         .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            let src_shadow_var = raw_int_shadow.get(&args[0]).copied();
-                            let raw_val =
-                                src_shadow_var.map(|v| builder.use_var(v)).or_else(|| {
-                                    shadow_value_for(
-                                        &mut builder,
-                                        &raw_int_shadow,
-                                        &raw_int_shadow_vals,
-                                        &args[0],
-                                    )
-                                });
-                            if let Some(raw_val) = raw_val {
-                                if let Some(_src_shadow_var) = src_shadow_var {
-                                    let dst_shadow_var = if let Some(&dst_var) =
-                                        raw_int_shadow.get(out_name.as_str())
-                                    {
-                                        dst_var
-                                    } else {
-                                        let dst_var = builder.declare_var(types::I64);
-                                        builder.def_var(dst_var, raw_val);
-                                        raw_int_shadow.insert(out_name.clone(), dst_var);
-                                        dst_var
-                                    };
-                                    builder.def_var(dst_shadow_var, raw_val);
-                                    raw_int_shadow_vals.remove(out_name);
-                                } else {
-                                    if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
-                                        builder.def_var(dst_var, raw_val);
-                                    }
-                                    raw_int_shadow_vals.insert(out_name.clone(), raw_val);
-                                }
-                            }
                             // Propagate bool shadow: same two-tier pattern.
                             let src_bool_var = raw_bool_shadow_vars.get(&args[0]).copied();
                             let raw_bool_val = src_bool_var
@@ -37908,11 +35530,9 @@ impl SimpleBackend {
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
-                        &raw_int_shadow,
-                        &raw_int_shadow_vals,
                         &vars,
                         name,
-                        &raw_primary_int,
+                        &int_primary_vars,
                         &raw_primary_float,
                         box_int_mask_var,
                         box_int_tag_var,
@@ -37944,7 +35564,7 @@ impl SimpleBackend {
                     name,
                     None,
                     &param_name_set,
-                    &raw_primary_int,
+                    &int_primary_vars,
                     &raw_primary_float,
                 ) {
                     continue;
@@ -37960,7 +35580,7 @@ impl SimpleBackend {
                     name,
                     None,
                     &param_name_set,
-                    &raw_primary_int,
+                    &int_primary_vars,
                     &raw_primary_float,
                 ) {
                     continue;
@@ -38262,7 +35882,7 @@ impl SimpleBackend {
             }
         };
         // Typed IR Phase 1a invariant: every variable that the dynamic
-        // codegen path classified as raw-primary-int (raw_primary_int) must
+        // codegen path classified as raw-primary-int (int_primary_vars) must
         // also have been included in the static int_primary_vars set
         // computed before codegen.  A divergence means either the static
         // analysis is too narrow (under-approximates the runtime decisions
@@ -38271,10 +35891,10 @@ impl SimpleBackend {
         // hazard, since a future phase will use the static set as the
         // ground truth).  Gated by env var so production builds skip it.
         if std::env::var("MOLT_TYPED_IR_VERIFY").is_ok() {
-            for name in raw_primary_int.iter() {
+            for name in int_primary_vars.iter() {
                 debug_assert!(
                     int_primary_vars.contains(name),
-                    "MOLT_TYPED_IR_VERIFY: raw_primary_int {{{name}}} not in int_primary_vars for fn {}",
+                    "MOLT_TYPED_IR_VERIFY: int_primary_vars {{{name}}} not in int_primary_vars for fn {}",
                     func_ir.name,
                 );
             }
@@ -38774,59 +36394,6 @@ mod tests {
     }
 
     #[test]
-    fn preanalysis_keeps_transport_last_use_precise_when_loop_cleanup_last_use_is_extended() {
-        let func = FunctionIR {
-            name: "loop_temp_transport_split".to_string(),
-            params: vec![],
-            ops: vec![
-                OpIR {
-                    kind: "loop_start".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const_str".to_string(),
-                    out: Some("tmp".to_string()),
-                    s_value: Some("hi".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "check_exception".to_string(),
-                    value: Some(1),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "loop_continue".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "loop_end".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
-            ],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-        };
-
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
-
-        assert_eq!(
-            analysis.transport_last_use.get("tmp"),
-            Some(&1),
-            "transport liveness should reflect the temp's actual textual lifetime",
-        );
-        assert_eq!(
-            analysis.last_use.get("tmp"),
-            Some(&5),
-            "cleanup liveness may remain conservatively extended through loop functions",
-        );
-    }
-
-    #[test]
     fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
         let func = FunctionIR {
             name: "loop_store_slot_only".to_string(),
@@ -39124,13 +36691,6 @@ mod tests {
         let stable_var = builder.declare_var(types::I64);
         let phi_var = builder.declare_var(types::I64);
 
-        let vars = BTreeMap::from([
-            ("stable".to_string(), stable_var),
-            ("phi_out".to_string(), phi_var),
-        ]);
-        let shadow_vars = BTreeMap::new();
-        let shadow_names = BTreeSet::new();
-
         let entry = builder.create_block();
         let then_block = builder.create_block();
         let else_block = builder.create_block();
@@ -39157,15 +36717,7 @@ mod tests {
         builder.seal_block(else_block);
 
         let mut is_block_filled = false;
-        switch_to_block_with_rebind(
-            &mut builder,
-            merge_block,
-            &mut is_block_filled,
-            false,
-            &vars,
-            &shadow_vars,
-            &shadow_names,
-        );
+        switch_to_block_with_rebind(&mut builder, merge_block, &mut is_block_filled, false);
 
         assert_eq!(
             builder.block_params(merge_block).len(),
@@ -39183,9 +36735,6 @@ mod tests {
         let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
 
         let stable_var = builder.declare_var(types::I64);
-        let vars = BTreeMap::from([("stable".to_string(), stable_var)]);
-        let shadow_vars = BTreeMap::new();
-        let shadow_names = BTreeSet::new();
 
         let entry = builder.create_block();
         let validate_block = builder.create_block();
@@ -39205,15 +36754,7 @@ mod tests {
         builder.seal_block(validate_block);
 
         let mut is_block_filled = false;
-        switch_to_block_with_rebind(
-            &mut builder,
-            fallthrough,
-            &mut is_block_filled,
-            true,
-            &vars,
-            &shadow_vars,
-            &shadow_names,
-        );
+        switch_to_block_with_rebind(&mut builder, fallthrough, &mut is_block_filled, true);
 
         assert!(
             builder.block_params(fallthrough).is_empty(),
@@ -39230,9 +36771,6 @@ mod tests {
         let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
 
         let stable_var = builder.declare_var(types::I64);
-        let vars = BTreeMap::from([("stable".to_string(), stable_var)]);
-        let shadow_vars = BTreeMap::new();
-        let shadow_names = BTreeSet::new();
 
         let entry = builder.create_block();
         let label_block = builder.create_block();
@@ -39244,15 +36782,7 @@ mod tests {
         builder.seal_block(entry);
 
         let mut is_block_filled = false;
-        switch_to_block_with_rebind(
-            &mut builder,
-            label_block,
-            &mut is_block_filled,
-            false,
-            &vars,
-            &shadow_vars,
-            &shadow_names,
-        );
+        switch_to_block_with_rebind(&mut builder, label_block, &mut is_block_filled, false);
 
         assert!(
             builder.block_params(label_block).is_empty(),
