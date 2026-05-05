@@ -32085,6 +32085,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
+                if op.result.type_hint and op.result.type_hint != "Any":
+                    _onb_op["type_hint"] = op.result.type_hint
                 _onb_md = op.metadata or {}
                 _onb_size = _onb_md.get("class_size_bytes")
                 if isinstance(_onb_size, int) and _onb_size > 0:

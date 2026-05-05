@@ -9,6 +9,7 @@ use super::values::ValueId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LirRepr {
     DynBox,
+    Ref64,
     I64,
     F64,
     Bool1,
@@ -97,4 +98,17 @@ pub struct LirFunction {
     /// attrs into successor BlockIds during dominator/reachability
     /// analysis.
     pub label_id_map: HashMap<u32, i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_class_default_representation_stays_boxed() {
+        assert_eq!(
+            LirRepr::for_type(&TirType::UserClass("Point".into())),
+            LirRepr::DynBox
+        );
+    }
 }
