@@ -109,13 +109,12 @@ facts before native codegen.
   non-heap, and the target slot was either just initialized or previously
   direct-written with a non-heap value. Any control boundary, unknown op, heap
   value, or escaping use removes the root from direct-write eligibility.
-- Same-module class constructor loops use a frontend lazy static-binding cache
+- Same-module class constructor loops use a frontend static-binding cache
   when whole-module analysis proves the class name is defined exactly once, not
   rebound/deleted/global-mutated, not exposed through `globals()`/`vars()`, and
-  layout-stable. The cache stores `missing` before the loop and performs the
-  `module_get_attr` only on the first executed iteration, so zero-iteration
-  loops retain CPython exception timing while hot iterations reuse a local
-  `store_var`/`load_var` class reference.
+  layout-stable. The class reference is resolved once in the loop preheader and
+  the hot loop reuses a local `store_var`/`load_var` class reference without a
+  per-iteration missing-sentinel branch.
 
 **Bottlenecks and opportunities**:
 
