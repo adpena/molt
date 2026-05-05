@@ -1035,6 +1035,51 @@ fn record_float_shadow_if_needed(
     raw_float_shadow_vals.insert(name.to_string(), raw_f64);
 }
 
+/// Propagate a raw f64 shadow through copy/load edges for non-primary float
+/// variables. `float_primary_vars` names already carry raw f64 in their main
+/// Variable, so they never receive shadow entries here.
+#[cfg(feature = "native-backend")]
+fn propagate_float_shadow_if_needed(
+    builder: &mut FunctionBuilder<'_>,
+    float_primary_vars: &BTreeSet<String>,
+    raw_float_shadow: &mut BTreeMap<String, Variable>,
+    raw_float_shadow_vals: &mut BTreeMap<String, Value>,
+    src: &str,
+    dst: &str,
+) {
+    let src_shadow_var = raw_float_shadow.get(src).copied();
+    let raw_float = src_shadow_var
+        .map(|var| builder.use_var(var))
+        .or_else(|| raw_float_shadow_vals.get(src).copied());
+    let Some(raw_float) = raw_float else {
+        return;
+    };
+
+    if src_shadow_var.is_some() {
+        if !float_primary_vars.contains(dst) {
+            let dst_shadow_var = if let Some(&var) = raw_float_shadow.get(dst) {
+                var
+            } else {
+                let var = builder.declare_var(types::F64);
+                builder.def_var(var, raw_float);
+                raw_float_shadow.insert(dst.to_string(), var);
+                var
+            };
+            builder.def_var(dst_shadow_var, raw_float);
+        }
+        raw_float_shadow_vals.remove(dst);
+    } else {
+        record_float_shadow_if_needed(
+            builder,
+            float_primary_vars,
+            raw_float_shadow,
+            raw_float_shadow_vals,
+            dst,
+            raw_float,
+        );
+    }
+}
+
 /// Get a raw f64 value from a variable, checking float-primary Variables
 /// first (no bitcast needed), then falling back to the shadow system.
 /// This eliminates redundant bitcast(F64→I64)→bitcast(I64→F64) round-trips
@@ -35342,38 +35387,14 @@ impl SimpleBackend {
                                 var_name,
                                 out_name,
                             );
-                            // Propagate float shadow: same two-tier pattern.
-                            let src_float_var = raw_float_shadow.get(var_name.as_str()).copied();
-                            let raw_float_val = src_float_var
-                                .map(|v| builder.use_var(v))
-                                .or_else(|| raw_float_shadow_vals.get(var_name.as_str()).copied());
-                            if let Some(raw_fv) = raw_float_val {
-                                if src_float_var.is_some() {
-                                    if !float_primary_vars.contains(out_name) {
-                                        let dst_fvar = if let Some(&dst_var) =
-                                            raw_float_shadow.get(out_name.as_str())
-                                        {
-                                            dst_var
-                                        } else {
-                                            let dst_var = builder.declare_var(types::F64);
-                                            builder.def_var(dst_var, raw_fv);
-                                            raw_float_shadow.insert(out_name.clone(), dst_var);
-                                            dst_var
-                                        };
-                                        builder.def_var(dst_fvar, raw_fv);
-                                    }
-                                    raw_float_shadow_vals.remove(out_name);
-                                } else {
-                                    record_float_shadow_if_needed(
-                                        &mut builder,
-                                        &float_primary_vars,
-                                        &raw_float_shadow,
-                                        &mut raw_float_shadow_vals,
-                                        out_name,
-                                        raw_fv,
-                                    );
-                                }
-                            }
+                            propagate_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &mut raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                var_name,
+                                out_name,
+                            );
                         }
                     } else if let Some(ref args) = op.args
                         && !args.is_empty()
@@ -35430,38 +35451,14 @@ impl SimpleBackend {
                                 &args[0],
                                 out_name,
                             );
-                            // Propagate float shadow: same two-tier pattern.
-                            let src_float_var = raw_float_shadow.get(&args[0]).copied();
-                            let raw_float_val = src_float_var
-                                .map(|v| builder.use_var(v))
-                                .or_else(|| raw_float_shadow_vals.get(&args[0]).copied());
-                            if let Some(raw_fv) = raw_float_val {
-                                if src_float_var.is_some() {
-                                    if !float_primary_vars.contains(out_name) {
-                                        let dst_fvar = if let Some(&dst_var) =
-                                            raw_float_shadow.get(out_name.as_str())
-                                        {
-                                            dst_var
-                                        } else {
-                                            let dst_var = builder.declare_var(types::F64);
-                                            builder.def_var(dst_var, raw_fv);
-                                            raw_float_shadow.insert(out_name.clone(), dst_var);
-                                            dst_var
-                                        };
-                                        builder.def_var(dst_fvar, raw_fv);
-                                    }
-                                    raw_float_shadow_vals.remove(out_name);
-                                } else {
-                                    record_float_shadow_if_needed(
-                                        &mut builder,
-                                        &float_primary_vars,
-                                        &raw_float_shadow,
-                                        &mut raw_float_shadow_vals,
-                                        out_name,
-                                        raw_fv,
-                                    );
-                                }
-                            }
+                            propagate_float_shadow_if_needed(
+                                &mut builder,
+                                &float_primary_vars,
+                                &mut raw_float_shadow,
+                                &mut raw_float_shadow_vals,
+                                &args[0],
+                                out_name,
+                            );
                         }
                     }
                 }
