@@ -269,14 +269,7 @@ fn simple_op_is_provably_nonthrowing(op: &OpIR) -> bool {
     //    raise TypeError, so we stay conservative.
     if matches!(
         kind,
-        "add"
-            | "sub"
-            | "mul"
-            | "inplace_add"
-            | "inplace_sub"
-            | "inplace_mul"
-            | "neg"
-            | "pos"
+        "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" | "neg" | "pos"
     ) && (op.fast_int == Some(true) || op.fast_float == Some(true))
     {
         return true;
@@ -309,10 +302,8 @@ fn simple_op_is_provably_nonthrowing(op: &OpIR) -> bool {
     // 6) Boolean / comparison ops on proven types.  Comparisons on
     //    arbitrary objects can raise TypeError (no __lt__) so require
     //    the proven-type annotation here too.
-    if matches!(
-        kind,
-        "lt" | "le" | "gt" | "ge" | "eq" | "ne"
-    ) && (op.fast_int == Some(true) || op.fast_float == Some(true))
+    if matches!(kind, "lt" | "le" | "gt" | "ge" | "eq" | "ne")
+        && (op.fast_int == Some(true) || op.fast_float == Some(true))
     {
         return true;
     }
@@ -322,7 +313,10 @@ fn simple_op_is_provably_nonthrowing(op: &OpIR) -> bool {
     }
     // 8) Type guards — emit a typed branch on type-tag mismatch but do
     //    not raise: the slow path falls through to the polymorphic op.
-    if matches!(kind, "guard_tag" | "guard_layout" | "guard_int" | "guard_float") {
+    if matches!(
+        kind,
+        "guard_tag" | "guard_layout" | "guard_int" | "guard_float"
+    ) {
         return true;
     }
     // 9) Field accesses by offset — the frontend's `store`/`load` ops
@@ -334,8 +328,7 @@ fn simple_op_is_provably_nonthrowing(op: &OpIR) -> bool {
     //     their own (their bodies' ops decide).
     if matches!(
         kind,
-        "if"
-            | "else"
+        "if" | "else"
             | "end_if"
             | "loop_start"
             | "loop_end"
@@ -351,10 +344,7 @@ fn simple_op_is_provably_nonthrowing(op: &OpIR) -> bool {
         return true;
     }
     // 11) Inline-cache slot setup ops — idempotent, no exception.
-    if matches!(
-        kind,
-        "code_slots_init" | "code_slot_set" | "code_new"
-    ) {
+    if matches!(kind, "code_slots_init" | "code_slot_set" | "code_new") {
         return true;
     }
     // 12) Trace markers and tuple-new-zero-args — pure introduction of
@@ -684,8 +674,6 @@ mod vec_layout {
                     );
                 }
             }
-
-            
 
             // Intentionally NOT forgetting v — drop it normally.
             VecLayout {
@@ -1778,7 +1766,7 @@ fn var_get(
 
 /// Get a variable's NaN-boxed value, boxing a raw-primary value on demand.
 ///
-/// When a variable is in `raw_primary_int`, its Cranelift Variable holds a raw
+/// When a variable is in `int_primary_vars`, its Cranelift Variable holds a raw
 /// i64 value (not NaN-boxed). This function boxes it lazily using the hoisted
 /// boxing constants, ensuring all 620+ runtime-call sites get a properly
 /// NaN-boxed value without any code changes at the call site.
@@ -1789,7 +1777,7 @@ fn var_get(
 /// Phase 1d Step 0.6 NOTE: zero callers after the float_value_for_mixed
 /// migration. Retained as a template for the Phase 2 bool-lane mirror's
 /// inline-only fast-box equivalent. Will be deleted by Phase 1d Step 1
-/// (`raw_primary_int` becomes the static `int_primary_vars` and
+/// (`int_primary_vars` becomes the static `int_primary_vars` and
 /// `box_int_value_hoisted` is no longer safe at any escape).
 #[cfg(feature = "native-backend")]
 #[allow(dead_code)]
@@ -1797,7 +1785,7 @@ fn var_get_boxed(
     builder: &mut FunctionBuilder,
     vars: &BTreeMap<String, Variable>,
     name: &str,
-    raw_primary_int: &std::collections::BTreeSet<String>,
+    int_primary_vars: &std::collections::BTreeSet<String>,
     raw_primary_float: &std::collections::BTreeSet<String>,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
@@ -1805,7 +1793,7 @@ fn var_get_boxed(
     let var = *vars.get(name)?;
     let val = builder.use_var(var);
 
-    if raw_primary_int.contains(name) {
+    if int_primary_vars.contains(name) {
         // Variable holds raw i64 — box it for the runtime call
         let boxed = box_int_value_hoisted(builder, val, box_int_mask_var, box_int_tag_var);
         Some(VarValue(boxed))
@@ -1826,12 +1814,12 @@ fn var_get_raw(
     builder: &mut FunctionBuilder,
     vars: &BTreeMap<String, Variable>,
     name: &str,
-    raw_primary_int: &std::collections::BTreeSet<String>,
+    int_primary_vars: &std::collections::BTreeSet<String>,
     raw_primary_float: &std::collections::BTreeSet<String>,
 ) -> Option<(VarValue, bool)> {
     let var = *vars.get(name)?;
     let val = builder.use_var(var);
-    let is_raw = raw_primary_int.contains(name) || raw_primary_float.contains(name);
+    let is_raw = int_primary_vars.contains(name) || raw_primary_float.contains(name);
     Some((VarValue(val), is_raw))
 }
 
@@ -1843,7 +1831,7 @@ fn def_var_raw(
     vars: &BTreeMap<String, Variable>,
     name: impl AsRef<str>,
     raw_val: Value,
-    raw_primary_int: &mut std::collections::BTreeSet<String>,
+    int_primary_vars: &mut std::collections::BTreeSet<String>,
 ) {
     let name_ref = name.as_ref();
     if name_ref == "none" {
@@ -1853,7 +1841,7 @@ fn def_var_raw(
         .get(name_ref)
         .unwrap_or_else(|| panic!("Var not found: {name_ref}"));
     builder.def_var(var, raw_val);
-    raw_primary_int.insert(name_ref.to_string());
+    int_primary_vars.insert(name_ref.to_string());
 }
 
 #[cfg(feature = "native-backend")]
@@ -2457,7 +2445,6 @@ struct LoopFrame {
     after_block: Block,
     index_name: Option<String>,
     next_index: Option<Value>,
-    next_index_raw: Option<Value>,
     /// True when the loop uses the linearized TIR path (no dedicated
     /// Cranelift loop block; counter flows through phi variables).
     /// `loop_end` must NOT decrement `loop_depth` for linearized loops
@@ -2779,7 +2766,11 @@ impl SimpleBackend {
         flag_builder
             .set(
                 "probestack_strategy",
-                if targeting_aarch64 { "outline" } else { "inline" },
+                if targeting_aarch64 {
+                    "outline"
+                } else {
+                    "inline"
+                },
             )
             .unwrap();
         // MOLT_PORTABLE=1 forces baseline ISA (no host-specific features like AVX2).
@@ -4005,39 +3996,23 @@ impl SimpleBackend {
         // will SIGILL at runtime, so the user MUST know about them at build time.
         if !self.trap_stub_names.is_empty() {
             eprintln!();
-            eprintln!(
-                "╔══════════════════════════════════════════════════════════════╗"
-            );
+            eprintln!("╔══════════════════════════════════════════════════════════════╗");
             eprintln!(
                 "║  WARNING: {} function(s) failed to compile                  ║",
                 self.trap_stub_names.len()
             );
-            eprintln!(
-                "║  These functions will abort if called at runtime.           ║"
-            );
-            eprintln!(
-                "╠══════════════════════════════════════════════════════════════╣"
-            );
+            eprintln!("║  These functions will abort if called at runtime.           ║");
+            eprintln!("╠══════════════════════════════════════════════════════════════╣");
             for name in &self.trap_stub_names {
                 // Demangle: molt_init_builtins__molt_module_chunk_5 → builtins (chunk 5)
                 let display_name = demangle_stub_name(name);
                 eprintln!("║  • {:<56} ║", display_name);
             }
-            eprintln!(
-                "╠══════════════════════════════════════════════════════════════╣"
-            );
-            eprintln!(
-                "║  Cause: Cranelift compilation limit (function too large or  ║"
-            );
-            eprintln!(
-                "║  unsupported target feature). Try: --rebuild or splitting   ║"
-            );
-            eprintln!(
-                "║  large modules into smaller files.                          ║"
-            );
-            eprintln!(
-                "╚══════════════════════════════════════════════════════════════╝"
-            );
+            eprintln!("╠══════════════════════════════════════════════════════════════╣");
+            eprintln!("║  Cause: Cranelift compilation limit (function too large or  ║");
+            eprintln!("║  unsupported target feature). Try: --rebuild or splitting   ║");
+            eprintln!("║  large modules into smaller files.                          ║");
+            eprintln!("╚══════════════════════════════════════════════════════════════╝");
             eprintln!();
         }
 
@@ -4076,7 +4051,6 @@ impl SimpleBackend {
             trap_stub_names: self.trap_stub_names,
         }
     }
-
 }
 
 /// Demangle internal function names for user-facing diagnostics.
@@ -4574,8 +4548,7 @@ mod tests {
         }
         #[cfg(debug_assertions)]
         {
-            let repr_violations =
-                crate::tir::verify_lir_repr::verify_register_passable(&lir);
+            let repr_violations = crate::tir::verify_lir_repr::verify_register_passable(&lir);
             if !repr_violations.is_empty() {
                 eprintln!(
                     "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
