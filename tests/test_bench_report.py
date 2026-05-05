@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -248,3 +249,89 @@ def test_bench_report_check_fails_for_stale_generated_outputs(tmp_path: Path) ->
         )
         == 1
     )
+
+
+def test_failed_wasm_zero_time_is_not_reported_as_speed(tmp_path: Path) -> None:
+    module = _load_module()
+    module.ROOT = tmp_path
+    native_path = tmp_path / "bench/results/native.json"
+    wasm_path = tmp_path / "bench/results/wasm.json"
+    out_path = tmp_path / "docs/benchmarks/bench_summary.md"
+    _write_json(
+        native_path,
+        {
+            "created_at": "2026-04-03T12:00:00Z",
+            "system": {"platform": "macos-14", "machine": "arm64", "python": "3.12.9"},
+            "benchmarks": {
+                "ok.py": {
+                    "molt_ok": True,
+                    "molt_time_s": 0.50,
+                    "cpython_time_s": 1.00,
+                    "molt_speedup": 2.0,
+                },
+                "failed.py": {
+                    "molt_ok": True,
+                    "molt_time_s": 0.25,
+                    "cpython_time_s": 1.00,
+                    "molt_speedup": 4.0,
+                },
+            },
+        },
+    )
+    _write_json(
+        wasm_path,
+        {
+            "created_at": "2026-04-03T12:10:00Z",
+            "system": {"platform": "wasmtime", "machine": "wasm32", "python": "n/a"},
+            "benchmarks": {
+                "ok.py": {
+                    "molt_wasm_ok": True,
+                    "molt_wasm_time_s": 2.00,
+                    "molt_wasm_size_kb": 321.0,
+                },
+                "failed.py": {
+                    "molt_wasm_ok": False,
+                    "molt_wasm_time_s": 0.00,
+                    "molt_wasm_size_kb": 111.0,
+                },
+            },
+        },
+    )
+
+    assert (
+        module.main(
+            [
+                "--native",
+                str(native_path),
+                "--wasm",
+                str(wasm_path),
+                "--out",
+                str(out_path),
+            ]
+        )
+        == 0
+    )
+
+    report = out_path.read_text(encoding="utf-8")
+    assert "Median wasm speedup vs CPython: 0.50x." in report
+    assert "| failed | yes | 1.000000" in report
+    assert "| failed | yes | 1.000000" in report and "| no | - | - | -" in report
+    assert "failed.py 0.00x" not in module._status_summary(
+        module._load_json(native_path),
+        module._load_json(wasm_path),
+        module._collect_benchmarks(
+            module._load_json(native_path), module._load_json(wasm_path)
+        )[1],
+        module._collect_benchmarks(
+            module._load_json(native_path), module._load_json(wasm_path)
+        )[2],
+    )
+
+
+def test_wasm_time_filter_rejects_invalid_numeric_values() -> None:
+    module = _load_module()
+
+    for value in (True, False, 0.0, -1.0, math.nan, math.inf, -math.inf):
+        assert module._valid_positive_time(value) is None
+
+    assert module._valid_positive_time(1.25) == 1.25

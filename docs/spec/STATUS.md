@@ -144,7 +144,7 @@ Top speedups: `bench_bytearray_replace.py` 2.15x, `bench_bytes_replace.py` 1.64x
 Regressions: `bench_class_hierarchy.py` 0.01x, `bench_struct.py` 0.05x, `bench_bytes_find_only.py` 0.06x, `bench_bytes_find.py` 0.07x, `bench_exception_heavy.py` 0.10x, `bench_attr_access.py` 0.11x, `bench_json_roundtrip.py` 0.13x, `bench_descriptor_property.py` 0.13x, `bench_str_endswith.py` 0.19x, `bench_str_startswith.py` 0.21x, `bench_str_find.py` 0.21x, `bench_str_count.py` 0.23x, `bench_str_replace.py` 0.27x, `bench_str_count_unicode.py` 0.28x, `bench_str_find_unicode_warm.py` 0.32x, `bench_str_find_unicode.py` 0.34x, `bench_str_count_unicode_warm.py` 0.34x, `bench_counter_words.py` 0.38x, `bench_dict_views.py` 0.57x, `bench_dict_ops.py` 0.65x, `bench_bytearray_find.py` 0.76x, `bench_gc_pressure.py` 0.79x, `bench_str_split.py` 0.94x.
 Slowest: `bench_class_hierarchy.py` 0.01x, `bench_struct.py` 0.05x, `bench_bytes_find_only.py` 0.06x.
 Build/run failures: PyPy skipped for `bench_channel_throughput.py`, `bench_parse_msgpack.py`, `bench_ptr_registry.py`; Codon baseline unavailable; Nuitka baseline unavailable; Pyodide baseline unavailable.
-WASM run: 2026-03-28 (macOS arm64, CPython 3.12.13). Slowest: `bench_sum.py` 0.00s; largest sizes: `bench_sum.py` 7182.5 KB; WASM vs CPython slowest ratios: `bench_sum.py` 0.00x.
+WASM run: 2026-03-28 (macOS arm64, CPython 3.12.13). Slowest: none; largest sizes: `bench_sum.py` 7182.5 KB; WASM vs CPython slowest ratios: none.
 <!-- GENERATED:bench-summary:end -->
 
 ## Deep Links
