@@ -318,9 +318,9 @@ gate bundle (no exceptions):
 
 - **Speedup (x.xx)**: Molt is X times faster than CPython. (e.g., 10.0x = Molt is 10x faster).
 - **Regression (< 1.0x)**: Molt is slower than CPython. This is generally unacceptable for Tier 0 constructs.
-- **Super Bench (`--super`)**: Runs 10 samples and calculates variance. Use this for final release validation or when results are noisy.
+- **Super Bench (`--super`)**: Runs 10 samples, records raw successful sample arrays, and calculates variance. Use this for final release validation or when results are noisy.
 - **Molt build vs run time**: `molt_build_s` captures compile time; `molt_time_s` is run time only for fair runtime comparisons.
-- **WASM build vs run time**: `molt_wasm_build_s` captures wasm compile time; `molt_wasm_time_s` is run time only.
+- **WASM build vs run time**: `molt_wasm_build_s` captures wasm compile time; `molt_wasm_time_s` is run time only and is `null` unless every measured WASM sample succeeds with a positive finite duration.
 - **WASM import density**: use `molt_wasm_function_imports_per_kb` and related
   import-count fields to monitor runtime call-surface pressure.
 
