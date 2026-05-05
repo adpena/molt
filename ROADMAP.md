@@ -56,12 +56,13 @@ This file is forward-looking only.
 ### Medium Term
 
 - Expand language and stdlib coverage under the Rust-first lowering model.
-- Keep retiring `fast_int` / `fast_float` / `raw_int` / `type_hint` as the
-  architectural center of backend optimization. TIR-to-SimpleIR lowering no
-  longer accepts an external type map for scalar hint reseeding; remaining
-  performance work must flow through shared representation-aware TIR/LIR
-  contracts. Native int codegen has retired the raw-int shadow transport in
-  favor of `int_primary_vars`, and native float-primary codegen now treats
+- Keep retiring `fast_int` / `fast_float` / `type_hint` transport hints and raw
+  scalar shadow lanes as the architectural center of backend optimization.
+  TIR-to-SimpleIR lowering no longer accepts an external type map for scalar
+  hint reseeding; remaining performance work must flow through shared
+  representation-aware TIR/LIR contracts. Native int codegen has retired the
+  raw-int shadow transport in favor of `int_primary_vars`, and native
+  float-primary codegen now treats
   `float_primary_vars` as the single static authority for F64-primary variables.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
