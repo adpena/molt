@@ -3778,6 +3778,7 @@ fn codeobj_from_filename_bits(_py: &crate::PyToken<'_>, filename_bits: u64) -> u
         0,
     );
     dec_ref_bits(_py, varnames_bits);
+    dec_ref_bits(_py, name_bits);
     if code_ptr.is_null() {
         MoltObject::none().bits()
     } else {
@@ -5820,5 +5821,137 @@ mod tokenize_encoding_tests {
     fn find_encoding_cookie_rejects_non_cookie_lines() {
         assert_eq!(find_encoding_cookie(b"print('hi')"), None);
         assert_eq!(find_encoding_cookie(b"# comment only"), None);
+    }
+}
+
+#[cfg(all(test, feature = "stdlib_ast"))]
+mod code_object_ownership_tests {
+    use super::codeobj_from_filename_bits;
+    use crate::object::header_from_obj_ptr;
+    use crate::{
+        alloc_function_obj, alloc_string, dec_ref_bits, function_set_code_bits, inc_ref_bits,
+        obj_from_bits,
+    };
+    use molt_obj_model::MoltObject;
+    use std::sync::atomic::Ordering;
+
+    unsafe fn ref_count(ptr: *mut u8) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn codeobj_from_filename_balances_temporary_name_reference() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let filename_ptr = alloc_string(_py, b"<codeobj-helper-test>");
+            assert_eq!(unsafe { ref_count(filename_ptr) }, 1);
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+
+            let code_bits = codeobj_from_filename_bits(_py, filename_bits);
+            let code_ptr = obj_from_bits(code_bits).as_ptr().unwrap();
+            let name_bits = unsafe { crate::code_name_bits(code_ptr) };
+            let name_ptr = obj_from_bits(name_bits).as_ptr().unwrap();
+
+            assert_eq!(unsafe { ref_count(filename_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(name_ptr) }, 1);
+
+            dec_ref_bits(_py, code_bits);
+            assert_eq!(unsafe { ref_count(filename_ptr) }, 1);
+            dec_ref_bits(_py, filename_bits);
+        })
+    }
+
+    #[test]
+    fn alloc_code_obj_owns_and_releases_metadata_once() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let filename_ptr = alloc_string(_py, b"<constructor-test>");
+            let name_ptr = alloc_string(_py, b"<constructor-test-name>");
+            let linetable_ptr = alloc_string(_py, b"<constructor-test-linetable>");
+            let varnames_ptr = alloc_string(_py, b"<constructor-test-varnames>");
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let linetable_bits = MoltObject::from_ptr(linetable_ptr).bits();
+            let varnames_bits = MoltObject::from_ptr(varnames_ptr).bits();
+
+            for bits in [filename_bits, name_bits, linetable_bits, varnames_bits] {
+                inc_ref_bits(_py, bits);
+            }
+
+            let code_ptr = crate::alloc_code_obj(
+                _py,
+                filename_bits,
+                name_bits,
+                17,
+                linetable_bits,
+                varnames_bits,
+                0,
+                0,
+                0,
+            );
+            let code_bits = MoltObject::from_ptr(code_ptr).bits();
+            for bits in [filename_bits, name_bits, linetable_bits, varnames_bits] {
+                dec_ref_bits(_py, bits);
+            }
+
+            assert_eq!(unsafe { ref_count(filename_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(name_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(linetable_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(varnames_ptr) }, 2);
+
+            dec_ref_bits(_py, code_bits);
+
+            assert_eq!(unsafe { ref_count(filename_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(name_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(linetable_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(varnames_ptr) }, 1);
+
+            for bits in [filename_bits, name_bits, linetable_bits, varnames_bits] {
+                dec_ref_bits(_py, bits);
+            }
+        })
+    }
+
+    #[test]
+    fn molt_function_get_code_returns_owned_reference() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = alloc_function_obj(_py, 0, 0);
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            let filename_ptr = alloc_string(_py, b"<function-code-test>");
+            let name_ptr = alloc_string(_py, b"<function-code-test-name>");
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let code_ptr = crate::alloc_code_obj(
+                _py,
+                filename_bits,
+                name_bits,
+                23,
+                MoltObject::none().bits(),
+                0,
+                0,
+                0,
+                0,
+            );
+            dec_ref_bits(_py, filename_bits);
+            dec_ref_bits(_py, name_bits);
+            let code_bits = MoltObject::from_ptr(code_ptr).bits();
+
+            unsafe { function_set_code_bits(_py, func_ptr, code_bits) };
+            dec_ref_bits(_py, code_bits);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 1);
+
+            let returned_bits = super::molt_function_get_code(func_bits);
+            assert_eq!(returned_bits, code_bits);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 2);
+            dec_ref_bits(_py, returned_bits);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 1);
+
+            dec_ref_bits(_py, func_bits);
+        })
     }
 }
