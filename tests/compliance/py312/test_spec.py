@@ -101,6 +101,26 @@ print("body")
 """)
 
 
+# -- Native Scalar Lane Correctness -------------------------------------------
+
+
+class TestNativeScalarLaneCorrectness:
+    def test_large_int_bitwise_after_boxing_escape(self):
+        _assert_match("""\
+def hash_coord(x: int, y: int, z: int, seed: int) -> float:
+    h = seed ^ x * 374761393 ^ y * 668265263 ^ z * 2246822519
+    h = h ^ (h >> 13)
+    h = h * 3266489917
+    print(h)
+    print(h | 7)
+    h = h ^ (h >> 16)
+    print(h & 0xFFFFFFFF)
+    return (h & 0xFFFFFFFF) / 4294967295.0
+
+print(hash_coord(1, 0, 0, 1337))
+""")
+
+
 # -- PEP 695: Type Parameter Syntax (type X = ...) ----------------------------
 
 
