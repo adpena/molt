@@ -13541,7 +13541,14 @@ def _compile_with_backend_daemon(
 ) -> _BackendDaemonCompileResult:
     full_request_bytes = request_bytes
     probe_request_bytes: bytes | None = None
-    if request_bytes is None and (cache_key or function_cache_key):
+    cache_probe_allowed = True
+    if not is_wasm and stdlib_object_path is not None:
+        cache_probe_allowed = _shared_stdlib_cache_matches_key(
+            stdlib_object_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+        )
+    if request_bytes is None and (cache_key or function_cache_key) and cache_probe_allowed:
         probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
             ir=None,
             backend_output=backend_output,

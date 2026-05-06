@@ -1719,6 +1719,22 @@ impl WasmBackend {
                     );
                 }
 
+                // `object_new_bound` chooses its runtime entry from the
+                // static payload-size metadata attached to the op. Keep the
+                // auto import set as precise as the codegen path: typed class
+                // allocation sites with a positive payload size use the sized
+                // constructor, while hand-built legacy SimpleIR without the
+                // metadata keeps the unsized verifier/allocator path.
+                if kind == "object_new_bound" {
+                    let import_name = if op.value.is_some_and(|size| size > 0) {
+                        "object_new_bound_sized"
+                    } else {
+                        "object_new_bound"
+                    };
+                    required.insert(import_name.to_string());
+                    continue;
+                }
+
                 // Check explicit dependency table first.
                 if let Some(deps) = deps_map.get(kind) {
                     if matches!(
@@ -10179,6 +10195,46 @@ impl WasmBackend {
                     }
                     "object_new" => {
                         emit_call(func, reloc_enabled, import_ids["object_new"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "object_new_bound" => {
+                        let args = op
+                            .args
+                            .as_ref()
+                            .expect("object_new_bound requires class arg");
+                        let class_bits = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(class_bits));
+                        if let Some(payload_size) = op.value.filter(|size| *size > 0) {
+                            func.instruction(&Instruction::I64Const(payload_size));
+                            emit_call(func, reloc_enabled, import_ids["object_new_bound_sized"]);
+                        } else {
+                            emit_call(func, reloc_enabled, import_ids["object_new_bound"]);
+                        }
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "object_new_bound_stack" => {
+                        let args = op
+                            .args
+                            .as_ref()
+                            .expect("object_new_bound_stack requires class arg");
+                        let payload_size = op
+                            .value
+                            .filter(|size| *size > 0)
+                            .expect("object_new_bound_stack requires positive payload byte size");
+                        let class_bits = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(class_bits));
+                        func.instruction(&Instruction::I64Const(payload_size));
+                        emit_call(func, reloc_enabled, import_ids["object_new_bound_sized"]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

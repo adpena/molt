@@ -80,6 +80,8 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("object_field_set", 5),
     ("object_field_set_ptr", 17),
     ("object_new", 0),
+    ("object_new_bound", 2),
+    ("object_new_bound_sized", 3),
     ("object_set_class", 16),
     ("property_new", 5),
     ("staticmethod_new", 2),
@@ -1054,6 +1056,8 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     // ── On-demand: object field access ──
     // Pulled in when load/store/object ops appear in IR.
     ("object_new", &["object_new", "object_set_class"]),
+    ("object_new_bound", &[]),
+    ("object_new_bound_stack", &["object_new_bound_sized"]),
     ("object_field_get", &["object_field_get"]),
     ("object_field_get_ptr", &["object_field_get_ptr"]),
     ("object_field_init", &["object_field_init"]),
@@ -1624,6 +1628,46 @@ mod tests {
             op_deps,
             ["module_cache_del"],
             "module_cache_del codegen must request its runtime import explicitly"
+        );
+    }
+
+    #[test]
+    fn object_new_bound_declares_wasm_imports() {
+        let bound_type = IMPORT_REGISTRY
+            .iter()
+            .find_map(|&(name, type_idx)| (name == "object_new_bound").then_some(type_idx));
+        assert_eq!(
+            bound_type,
+            Some(2),
+            "object_new_bound must use the unary i64 -> i64 host import ABI"
+        );
+
+        let sized_type = IMPORT_REGISTRY
+            .iter()
+            .find_map(|&(name, type_idx)| (name == "object_new_bound_sized").then_some(type_idx));
+        assert_eq!(
+            sized_type,
+            Some(3),
+            "object_new_bound_sized must use the binary i64,i64 -> i64 host import ABI"
+        );
+
+        let op_deps = OP_IMPORT_DEPS
+            .iter()
+            .find_map(|&(kind, deps)| (kind == "object_new_bound").then_some(deps))
+            .expect("object_new_bound op must declare its WASM import dependencies");
+        assert!(
+            op_deps.is_empty(),
+            "object_new_bound dependencies are selected from payload-size metadata during import collection"
+        );
+
+        let stack_deps = OP_IMPORT_DEPS
+            .iter()
+            .find_map(|&(kind, deps)| (kind == "object_new_bound_stack").then_some(deps))
+            .expect("object_new_bound_stack op must declare its WASM import dependencies");
+        assert_eq!(
+            stack_deps,
+            ["object_new_bound_sized"],
+            "WASM has no native stack object representation; stack-eligible class allocation lowers to the sized heap constructor"
         );
     }
 }
