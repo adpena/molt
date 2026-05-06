@@ -1276,6 +1276,29 @@ mod tests {
     }
 
     #[test]
+    fn semantic_list_bool_index_does_not_authorize_raw_bool_primary() {
+        let index = op("index", Some("item"), None, &["items", "idx"]);
+        let func = function(
+            "typed_list_bool_index",
+            &["items", "idx"],
+            Some(vec!["list[bool]", "int"]),
+            vec![index],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (_, bool_like, _, _, _) = plan.scalar_name_sets();
+        let primary = plan.primary_name_sets();
+
+        assert!(
+            bool_like.contains("item"),
+            "semantic list[bool] indexing should refine the element type"
+        );
+        assert!(
+            !primary.bool_.contains("item"),
+            "semantic element type alone must not prove native raw-bool carrier codegen"
+        );
+    }
+
+    #[test]
     fn conflicting_facts_do_not_pick_order_dependent_scalar_lane() {
         let mut plan = ScalarRepresentationPlan::default();
         plan.insert_fact(
