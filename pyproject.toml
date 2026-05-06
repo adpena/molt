@@ -84,7 +84,7 @@ cargo_profile = "release-fast"
 backend_package = "molt-backend"
 backend_features = ["native-backend"]
 cargo_build_jobs = 2
-backend_daemon = false
+backend_daemon = true
 
 [tool.molt.dx.env]
 MOLT_EXT_ROOT = "{root}"
