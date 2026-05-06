@@ -1160,6 +1160,8 @@ fn infer_single_result_type_with_attrs(
         OpCode::BuildSet => Some(TirType::Set(Box::new(TirType::DynBox))),
         OpCode::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
         OpCode::Index => match operand_types {
+            [TirType::Str, TirType::I64 | TirType::Bool] => Some(TirType::Str),
+            [TirType::Bytes, TirType::I64 | TirType::Bool] => Some(TirType::I64),
             [TirType::List(elem_ty), TirType::I64 | TirType::Bool] => {
                 Some(elem_ty.as_ref().clone())
             }
@@ -2323,6 +2325,87 @@ mod tests {
         let type_map = extract_type_map(&func);
 
         assert_eq!(type_map.get(&item), Some(&TirType::DynBox));
+    }
+
+    #[test]
+    fn str_index_refines_to_str_for_integer_indices() {
+        for index_ty in [TirType::I64, TirType::Bool] {
+            let value = ValueId(0);
+            let index = ValueId(1);
+            let item = ValueId(2);
+            let ops = vec![make_op(
+                OpCode::Index,
+                vec![value, index],
+                vec![item],
+                AttrDict::new(),
+            )];
+            let mut func = single_block_func(ops, 3);
+            func.value_types.insert(value, TirType::Str);
+            func.value_types.insert(index, index_ty.clone());
+
+            refine_types(&mut func);
+            let type_map = extract_type_map(&func);
+
+            assert_eq!(
+                type_map.get(&item),
+                Some(&TirType::Str),
+                "str indexed by {index_ty:?} should refine to Str"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_index_refines_to_i64_for_integer_indices() {
+        for index_ty in [TirType::I64, TirType::Bool] {
+            let value = ValueId(0);
+            let index = ValueId(1);
+            let item = ValueId(2);
+            let ops = vec![make_op(
+                OpCode::Index,
+                vec![value, index],
+                vec![item],
+                AttrDict::new(),
+            )];
+            let mut func = single_block_func(ops, 3);
+            func.value_types.insert(value, TirType::Bytes);
+            func.value_types.insert(index, index_ty.clone());
+
+            refine_types(&mut func);
+            let type_map = extract_type_map(&func);
+
+            assert_eq!(
+                type_map.get(&item),
+                Some(&TirType::I64),
+                "bytes indexed by {index_ty:?} should refine to I64"
+            );
+        }
+    }
+
+    #[test]
+    fn immutable_sequence_index_with_non_integer_index_stays_dynbox() {
+        for value_ty in [TirType::Str, TirType::Bytes] {
+            let value = ValueId(0);
+            let index = ValueId(1);
+            let item = ValueId(2);
+            let ops = vec![make_op(
+                OpCode::Index,
+                vec![value, index],
+                vec![item],
+                AttrDict::new(),
+            )];
+            let mut func = single_block_func(ops, 3);
+            func.value_types.insert(value, value_ty.clone());
+            func.value_types.insert(index, TirType::Str);
+
+            refine_types(&mut func);
+            let type_map = extract_type_map(&func);
+
+            assert_eq!(
+                type_map.get(&item),
+                Some(&TirType::DynBox),
+                "{value_ty:?} indexed by Str must stay conservative"
+            );
+        }
     }
 
     #[test]
