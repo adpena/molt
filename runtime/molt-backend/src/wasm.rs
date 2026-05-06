@@ -1,3 +1,4 @@
+use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -82,6 +83,17 @@ fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
         "gpu_barrier" => Some("molt_gpu_barrier"),
         _ => None,
     }
+}
+
+fn wasm_scalar_integer_fast_path_for_op(plan: &ScalarRepresentationPlan, op: &OpIR) -> bool {
+    match op.kind.as_str() {
+        "div" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" => plan.op_args_are_integer_family(op),
+        _ => plan.op_prefers_integer_runtime_lane(op),
+    }
+}
+
+fn wasm_scalar_truthiness_fast_path_for_name(plan: &ScalarRepresentationPlan, name: &str) -> bool {
+    plan.name_is_integer_family(name)
 }
 
 const DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[
@@ -5059,6 +5071,7 @@ impl WasmBackend {
         // arena_alloc_object at every eligible alloc site, arena_free before
         // every return). Mirrors the native backend integration.
         let has_arena_eligible = func_ir.ops.iter().any(|op| op.arena_eligible == Some(true));
+        let scalar_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
         let mut stateful = false;
         let mut saw_jump_or_label = false;
         let mut fast_int_count: usize = 0;
@@ -5082,7 +5095,7 @@ impl WasmBackend {
             }
         }
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
-            if op.fast_int.unwrap_or(false) {
+            if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                 fast_int_count += 1;
             }
             if let Some(var) = &op.var {
@@ -5828,7 +5841,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -5899,7 +5912,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6005,7 +6018,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6076,7 +6089,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6147,7 +6160,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6218,7 +6231,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6289,7 +6302,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6333,7 +6346,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6377,7 +6390,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6433,7 +6446,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6477,7 +6490,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6521,7 +6534,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6565,7 +6578,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6631,7 +6644,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6696,7 +6709,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             emit_unbox_int_local_trusted_opt(
@@ -6770,7 +6783,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6845,7 +6858,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6974,7 +6987,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             emit_unbox_int_local_trusted_tee_opt(
@@ -7036,7 +7049,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             emit_unbox_int_local_trusted_tee_opt(
@@ -7098,7 +7111,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             emit_unbox_int_local_trusted_tee_opt(
@@ -7160,7 +7173,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             emit_unbox_int_local_trusted_tee_opt(
@@ -7222,7 +7235,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             // Box/unbox elimination: when both operands are
                             // known NaN-boxed integers, equality of the boxed
                             // representations implies equality of the raw
@@ -7247,7 +7260,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if wasm_scalar_integer_fast_path_for_op(&scalar_plan, op) {
                             // Box/unbox elimination: compare NaN-boxed values
                             // directly — same tag means ne(boxed) iff ne(raw).
                             func.instruction(&Instruction::LocalGet(lhs));
@@ -7309,11 +7322,12 @@ impl WasmBackend {
                     "bool" | "cast_bool" | "builtin_bool" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];
-                        let truthy_import = if op.fast_int.unwrap_or(false) {
-                            "is_truthy_int"
-                        } else {
-                            "is_truthy"
-                        };
+                        let truthy_import =
+                            if wasm_scalar_truthiness_fast_path_for_name(&scalar_plan, &args[0]) {
+                                "is_truthy_int"
+                            } else {
+                                "is_truthy"
+                            };
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids[truthy_import]);
                         func.instruction(&Instruction::I64Const(0));
@@ -12954,11 +12968,12 @@ impl WasmBackend {
                     "if" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
-                        let truthy_import = if op.fast_int.unwrap_or(false) {
-                            "is_truthy_int"
-                        } else {
-                            "is_truthy"
-                        };
+                        let truthy_import =
+                            if wasm_scalar_truthiness_fast_path_for_name(&scalar_plan, &args[0]) {
+                                "is_truthy_int"
+                            } else {
+                                "is_truthy"
+                            };
                         func.instruction(&Instruction::LocalGet(cond));
                         emit_call(func, reloc_enabled, import_ids[truthy_import]);
                         func.instruction(&Instruction::I64Const(0));
@@ -13656,7 +13671,10 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
-                            let truthy_import = if op.fast_int.unwrap_or(false) {
+                            let truthy_import = if wasm_scalar_truthiness_fast_path_for_name(
+                                &scalar_plan,
+                                &args[0],
+                            ) {
                                 "is_truthy_int"
                             } else {
                                 "is_truthy"
@@ -14161,7 +14179,10 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
-                            let truthy_import = if op.fast_int.unwrap_or(false) {
+                            let truthy_import = if wasm_scalar_truthiness_fast_path_for_name(
+                                &scalar_plan,
+                                &args[0],
+                            ) {
                                 "is_truthy_int"
                             } else {
                                 "is_truthy"
@@ -15778,6 +15799,59 @@ mod tests {
         assert!(!is_production_lir_wasm_fast_path_name(
             "molt_test_user_callable"
         ));
+    }
+
+    fn wasm_test_function(
+        name: &str,
+        params: Vec<&str>,
+        param_types: Option<Vec<&str>>,
+        ops: Vec<OpIR>,
+    ) -> FunctionIR {
+        FunctionIR {
+            name: name.to_string(),
+            params: params.into_iter().map(str::to_string).collect(),
+            ops,
+            param_types: param_types.map(|types| types.into_iter().map(str::to_string).collect()),
+            source_file: None,
+            is_extern: false,
+        }
+    }
+
+    fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            out: out.map(str::to_string),
+            args: Some(args.into_iter().map(str::to_string).collect()),
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn scalar_fast_path_ignores_transport_hints() {
+        let mut add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+        add.fast_int = Some(true);
+        add.type_hint = Some("int".to_string());
+        let func = wasm_test_function("hinted", vec!["lhs", "rhs"], None, vec![add.clone()]);
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert!(!wasm_scalar_integer_fast_path_for_op(&plan, &add));
+    }
+
+    #[test]
+    fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
+        let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+        let div = wasm_test_op("div", Some("quot"), vec!["lhs", "rhs"]);
+        let func = wasm_test_function(
+            "typed",
+            vec!["lhs", "rhs"],
+            Some(vec!["int", "int"]),
+            vec![add.clone(), div.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert!(wasm_scalar_integer_fast_path_for_op(&plan, &add));
+        assert!(wasm_scalar_integer_fast_path_for_op(&plan, &div));
+        assert!(wasm_scalar_truthiness_fast_path_for_name(&plan, "lhs"));
     }
 
     // ---------------------------------------------------------------

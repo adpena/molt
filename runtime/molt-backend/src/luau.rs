@@ -8,6 +8,7 @@
 //! reject lowered output that still contains comment-only control-flow markers
 //! or stub markers for unsupported semantics.
 
+use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -25,11 +26,12 @@ pub struct LuauBackend {
     /// these is returned we emit `return table.unpack(v)` so the caller
     /// receives multiple values instead of a single table.
     tuple_vars: BTreeSet<String>,
-    /// Heuristic type hints propagated through operations.  When a variable is
-    /// known to be a list (via `build_list`/`list_new` or `type_hint`), we
-    /// record it here so that downstream `get_item` and `call_method` ops can
-    /// emit more precise Luau code.
+    /// Container and user-facing shape facts propagated through operations.
+    /// Scalar representation decisions come from `scalar_plan`.
     var_type_hints: BTreeMap<String, String>,
+    /// Backend-neutral scalar representation facts for the function currently
+    /// being emitted.
+    scalar_plan: ScalarRepresentationPlan,
     /// Stack of pcall counter values for nested try/except blocks.
     try_depth_counter: Vec<u32>,
     /// Monotonically increasing counter for generating unique pcall variable names.
@@ -69,6 +71,7 @@ impl LuauBackend {
             hoisted_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
             var_type_hints: BTreeMap::new(),
+            scalar_plan: ScalarRepresentationPlan::default(),
             try_depth_counter: Vec::new(),
             pcall_counter: 0,
             inside_pcall_body: false,
@@ -700,6 +703,15 @@ impl LuauBackend {
         let ops = strip_dead_after_return(&ops);
         let ops = lower_iter_to_for(&ops);
         let (ops, pcall_escaped_vars) = lower_try_to_pcall(&ops);
+        let scalar_func = FunctionIR {
+            name: func.name.clone(),
+            params: func.params.clone(),
+            ops: ops.clone(),
+            param_types: func.param_types.clone(),
+            source_file: func.source_file.clone(),
+            is_extern: func.is_extern,
+        };
+        self.scalar_plan = ScalarRepresentationPlan::for_function_ir(&scalar_func);
 
         // Build typed parameter list.  When `param_types` carries per-param
         // type hints from the frontend we emit Luau type annotations so the
@@ -1404,16 +1416,8 @@ impl LuauBackend {
                     let rhs = sanitize_ident(&args[1]);
                     let lhs_num = self.numeric_operand_expr(&args[0]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
-                    let is_numeric = op.fast_int == Some(true)
-                        || op.fast_float == Some(true)
-                        || self
-                            .var_type_hints
-                            .get(&args[0])
-                            .is_some_and(|h| h == "int" || h == "float" || h == "bool")
-                        || self
-                            .var_type_hints
-                            .get(&args[1])
-                            .is_some_and(|h| h == "int" || h == "float" || h == "bool");
+                    let is_numeric = self.scalar_plan.op_prefers_integer_runtime_lane(op)
+                        || matches!(self.scalar_plan.op_scalar_lane(op), Some(ScalarKind::Float));
                     if is_numeric {
                         if let Some(ref n) = op.out {
                             self.var_type_hints.insert(n.clone(), "int".to_string());
@@ -2654,8 +2658,9 @@ impl LuauBackend {
 
                     // Fast-path: when the key is a known non-negative constant,
                     // skip the negative-index ternary entirely.
+                    let key_is_scalar_int = self.scalar_plan.name_is_integer_family(&args[1]);
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
-                        || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
+                        || (key_is_scalar_int && op.value.is_some_and(|v| v >= 0));
 
                     if container_is_str {
                         // Luau does not support string[index]; use string.sub.
@@ -2691,10 +2696,7 @@ impl LuauBackend {
                             .var_type_hints
                             .get(&args[0])
                             .is_some_and(|t| t == "list");
-                        let key_is_int = op.fast_int == Some(true)
-                            || op.fast_int == Some(true)
-                            || matches!(op.type_hint.as_deref(), Some("int"))
-                            || container_is_list;
+                        let key_is_int = key_is_scalar_int || container_is_list;
                         // When the container has type_hint="list" on the op itself,
                         // propagate the hint to the output variable.
                         if (container_is_list || matches!(op.type_hint.as_deref(), Some("list")))
@@ -2746,10 +2748,9 @@ impl LuauBackend {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
-                    let key_is_int =
-                        op.fast_int == Some(true) || matches!(op.type_hint.as_deref(), Some("int"));
+                    let key_is_int = self.scalar_plan.name_is_integer_family(&args[1]);
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
-                        || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
+                        || (key_is_int && op.value.is_some_and(|v| v >= 0));
                     let known_list_like = self
                         .var_type_hints
                         .get(&args[0])
@@ -2788,10 +2789,9 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    let key_is_int =
-                        op.fast_int == Some(true) || matches!(op.type_hint.as_deref(), Some("int"));
+                    let key_is_int = self.scalar_plan.name_is_integer_family(&args[1]);
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
-                        || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
+                        || (key_is_int && op.value.is_some_and(|v| v >= 0));
                     let known_list_like = self
                         .var_type_hints
                         .get(&args[0])
@@ -4502,11 +4502,7 @@ impl LuauBackend {
 
     fn numeric_operand_expr(&self, raw_name: &str) -> String {
         let ident = sanitize_ident(raw_name);
-        if self
-            .var_type_hints
-            .get(raw_name)
-            .is_some_and(|hint| hint == "bool")
-        {
+        if self.scalar_plan.name_scalar_kind(raw_name) == Some(ScalarKind::Bool) {
             format!("(if {ident} then 1 else 0)")
         } else {
             ident
@@ -4583,27 +4579,28 @@ impl LuauBackend {
     /// Returns the identifier as-is for booleans, or `molt_bool(ident)` otherwise.
     fn guard_truthiness(&self, raw_name: &str) -> String {
         let ident = sanitize_ident(raw_name);
-        let hint = self.var_type_hints.get(raw_name).map(|s| s.as_str());
-        match hint {
-            Some("bool") => ident,
+        match self.scalar_plan.name_scalar_kind(raw_name) {
+            Some(ScalarKind::Bool) => ident,
             // Strength-reduce: type-specific truthiness checks avoid
             // the multi-branch molt_bool() function call overhead.
-            Some("int") | Some("Int") => format!("({ident} ~= 0)"),
-            Some("float") | Some("Float") => format!("({ident} ~= 0)"),
-            Some("str") | Some("Str") | Some("string") => format!("({ident} ~= \"\")"),
-            Some("list") | Some("List") => format!("(#{ident} > 0)"),
-            Some("dict") | Some("Dict") => format!("(next({ident}) ~= nil)"),
-            _ if ident == "true" || ident == "false" => ident,
-            _ => format!("molt_bool({ident})"),
+            Some(ScalarKind::Int | ScalarKind::Float) => format!("({ident} ~= 0)"),
+            Some(ScalarKind::Str) => format!("({ident} ~= \"\")"),
+            Some(ScalarKind::NoneValue) => "false".to_string(),
+            None => {
+                let hint = self.var_type_hints.get(raw_name).map(|s| s.as_str());
+                match hint {
+                    Some("list") | Some("List") => format!("(#{ident} > 0)"),
+                    Some("dict") | Some("Dict") => format!("(next({ident}) ~= nil)"),
+                    _ if ident == "true" || ident == "false" => ident,
+                    _ => format!("molt_bool({ident})"),
+                }
+            }
         }
     }
 
     fn is_known_bool_value(&self, raw_name: &str) -> bool {
         matches!(raw_name, "true" | "false")
-            || self
-                .var_type_hints
-                .get(raw_name)
-                .is_some_and(|hint| hint == "bool")
+            || self.scalar_plan.name_scalar_kind(raw_name) == Some(ScalarKind::Bool)
     }
 
     fn emit_line(&mut self, line: &str) {
@@ -10066,6 +10063,85 @@ mod tests {
         assert!(
             !output.contains("local v0: number ="),
             "result-side type_hint=int must not force numeric add lowering, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_transport_hints_do_not_force_luau_numeric_add() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "transport_hinted_add".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "add".to_string(),
+                        args: Some(vec!["a".to_string(), "b".to_string()]),
+                        out: Some("v0".to_string()),
+                        fast_int: Some(true),
+                        fast_float: Some(true),
+                        type_hint: Some("int".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("if type(a) == \"string\" or type(b) == \"string\""),
+            "transport hints must not bypass unknown add guard, got:\n{output}"
+        );
+        assert!(
+            !output.contains("local v0: number ="),
+            "transport hints must not select numeric add lowering, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_type_hint_int_does_not_force_luau_integer_index() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "hinted_index".to_string(),
+                params: vec!["xs".to_string(), "key".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "get_item".to_string(),
+                        args: Some(vec!["xs".to_string(), "key".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("int".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("if type(key) == \"number\""),
+            "unknown key must keep dynamic key normalization, got:\n{output}"
+        );
+        assert!(
+            !output.contains("xs[if key >= 0 then key + 1"),
+            "transport hints must not select integer-only indexing, got:\n{output}"
         );
     }
 

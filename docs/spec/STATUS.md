@@ -75,13 +75,17 @@ It is current-state only. For forward-looking priorities, use
   of leaving those facts solely in `_fast_int` attrs. TIR-to-SimpleIR value
   naming is now centralized in `SimpleValueNames`, keeping parameter identity
   and block-argument storage names on one reusable contract. TIR lift also
-  records explicit single-output SimpleIR provenance so the native backend can
-  map final LIR facts back to legacy names without trusting scalar transport
-  hints. Native preanalysis consumes a final-codegen-time
-  `NativeRepresentationPlan` for semantic int/bool/float/str/None
-  classifications, raw-primary carrier sets, scalar slot escape safety,
-  scalar store-target discovery, and operation lane preference; raw-primary
-  sets remain stricter carrier-safety subsets.
+  records explicit single-output SimpleIR provenance so backends can map final
+  LIR facts back to legacy names without trusting scalar transport hints.
+  Backend scalar lowering consumes a final-codegen-time
+  `ScalarRepresentationPlan` for semantic int/bool/float/str/None
+  classifications. Native uses the plan for raw-primary carrier sets, scalar
+  slot escape safety, scalar store-target discovery, and operation lane
+  preference; raw-primary sets remain stricter carrier-safety subsets. Legacy
+  WASM and Luau scalar fast paths now consume the same plan for
+  integer-family arithmetic, comparison, truthiness, and index-key scalar
+  decisions instead of trusting `fast_int`, `fast_float`, or scalar
+  `type_hint` transport metadata.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic

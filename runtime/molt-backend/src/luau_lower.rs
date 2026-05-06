@@ -6,6 +6,7 @@
 
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
 use crate::luau_ir::*;
+use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
 use std::collections::BTreeSet;
 
 /// Lower a complete SimpleIR program to a LuauModule.
@@ -58,7 +59,7 @@ fn lower_function(func: &FunctionIR) -> LuauFunction {
         })
         .collect();
 
-    let mut ctx = LowerCtx::new();
+    let mut ctx = LowerCtx::new(ScalarRepresentationPlan::for_function_ir(func));
     let body = lower_ops(&func.ops, &mut ctx);
 
     LuauFunction {
@@ -78,16 +79,16 @@ struct LowerCtx {
     /// Variables known to be tuples (for multi-return unpack).
     #[allow(dead_code)]
     tuple_vars: BTreeSet<String>,
-    /// Variables known to be numeric.
-    numeric_vars: BTreeSet<String>,
+    /// Backend-neutral scalar representation facts for this function.
+    scalar_plan: ScalarRepresentationPlan,
 }
 
 impl LowerCtx {
-    fn new() -> Self {
+    fn new(scalar_plan: ScalarRepresentationPlan) -> Self {
         Self {
             list_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
-            numeric_vars: BTreeSet::new(),
+            scalar_plan,
         }
     }
 }
@@ -119,7 +120,6 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
             "const_float" => {
                 let out = out_var(op);
                 let val = op.f_value.unwrap_or(0.0);
-                ctx.numeric_vars.insert(out.clone());
                 stmts.push(LuauStmt::Local(
                     out,
                     None,
@@ -154,13 +154,9 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
                 if args.len() >= 2 {
                     let lhs = var_expr(&args[0]);
                     let rhs = var_expr(&args[1]);
-                    let is_numeric = op.fast_int == Some(true)
-                        || op.fast_float == Some(true)
-                        || matches!(op.type_hint.as_deref(), Some("int") | Some("float"))
-                        || (ctx.numeric_vars.contains(&args[0])
-                            && ctx.numeric_vars.contains(&args[1]));
+                    let is_numeric = ctx.scalar_plan.op_prefers_integer_runtime_lane(op)
+                        || ctx.scalar_plan.op_scalar_lane(op) == Some(ScalarKind::Float);
                     let expr = if is_numeric {
-                        ctx.numeric_vars.insert(out.clone());
                         LuauExpr::BinOp(Box::new(lhs), LuauBinOp::Add, Box::new(rhs))
                     } else {
                         // Type-checked: string concat or numeric add
@@ -193,17 +189,16 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
                     stmts.push(LuauStmt::Local(out, None, expr));
                 }
             }
-            "sub" | "inplace_sub" => stmts.push(binary_op_stmt(op, LuauBinOp::Sub, ctx)),
-            "mul" | "inplace_mul" => stmts.push(binary_op_stmt(op, LuauBinOp::Mul, ctx)),
-            "div" => stmts.push(binary_op_stmt(op, LuauBinOp::Div, ctx)),
-            "mod" => stmts.push(binary_op_stmt(op, LuauBinOp::Mod, ctx)),
-            "pow" => stmts.push(binary_op_stmt(op, LuauBinOp::Pow, ctx)),
+            "sub" | "inplace_sub" => stmts.push(binary_op_stmt(op, LuauBinOp::Sub)),
+            "mul" | "inplace_mul" => stmts.push(binary_op_stmt(op, LuauBinOp::Mul)),
+            "div" => stmts.push(binary_op_stmt(op, LuauBinOp::Div)),
+            "mod" => stmts.push(binary_op_stmt(op, LuauBinOp::Mod)),
+            "pow" => stmts.push(binary_op_stmt(op, LuauBinOp::Pow)),
             "floordiv" => {
                 // Luau // operator = LOP_IDIV opcode
                 let out = out_var(op);
                 let args = op_args(op);
                 if args.len() >= 2 {
-                    ctx.numeric_vars.insert(out.clone());
                     stmts.push(LuauStmt::Local(
                         out,
                         None,
@@ -219,14 +214,14 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
             // =============================================================
             // Comparisons
             // =============================================================
-            "lt" => stmts.push(binary_op_stmt(op, LuauBinOp::Lt, ctx)),
-            "le" => stmts.push(binary_op_stmt(op, LuauBinOp::Le, ctx)),
-            "gt" => stmts.push(binary_op_stmt(op, LuauBinOp::Gt, ctx)),
-            "ge" => stmts.push(binary_op_stmt(op, LuauBinOp::Ge, ctx)),
-            "eq" | "string_eq" | "is" => stmts.push(binary_op_stmt(op, LuauBinOp::Eq, ctx)),
-            "ne" => stmts.push(binary_op_stmt(op, LuauBinOp::Ne, ctx)),
-            "and" => stmts.push(binary_op_stmt(op, LuauBinOp::And, ctx)),
-            "or" => stmts.push(binary_op_stmt(op, LuauBinOp::Or, ctx)),
+            "lt" => stmts.push(binary_op_stmt(op, LuauBinOp::Lt)),
+            "le" => stmts.push(binary_op_stmt(op, LuauBinOp::Le)),
+            "gt" => stmts.push(binary_op_stmt(op, LuauBinOp::Gt)),
+            "ge" => stmts.push(binary_op_stmt(op, LuauBinOp::Ge)),
+            "eq" | "string_eq" | "is" => stmts.push(binary_op_stmt(op, LuauBinOp::Eq)),
+            "ne" => stmts.push(binary_op_stmt(op, LuauBinOp::Ne)),
+            "and" => stmts.push(binary_op_stmt(op, LuauBinOp::And)),
+            "or" => stmts.push(binary_op_stmt(op, LuauBinOp::Or)),
 
             // =============================================================
             // Unary
@@ -408,7 +403,6 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
                     }
 
                     let body = lower_ops(&body_ops, ctx);
-                    ctx.numeric_vars.insert(out.clone());
                     stmts.push(LuauStmt::ForNumeric {
                         var: out,
                         start,
@@ -529,8 +523,7 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
                 if args.len() >= 2 {
                     let container = var_expr(&args[0]);
                     let key = var_expr(&args[1]);
-                    let key_is_int =
-                        op.fast_int == Some(true) || matches!(op.type_hint.as_deref(), Some("int"));
+                    let key_is_int = ctx.scalar_plan.name_is_integer_family(&args[1]);
                     let index_expr = if key_is_int {
                         LuauExpr::Index(
                             Box::new(container),
@@ -635,7 +628,7 @@ fn var_expr(name: &str) -> LuauExpr {
     LuauExpr::Var(sanitize_ident(name))
 }
 
-fn binary_op_stmt(op: &OpIR, bin_op: LuauBinOp, ctx: &mut LowerCtx) -> LuauStmt {
+fn binary_op_stmt(op: &OpIR, bin_op: LuauBinOp) -> LuauStmt {
     let out = out_var(op);
     let args = op_args(op);
     if args.len() >= 2 {
@@ -649,9 +642,7 @@ fn binary_op_stmt(op: &OpIR, bin_op: LuauBinOp, ctx: &mut LowerCtx) -> LuauStmt 
                 | LuauBinOp::Div
                 | LuauBinOp::Mod
                 | LuauBinOp::Pow
-        ) {
-            ctx.numeric_vars.insert(out.clone());
-        }
+        ) {}
         LuauStmt::Local(
             out,
             None,
@@ -792,6 +783,87 @@ mod tests {
         assert!(source.contains("x: number"), "source: {source}");
         assert!(source.contains("local v0 = x + x"), "source: {source}");
         assert!(source.contains("return v0"), "source: {source}");
+    }
+
+    #[test]
+    fn test_transport_hints_do_not_force_numeric_add() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "add".to_string(),
+                        out: Some("v0".to_string()),
+                        args: Some(vec!["a".to_string(), "b".to_string()]),
+                        fast_int: Some(true),
+                        fast_float: Some(true),
+                        type_hint: Some("int".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+
+        let module = lower_to_luau(&ir);
+        let source = emit_luau(&module);
+        assert!(
+            source.contains("if type(a) == \"string\""),
+            "unknown add operands must keep runtime guard, got:\n{source}"
+        );
+        assert!(
+            !source.contains("local v0 = a + b"),
+            "transport hints must not select numeric add lowering, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_type_hint_int_does_not_force_integer_index() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec!["xs".to_string(), "key".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "get_item".to_string(),
+                        out: Some("v0".to_string()),
+                        args: Some(vec!["xs".to_string(), "key".to_string()]),
+                        fast_int: Some(true),
+                        type_hint: Some("int".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+
+        let module = lower_to_luau(&ir);
+        let source = emit_luau(&module);
+        assert!(
+            source.contains("if type(key) == \"number\""),
+            "unknown key must keep dynamic key normalization, got:\n{source}"
+        );
+        assert!(
+            !source.contains("xs[key + 1]"),
+            "transport hints must not select integer-only indexing, got:\n{source}"
+        );
     }
 
     #[test]

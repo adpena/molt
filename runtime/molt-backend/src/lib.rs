@@ -45,6 +45,7 @@ pub mod luau_lower;
 #[cfg(feature = "native-backend")]
 mod native_backend;
 mod passes;
+mod representation_plan;
 pub mod tir;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 #[cfg(feature = "native-backend")]

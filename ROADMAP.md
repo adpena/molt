@@ -69,14 +69,17 @@ This file is forward-looking only.
   TIR functions now own a persistent `value_types` map, and type refinement
   writes op-result facts back into that map instead of leaving them as a
   transient extraction side table; range/list devirtualization also records the
-  I64/Bool facts it synthesizes for loop-carried values. Native preanalysis
-  now builds a final-codegen-time `NativeRepresentationPlan` from refined
-  TIR/LIR facts, `SimpleValueNames`, and explicit single-output provenance,
-  then derives semantic scalar/None classifications from that plan instead of
-  recomputing them from SimpleIR op strings. The plan also owns raw-primary
-  carrier eligibility, scalar slot escape safety, scalar store-target
-  discovery, and operation lane preference, while preserving the stricter
-  exact-carrier safety predicates needed by codegen.
+  I64/Bool facts it synthesizes for loop-carried values. Backend scalar
+  lowering now builds a final-codegen-time `ScalarRepresentationPlan` from
+  refined TIR/LIR facts, `SimpleValueNames`, and explicit single-output
+  provenance, then derives semantic scalar/None classifications from that plan
+  instead of recomputing them from SimpleIR op strings. Native uses the plan for
+  raw-primary carrier eligibility, scalar slot escape safety, scalar
+  store-target discovery, and operation lane preference, while preserving the
+  stricter exact-carrier safety predicates needed by codegen. Legacy WASM and
+  Luau scalar fast paths now consume the same plan for integer-family
+  arithmetic, comparison, truthiness, and index-key scalar decisions instead of
+  trusting `fast_int`, `fast_float`, or scalar `type_hint` transport metadata.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
@@ -114,10 +117,9 @@ This file is forward-looking only.
 
 - Incomplete same-contract parity between native and WASM for important surfaces.
 - Incomplete compatibility coverage across language and stdlib.
-- Some backend lowering still degrades typed representation facts into legacy
-  transport names before codegen; native scalar preanalysis now consumes a
-  LIR-derived representation plan that owns raw-primary carrier bookkeeping,
-  but non-native backends still need to converge on the same contract.
+- Container/list/dict dispatch still needs a backend-neutral representation
+  plan; scalar fast-path authority has converged on `ScalarRepresentationPlan`
+  across native, legacy WASM, and Luau.
 - Benchmark suite results are not yet consistently faster than CPython across
   all tracked lanes.
 
