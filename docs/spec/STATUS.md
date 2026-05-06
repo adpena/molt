@@ -90,6 +90,12 @@ It is current-state only. For forward-looking priorities, use
   (`list[T]`, `dict[K, V]`, `set[T]`, and fixed-arity `tuple[...]`) instead of
   remaining opaque string hints; malformed, dynamic, or unsupported compound
   hints stay `DynBox`.
+  Backend semantic container dispatch now reads those facts through the shared
+  representation plan for Luau, WASM import selection/emission, native
+  `len`/`contains`, and LLVM `len`; `container_type` / `type_hint` strings
+  alone no longer select those specialized paths. Semantic `list[int]` remains
+  distinct from flat `list_int` storage proof, so direct storage optimizations
+  still require a separate structural storage fact.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic

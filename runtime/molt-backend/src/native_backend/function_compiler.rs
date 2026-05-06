@@ -1,5 +1,5 @@
 use super::*;
-use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
+use crate::representation_plan::{ContainerKind, ScalarKind, ScalarRepresentationPlan};
 
 #[cfg(feature = "native-backend")]
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
@@ -8806,13 +8806,12 @@ impl SimpleBackend {
                         .expect("Len arg not found");
                         // Dispatch to specialized fast-path len when container
                         // type is known, skipping the 18-type dispatch in molt_len.
-                        let fn_name = match op.container_type.as_deref() {
-                            Some("list") | Some("list_int") => "molt_len_list",
-                            Some("str") => "molt_len_str",
-                            Some("dict") => "molt_len_dict",
-                            Some("tuple") => "molt_len_tuple",
-                            Some("set") | Some("frozenset") => "molt_len_set",
-                            _ if var_is_str(&args[0]) => "molt_len_str",
+                        let fn_name = match representation_plan.name_container_kind(&args[0]) {
+                            Some(ContainerKind::List) => "molt_len_list",
+                            Some(ContainerKind::Str) => "molt_len_str",
+                            Some(ContainerKind::Dict) => "molt_len_dict",
+                            Some(ContainerKind::Tuple) => "molt_len_tuple",
+                            Some(ContainerKind::Set) => "molt_len_set",
                             _ => "molt_len",
                         };
                         let callee = Self::import_func_id_split(
@@ -20079,11 +20078,11 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Item not found");
-                    let func_name = match op.container_type.as_deref() {
-                        Some("set") | Some("frozenset") => "molt_set_contains",
-                        Some("dict") => "molt_dict_contains",
-                        Some("list") => "molt_list_contains",
-                        Some("str") => "molt_str_contains",
+                    let func_name = match representation_plan.name_container_kind(&args[0]) {
+                        Some(ContainerKind::Set) => "molt_set_contains",
+                        Some(ContainerKind::Dict) => "molt_dict_contains",
+                        Some(ContainerKind::List) => "molt_list_contains",
+                        Some(ContainerKind::Str) => "molt_str_contains",
                         _ => "molt_contains",
                     };
                     let mut sig = self.module.make_signature();
