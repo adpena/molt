@@ -445,7 +445,7 @@ mod json_parse_tests {
                                 "kind": "index",
                                 "args": ["seq", "idx"],
                                 "out": "item",
-                                "container_type": "dict",
+                                "container_type": "list_int",
                                 "bce_safe": true
                             }
                         ]
@@ -456,7 +456,7 @@ mod json_parse_tests {
         .expect_err("contract-invalid JSON should fail at parse boundary");
 
         assert!(err.contains("invalid SimpleIR contract"));
-        assert!(err.contains("bce_safe does not support container_type `dict`"));
+        assert!(err.contains("unsupported container_type `list_int`"));
     }
 
     #[test]

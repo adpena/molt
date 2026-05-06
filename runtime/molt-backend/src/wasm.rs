@@ -15858,24 +15858,41 @@ mod tests {
     #[test]
     fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
         let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+        let mul = wasm_test_op("mul", Some("product"), vec!["lhs", "rhs"]);
         let div = wasm_test_op("div", Some("quot"), vec!["lhs", "rhs"]);
         let func = wasm_test_function(
             "typed",
             vec!["lhs", "rhs"],
             Some(vec!["int", "int"]),
-            vec![add.clone(), div.clone()],
+            vec![add.clone(), mul.clone(), div.clone()],
         );
         let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         assert!(wasm_scalar_integer_fast_path_for_op(&plan, &add));
+        assert!(wasm_scalar_integer_fast_path_for_op(&plan, &mul));
         assert!(wasm_scalar_integer_fast_path_for_op(&plan, &div));
         assert!(wasm_scalar_truthiness_fast_path_for_name(&plan, "lhs"));
     }
 
     #[test]
+    fn scalar_fast_path_keeps_list_repeat_on_runtime_mul() {
+        let list_new = wasm_test_op("list_new", Some("items"), vec!["item"]);
+        let repeat = wasm_test_op("mul", Some("repeated"), vec!["items", "count"]);
+        let func = wasm_test_function(
+            "list_repeat",
+            vec!["item", "count"],
+            Some(vec!["bool", "int"]),
+            vec![list_new, repeat.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert!(!wasm_scalar_integer_fast_path_for_op(&plan, &repeat));
+    }
+
+    #[test]
     fn container_import_selection_ignores_transport_hints() {
         let mut index = wasm_test_op("index", Some("item"), vec!["xs", "i"]);
-        index.container_type = Some("list_int".to_string());
+        index.container_type = Some("list".to_string());
         index.type_hint = Some("list".to_string());
         let func = wasm_test_function(
             "hinted_container",

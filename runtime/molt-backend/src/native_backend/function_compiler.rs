@@ -34730,7 +34730,6 @@ mod tests {
         OpIR {
             kind: "list_int_new".to_string(),
             out: Some(out.to_string()),
-            container_type: Some("list_int".to_string()),
             ..OpIR::default()
         }
     }
@@ -35949,7 +35948,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["my_list".to_string(), "idx".to_string()]),
                 out: Some("elem".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: Some(true),
                 ..OpIR::default()
             },
@@ -36012,7 +36010,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["lst".to_string(), "i".to_string()]),
                 out: Some("e".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: Some(true),
                 ..OpIR::default()
             },
@@ -36059,7 +36056,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["lst".to_string(), "i".to_string()]),
                 out: Some("e".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: None, // NOT bce_safe
                 ..OpIR::default()
             },
@@ -36102,7 +36098,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["lst".to_string(), "i".to_string()]),
                 out: Some("e".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: Some(true),
                 ..OpIR::default()
             },
@@ -36152,7 +36147,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["lst".to_string(), "i".to_string()]),
                 out: Some("e".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: Some(true),
                 ..OpIR::default()
             },
@@ -36205,7 +36199,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["lst".to_string(), "other_var".to_string()]),
                 out: Some("e".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: Some(true),
                 ..OpIR::default()
             },
@@ -36290,7 +36283,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["lst".to_string(), "i".to_string()]),
                 out: Some("e".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: Some(true),
                 ..OpIR::default()
             },
@@ -36340,7 +36332,6 @@ mod tests {
                 kind: "index".to_string(),
                 args: Some(vec!["lst".to_string(), "i".to_string()]),
                 out: Some("e".to_string()),
-                container_type: Some("list_int".to_string()),
                 bce_safe: Some(true),
                 ..OpIR::default()
             },
@@ -36731,7 +36722,6 @@ mod tests {
                         "idx".to_string(),
                         "val".to_string(),
                     ]),
-                    container_type: Some("list_int".to_string()),
                     ..OpIR::default()
                 },
                 OpIR {
