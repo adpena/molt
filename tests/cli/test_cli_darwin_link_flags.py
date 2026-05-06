@@ -154,9 +154,7 @@ def test_runtime_archive_crate_name_parsing_matches_cargo_build_dirs() -> None:
         )
         == "libmimalloc_sys"
     )
-    assert (
-        cli._crate_name_from_archive_member("077ae3504b1c7768-static.o") is None
-    )
+    assert cli._crate_name_from_archive_member("077ae3504b1c7768-static.o") is None
     assert (
         cli._crate_name_from_cargo_build_dir("libmimalloc-sys-a169d24182e74596")
         == "libmimalloc_sys"

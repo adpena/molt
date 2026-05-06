@@ -40,7 +40,9 @@ def f(value: int) -> str:
     return "ok"
 """
     ir = compile_to_tir(source)
-    main_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
 
     assert any(
         op.get("kind") == "set_attr_generic_obj"

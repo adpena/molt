@@ -39,6 +39,8 @@ ALIASES: dict[str, list[str]] = {
     "Buffer2DGet": ["BUFFER2D_GET"],
     "Buffer2DSet": ["BUFFER2D_SET"],
     "Buffer2DMatmul": ["BUFFER2D_MATMUL"],
+    "Import": ["MODULE_IMPORT"],
+    "ImportFrom": ["MODULE_IMPORT", "MODULE_IMPORT_STAR"],
     "AIter": ["AITER"],
     "ANext": ["ANEXT"],
     "AllocGenerator": ["ASYNCGEN_NEW"],

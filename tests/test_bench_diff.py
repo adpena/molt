@@ -80,9 +80,9 @@ def test_failed_wasm_ok_excludes_wasm_runtime_metrics() -> None:
 
     assert "molt_wasm_time_s" not in available
     assert "molt_wasm_size_kb" in available
-    assert bench_diff._compute_metric_diffs(
-        "molt_wasm_time_s", old_bench, new_bench
-    ) == []
+    assert (
+        bench_diff._compute_metric_diffs("molt_wasm_time_s", old_bench, new_bench) == []
+    )
 
 
 def test_ratio_metrics_require_all_runtime_gates() -> None:
@@ -164,7 +164,9 @@ def test_explicit_metric_reports_no_rows_when_only_failed_gated_rows_exist(
     assert bench_diff.main() == 0
 
 
-def test_regression_gate_ignores_failed_gated_metrics(monkeypatch, tmp_path: Path) -> None:
+def test_regression_gate_ignores_failed_gated_metrics(
+    monkeypatch, tmp_path: Path
+) -> None:
     old_json = tmp_path / "old.json"
     new_json = tmp_path / "new.json"
     out_json = tmp_path / "diff.json"

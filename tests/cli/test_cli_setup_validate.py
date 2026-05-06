@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -97,6 +99,44 @@ def test_tools_dev_validate_delegates_to_canonical_cli() -> None:
     res = _run_dev(["validate", "--check"])
     assert res.returncode == 0, res.stderr
     assert "validate" in res.stdout.lower() or "validate" in res.stderr.lower()
+
+
+def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from molt import cli
+
+    calls: list[list[str]] = []
+
+    class FakeDxProject:
+        def __init__(self, root: Path) -> None:
+            self.root = root
+
+        def canonical_env(self) -> dict[str, str]:
+            return {"PATH": "", "PYTHONPATH": str(ROOT / "src")}
+
+        def require_project_python(self, context: str) -> Path:
+            assert context == "lint"
+            return ROOT / ".venv" / "bin" / "python3"
+
+        def commands(self) -> dict[str, object]:
+            return {"lint": "python3 -m ruff check ."}
+
+        def split_command_sequence(self, command: object, name: str) -> list[list[str]]:
+            assert command == "python3 -m ruff check ."
+            assert name == "lint"
+            return [["python3", "-m", "ruff", "check", "."]]
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        assert cmd != [sys.executable, "tools/dev.py", "lint"]
+        assert kwargs["cwd"] == ROOT
+        assert kwargs["capture_output"] is False
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli, "DxProject", FakeDxProject, raising=True)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+
+    assert cli.lint(json_output=False, verbose=False) == 0
+    assert calls == [["python3", "-m", "ruff", "check", "."]]
 
 
 def test_install_wrappers_delegate_into_setup() -> None:
