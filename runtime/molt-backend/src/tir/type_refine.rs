@@ -19,7 +19,7 @@ const MAX_ROUNDS: usize = 20;
 /// After the forward inference pass, TypeGuard-proven types are propagated
 /// into dominated blocks via the dominator tree.
 pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
-    let mut env: HashMap<ValueId, TirType> = HashMap::new();
+    let mut env: HashMap<ValueId, TirType> = func.value_types.clone();
 
     // Sorted block order for deterministic iteration.
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
@@ -28,7 +28,9 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     for &bid in &block_order {
         let block = &func.blocks[&bid];
 
-        // Block arguments already carry refined types.
+        // Block arguments carry their type in-place and mirror it into the
+        // function-owned value map for consumers that need a single query
+        // surface.
         for arg in &block.args {
             env.insert(arg.id, arg.ty.clone());
         }
@@ -62,7 +64,8 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                     env.insert(result_id, inferred.clone());
                 }
             } else {
-                // No inference possible — record DynBox so the map is complete.
+                // No inference possible — preserve any persisted fact first,
+                // otherwise record DynBox so the map is complete.
                 for &result_id in &op.results {
                     env.entry(result_id).or_insert(TirType::DynBox);
                 }
@@ -78,7 +81,7 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
     // Build the type environment from existing value types.
-    let mut env: HashMap<ValueId, TirType> = HashMap::new();
+    let mut env: HashMap<ValueId, TirType> = func.value_types.clone();
 
     // Collect initial types from block args and op results.
     for block in func.blocks.values() {
@@ -87,8 +90,8 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
         for op in &block.ops {
             for &result_id in &op.results {
-                // Check if we already have a type from the value declarations;
-                // if not, start as DynBox.
+                // Preserve any persisted function-owned fact; if none exists,
+                // start conservatively as DynBox.
                 env.entry(result_id).or_insert(TirType::DynBox);
             }
         }
@@ -502,26 +505,16 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // existing fixpoint — it only strengthens types that were DynBox.
     let (guard_refinements, _proven) = propagate_guard_types(func, &mut env);
 
-    // Write refined types back into the function.
+    // Write refined types back into the function-owned map and mirror block
+    // argument entries into their in-place `TirValue` records.
     for block in func.blocks.values_mut() {
         for arg in &mut block.args {
             if let Some(ty) = env.get(&arg.id) {
                 arg.ty = ty.clone();
             }
         }
-        for op in &mut block.ops {
-            for &result_id in &op.results {
-                // We don't have TirValue in ops directly — the type lives in
-                // the env. But we need to propagate back to anywhere types are
-                // stored. For now, the env is the authoritative source and
-                // downstream passes can query it. However, since the task says
-                // "mutates TirFunction in place", we store types on block args
-                // (done above). Op result types aren't stored on TirOp (they
-                // only have ValueId). So the block args are the mutation target.
-                let _ = result_id; // suppress unused warning
-            }
-        }
     }
+    func.value_types = env.clone();
 
     // Count refinements: values that started as DynBox and are now concrete.
     let fixpoint_refinements = initially_dynbox
@@ -1195,6 +1188,7 @@ mod tests {
             next_value,
             next_block: 1,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
@@ -1492,6 +1486,7 @@ mod tests {
             next_value: 4,
             next_block: 4,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
@@ -1598,6 +1593,7 @@ mod tests {
             next_value: 4,
             next_block: 4,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
@@ -1683,6 +1679,7 @@ mod tests {
             next_value: 3,
             next_block: 1,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
@@ -1786,6 +1783,7 @@ mod tests {
             next_value: 5,
             next_block: 4,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
@@ -1904,6 +1902,7 @@ mod tests {
             next_value: 6,
             next_block: 5,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::from([(dead_loop_end_id, LoopRole::LoopEnd)]),
@@ -2026,6 +2025,7 @@ mod tests {
             next_value: 2,
             next_block: 1,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
@@ -2113,6 +2113,7 @@ mod tests {
             next_value: 3,
             next_block: 3,
             attrs: AttrDict::new(),
+            value_types: HashMap::new(),
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),

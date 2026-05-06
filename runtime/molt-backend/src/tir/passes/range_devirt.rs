@@ -295,6 +295,7 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
     let start_val = if c.start_val.0 == u32::MAX - 1 {
         // Materialize ConstInt(0) for range(stop).
         let val = func.fresh_value();
+        func.value_types.insert(val, TirType::I64);
         let const_op = make_const_int(val, 0);
         // Insert before the CallBuiltin in the setup block.
         if let Some(block) = func.blocks.get_mut(&c.setup_block) {
@@ -313,6 +314,7 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
     let step_val = if c.step_val.0 == u32::MAX {
         // Materialize ConstInt(1) for step=1.
         let val = func.fresh_value();
+        func.value_types.insert(val, TirType::I64);
         let const_op = make_const_int(val, 1);
         if let Some(block) = func.blocks.get_mut(&c.setup_block) {
             block.ops.insert(c.call_range_idx + offset, const_op);
@@ -379,6 +381,7 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
     //    - Flip CondBranch polarity (was: done->exit, !done->body;
     //      now: cond_true->body, cond_false->exit).
     let ind_var = c.elem_val; // Reuse the same ValueId for the induction variable.
+    func.value_types.insert(ind_var, TirType::I64);
 
     if let Some(header) = func.blocks.get_mut(&c.header_block) {
         // Add block argument for induction variable.
@@ -396,6 +399,7 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
         };
 
         let cond_val = c.done_val; // Reuse done_val as the comparison result.
+        func.value_types.insert(cond_val, TirType::Bool);
         let cmp_op = TirOp {
             dialect: Dialect::Molt,
             opcode: cmp_opcode,
@@ -456,6 +460,7 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
         }
 
         let next_val = func.fresh_value();
+        func.value_types.insert(next_val, TirType::I64);
 
         if let Some(block) = func.blocks.get_mut(&back_bid) {
             // Insert Add(ind_var, step_val) -> next_val at end of block (before terminator).
@@ -708,6 +713,23 @@ mod tests {
         // Header should have a block argument (induction variable).
         assert_eq!(header.args.len(), 1, "header should have induction var arg");
         assert_eq!(header.args[0].ty, TirType::I64);
+        assert_eq!(
+            func.value_types.get(&header.args[0].id),
+            Some(&TirType::I64),
+            "induction block arg must be mirrored into function value types"
+        );
+        let cmp_result = header
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Lt)
+            .and_then(|op| op.results.first())
+            .copied()
+            .expect("range devirt comparison result");
+        assert_eq!(
+            func.value_types.get(&cmp_result),
+            Some(&TirType::Bool),
+            "range comparison result must carry a bool type fact"
+        );
 
         // Entry block should not have CallBuiltin("range") or GetIter.
         let entry = &func.blocks[&BlockId(0)];
@@ -732,6 +754,19 @@ mod tests {
         assert_eq!(
             add_count, 2,
             "body should have original Add + increment Add"
+        );
+        let increment_result = body
+            .ops
+            .iter()
+            .rev()
+            .find(|op| op.opcode == OpCode::Add)
+            .and_then(|op| op.results.first())
+            .copied()
+            .expect("range increment result");
+        assert_eq!(
+            func.value_types.get(&increment_result),
+            Some(&TirType::I64),
+            "range increment result must carry an i64 type fact"
         );
 
         // The body's branch back to header should carry the next induction value.
