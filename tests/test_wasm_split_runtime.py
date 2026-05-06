@@ -111,16 +111,10 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
         code_slot_count=17,
         module_order=["sys"],
         register_global_code_id=lambda _symbol: 123,
-        per_module_code_ops={
-            "sys": [
-                {"kind": "const_none", "out": "v0"},
-                {"kind": "code_slot_set", "value": 9, "args": ["v0"]},
-            ]
-        },
     )
 
     assert ops[0] == {"kind": "code_slots_init", "value": 17}
-    assert any(op.get("kind") == "code_slot_set" for op in ops)
+    assert not any(op.get("kind") == "code_slot_set" for op in ops)
     assert any(op.get("s_value") == "molt_init_sys" for op in ops)
 
 
