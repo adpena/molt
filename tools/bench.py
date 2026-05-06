@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -160,10 +160,15 @@ class RunSample:
 class SampleBatch:
     samples: list[RunSample]
     ok: bool
+    warmup_samples: list[RunSample] = field(default_factory=list)
 
     @property
     def times_s(self) -> list[float]:
         return [sample.elapsed_s for sample in self.samples] if self.ok else []
+
+    @property
+    def warmup_times_s(self) -> list[float]:
+        return [sample.elapsed_s for sample in self.warmup_samples]
 
 
 def _enable_line_buffering() -> None:
@@ -604,16 +609,19 @@ def measure_molt_run(
 
 
 def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
+    warmup_samples: list[RunSample] = []
     for _ in range(warmup):
-        if measure_fn() is None:
-            return SampleBatch([], False)
+        sample = measure_fn()
+        if sample is None:
+            return SampleBatch([], False, warmup_samples)
+        warmup_samples.append(sample)
     measured: list[RunSample] = []
     for _ in range(samples):
         sample = measure_fn()
         if sample is None:
-            return SampleBatch(measured, False)
+            return SampleBatch(measured, False, warmup_samples)
         measured.append(sample)
-    return SampleBatch(measured, bool(measured))
+    return SampleBatch(measured, bool(measured), warmup_samples)
 
 
 def summarize_samples(samples: list[float]) -> dict[str, float | list[float]]:
@@ -1209,28 +1217,41 @@ def bench_results(
             batch = runtime_batches.get(rt_name)
             return batch.times_s if batch is not None else None
 
+        def _runtime_warmup_samples(rt_name: str) -> list[float] | None:
+            batch = runtime_batches.get(rt_name)
+            return batch.warmup_times_s if batch is not None else None
+
         def _optional_samples(batch: SampleBatch | None) -> list[float] | None:
             return batch.times_s if batch is not None else None
+
+        def _optional_warmup_samples(batch: SampleBatch | None) -> list[float] | None:
+            return batch.warmup_times_s if batch is not None else None
 
         data[name] = {
             "cpython_time_s": cpython_time,
             "cpython_samples_s": _runtime_samples("cpython"),
+            "cpython_warmup_samples_s": _runtime_warmup_samples("cpython"),
             "pypy_time_s": pypy_time,
             "pypy_samples_s": _runtime_samples("pypy"),
+            "pypy_warmup_samples_s": _runtime_warmup_samples("pypy"),
             "codon_time_s": codon_time,
             "codon_samples_s": _optional_samples(codon_batch),
+            "codon_warmup_samples_s": _optional_warmup_samples(codon_batch),
             "codon_build_s": codon_build,
             "codon_size_kb": codon_size,
             "nuitka_time_s": nuitka_time,
             "nuitka_samples_s": _optional_samples(nuitka_batch),
+            "nuitka_warmup_samples_s": _optional_warmup_samples(nuitka_batch),
             "nuitka_build_s": nuitka_build,
             "nuitka_size_kb": nuitka_size,
             "pyodide_time_s": pyodide_time,
             "pyodide_samples_s": _optional_samples(pyodide_batch),
+            "pyodide_warmup_samples_s": _optional_warmup_samples(pyodide_batch),
             "pyodide_build_s": pyodide_build,
             "pyodide_size_kb": pyodide_size,
             "molt_time_s": molt_time,
             "molt_samples_s": molt_batch.times_s,
+            "molt_warmup_samples_s": molt_batch.warmup_times_s,
             "molt_build_s": molt_build,
             "molt_size_kb": molt_size,
             "molt_speedup": speedup,
@@ -1433,6 +1454,7 @@ def main():
         "super_run": args.super,
         "samples": samples,
         "warmup": warmup,
+        "timing_mode": "warm_throughput" if warmup > 0 else "cold_first_run",
         "system": {
             "platform": platform.platform(),
             "python": platform.python_version(),
