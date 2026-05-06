@@ -72,6 +72,13 @@ def _format_system(system: dict[str, Any] | None) -> str:
     return ", ".join(parts)
 
 
+def _format_run_settings(payload: dict[str, Any]) -> str:
+    timing_mode = payload.get("timing_mode", "legacy-unknown")
+    warmup = payload.get("warmup", "legacy-unknown")
+    samples = payload.get("samples", "legacy-unknown")
+    return f"timing_mode={timing_mode}, warmup={warmup}, samples={samples}"
+
+
 def _display_path(path: Path) -> str:
     try:
         return path.resolve().relative_to(ROOT.resolve()).as_posix()
@@ -356,6 +363,8 @@ def _render_report_markdown(
     wasm_created = wasm.get("created_at") or "-"
     native_system = _format_system(native.get("system"))
     wasm_system = _format_system(wasm.get("system"))
+    native_run_settings = _format_run_settings(native)
+    wasm_run_settings = _format_run_settings(wasm)
 
     lines: list[str] = []
     lines.append("# Molt Bench Summary")
@@ -363,11 +372,11 @@ def _render_report_markdown(
     lines.append("## Inputs")
     lines.append(
         f"- Native: `{_display_path(native_path)}`; git_rev={native_rev}; created_at={native_created}; "
-        f"system={native_system}"
+        f"{native_run_settings}; system={native_system}"
     )
     lines.append(
         f"- WASM: `{_display_path(wasm_path)}`; git_rev={wasm_rev}; created_at={wasm_created}; "
-        f"system={wasm_system}"
+        f"{wasm_run_settings}; system={wasm_system}"
     )
     if native_rev != "-" and wasm_rev != "-" and native_rev != wasm_rev:
         lines.append(

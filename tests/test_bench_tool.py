@@ -148,6 +148,28 @@ def test_bench_defaults_baseline_to_canonical_results_path() -> None:
     )
 
 
+def test_compare_baseline_rejects_incompatible_timing_metadata() -> None:
+    current = {
+        "timing_mode": "warm_throughput",
+        "warmup": 1,
+        "samples": 1,
+        "benchmarks": {"bench.py": {"molt_cpython_ratio": 1.0}},
+    }
+    baseline = {
+        "timing_mode": "cold_first_run",
+        "warmup": 0,
+        "samples": 1,
+        "benchmarks": {"bench.py": {"molt_cpython_ratio": 0.5}},
+    }
+
+    assert bench_tool.compare_baseline(current, baseline, 0.15) == [
+        "incompatible benchmark baseline: "
+        "timing_mode differs: current='warm_throughput', baseline='cold_first_run'; "
+        "warmup differs: current=1, baseline=0; "
+        "regenerate the baseline with matching benchmark timing settings"
+    ]
+
+
 def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
@@ -275,7 +297,9 @@ def _bench_results_with_mocked_native_outputs(
     )[script.name]
 
 
-def test_bench_results_records_raw_native_sample_arrays(monkeypatch, tmp_path: Path) -> None:
+def test_bench_results_records_raw_native_sample_arrays(
+    monkeypatch, tmp_path: Path
+) -> None:
     entry = _bench_results_with_mocked_native_outputs(
         monkeypatch,
         tmp_path,
