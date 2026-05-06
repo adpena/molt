@@ -950,6 +950,15 @@ fn dict_index_key_matches(dict_key_ty: &TirType, index_ty: &TirType) -> bool {
     matches!(dict_key_ty, TirType::DynBox) || dict_key_ty == index_ty
 }
 
+fn structural_builtin_return_type(name: &str) -> Option<TirType> {
+    match name {
+        "len" | "id" | "ord" => Some(TirType::I64),
+        "bool" | "hasattr" | "isinstance" | "issubclass" => Some(TirType::Bool),
+        "chr" => Some(TirType::Str),
+        _ => None,
+    }
+}
+
 /// Infer the result type of an operation from its operand types.
 /// Returns `None` if the result type cannot be determined (stays as-is).
 pub(super) fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirType> {
@@ -1002,6 +1011,13 @@ fn infer_result_type_with_attrs(
     ) && let Some(attrs) = attrs
         && let Some(AttrValue::Str(name)) = attrs.get("return_type")
         && let Some(ty) = parse_return_type_str(name)
+    {
+        return Some(ty);
+    }
+    if matches!(opcode, OpCode::CallBuiltin)
+        && let Some(attrs) = attrs
+        && let Some(AttrValue::Str(name)) = attrs.get("name")
+        && let Some(ty) = structural_builtin_return_type(name)
     {
         return Some(ty);
     }
@@ -2351,6 +2367,109 @@ mod tests {
         let type_map = extract_type_map(&func);
 
         assert_eq!(type_map.get(&item), Some(&TirType::DynBox));
+    }
+
+    #[test]
+    fn builtin_len_return_refines_to_i64_without_transport_hint() {
+        let list = ValueId(0);
+        let result = ValueId(1);
+        let mut attrs = AttrDict::new();
+        attrs.insert("name".into(), AttrValue::Str("len".into()));
+        let ops = vec![make_op(
+            OpCode::CallBuiltin,
+            vec![list],
+            vec![result],
+            attrs,
+        )];
+        let mut func = single_block_func(ops, 2);
+        func.value_types
+            .insert(list, TirType::List(Box::new(TirType::DynBox)));
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&result), Some(&TirType::I64));
+    }
+
+    #[test]
+    fn builtin_predicate_returns_refine_to_bool() {
+        for name in ["bool", "hasattr", "isinstance", "issubclass"] {
+            let value = ValueId(0);
+            let result = ValueId(1);
+            let mut attrs = AttrDict::new();
+            attrs.insert("name".into(), AttrValue::Str(name.into()));
+            let ops = vec![make_op(
+                OpCode::CallBuiltin,
+                vec![value],
+                vec![result],
+                attrs,
+            )];
+            let mut func = single_block_func(ops, 2);
+            func.value_types.insert(value, TirType::DynBox);
+
+            refine_types(&mut func);
+            let type_map = extract_type_map(&func);
+
+            assert_eq!(
+                type_map.get(&result),
+                Some(&TirType::Bool),
+                "call_builtin {name} should refine to Bool"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_ord_and_chr_return_types_refine() {
+        let value = ValueId(0);
+        let ord_result = ValueId(1);
+        let chr_result = ValueId(2);
+        let mut ord_attrs = AttrDict::new();
+        ord_attrs.insert("name".into(), AttrValue::Str("ord".into()));
+        let mut chr_attrs = AttrDict::new();
+        chr_attrs.insert("name".into(), AttrValue::Str("chr".into()));
+        let ops = vec![
+            make_op(
+                OpCode::CallBuiltin,
+                vec![value],
+                vec![ord_result],
+                ord_attrs,
+            ),
+            make_op(
+                OpCode::CallBuiltin,
+                vec![ord_result],
+                vec![chr_result],
+                chr_attrs,
+            ),
+        ];
+        let mut func = single_block_func(ops, 3);
+        func.value_types.insert(value, TirType::Str);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&ord_result), Some(&TirType::I64));
+        assert_eq!(type_map.get(&chr_result), Some(&TirType::Str));
+    }
+
+    #[test]
+    fn unknown_builtin_return_stays_dynbox() {
+        let value = ValueId(0);
+        let result = ValueId(1);
+        let mut attrs = AttrDict::new();
+        attrs.insert("name".into(), AttrValue::Str("dynamic_builtin".into()));
+        let ops = vec![make_op(
+            OpCode::CallBuiltin,
+            vec![value],
+            vec![result],
+            attrs,
+        )];
+        let mut func = single_block_func(ops, 2);
+        func.value_types.insert(value, TirType::DynBox);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&result), Some(&TirType::DynBox));
     }
 
     // ---- Test: parse_guard_type handles various type strings ----
