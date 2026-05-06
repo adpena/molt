@@ -229,6 +229,7 @@ def _bench_results_with_mocked_native_outputs(
     cpython_outputs: list[tuple[str, str]],
     molt_outputs: list[tuple[str, str]],
     samples: int | None = None,
+    warmup: int = 0,
 ) -> dict:
     script = tmp_path / "bench_native_output.py"
     script.write_text("print('real path is not executed')\n", encoding="utf-8")
@@ -259,7 +260,7 @@ def _bench_results_with_mocked_native_outputs(
     return bench_tool.bench_results(
         [str(script)],
         sample_count,
-        0,
+        warmup,
         True,
         False,
         False,
@@ -288,6 +289,26 @@ def test_bench_results_records_raw_native_sample_arrays(monkeypatch, tmp_path: P
     assert entry["molt_ok"] is True
     assert entry["molt_output_parity"]["ok"] is True
     assert entry["molt_output_parity"]["reason"] == "match"
+
+
+def test_bench_results_records_warmup_samples_separately(
+    monkeypatch, tmp_path: Path
+) -> None:
+    entry = _bench_results_with_mocked_native_outputs(
+        monkeypatch,
+        tmp_path,
+        cpython_outputs=[("same\n", ""), ("same\n", ""), ("same\n", "")],
+        molt_outputs=[("same\n", ""), ("same\n", ""), ("same\n", "")],
+        samples=2,
+        warmup=1,
+    )
+
+    assert entry["cpython_warmup_samples_s"] == [2.0]
+    assert entry["cpython_samples_s"] == [2.0, 2.0]
+    assert entry["molt_warmup_samples_s"] == [1.0]
+    assert entry["molt_samples_s"] == [1.0, 1.0]
+    assert entry["molt_time_s"] == 1.0
+    assert entry["molt_ok"] is True
 
 
 def test_bench_results_gates_molt_ok_on_stdout_mismatch(
