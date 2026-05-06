@@ -76,7 +76,9 @@ It is current-state only. For forward-looking priorities, use
   are strict integer/bool/BigInt values rather than exact-float or arbitrary
   `__index__` coercions, BigInt shift counts are not narrowed through fixed
   machine widths, huge right shifts saturate by operand sign, and left shifts
-  validate allocation size before constructing wide BigInts.
+  validate allocation size before constructing wide BigInts. Native lowering
+  calls those runtime shift primitives directly; raw Cranelift shift lowering
+  requires a future explicit range and nonnegative shift-count proof.
   Native float-primary lowering likewise uses static `float_primary_vars` as
   the only authority for F64-primary Cranelift variables; the raw-f64 shadow
   lane has been removed, and non-primary float values are boxed immediately in

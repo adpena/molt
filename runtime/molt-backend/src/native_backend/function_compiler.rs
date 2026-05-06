@@ -8207,38 +8207,6 @@ impl SimpleBackend {
                 }
                 "lshift" | "shl" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if op_prefers_int_lane(&op) {
-                        let lhs_name = &args[0];
-                        let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
-                        let out_is_int_primary = op
-                            .out
-                            .as_ref()
-                            .is_some_and(|out| int_primary_vars.contains(out));
-
-                        if out_is_int_primary
-                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
-                        {
-                            // Raw i64 primary: left shift.  Overflow is deferred to
-                            // boxing escape points via ensure_boxed_overflow_safe.
-                            let raw = builder.ins().ishl(lhs_raw, rhs_raw);
-                            if let Some(ref out__) = op.out {
-                                def_var_named(&mut builder, &vars, out__, raw);
-                            }
-                            continue;
-                        }
-                    }
-                    // Fallback: runtime call.
                     let lhs = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
@@ -8283,38 +8251,6 @@ impl SimpleBackend {
                 }
                 "rshift" | "shr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if op_prefers_int_lane(&op) {
-                        let lhs_name = &args[0];
-                        let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
-                        let out_is_int_primary = op
-                            .out
-                            .as_ref()
-                            .is_some_and(|out| int_primary_vars.contains(out));
-
-                        if out_is_int_primary
-                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
-                        {
-                            // Raw i64 primary: arithmetic right shift.  Result
-                            // magnitude <= input, so no overflow possible.
-                            let raw = builder.ins().sshr(lhs_raw, rhs_raw);
-                            if let Some(ref out__) = op.out {
-                                def_var_named(&mut builder, &vars, out__, raw);
-                            }
-                            continue;
-                        }
-                    }
-                    // Fallback: runtime call.
                     let lhs = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
@@ -35893,6 +35829,8 @@ mod tests {
             "mod",
             "lshift",
             "rshift",
+            "shl",
+            "shr",
             "neg",
             "abs",
             "builtin_abs",
