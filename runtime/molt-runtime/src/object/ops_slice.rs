@@ -215,22 +215,6 @@ pub extern "C" fn molt_dataclass_new(
     flags_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let name_obj = obj_from_bits(name_bits);
-        let name = match string_obj_to_owned(name_obj) {
-            Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "dataclass name must be a str"),
-        };
-        let field_names_obj = obj_from_bits(field_names_bits);
-        let field_names = match decode_string_list(field_names_obj) {
-            Some(val) => val,
-            None => {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "dataclass field names must be a list/tuple of str",
-                );
-            }
-        };
         let values_obj = obj_from_bits(values_bits);
         let values = match decode_value_list(values_obj) {
             Some(val) => val,
@@ -242,58 +226,112 @@ pub extern "C" fn molt_dataclass_new(
                 );
             }
         };
-        if field_names.len() != values.len() {
+        dataclass_new_from_value_slice(_py, name_bits, field_names_bits, &values, flags_bits)
+    })
+}
+
+/// # Safety
+/// `values_ptr` must point to `len` contiguous NaN-boxed values when `len > 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_dataclass_new_from_values(
+    name_bits: u64,
+    field_names_bits: u64,
+    values_ptr: *const u64,
+    len: u64,
+    flags_bits: u64,
+) -> u64 {
+    unsafe {
+        crate::with_gil_entry_nopanic!(_py, {
+            let Ok(len) = usize::try_from(len) else {
+                return raise_exception::<_>(_py, "MemoryError", "dataclass is too large");
+            };
+            if len > 0 && values_ptr.is_null() {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "dataclass values pointer is null",
+                );
+            }
+            let values = if len == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(values_ptr, len)
+            };
+            dataclass_new_from_value_slice(_py, name_bits, field_names_bits, values, flags_bits)
+        })
+    }
+}
+
+fn dataclass_new_from_value_slice(
+    _py: &PyToken<'_>,
+    name_bits: u64,
+    field_names_bits: u64,
+    values: &[u64],
+    flags_bits: u64,
+) -> u64 {
+    let name_obj = obj_from_bits(name_bits);
+    let name = match string_obj_to_owned(name_obj) {
+        Some(val) => val,
+        None => return raise_exception::<_>(_py, "TypeError", "dataclass name must be a str"),
+    };
+    let field_names_obj = obj_from_bits(field_names_bits);
+    let field_names = match decode_string_list(field_names_obj) {
+        Some(val) => val,
+        None => {
             return raise_exception::<_>(
                 _py,
                 "TypeError",
-                "dataclass constructor argument mismatch",
+                "dataclass field names must be a list/tuple of str",
             );
         }
-        let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as u64;
-        let frozen = (flags & 0x1) != 0;
-        let eq = (flags & 0x2) != 0;
-        let repr = (flags & 0x4) != 0;
-        let slots = (flags & 0x8) != 0;
-        let mut field_name_to_index = HashMap::with_capacity(field_names.len());
-        for (idx, field_name) in field_names.iter().enumerate() {
-            field_name_to_index.insert(field_name.clone(), idx);
-        }
-        let desc = Box::new(DataclassDesc {
-            name,
-            field_names,
-            field_name_to_index,
-            frozen,
-            eq,
-            repr,
-            slots,
-            class_bits: 0,
-            field_flags: Vec::new(),
-            hash_mode: 0,
-        });
-        let desc_ptr = Box::into_raw(desc);
+    };
+    if field_names.len() != values.len() {
+        return raise_exception::<_>(_py, "TypeError", "dataclass constructor argument mismatch");
+    }
+    let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as u64;
+    let frozen = (flags & 0x1) != 0;
+    let eq = (flags & 0x2) != 0;
+    let repr = (flags & 0x4) != 0;
+    let slots = (flags & 0x8) != 0;
+    let mut field_name_to_index = HashMap::with_capacity(field_names.len());
+    for (idx, field_name) in field_names.iter().enumerate() {
+        field_name_to_index.insert(field_name.clone(), idx);
+    }
+    let desc = Box::new(DataclassDesc {
+        name,
+        field_names,
+        field_name_to_index,
+        frozen,
+        eq,
+        repr,
+        slots,
+        class_bits: 0,
+        field_flags: Vec::new(),
+        hash_mode: 0,
+    });
+    let desc_ptr = Box::into_raw(desc);
 
-        let total = std::mem::size_of::<MoltHeader>()
-            + std::mem::size_of::<*mut DataclassDesc>()
-            + std::mem::size_of::<*mut Vec<u64>>()
-            + std::mem::size_of::<u64>();
-        let ptr = alloc_object(_py, total, TYPE_ID_DATACLASS);
-        if ptr.is_null() {
-            unsafe { drop(Box::from_raw(desc_ptr)) };
-            return MoltObject::none().bits();
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut DataclassDesc>()
+        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<u64>();
+    let ptr = alloc_object(_py, total, TYPE_ID_DATACLASS);
+    if ptr.is_null() {
+        unsafe { drop(Box::from_raw(desc_ptr)) };
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let mut vec = Vec::with_capacity(values.len());
+        vec.extend_from_slice(values);
+        for &val in values.iter() {
+            inc_ref_bits(_py, val);
         }
-        unsafe {
-            let mut vec = Vec::with_capacity(values.len());
-            vec.extend_from_slice(&values);
-            for &val in values.iter() {
-                inc_ref_bits(_py, val);
-            }
-            let vec_ptr = Box::into_raw(Box::new(vec));
-            *(ptr as *mut *mut DataclassDesc) = desc_ptr;
-            *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *mut *mut Vec<u64>) = vec_ptr;
-            dataclass_set_dict_bits(_py, ptr, 0);
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
+        let vec_ptr = Box::into_raw(Box::new(vec));
+        *(ptr as *mut *mut DataclassDesc) = desc_ptr;
+        *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *mut *mut Vec<u64>) = vec_ptr;
+        dataclass_set_dict_bits(_py, ptr, 0);
+    }
+    MoltObject::from_ptr(ptr).bits()
 }
 
 #[unsafe(no_mangle)]

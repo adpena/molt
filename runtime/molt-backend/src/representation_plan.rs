@@ -1457,6 +1457,7 @@ fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
             | "classmethod_new"
             | "code_new"
             | "dataclass_new"
+            | "dataclass_new_values"
             | "dict_new"
             | "exception_new"
             | "exception_new_from_class"

@@ -3488,7 +3488,7 @@ impl LuauBackend {
             // ================================================================
             // Dataclass
             // ================================================================
-            "dataclass_new" => {
+            "dataclass_new" | "dataclass_new_values" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
             }

@@ -97,8 +97,7 @@ mod wasm_stubs {
 pub(crate) use wasm_stubs::{
     current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
     molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
-    profile_enabled, profile_hit, profile_hit_bytes,
-    profile_hit_unchecked, sample_peak_rss,
+    profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked, sample_peak_rss,
 };
 
 // Full profiling implementation for non-wasm32 targets.
@@ -281,8 +280,7 @@ mod native {
 pub(crate) use native::{
     current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
     molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
-    profile_enabled, profile_hit, profile_hit_bytes,
-    profile_hit_unchecked, sample_peak_rss,
+    profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked, sample_peak_rss,
 };
 
 /// Mirrors `mach_task_basic_info` from `<mach/task_info.h>`.

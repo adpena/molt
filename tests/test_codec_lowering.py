@@ -332,7 +332,15 @@ print(order.qty)
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "dataclass_new" in kinds
+    assert "dataclass_new_values" in kinds
+    assert "dataclass_new" not in kinds
+    dataclass_ops = _ops_by_kind(ir, "dataclass_new_values")
+    assert len(dataclass_ops) == 1
+    dataclass_args = dataclass_ops[0]["args"]
+    assert len(dataclass_args) == 8
+    tuple_outs = {op["out"] for op in _ops_by_kind(ir, "tuple_new")}
+    assert dataclass_args[1] in tuple_outs
+    assert not any(arg in tuple_outs for arg in dataclass_args[3:])
     assert "dataclass_get" in kinds
     assert "bound_method_new" not in kinds
     assert "dataclass_set" not in kinds
