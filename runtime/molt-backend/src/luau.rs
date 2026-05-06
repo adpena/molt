@@ -8,7 +8,7 @@
 //! reject lowered output that still contains comment-only control-flow markers
 //! or stub markers for unsupported semantics.
 
-use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
+use crate::representation_plan::{ContainerKind, ScalarKind, ScalarRepresentationPlan};
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -2599,23 +2599,12 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let val = sanitize_ident(&args[1]);
-                    // Use type_hint or container_type to specialize.
+                    let container_kind = self.scalar_plan.name_container_kind(&args[0]);
                     let is_dict = matches!(
-                        op.type_hint.as_deref(),
-                        Some("dict") | Some("set") | Some("frozenset")
-                    ) || matches!(
-                        op.container_type.as_deref(),
-                        Some("dict") | Some("set") | Some("frozenset")
-                    ) || self
-                        .var_type_hints
-                        .get(&args[0])
-                        .is_some_and(|t| t == "dict" || t == "set");
-                    let is_list = matches!(op.type_hint.as_deref(), Some("list"))
-                        || matches!(op.container_type.as_deref(), Some("list"))
-                        || self
-                            .var_type_hints
-                            .get(&args[0])
-                            .is_some_and(|t| t == "list");
+                        container_kind,
+                        Some(ContainerKind::Dict | ContainerKind::Set)
+                    );
+                    let is_list = matches!(container_kind, Some(ContainerKind::List));
                     if is_dict {
                         // Dict/set: key lookup.
                         self.emit_line(&format!("local {out} = ({container}[{val}] ~= nil)"));
@@ -2648,13 +2637,8 @@ impl LuauBackend {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
 
-                    // Check if the container is known to be a string.
-                    let container_is_str =
-                        matches!(op.type_hint.as_deref(), Some("str") | Some("string"))
-                            || self
-                                .var_type_hints
-                                .get(&args[0])
-                                .is_some_and(|h| h == "str" || h == "string");
+                    let container_kind = self.scalar_plan.name_container_kind(&args[0]);
+                    let container_is_str = container_kind == Some(ContainerKind::Str);
 
                     // Fast-path: when the key is a known non-negative constant,
                     // skip the negative-index ternary entirely.
@@ -2692,22 +2676,19 @@ impl LuauBackend {
                         // the key is integer-indexed and the result may also be a
                         // list (nested lists).  We also infer integer keys when the
                         // container is a known list.
-                        let container_is_list = self
-                            .var_type_hints
-                            .get(&args[0])
-                            .is_some_and(|t| t == "list");
+                        let container_is_list = matches!(container_kind, Some(ContainerKind::List));
                         let key_is_int = key_is_scalar_int || container_is_list;
-                        // When the container has type_hint="list" on the op itself,
-                        // propagate the hint to the output variable.
-                        if (container_is_list || matches!(op.type_hint.as_deref(), Some("list")))
+                        if container_is_list
                             && let Some(ref out_name) = op.out
+                            && matches!(
+                                self.scalar_plan.name_container_kind(out_name),
+                                Some(ContainerKind::List)
+                            )
                         {
                             self.var_type_hints
                                 .insert(out_name.clone(), "list".to_string());
                         }
-                        let known_list_like =
-                            container_is_list || matches!(op.type_hint.as_deref(), Some("list"));
-                        if known_list_like {
+                        if container_is_list {
                             let idx_var = format!("__idx_{out}");
                             if key_known_nonneg {
                                 self.emit_line(&format!("local {idx_var}: number = {key} + 1"));
@@ -2751,12 +2732,10 @@ impl LuauBackend {
                     let key_is_int = self.scalar_plan.name_is_integer_family(&args[1]);
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
                         || (key_is_int && op.value.is_some_and(|v| v >= 0));
-                    let known_list_like = self
-                        .var_type_hints
-                        .get(&args[0])
-                        .is_some_and(|t| t == "list")
-                        || matches!(op.container_type.as_deref(), Some("list"))
-                        || matches!(op.type_hint.as_deref(), Some("list"));
+                    let known_list_like = matches!(
+                        self.scalar_plan.name_container_kind(&args[0]),
+                        Some(ContainerKind::List)
+                    );
                     if known_list_like {
                         let idx_expr = if key_known_nonneg {
                             format!("{key} + 1")
@@ -2792,12 +2771,10 @@ impl LuauBackend {
                     let key_is_int = self.scalar_plan.name_is_integer_family(&args[1]);
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
                         || (key_is_int && op.value.is_some_and(|v| v >= 0));
-                    let known_list_like = self
-                        .var_type_hints
-                        .get(&args[0])
-                        .is_some_and(|t| t == "list")
-                        || matches!(op.container_type.as_deref(), Some("list"))
-                        || matches!(op.type_hint.as_deref(), Some("list"));
+                    let known_list_like = matches!(
+                        self.scalar_plan.name_container_kind(&args[0]),
+                        Some(ContainerKind::List)
+                    );
                     if known_list_like {
                         let idx_expr = if key_known_nonneg {
                             format!("{key} + 1")
@@ -10142,6 +10119,62 @@ mod tests {
         assert!(
             !output.contains("xs[if key >= 0 then key + 1"),
             "transport hints must not select integer-only indexing, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_container_transport_hints_do_not_force_luau_list_dispatch() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "hinted_container_index".to_string(),
+                params: vec!["xs".to_string(), "key".to_string(), "value".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "get_item".to_string(),
+                        args: Some(vec!["xs".to_string(), "key".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("list".to_string()),
+                        container_type: Some("list".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "set_item".to_string(),
+                        args: Some(vec![
+                            "xs".to_string(),
+                            "key".to_string(),
+                            "value".to_string(),
+                        ]),
+                        type_hint: Some("list".to_string()),
+                        container_type: Some("list".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("if type(key) == \"number\""),
+            "unknown container must keep dynamic key normalization, got:\n{output}"
+        );
+        assert!(
+            !output.contains("rawget(xs") && !output.contains("rawset(xs"),
+            "transport hints must not select raw list dispatch, got:\n{output}"
+        );
+        assert!(
+            !output.contains("list index out of range")
+                && !output.contains("list assignment index out of range"),
+            "transport hints must not select list bounds-guard path, got:\n{output}"
         );
     }
 
