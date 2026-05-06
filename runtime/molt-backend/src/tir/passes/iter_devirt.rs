@@ -324,6 +324,7 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
     //    find and update all references to the iterator (there are none after
     //    we replace IterNextUnboxed).
     let len_val = func.fresh_value();
+    func.value_types.insert(len_val, TirType::I64);
     let len_op = TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
@@ -340,10 +341,12 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
 
     // Materialize ConstInt(0) for the initial index.
     let zero_val = func.fresh_value();
+    func.value_types.insert(zero_val, TirType::I64);
     let zero_op = make_const_int(zero_val, 0);
 
     // Materialize ConstInt(1) for the index increment.
     let one_val = func.fresh_value();
+    func.value_types.insert(one_val, TirType::I64);
     let one_op = make_const_int(one_val, 1);
 
     if let Some(block) = func.blocks.get_mut(&c.setup_block) {
@@ -386,6 +389,7 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
     //    - Flip CondBranch polarity (was: done->exit, !done->body;
     //      now: in_bounds->body, out_of_bounds->exit).
     let idx_var = func.fresh_value();
+    func.value_types.insert(idx_var, TirType::I64);
 
     if let Some(header) = func.blocks.get_mut(&c.header_block) {
         // Add block argument for index variable.
@@ -396,6 +400,7 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
 
         // Replace IterNextUnboxed with Lt comparison.
         let cond_val = c.done_val; // Reuse done_val as the comparison result.
+        func.value_types.insert(cond_val, TirType::Bool);
         let cmp_op = TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Lt,
@@ -476,6 +481,7 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
         }
 
         let next_val = func.fresh_value();
+        func.value_types.insert(next_val, TirType::I64);
 
         if let Some(block) = func.blocks.get_mut(&back_bid) {
             // Insert Add(idx_var, 1) -> next_val at end of block (before terminator).
@@ -729,6 +735,23 @@ mod tests {
         // Header should have a block argument (index variable).
         assert_eq!(header.args.len(), 1, "header should have index var arg");
         assert_eq!(header.args[0].ty, TirType::I64);
+        assert_eq!(
+            func.value_types.get(&header.args[0].id),
+            Some(&TirType::I64),
+            "index block arg must be mirrored into function value types"
+        );
+        let cmp_result = header
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Lt)
+            .and_then(|op| op.results.first())
+            .copied()
+            .expect("list devirt comparison result");
+        assert_eq!(
+            func.value_types.get(&cmp_result),
+            Some(&TirType::Bool),
+            "list-loop comparison result must carry a bool type fact"
+        );
 
         // Entry block should not have GetIter.
         let entry = &func.blocks[&BlockId(0)];
@@ -764,6 +787,19 @@ mod tests {
         assert_eq!(
             add_count, 2,
             "body should have original Add + increment Add"
+        );
+        let increment_result = body
+            .ops
+            .iter()
+            .rev()
+            .find(|op| op.opcode == OpCode::Add)
+            .and_then(|op| op.results.first())
+            .copied()
+            .expect("list index increment result");
+        assert_eq!(
+            func.value_types.get(&increment_result),
+            Some(&TirType::I64),
+            "list index increment result must carry an i64 type fact"
         );
 
         // The body's branch back to header should carry the next index value.

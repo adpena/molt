@@ -65,7 +65,11 @@ It is current-state only. For forward-looking priorities, use
   for legacy consumers, but scalar `fast_int` / `fast_float` / `type_hint`
   metadata is not backend-authoritative. The TIR-to-SimpleIR lowerer no longer
   accepts an external type-map channel, and opaque call returns refine only
-  through structural TIR `return_type` metadata.
+  through structural TIR `return_type` metadata. TIR functions now own a
+  persistent `value_types` map, and type refinement writes op-result facts back
+  into that function-owned map; range/list devirtualization records the I64 and
+  Bool facts it synthesizes for generated loop carriers and comparisons instead
+  of leaving those facts solely in `_fast_int` attrs.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic
