@@ -33156,7 +33156,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "list_int_new",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
-                        "container_type": "list_int",
                     }
                 )
                 json_list_int_containers.add(op.result.name)
@@ -33482,8 +33481,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and op.args[1].type_hint in {"int", "bool"}
                 ):
                     ds_entry["fast_int"] = True
-                # list_int: container is a specialized flat i64 list —
-                # backend dispatches to molt_list_int_setitem.
+                # Flat i64-list storage is tracked structurally from
+                # list_int_new; do not encode it as container_type metadata.
                 if (
                     len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
@@ -33495,7 +33494,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         else None
                     )
                     if value_hint == "int":
-                        ds_entry["container_type"] = "list_int"
                         if op.result.name != "none":
                             json_list_int_containers.add(op.result.name)
                     else:
@@ -33742,29 +33740,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and op.args[1].type_hint in {"int", "bool"}
                 ):
                     index_entry["fast_int"] = True
-                # list_int: container is a specialized flat i64 list —
-                # backend dispatches to molt_list_int_getitem for O(1)
-                # unboxed access without refcounting.
-                if (
+                list_int_container = (
                     len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
                     and op.args[0].name in json_list_int_containers
-                ):
-                    index_entry["container_type"] = "list_int"
-                elif (
-                    len(op.args) >= 1
+                )
+                if (
+                    not list_int_container
+                    and len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
                     and op.args[0].type_hint == "dict"
                 ):
                     index_entry["container_type"] = "dict"
                 elif (
-                    len(op.args) >= 1
+                    not list_int_container
+                    and len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
                     and op.args[0].type_hint == "list"
                 ):
                     index_entry["container_type"] = "list"
                 elif (
-                    len(op.args) >= 1
+                    not list_int_container
+                    and len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
                     and op.args[0].type_hint == "tuple"
                 ):
@@ -33786,8 +33783,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                # list_int: container is a specialized flat i64 list —
-                # backend dispatches to molt_list_int_setitem.
+                # Flat i64-list storage is tracked structurally from
+                # list_int_new; do not encode it as container_type metadata.
                 if (
                     len(op.args) >= 1
                     and isinstance(op.args[0], MoltValue)
@@ -33799,7 +33796,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         else None
                     )
                     if value_hint == "int":
-                        si_entry["container_type"] = "list_int"
                         if op.result.name != "none":
                             json_list_int_containers.add(op.result.name)
                     else:

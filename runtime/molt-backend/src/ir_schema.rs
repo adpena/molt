@@ -86,7 +86,6 @@ const CONTAINER_TYPES: &[&str] = &[
     "list",
     "list_bool",
     "list_float",
-    "list_int",
     "range",
     "set",
     "str",
@@ -94,7 +93,6 @@ const CONTAINER_TYPES: &[&str] = &[
 ];
 
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
-const BCE_SAFE_CONTAINER_TYPES: &[&str] = &["list", "list_bool", "list_float", "list_int", "tuple"];
 const ARENA_ELIGIBLE_KINDS: &[&str] = &[
     "alloc",
     "alloc_class",
@@ -229,15 +227,6 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.bce_safe == Some(true) {
         if !BCE_SAFE_KINDS.contains(&op.kind.as_str()) {
             return Err(format!("op `{}` cannot carry bce_safe", op.kind));
-        }
-        let Some(container_type) = op.container_type.as_deref() else {
-            return Err(format!("op `{}` bce_safe requires container_type", op.kind));
-        };
-        if !BCE_SAFE_CONTAINER_TYPES.contains(&container_type) {
-            return Err(format!(
-                "op `{}` bce_safe does not support container_type `{container_type}`",
-                op.kind
-            ));
         }
     }
     if op.arena_eligible == Some(true) && !ARENA_ELIGIBLE_KINDS.contains(&op.kind.as_str()) {

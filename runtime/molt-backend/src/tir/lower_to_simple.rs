@@ -1314,8 +1314,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::Index => {
             let kind = attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "index".to_string());
             let mut opir = binary_op(&kind, op, out_var);
-            // Restore container_type (e.g., "list_int") from the preserved attr
-            // so the backend can emit inline list access.
+            // Restore semantic container_type from the preserved attr so
+            // backend dispatch can use typed container facts.
             opir.container_type = attr_str(&op.attrs, "container_type");
             // Propagate BCE proof so codegen can skip bounds checks.
             opir.bce_safe = attr_bool(&op.attrs, "bce_safe");

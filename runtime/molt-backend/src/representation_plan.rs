@@ -85,6 +85,7 @@ impl ScalarRepresentationFact {
 pub(crate) struct ScalarRepresentationPlan {
     facts_by_name: BTreeMap<String, ScalarRepresentationFact>,
     conflicted_names: BTreeSet<String>,
+    non_scalar_names: BTreeSet<String>,
     integer_family_names: BTreeSet<String>,
     container_storage_by_name: BTreeMap<String, ContainerStorageFact>,
     container_storage_conflicted_names: BTreeSet<String>,
@@ -228,39 +229,37 @@ impl ScalarRepresentationPlan {
     }
 
     pub(crate) fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
-        matches!(op.kind.as_str(), "mul" | "inplace_mul")
-            || (matches!(
-                op.kind.as_str(),
-                "add"
-                    | "inplace_add"
-                    | "sub"
-                    | "inplace_sub"
-                    | "floordiv"
-                    | "inplace_floordiv"
-                    | "mod"
-                    | "mod_"
-                    | "inplace_mod"
-                    | "bit_and"
-                    | "inplace_bit_and"
-                    | "bit_or"
-                    | "inplace_bit_or"
-                    | "bit_xor"
-                    | "inplace_bit_xor"
-                    | "lshift"
-                    | "rshift"
-                    | "shl"
-                    | "shr"
-                    | "neg"
-                    | "pos"
-                    | "abs"
-                    | "builtin_abs"
-                    | "invert"
-            ) && op.args.as_ref().is_some_and(|args| {
-                !args.is_empty()
-                    && args.iter().all(|arg| {
-                        self.integer_family_names.contains(arg) || self.name_is_bool(arg)
-                    })
-            }))
+        matches!(
+            op.kind.as_str(),
+            "add"
+                | "inplace_add"
+                | "sub"
+                | "inplace_sub"
+                | "mul"
+                | "inplace_mul"
+                | "floordiv"
+                | "inplace_floordiv"
+                | "mod"
+                | "mod_"
+                | "inplace_mod"
+                | "bit_and"
+                | "inplace_bit_and"
+                | "bit_or"
+                | "inplace_bit_or"
+                | "bit_xor"
+                | "inplace_bit_xor"
+                | "lshift"
+                | "rshift"
+                | "shl"
+                | "shr"
+                | "neg"
+                | "pos"
+                | "abs"
+                | "builtin_abs"
+                | "invert"
+        ) && op.args.as_ref().is_some_and(|args| {
+            !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
+        })
     }
 
     fn insert_lir_value(&mut self, name: String, value: &LirValue) {
@@ -542,10 +541,12 @@ impl ScalarRepresentationPlan {
     }
 
     fn propagate_integer_family(&mut self, func_ir: &FunctionIR) {
+        self.non_scalar_names = self.non_scalar_simple_outputs(func_ir);
         self.integer_family_names
             .extend(self.facts_by_name.iter().filter_map(|(name, fact)| {
-                (matches!(fact.ty, TirType::I64) && fact.repr == LirRepr::I64
-                    || matches!(fact.ty, TirType::BigInt))
+                (!self.non_scalar_names.contains(name)
+                    && (matches!(fact.ty, TirType::I64) && fact.repr == LirRepr::I64
+                        || matches!(fact.ty, TirType::BigInt)))
                 .then(|| name.clone())
             }));
 
@@ -566,10 +567,7 @@ impl ScalarRepresentationPlan {
                     true
                 } else if integer_arithmetic_result_op(op.kind.as_str()) {
                     op.args.as_ref().is_some_and(|args| {
-                        !args.is_empty()
-                            && args.iter().all(|arg| {
-                                self.integer_family_names.contains(arg) || self.name_is_bool(arg)
-                            })
+                        !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
                     })
                 } else {
                     false
@@ -580,6 +578,17 @@ impl ScalarRepresentationPlan {
                 }
             }
         }
+    }
+
+    fn non_scalar_simple_outputs(&self, func_ir: &FunctionIR) -> BTreeSet<String> {
+        func_ir
+            .ops
+            .iter()
+            .filter_map(|op| {
+                let out = op.out.as_deref()?;
+                simple_op_produces_non_scalar_value(op.kind.as_str()).then(|| out.to_string())
+            })
+            .collect()
     }
 
     fn propagate_integer_store_targets(&mut self, func_ir: &FunctionIR) -> bool {
@@ -608,6 +617,9 @@ impl ScalarRepresentationPlan {
     }
 
     pub(crate) fn name_scalar_kind(&self, name: &str) -> Option<ScalarKind> {
+        if self.non_scalar_names.contains(name) {
+            return None;
+        }
         self.facts_by_name
             .get(name)
             .and_then(ScalarRepresentationFact::scalar_kind)
@@ -620,6 +632,9 @@ impl ScalarRepresentationPlan {
     }
 
     pub(crate) fn name_is_integer_family(&self, name: &str) -> bool {
+        if self.non_scalar_names.contains(name) {
+            return false;
+        }
         self.integer_family_names.contains(name)
             || self.name_scalar_kind(name) == Some(ScalarKind::Bool)
     }
@@ -631,16 +646,8 @@ impl ScalarRepresentationPlan {
         })
     }
 
-    fn name_is_bool(&self, name: &str) -> bool {
-        self.facts_by_name
-            .get(name)
-            .is_some_and(|fact| fact.scalar_kind() == Some(ScalarKind::Bool))
-    }
-
     fn name_has_scalar_kind(&self, name: &str, kind: ScalarKind) -> bool {
-        self.facts_by_name
-            .get(name)
-            .is_some_and(|fact| fact.scalar_kind() == Some(kind))
+        self.name_scalar_kind(name) == Some(kind)
     }
 
     fn compute_scalar_store_targets(
@@ -1419,6 +1426,54 @@ fn integer_only_result_op(kind: &str) -> bool {
     )
 }
 
+fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
+    matches!(
+        kind,
+        "async_sleep_new"
+            | "asyncgen_new"
+            | "bound_method_new"
+            | "build_dict"
+            | "build_list"
+            | "builtin_type"
+            | "buffer2d_new"
+            | "callargs_new"
+            | "cancel_token_new"
+            | "chan_new"
+            | "class_new"
+            | "classmethod_new"
+            | "code_new"
+            | "dataclass_new"
+            | "dict_new"
+            | "exception_new"
+            | "exception_new_from_class"
+            | "frozenset_new"
+            | "func_new"
+            | "func_new_closure"
+            | "io_wait_new"
+            | "list_from_range"
+            | "list_int_new"
+            | "list_new"
+            | "lock_new"
+            | "memoryview_new"
+            | "module_new"
+            | "object_new"
+            | "promise_new"
+            | "property_new"
+            | "range_new"
+            | "rlock_new"
+            | "set_new"
+            | "slice_new"
+            | "socket_new"
+            | "staticmethod_new"
+            | "stream_new"
+            | "super_new"
+            | "task_new"
+            | "tuple_from_list"
+            | "tuple_new"
+            | "ws_wait_new"
+    )
+}
+
 fn alias_source_name(op: &OpIR) -> Option<&str> {
     match op.kind.as_str() {
         "copy" | "copy_var" | "load_var" | "identity_alias" => op.var.as_deref().or_else(|| {
@@ -1545,7 +1600,7 @@ mod tests {
     #[test]
     fn container_transport_metadata_does_not_seed_container_kind() {
         let mut index = op("index", Some("item"), None, &["xs", "i"]);
-        index.container_type = Some("list_int".to_string());
+        index.container_type = Some("list".to_string());
         index.type_hint = Some("list".to_string());
         let func = function("transport_only", &["xs", "i"], None, vec![index]);
         let plan = ScalarRepresentationPlan::for_function_ir(&func);
@@ -1557,7 +1612,7 @@ mod tests {
     #[test]
     fn flat_list_storage_requires_structural_producer() {
         let mut index = op("index", Some("item"), None, &["xs", "i"]);
-        index.container_type = Some("list_int".to_string());
+        index.container_type = Some("list".to_string());
         let func = function(
             "transport_only_storage",
             &["xs", "i"],
@@ -1860,17 +1915,38 @@ mod tests {
     #[test]
     fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
         let add = op("add", Some("sum"), None, &["lhs", "rhs"]);
+        let mul = op("mul", Some("product"), None, &["lhs", "rhs"]);
         let func = function(
             "typed_add",
             &["lhs", "rhs"],
             Some(vec!["int", "int"]),
-            vec![add.clone()],
+            vec![add.clone(), mul.clone()],
         );
 
         let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         assert!(plan.op_prefers_integer_runtime_lane(&add));
+        assert!(plan.op_prefers_integer_runtime_lane(&mul));
         assert!(plan.op_args_are_integer_family(&add));
+        assert!(plan.op_args_are_integer_family(&mul));
+    }
+
+    #[test]
+    fn list_repeat_does_not_take_integer_runtime_lane() {
+        let list_new = op("list_new", Some("items"), None, &["item"]);
+        let repeat = op("mul", Some("repeated"), None, &["items", "count"]);
+        let func = function(
+            "list_repeat",
+            &["item", "count"],
+            Some(vec!["bool", "int"]),
+            vec![list_new, repeat.clone()],
+        );
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.name_scalar_kind("items"), None);
+        assert!(!plan.op_prefers_integer_runtime_lane(&repeat));
+        assert!(!plan.op_args_are_integer_family(&repeat));
     }
 
     #[test]
