@@ -204,11 +204,32 @@ fn validate_simple_ir_rejects_unknown_container_type() {
 }
 
 #[test]
-fn validate_simple_ir_rejects_bce_safe_without_indexable_container() {
+fn validate_simple_ir_rejects_legacy_list_int_container_type() {
     let mut idx = op("index");
     idx.args = Some(vec!["seq".to_string(), "idx".to_string()]);
     idx.out = Some("item".to_string());
-    idx.container_type = Some("dict".to_string());
+    idx.container_type = Some("list_int".to_string());
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_validate_legacy_list_int_container_type".to_string(),
+            params: vec!["seq".to_string(), "idx".to_string()],
+            ops: vec![idx],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+    let err = validate_simple_ir(&ir).expect_err("expected list_int container type rejection");
+    assert!(err.contains("unsupported container_type `list_int`"));
+}
+
+#[test]
+fn validate_simple_ir_accepts_bce_safe_without_container_type() {
+    let mut idx = op("index");
+    idx.args = Some(vec!["seq".to_string(), "idx".to_string()]);
+    idx.out = Some("item".to_string());
     idx.bce_safe = Some(true);
 
     let ir = SimpleIR {
@@ -222,8 +243,7 @@ fn validate_simple_ir_rejects_bce_safe_without_indexable_container() {
         }],
         profile: None,
     };
-    let err = validate_simple_ir(&ir).expect_err("expected bce container rejection");
-    assert!(err.contains("bce_safe does not support container_type `dict`"));
+    validate_simple_ir(&ir).expect("bce_safe is an independent bounds proof");
 }
 
 #[test]

@@ -30,8 +30,8 @@
 //!
 //! Detection: the source of `GetIter` is considered a list if:
 //!   1. It was produced by a `BuildList` op, OR
-//!   2. The `GetIter` op has `container_type` attr starting with `"list"`, OR
-//!   3. The source-defining op has `container_type` attr starting with `"list"`.
+//!   2. The `GetIter` op has a semantic list `container_type` attr, OR
+//!   3. The source-defining op has a semantic list `container_type` attr.
 //!
 //! This runs early in the pipeline (after range_devirt, before type refinement)
 //! so downstream passes can refine the index variable and element types.
@@ -68,7 +68,7 @@ struct ListLoopCandidate {
     exit_block: BlockId,
     /// The body block (where done=false branches to).
     body_block: BlockId,
-    /// Container type from the GetIter or source (e.g. "list", "list_int").
+    /// Semantic container type from the GetIter or source (e.g. "list").
     /// Propagated to the synthesized Index op so the backend can emit
     /// inline list access instead of a generic runtime call.
     container_type: Option<String>,
@@ -95,7 +95,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 /// Infer the container_type for a value known to be a list.
 ///
 /// Returns `Some("list")` for BuildList, Mul(BuildList, count), or ops with
-/// an explicit container_type starting with "list".  Returns `None` when
+/// an explicit semantic-list container_type.  Returns `None` when
 /// the type cannot be determined (conservative: the backend will use the
 /// generic dispatch path).
 fn infer_container_type(
@@ -127,7 +127,7 @@ fn infer_container_type(
             }
             // Explicit container_type attr.
             if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
-                && ct.starts_with("list")
+                && is_semantic_list_container_type(ct)
             {
                 return Some(ct.clone());
             }
@@ -161,7 +161,7 @@ fn is_list_source(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]
             }
             // Check container_type attr on the source op.
             if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
-                && ct.starts_with("list")
+                && is_semantic_list_container_type(ct)
             {
                 return true;
             }
@@ -225,7 +225,7 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
             let get_iter_op = &func.blocks[&setup_block].ops[get_iter_idx];
             let get_iter_container_type =
                 if let Some(AttrValue::Str(ct)) = get_iter_op.attrs.get("container_type") {
-                    if ct.starts_with("list") {
+                    if is_semantic_list_container_type(ct) {
                         Some(ct.clone())
                     } else {
                         None
@@ -315,6 +315,10 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
     }
 
     candidates
+}
+
+fn is_semantic_list_container_type(container_type: &str) -> bool {
+    matches!(container_type, "list" | "list_bool" | "list_float")
 }
 
 /// Apply the list iterator devirtualization transform to a single candidate.
@@ -827,6 +831,29 @@ mod tests {
         let header = &func.blocks[&BlockId(1)];
         assert!(header.ops.iter().any(|op| op.opcode == OpCode::Lt));
 
+        crate::tir::verify::verify_function(&func).expect("verification should pass");
+    }
+
+    #[test]
+    fn no_devirt_from_legacy_list_int_container_type() {
+        let mut func = build_list_for_loop(false);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let source_op = entry
+            .ops
+            .iter_mut()
+            .find(|op| op.opcode == OpCode::CallBuiltin)
+            .expect("source op exists");
+        source_op.attrs.insert(
+            "container_type".to_string(),
+            AttrValue::Str("list_int".to_string()),
+        );
+
+        let stats = run(&mut func);
+
+        assert_eq!(
+            stats.values_changed, 0,
+            "legacy flat-list storage must not be accepted as semantic container metadata"
+        );
         crate::tir::verify::verify_function(&func).expect("verification should pass");
     }
 
