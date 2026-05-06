@@ -730,6 +730,17 @@ mod tests {
     use super::*;
     use core::sync::atomic::Ordering;
 
+    #[cfg(not(feature = "stdlib_net"))]
+    #[test]
+    fn ssl_intrinsics_resolve_when_stdlib_net_is_disabled() {
+        assert!(resolve_symbol("molt_ssl_cert_none").is_some());
+        assert!(resolve_symbol("molt_ssl_context_new").is_some());
+        assert!(resolve_symbol("molt_ssl_wrap_socket").is_some());
+        assert!(resolve_symbol("molt_ssl_socket_read").is_some());
+
+        assert!(resolve_symbol("molt_http_client_execute").is_none());
+    }
+
     #[test]
     #[cfg_attr(
         miri,
