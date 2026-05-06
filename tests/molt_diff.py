@@ -4,7 +4,6 @@ import contextlib
 import io
 import json
 import os
-import queue
 import re
 import runpy
 import signal
@@ -18,6 +17,8 @@ import time
 from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
+
+from tools.batch_compile_client import BatchCompileServerClient
 
 _ACTIVE_CHILD_PIDS: set[int] = set()
 _SIGNAL_HANDLERS_INSTALLED = False
@@ -2064,7 +2065,7 @@ def _record_rss_metrics(
         return
 
 
-class _BatchCompileServerClient:
+class _BatchCompileServerClient(BatchCompileServerClient):
     def __init__(self, env: dict[str, str]) -> None:
         cmd = [
             _resolve_molt_cli_python(),
@@ -2072,103 +2073,14 @@ class _BatchCompileServerClient:
             "molt.cli",
             "internal-batch-build-server",
         ]
-        self._proc = subprocess.Popen(
+        super().__init__(
             cmd,
-            cwd=_repo_root(),
+            cwd=Path(_repo_root()),
             env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            errors="replace",
-            **_popen_group_kwargs(),
+            reader_name="molt-diff-batch-server-reader",
+            process_group_kwargs=_popen_group_kwargs(),
+            force_close=lambda proc: _terminate_process_tree(proc, grace=0.35),
         )
-        self._next_id = 1
-        self._response_queue: queue.Queue[str | BaseException | None] = queue.Queue()
-        self._response_reader = threading.Thread(
-            target=self._stdout_reader_loop,
-            name="molt-diff-batch-server-reader",
-            daemon=True,
-        )
-        self._response_reader.start()
-
-    def _stdout_reader_loop(self) -> None:
-        if self._proc.stdout is None:
-            self._response_queue.put(
-                RuntimeError("batch compile server stdout pipe unavailable")
-            )
-            return
-        try:
-            while True:
-                line = self._proc.stdout.readline()
-                if not line:
-                    self._response_queue.put(None)
-                    return
-                self._response_queue.put(line)
-        except Exception as exc:
-            self._response_queue.put(exc)
-
-    def _readline(self, timeout: float) -> str:
-        deadline = time.monotonic() + max(0.01, timeout)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("batch compile server response timed out")
-            try:
-                item = self._response_queue.get(timeout=remaining)
-            except queue.Empty as exc:
-                raise TimeoutError("batch compile server response timed out") from exc
-            if isinstance(item, BaseException):
-                raise RuntimeError(
-                    "batch compile server response reader failed"
-                ) from item
-            if item is None:
-                error_detail = ""
-                if self._proc.stderr is not None:
-                    with contextlib.suppress(Exception):
-                        error_detail = self._proc.stderr.read().strip()
-                raise RuntimeError(
-                    "batch compile server closed response pipe"
-                    + (f": {error_detail}" if error_detail else "")
-                )
-            return item
-
-    def request(
-        self,
-        op: str,
-        *,
-        params: dict[str, object] | None = None,
-        timeout: float,
-    ) -> dict[str, object]:
-        if self._proc.poll() is not None:
-            raise RuntimeError("batch compile server process is not running")
-        if self._proc.stdin is None:
-            raise RuntimeError("batch compile server stdin pipe unavailable")
-        req_id = self._next_id
-        self._next_id += 1
-        request: dict[str, object] = {"id": req_id, "op": op}
-        if params is not None:
-            request["params"] = params
-        payload = json.dumps(request, sort_keys=True) + "\n"
-        try:
-            self._proc.stdin.write(payload)
-            self._proc.stdin.flush()
-        except OSError as exc:
-            raise RuntimeError(f"failed to write batch compile request: {exc}") from exc
-        raw = self._readline(timeout)
-        try:
-            response = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"invalid batch compile response JSON: {exc}") from exc
-        if not isinstance(response, dict):
-            raise RuntimeError("batch compile response must be an object")
-        if response.get("id") != req_id:
-            raise RuntimeError("batch compile response id mismatch")
-        return response
-
-    def force_close(self) -> None:
-        _terminate_process_tree(self._proc, grace=0.35)
 
     def close(self, *, force: bool = False, timeout: float | None = None) -> None:
         request_timeout = timeout

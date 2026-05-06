@@ -28713,7 +28713,7 @@ def _internal_batch_build_server(
                         pgo_profile=params.get("pgo_profile"),
                         runtime_feedback=params.get("runtime_feedback"),
                         output=params.get("output"),
-                        json_output=False,
+                        json_output=bool(params.get("json_output", False)),
                         verbose=bool(params.get("verbose", False)),
                         deterministic=bool(params.get("deterministic", True)),
                         deterministic_warn=bool(
