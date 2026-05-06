@@ -542,13 +542,16 @@ impl ScalarRepresentationPlan {
 
     fn propagate_integer_family(&mut self, func_ir: &FunctionIR) {
         self.non_scalar_names = self.non_scalar_simple_outputs(func_ir);
-        self.integer_family_names
-            .extend(self.facts_by_name.iter().filter_map(|(name, fact)| {
-                (!self.non_scalar_names.contains(name)
-                    && (matches!(fact.ty, TirType::I64) && fact.repr == LirRepr::I64
-                        || matches!(fact.ty, TirType::BigInt)))
-                .then(|| name.clone())
-            }));
+        self.integer_family_names.extend(
+            self.facts_by_name
+                .iter()
+                .filter(|(name, fact)| {
+                    !self.non_scalar_names.contains(*name)
+                        && (matches!(fact.ty, TirType::I64) && fact.repr == LirRepr::I64
+                            || matches!(fact.ty, TirType::BigInt))
+                })
+                .map(|(name, _)| name.clone()),
+        );
 
         let mut changed = true;
         while changed {
@@ -1230,9 +1233,8 @@ impl ScalarRepresentationPlan {
                 }
             }
             "pow" => {
-                if args.len() >= 2 && is_float(&args[1]) {
-                    Some(ScalarKind::Float)
-                } else if args_all(&is_float)
+                if (args.len() >= 2 && is_float(&args[1]))
+                    || args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
                     Some(ScalarKind::Float)
