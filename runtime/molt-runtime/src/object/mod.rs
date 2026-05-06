@@ -475,6 +475,10 @@ pub(crate) struct MoltColdHeader {
 struct ColdHeaderSlab {
     /// Slot 0 is unused (sentinel). Valid indices start at 1.
     entries: Vec<MoltColdHeader>,
+    /// Slot liveness mirrors `entries` exactly.  A freed slot may be reused only
+    /// after `free` has marked it non-live; this makes double-free detection a
+    /// slab invariant instead of an allocator-side accident.
+    live: Vec<bool>,
     /// Free-list of previously freed indices (LIFO reuse).
     free_list: Vec<u32>,
 }
@@ -484,6 +488,7 @@ impl ColdHeaderSlab {
         Self {
             // Slot 0 is the sentinel — push a dummy entry.
             entries: vec![MoltColdHeader::default()],
+            live: vec![false],
             free_list: Vec::new(),
         }
     }
@@ -491,11 +496,18 @@ impl ColdHeaderSlab {
     /// Allocate a slot, returning its u32 index (always >= 1).
     /// Returns 0 if the slab is full (`u32::MAX` live cold headers).
     fn alloc(&mut self, cold: MoltColdHeader) -> u32 {
-        if let Some(idx) = self.free_list.pop() {
+        while let Some(idx) = self.free_list.pop() {
             // Belt-and-suspenders: verify the recycled index is in bounds.
             // This defends against any residual free-list corruption.
             if (idx as usize) < self.entries.len() {
+                if self.live[idx as usize] {
+                    panic!(
+                        "cold header slab free-list corruption: live slot {} was queued",
+                        idx
+                    );
+                }
                 self.entries[idx as usize] = cold;
+                self.live[idx as usize] = true;
                 return idx;
             }
             // Index was stale/corrupted — discard and fall through to push.
@@ -512,6 +524,7 @@ impl ColdHeaderSlab {
             );
         }
         self.entries.push(cold);
+        self.live.push(true);
         idx as u32
     }
 
@@ -521,8 +534,10 @@ impl ColdHeaderSlab {
     fn get(&self, idx: u32) -> Option<&MoltColdHeader> {
         if idx == 0 {
             None
-        } else {
+        } else if self.live.get(idx as usize).copied().unwrap_or(false) {
             self.entries.get(idx as usize)
+        } else {
+            None
         }
     }
 
@@ -532,8 +547,10 @@ impl ColdHeaderSlab {
     fn get_mut(&mut self, idx: u32) -> Option<&mut MoltColdHeader> {
         if idx == 0 {
             None
-        } else {
+        } else if self.live.get(idx as usize).copied().unwrap_or(false) {
             self.entries.get_mut(idx as usize)
+        } else {
+            None
         }
     }
 
@@ -547,8 +564,15 @@ impl ColdHeaderSlab {
         // Only push to free_list when the index is actually in bounds —
         // a corrupted cold_idx (e.g. from use-after-free or stale pointer
         // reuse) must not poison the free list.
+        if (idx as usize) >= self.entries.len() {
+            return;
+        }
+        if !self.live[idx as usize] {
+            panic!("cold header slab double free for slot {}", idx);
+        }
         if let Some(entry) = self.entries.get_mut(idx as usize) {
             *entry = MoltColdHeader::default();
+            self.live[idx as usize] = false;
             self.free_list.push(idx);
         }
     }
@@ -2456,14 +2480,29 @@ mod tests {
 
         assert_eq!(slab.free_list.len(), free_list_len_before);
         assert_eq!(slab.entries.len(), len_before_free);
+        assert_eq!(slab.live.len(), len_before_free);
 
         let idx3 = slab.alloc(MoltColdHeader::default());
         assert!(idx3 >= 1);
 
         slab.free(idx1);
         assert_eq!(slab.free_list.len(), free_list_len_before + 1);
+        assert!(slab.get(idx1).is_none());
         let idx4 = slab.alloc(MoltColdHeader::default());
         assert_eq!(idx4, idx1);
+        assert!(slab.get(idx4).is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "cold header slab double free")]
+    fn cold_header_slab_rejects_double_free() {
+        use super::{ColdHeaderSlab, MoltColdHeader};
+
+        let mut slab = ColdHeaderSlab::new();
+        let idx = slab.alloc(MoltColdHeader::default());
+
+        slab.free(idx);
+        slab.free(idx);
     }
 
     #[test]
