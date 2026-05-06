@@ -28,7 +28,12 @@ from molt.frontend import compile_to_tir
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_SCHEMA = "molt.typed_repr_report.v1"
 DEFAULT_MARKDOWN_PATH = (
-    REPO_ROOT / "docs" / "spec" / "areas" / "compiler" / "backend_lir_representation.generated.md"
+    REPO_ROOT
+    / "docs"
+    / "spec"
+    / "areas"
+    / "compiler"
+    / "backend_lir_representation.generated.md"
 )
 DEFAULT_REPORT_PATHS = (REPO_ROOT / "examples" / "hello.py",)
 

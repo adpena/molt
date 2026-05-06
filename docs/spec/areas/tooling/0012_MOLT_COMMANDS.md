@@ -223,7 +223,7 @@ Environment:
 
 ## 4. Tooling and Diagnostics
 ### 4.1 `molt lint`
-**Status:** Implemented (initial; wraps `tools/dev.py lint`).
+**Status:** Implemented (shared `[tool.molt.dx.commands].lint` planner).
 
 Purpose: Run repo linting and formatting checks.
 
