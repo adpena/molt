@@ -1,3 +1,4 @@
+use super::representation_plan::NativeRepresentationPlan;
 use super::*;
 
 #[cfg(feature = "native-backend")]
@@ -311,16 +312,6 @@ enum ScalarLane {
 }
 
 #[cfg(feature = "native-backend")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StoreVarLane {
-    Int,
-    Bool,
-    Float,
-    Str,
-    NoneValue,
-}
-
-#[cfg(feature = "native-backend")]
 #[inline]
 fn name_is_int_like(
     name: &str,
@@ -346,70 +337,6 @@ fn store_var_source_name(op: &OpIR) -> Option<&str> {
     op.args
         .as_ref()
         .and_then(|args| args.first().map(String::as_str))
-}
-
-#[cfg(feature = "native-backend")]
-#[inline]
-fn classified_store_source_lane(
-    name: &str,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
-    float_like_vars: &BTreeSet<String>,
-    str_like_vars: &BTreeSet<String>,
-    none_like_vars: &BTreeSet<String>,
-) -> Option<StoreVarLane> {
-    if int_like_vars.contains(name) {
-        Some(StoreVarLane::Int)
-    } else if bool_like_vars.contains(name) {
-        Some(StoreVarLane::Bool)
-    } else if float_like_vars.contains(name) {
-        Some(StoreVarLane::Float)
-    } else if str_like_vars.contains(name) {
-        Some(StoreVarLane::Str)
-    } else if none_like_vars.contains(name) {
-        Some(StoreVarLane::NoneValue)
-    } else {
-        None
-    }
-}
-
-#[cfg(feature = "native-backend")]
-fn consistent_store_var_target_lanes(
-    func_ir: &FunctionIR,
-    int_like_vars: &BTreeSet<String>,
-    bool_like_vars: &BTreeSet<String>,
-    float_like_vars: &BTreeSet<String>,
-    str_like_vars: &BTreeSet<String>,
-    none_like_vars: &BTreeSet<String>,
-) -> BTreeMap<String, StoreVarLane> {
-    let mut lanes_by_target: BTreeMap<String, Option<StoreVarLane>> = BTreeMap::new();
-    for op in &func_ir.ops {
-        let Some(target) = store_var_target_name(op) else {
-            continue;
-        };
-        let source_lane = store_var_source_name(op).and_then(|src| {
-            classified_store_source_lane(
-                src,
-                int_like_vars,
-                bool_like_vars,
-                float_like_vars,
-                str_like_vars,
-                none_like_vars,
-            )
-        });
-        lanes_by_target
-            .entry(target.to_string())
-            .and_modify(|existing| {
-                if existing.is_none_or(|lane| Some(lane) != source_lane) {
-                    *existing = None;
-                }
-            })
-            .or_insert(source_lane);
-    }
-    lanes_by_target
-        .into_iter()
-        .filter_map(|(target, lane)| lane.map(|lane| (target, lane)))
-        .collect()
 }
 
 #[cfg(feature = "native-backend")]
@@ -1640,6 +1567,7 @@ struct FunctionPreanalysis {
     /// the native backend has a valid old-value slot for loop-carried cleanup.
     loop_body_init_vars: BTreeMap<usize, Vec<String>>,
     int_like_vars: BTreeSet<String>,
+    integer_family_vars: BTreeSet<String>,
     bool_like_vars: BTreeSet<String>,
     float_like_vars: BTreeSet<String>,
     str_like_vars: BTreeSet<String>,
@@ -1938,6 +1866,7 @@ fn analyze_direct_field_stores(
 fn preanalyze_function_ir(
     func_ir: &FunctionIR,
     return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
+    representation_plan: &NativeRepresentationPlan,
 ) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
@@ -1953,35 +1882,14 @@ fn preanalyze_function_ir(
     let mut resume_states = BTreeSet::new();
     let mut exception_label_ids = BTreeSet::new();
     let mut label_positions = Vec::new();
-    let mut int_like_vars: BTreeSet<String> = BTreeSet::new();
-    let mut bool_like_vars: BTreeSet<String> = BTreeSet::new();
-    let mut float_like_vars: BTreeSet<String> = BTreeSet::new();
-    let mut none_like_vars: BTreeSet<String> = BTreeSet::new();
-    let mut str_like_vars: BTreeSet<String> = BTreeSet::new();
+    let (int_like_vars, bool_like_vars, float_like_vars, str_like_vars, none_like_vars) =
+        representation_plan.scalar_name_sets();
+    let integer_family_vars = representation_plan.integer_family_names();
 
     for name in &func_ir.params {
         if name != "none" {
             var_names.insert(name.clone());
             alias_roots.insert(name.clone(), name.clone());
-        }
-    }
-    if let Some(param_types) = &func_ir.param_types {
-        for (name, ty) in func_ir.params.iter().zip(param_types.iter()) {
-            match ty.as_str() {
-                "int" => {
-                    int_like_vars.insert(name.clone());
-                }
-                "bool" => {
-                    bool_like_vars.insert(name.clone());
-                }
-                "float" => {
-                    float_like_vars.insert(name.clone());
-                }
-                "str" => {
-                    str_like_vars.insert(name.clone());
-                }
-                _ => {}
-            }
         }
     }
 
@@ -2320,107 +2228,6 @@ fn preanalyze_function_ir(
         }
     }
 
-    let mut changed_types = true;
-    while changed_types {
-        changed_types = false;
-        let store_target_lanes = consistent_store_var_target_lanes(
-            func_ir,
-            &int_like_vars,
-            &bool_like_vars,
-            &float_like_vars,
-            &str_like_vars,
-            &none_like_vars,
-        );
-        for (target, lane) in store_target_lanes {
-            let inserted = match lane {
-                StoreVarLane::Int => int_like_vars.insert(target),
-                StoreVarLane::Bool => bool_like_vars.insert(target),
-                StoreVarLane::Float => float_like_vars.insert(target),
-                StoreVarLane::Str => str_like_vars.insert(target),
-                StoreVarLane::NoneValue => none_like_vars.insert(target),
-            };
-            if inserted {
-                changed_types = true;
-            }
-        }
-        for op in &func_ir.ops {
-            // Propagate type info through store_var: when a value is
-            // stored into a variable, the variable inherits the scalar
-            // lane of the stored value.  This is critical for loop phi
-            // variables (e.g. _bb1_arg0) that are only written via
-            // store_var and read via load_var.
-            if op.kind == "store_var" {
-                continue;
-            }
-            let Some(out) = op.out.as_ref() else {
-                continue;
-            };
-            let inserted = match op.kind.as_str() {
-                "const" | "loop_index_start" | "loop_index_next" | "len" => {
-                    int_like_vars.insert(out.clone())
-                }
-                "const_bool" => bool_like_vars.insert(out.clone()),
-                "const_float" => float_like_vars.insert(out.clone()),
-                "const_none" => none_like_vars.insert(out.clone()),
-                "const_str" => str_like_vars.insert(out.clone()),
-                "copy" | "copy_var" | "load_var" | "identity_alias" => {
-                    let src = op
-                        .var
-                        .as_ref()
-                        .or_else(|| op.args.as_ref().and_then(|args| args.first()));
-                    if let Some(src) = src {
-                        if int_like_vars.contains(src) {
-                            int_like_vars.insert(out.clone())
-                        } else if bool_like_vars.contains(src) {
-                            bool_like_vars.insert(out.clone())
-                        } else if float_like_vars.contains(src) {
-                            float_like_vars.insert(out.clone())
-                        } else if str_like_vars.contains(src) {
-                            str_like_vars.insert(out.clone())
-                        } else if none_like_vars.contains(src) {
-                            none_like_vars.insert(out.clone())
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-                "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "bool" | "cast_bool" | "builtin_bool"
-                | "is_truthy" | "is" | "not" => bool_like_vars.insert(out.clone()),
-                // Python true division always returns float, regardless of
-                // operand types (int/int → float, float/float → float).
-                "div" => float_like_vars.insert(out.clone()),
-                "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
-                | "floordiv" | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and"
-                | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-                | "inplace_bit_xor" | "lshift" | "rshift" | "shl" | "shr" | "neg" | "abs"
-                | "invert" | "builtin_abs" | "pow" | "float_from_obj" => {
-                    match infer_scalar_lane(
-                        op,
-                        &int_like_vars,
-                        &bool_like_vars,
-                        &float_like_vars,
-                        &str_like_vars,
-                    ) {
-                        Some(ScalarLane::Int) => int_like_vars.insert(out.clone()),
-                        Some(ScalarLane::Bool) => bool_like_vars.insert(out.clone()),
-                        Some(ScalarLane::Float) => float_like_vars.insert(out.clone()),
-                        Some(ScalarLane::Str) => str_like_vars.insert(out.clone()),
-                        None => false,
-                    }
-                }
-                // Unknown/generic ops may have semantic `type_hint` metadata,
-                // but that is not a proof that the native value is stored in a
-                // scalar lane. Keep them boxed unless an op-specific rule above
-                // proves the representation.
-                _ => false,
-            };
-            if inserted {
-                changed_types = true;
-            }
-        }
-    }
     let direct_field_store_ops = analyze_direct_field_stores(
         func_ir,
         &alias_roots,
@@ -2585,6 +2392,7 @@ fn preanalyze_function_ir(
         loop_body_out_vars,
         loop_body_init_vars,
         int_like_vars,
+        integer_family_vars,
         bool_like_vars,
         float_like_vars,
         str_like_vars,
@@ -2846,6 +2654,7 @@ impl SimpleBackend {
             loop_body_out_vars,
             loop_body_init_vars,
             int_like_vars,
+            integer_family_vars,
             bool_like_vars,
             float_like_vars,
             str_like_vars,
@@ -2854,7 +2663,10 @@ impl SimpleBackend {
             arena_eligible_outs: _arena_eligible_outs,
             scalar_slot_exclusion_unsafe,
             direct_field_store_ops,
-        } = preanalyze_function_ir(&func_ir, return_alias_summaries);
+        } = {
+            let representation_plan = NativeRepresentationPlan::for_function_ir(&func_ir);
+            preanalyze_function_ir(&func_ir, return_alias_summaries, &representation_plan)
+        };
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
 
@@ -3334,6 +3146,42 @@ impl SimpleBackend {
                     Some(ScalarLane::Int)
                 )
         };
+        let op_prefers_integer_runtime_lane = |op: &OpIR| {
+            scalar_fast_paths_enabled
+                && (matches!(op.kind.as_str(), "mul" | "inplace_mul")
+                    || (matches!(
+                        op.kind.as_str(),
+                        "add"
+                            | "inplace_add"
+                            | "sub"
+                            | "inplace_sub"
+                            | "floordiv"
+                            | "inplace_floordiv"
+                            | "mod"
+                            | "mod_"
+                            | "inplace_mod"
+                            | "bit_and"
+                            | "inplace_bit_and"
+                            | "bit_or"
+                            | "inplace_bit_or"
+                            | "bit_xor"
+                            | "inplace_bit_xor"
+                            | "lshift"
+                            | "rshift"
+                            | "shl"
+                            | "shr"
+                            | "neg"
+                            | "pos"
+                            | "abs"
+                            | "builtin_abs"
+                            | "invert"
+                    ) && op.args.as_ref().is_some_and(|args| {
+                        !args.is_empty()
+                            && args.iter().all(|arg| {
+                                integer_family_vars.contains(arg) || bool_like_vars.contains(arg)
+                            })
+                    })))
+        };
         let op_prefers_bool_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
                 && matches!(
@@ -3349,6 +3197,7 @@ impl SimpleBackend {
         };
         let op_prefers_float_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
+                && !op_prefers_integer_runtime_lane(op)
                 && matches!(
                     infer_scalar_lane(
                         op,
@@ -4743,6 +4592,45 @@ impl SimpleBackend {
                             let merged_boxed = builder.block_params(merge_block)[0];
                             merged_boxed
                         }
+                    } else if op_prefers_integer_runtime_lane(&op) {
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("LHS not found");
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[1],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("RHS not found");
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        builder.inst_results(call)[0]
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -35674,13 +35562,13 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        ScalarLane, alias_root_name, box_raw_bool_value, cleanup_roots_for_names,
-        collect_slot_backed_join_names, compute_float_primary_vars, infer_scalar_lane,
-        is_cold_module_chunk_function, live_exception_rebind_vars_for_op, mark_cleanup_root_once,
-        materialize_label_block, op_produces_raw_bool_for_bool_primary,
-        op_produces_raw_i64_for_int_primary, preanalyze_function_ir, protect_cleanup_names,
-        scalar_lane_store_target_names, scan_loop_int_sum_reduction, switch_to_block_materialized,
-        switch_to_block_with_rebind,
+        FunctionPreanalysis, NativeRepresentationPlan, ScalarLane, alias_root_name,
+        box_raw_bool_value, cleanup_roots_for_names, collect_slot_backed_join_names,
+        compute_float_primary_vars, infer_scalar_lane, is_cold_module_chunk_function,
+        live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
+        op_produces_raw_bool_for_bool_primary, op_produces_raw_i64_for_int_primary,
+        preanalyze_function_ir, protect_cleanup_names, scalar_lane_store_target_names,
+        scan_loop_int_sum_reduction, switch_to_block_materialized, switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
     use cranelift_codegen::isa::CallConv;
@@ -35691,6 +35579,14 @@ mod tests {
     };
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
     use std::collections::{BTreeMap, BTreeSet};
+
+    fn preanalyze_for_test(
+        func_ir: &FunctionIR,
+        return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
+    ) -> FunctionPreanalysis {
+        let representation_plan = NativeRepresentationPlan::for_function_ir(func_ir);
+        preanalyze_function_ir(func_ir, return_alias_summaries, &representation_plan)
+    }
 
     #[test]
     fn raw_bool_boxing_accepts_i64_carrier() {
@@ -35937,7 +35833,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert!(
             !analysis.int_like_vars.contains("result"),
@@ -35987,7 +35883,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         for name in ["_bb_arg0", "joined"] {
             assert!(
@@ -35999,6 +35895,73 @@ mod tests {
                 "mixed dynamic/scalar join target {name} must stay boxed",
             );
         }
+    }
+
+    #[test]
+    fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
+        let func = FunctionIR {
+            name: "integer_family_chain".to_string(),
+            params: vec!["x".to_string(), "seed".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(374761393),
+                    out: Some("_v0".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "mul".to_string(),
+                    args: Some(vec!["x".to_string(), "_v0".to_string()]),
+                    out: Some("_v1".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "bit_xor".to_string(),
+                    args: Some(vec!["seed".to_string(), "_v1".to_string()]),
+                    out: Some("_v2".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(13),
+                    out: Some("_v3".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "rshift".to_string(),
+                    args: Some(vec!["_v2".to_string(), "_v3".to_string()]),
+                    out: Some("_v4".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "bit_xor".to_string(),
+                    args: Some(vec!["_v2".to_string(), "_v4".to_string()]),
+                    out: Some("_v5".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(3266489917),
+                    out: Some("_v6".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "mul".to_string(),
+                    args: Some(vec!["_v5".to_string(), "_v6".to_string()]),
+                    out: Some("_v7".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["int".to_string(), "int".to_string()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert!(analysis.integer_family_vars.contains("_v7"));
+        assert!(!analysis.int_like_vars.contains("_v7"));
+        assert!(!analysis.float_like_vars.contains("_v7"));
     }
 
     #[test]
@@ -36425,7 +36388,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert!(analysis.has_ret);
         assert!(analysis.stateful);
@@ -36472,11 +36435,11 @@ mod tests {
         };
 
         assert!(
-            preanalyze_function_ir(&value_ret, &BTreeMap::new()).has_ret,
+            preanalyze_for_test(&value_ret, &BTreeMap::new()).has_ret,
             "`ret` should mark the function as value-returning"
         );
         assert!(
-            !preanalyze_function_ir(&void_ret, &BTreeMap::new()).has_ret,
+            !preanalyze_for_test(&void_ret, &BTreeMap::new()).has_ret,
             "`ret_void` must not mark the function as value-returning"
         );
     }
@@ -36540,7 +36503,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert!(
             !analysis.has_store,
@@ -36618,7 +36581,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert!(
             !analysis.has_store,
@@ -36695,7 +36658,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert!(
             analysis.has_store,
@@ -36739,7 +36702,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert_eq!(
             analysis.alias_roots.get("_bb4_arg0").map(String::as_str),
@@ -36828,7 +36791,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert_eq!(analysis.last_use.get("tmp_loaded"), Some(&0));
         assert_eq!(analysis.last_use.get("tmp_missing"), Some(&2));
@@ -36874,7 +36837,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert_eq!(
             analysis.loop_body_out_vars.get(&0),
@@ -36940,7 +36903,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert_eq!(
             analysis.loop_body_out_vars.get(&2),
@@ -37064,7 +37027,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         let arg_cleanup_roots =
             cleanup_roots_for_names(&analysis.alias_roots, ["arg_alias".to_string()]);
 
@@ -37745,7 +37708,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("x"),
             "int variable passed to call must be marked unsafe for slot exclusion"
@@ -37775,7 +37738,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("x"),
             "int variable in ret must be marked unsafe for slot exclusion"
@@ -37809,7 +37772,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("val"),
             "int variable in store_attr must be marked unsafe for slot exclusion"
@@ -37843,7 +37806,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("x"),
             "int variable with inc_ref must be marked unsafe for slot exclusion"
@@ -37881,7 +37844,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("x"),
             "int variable in dec_ref var field must be marked unsafe for slot exclusion"
@@ -37916,7 +37879,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("y"),
             "int variable in release var field must be marked unsafe for slot exclusion"
@@ -37988,7 +37951,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             !analysis.scalar_slot_exclusion_unsafe.contains("x"),
             "pure arithmetic loop var must NOT be marked unsafe"
@@ -38042,7 +38005,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             analysis.scalar_slot_exclusion_unsafe.contains("val"),
             "int value stored to generic list must be marked unsafe"
@@ -38088,7 +38051,7 @@ mod tests {
             is_extern: false,
         };
 
-        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
         assert!(
             !analysis.scalar_slot_exclusion_unsafe.contains("val"),
             "int value stored to list_int must NOT be marked unsafe"
