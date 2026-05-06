@@ -613,9 +613,6 @@ pub(crate) unsafe fn function_set_code_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
         let slot = ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
         let old_bits = *slot;
         if old_bits != bits {
-            if old_bits != 0 {
-                dec_ref_bits(_py, old_bits);
-            }
             if bits != 0 {
                 inc_ref_bits(_py, bits);
             }
@@ -623,6 +620,9 @@ pub(crate) unsafe fn function_set_code_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
         }
         let fn_ptr = function_fn_ptr(ptr);
         fn_ptr_code_set(_py, fn_ptr, bits);
+        if old_bits != bits && old_bits != 0 {
+            dec_ref_bits(_py, old_bits);
+        }
     }
 }
 
@@ -931,7 +931,25 @@ pub(crate) fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{zip_set_strict_bits, zip_strict_bits};
+    use super::{
+        ensure_function_code_bits, function_code_bits, function_set_code_bits, zip_set_strict_bits,
+        zip_strict_bits,
+    };
+    use crate::object::header_from_obj_ptr;
+    use crate::{
+        alloc_function_obj, alloc_string, dec_ref_bits, fn_ptr_code_get, fn_ptr_code_set,
+        inc_ref_bits, obj_from_bits,
+    };
+    use molt_obj_model::MoltObject;
+    use std::sync::atomic::Ordering;
+
+    unsafe fn ref_count(ptr: *mut u8) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Relaxed)
+        }
+    }
 
     #[test]
     fn zip_strict_bits_unaligned_roundtrip() {
@@ -942,5 +960,124 @@ mod tests {
             zip_set_strict_bits(ptr, value);
             assert_eq!(zip_strict_bits(ptr), value);
         }
+    }
+
+    #[test]
+    fn function_code_slot_retains_and_releases_borrowed_code() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = alloc_function_obj(_py, 0, 0);
+            assert_eq!(unsafe { function_code_bits(func_ptr) }, 0);
+
+            let code_bits = unsafe { ensure_function_code_bits(_py, func_ptr) };
+            let code_ptr = obj_from_bits(code_bits).as_ptr().unwrap();
+            assert_eq!(unsafe { ref_count(code_ptr) }, 1);
+            assert_eq!(unsafe { function_code_bits(func_ptr) }, code_bits);
+            inc_ref_bits(_py, code_bits);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 2);
+
+            let filename_ptr = alloc_string(_py, b"<replacement-code>");
+            let name_ptr = alloc_string(_py, b"<replacement-code-name>");
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let replacement_ptr = crate::alloc_code_obj(
+                _py,
+                filename_bits,
+                name_bits,
+                3,
+                MoltObject::none().bits(),
+                0,
+                0,
+                0,
+                0,
+            );
+            dec_ref_bits(_py, filename_bits);
+            dec_ref_bits(_py, name_bits);
+            let replacement_bits = MoltObject::from_ptr(replacement_ptr).bits();
+            assert_eq!(unsafe { ref_count(replacement_ptr) }, 1);
+
+            unsafe { function_set_code_bits(_py, func_ptr, replacement_bits) };
+            assert_eq!(unsafe { ref_count(code_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(replacement_ptr) }, 2);
+            dec_ref_bits(_py, code_bits);
+
+            dec_ref_bits(_py, replacement_bits);
+            assert_eq!(unsafe { ref_count(replacement_ptr) }, 1);
+
+            inc_ref_bits(_py, replacement_bits);
+            assert_eq!(unsafe { ref_count(replacement_ptr) }, 2);
+            dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
+            assert_eq!(unsafe { ref_count(replacement_ptr) }, 1);
+            dec_ref_bits(_py, replacement_bits);
+        })
+    }
+
+    #[test]
+    fn fn_ptr_code_map_retain_replace_and_clear_release_outside_slot_owner() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let key = 0xF00D_C0DE_5151_0001;
+            fn_ptr_code_set(_py, key, 0);
+
+            let filename_a_ptr = alloc_string(_py, b"<fn-ptr-code-a>");
+            let name_a_ptr = alloc_string(_py, b"<fn-ptr-code-a-name>");
+            let filename_a_bits = MoltObject::from_ptr(filename_a_ptr).bits();
+            let name_a_bits = MoltObject::from_ptr(name_a_ptr).bits();
+            let code_a_ptr = crate::alloc_code_obj(
+                _py,
+                filename_a_bits,
+                name_a_bits,
+                5,
+                MoltObject::none().bits(),
+                0,
+                0,
+                0,
+                0,
+            );
+            dec_ref_bits(_py, filename_a_bits);
+            dec_ref_bits(_py, name_a_bits);
+            let code_a_bits = MoltObject::from_ptr(code_a_ptr).bits();
+            inc_ref_bits(_py, code_a_bits);
+
+            let filename_b_ptr = alloc_string(_py, b"<fn-ptr-code-b>");
+            let name_b_ptr = alloc_string(_py, b"<fn-ptr-code-b-name>");
+            let filename_b_bits = MoltObject::from_ptr(filename_b_ptr).bits();
+            let name_b_bits = MoltObject::from_ptr(name_b_ptr).bits();
+            let code_b_ptr = crate::alloc_code_obj(
+                _py,
+                filename_b_bits,
+                name_b_bits,
+                9,
+                MoltObject::none().bits(),
+                0,
+                0,
+                0,
+                0,
+            );
+            dec_ref_bits(_py, filename_b_bits);
+            dec_ref_bits(_py, name_b_bits);
+            let code_b_bits = MoltObject::from_ptr(code_b_ptr).bits();
+            inc_ref_bits(_py, code_b_bits);
+
+            assert_eq!(unsafe { ref_count(code_a_ptr) }, 2);
+            fn_ptr_code_set(_py, key, code_a_bits);
+            assert_eq!(fn_ptr_code_get(_py, key), code_a_bits);
+            assert_eq!(unsafe { ref_count(code_a_ptr) }, 3);
+            dec_ref_bits(_py, code_a_bits);
+            assert_eq!(unsafe { ref_count(code_a_ptr) }, 2);
+
+            fn_ptr_code_set(_py, key, code_b_bits);
+            assert_eq!(fn_ptr_code_get(_py, key), code_b_bits);
+            assert_eq!(unsafe { ref_count(code_b_ptr) }, 3);
+            assert_eq!(unsafe { ref_count(code_a_ptr) }, 1);
+            dec_ref_bits(_py, code_a_bits);
+            dec_ref_bits(_py, code_b_bits);
+            assert_eq!(unsafe { ref_count(code_b_ptr) }, 2);
+
+            fn_ptr_code_set(_py, key, 0);
+            assert_eq!(fn_ptr_code_get(_py, key), 0);
+            assert_eq!(unsafe { ref_count(code_b_ptr) }, 1);
+            dec_ref_bits(_py, code_b_bits);
+        })
     }
 }
