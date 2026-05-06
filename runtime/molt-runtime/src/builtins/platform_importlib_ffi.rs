@@ -7453,7 +7453,7 @@ fn importlib_module_dict_ptr_for_state(
     Ok(dict_ptr)
 }
 
-fn importlib_module_dict_get_optional_bits(
+fn importlib_module_dict_get_optional_owned_bits(
     _py: &PyToken<'_>,
     module_bits: u64,
     attr_bits: u64,
@@ -7463,7 +7463,15 @@ fn importlib_module_dict_get_optional_bits(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    Ok(out.filter(|bits| !obj_from_bits(*bits).is_none()))
+    let Some(bits) = out.filter(|bits| !obj_from_bits(*bits).is_none()) else {
+        return Ok(None);
+    };
+    // `dict_get_in_place` returns a borrowed value. Importlib state repair
+    // paths normalize all optional lookups to owned references so cleanup can
+    // use a single explicit `dec_ref_bits` boundary without depending on where
+    // the value came from.
+    inc_ref_bits(_py, bits);
+    Ok(Some(bits))
 }
 
 #[unsafe(no_mangle)]
@@ -7519,9 +7527,11 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
             if is_package {
                 importlib_require_package_root_bits(_py, package_root_bits)?;
                 let dunder_path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
-                if let Some(existing_path_bits) =
-                    importlib_module_dict_get_optional_bits(_py, module_bits, dunder_path_name)?
-                {
+                if let Some(existing_path_bits) = importlib_module_dict_get_optional_owned_bits(
+                    _py,
+                    module_bits,
+                    dunder_path_name,
+                )? {
                     if importlib_is_str_list_bits(existing_path_bits) {
                         module_path_bits = existing_path_bits;
                         module_path_owned = true;
@@ -7576,9 +7586,11 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
                 }
             } else {
                 let dunder_path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
-                if let Some(module_path_attr_bits) =
-                    importlib_module_dict_get_optional_bits(_py, module_bits, dunder_path_name)?
-                {
+                if let Some(module_path_attr_bits) = importlib_module_dict_get_optional_owned_bits(
+                    _py,
+                    module_bits,
+                    dunder_path_name,
+                )? {
                     let should_delete = match obj_from_bits(module_path_attr_bits).as_ptr() {
                         Some(path_ptr) => unsafe { object_type_id(path_ptr) == TYPE_ID_OBJECT },
                         None => false,

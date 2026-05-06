@@ -139,7 +139,7 @@ fn compute_function_return_alias_summary(
                     Some(_) => return None,
                 }
             }
-            "ret_void" => return None,
+            "ret_void" => {}
             _ => {}
         }
     }
@@ -2989,6 +2989,66 @@ mod tests {
             out: Some(out.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn return_alias_summary_ignores_exception_ret_void_tail() {
+        let summaries = compute_return_alias_summaries(&[FunctionIR {
+            name: "expect_str_like".to_string(),
+            params: vec!["value".to_string(), "label".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("value".to_string()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(1),
+                    ..Default::default()
+                },
+                make_op("ret_void"),
+            ],
+        }]);
+
+        assert_eq!(
+            summaries.get("expect_str_like"),
+            Some(&ReturnAliasSummary::Param(0))
+        );
+    }
+
+    #[test]
+    fn return_alias_summary_rejects_mixed_alias_and_fresh_return() {
+        let summaries = compute_return_alias_summaries(&[FunctionIR {
+            name: "mixed_return".to_string(),
+            params: vec!["value".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("value".to_string()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("fresh".to_string()),
+                    s_value: Some("fresh".to_string()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("fresh".to_string()),
+                    ..Default::default()
+                },
+            ],
+        }]);
+
+        assert_eq!(summaries.get("mixed_return"), None);
     }
 
     #[test]
