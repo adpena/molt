@@ -71,7 +71,10 @@ This file is forward-looking only.
   transient extraction side table; range/list devirtualization also records the
   I64/Bool facts it synthesizes for loop-carried values. The next native
   cleanup must consume these typed facts through a LIR-derived representation
-  plan instead of recomputing scalar lanes from SimpleIR op strings.
+  plan instead of recomputing scalar lanes from SimpleIR op strings. TIR-to-
+  SimpleIR value naming now has a first-class `SimpleValueNames` bridge so
+  representation planning can use the same param and block-argument naming
+  contract as the legacy lowering surface.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
