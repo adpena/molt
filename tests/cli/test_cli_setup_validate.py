@@ -76,13 +76,18 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert isinstance(steps, list)
     names = {entry["name"] for entry in steps}
     assert "cli-run-json" in names
-    assert "cli-build-json" in names
-    assert "cli-compare-json" in names
-    assert "cli-unsupported-dynamic" in names
+    assert "cli-command-json" in names
     assert "native-parity" in names
     assert "wasm-parity" in names
     assert "conformance-smoke" in names
     assert "bench-smoke" in names
+    cli_command_step = next(
+        entry for entry in steps if entry["name"] == "cli-command-json"
+    )
+    cli_command_expr = cli_command_step["cmd"][cli_command_step["cmd"].index("-k") + 1]
+    assert "test_cli_build_json_binary_executes_for_native_profiles" in cli_command_expr
+    assert "test_cli_compare_json" in cli_command_expr
+    assert "test_cli_run_exec_eval_raise_runtime_error" in cli_command_expr
     bench_step = next(entry for entry in steps if entry["name"] == "bench-smoke")
     assert "--warmup" in bench_step["cmd"]
     assert bench_step["cmd"][bench_step["cmd"].index("--warmup") + 1] == "1"

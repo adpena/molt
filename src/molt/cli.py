@@ -29744,7 +29744,7 @@ def _planned_validate_steps(
             "smoke",
         ),
         _ValidationStep(
-            "cli-build-json",
+            "cli-command-json",
             [
                 python,
                 "-m",
@@ -29752,41 +29752,11 @@ def _planned_validate_steps(
                 "-q",
                 "tests/cli/test_cli_smoke.py",
                 "-k",
-                "test_cli_build_json_binary_executes_for_native_profiles",
-            ],
-            root,
-            "command",
-            ("native",),
-            ("dev", "release"),
-            "smoke",
-        ),
-        _ValidationStep(
-            "cli-compare-json",
-            [
-                python,
-                "-m",
-                "pytest",
-                "-q",
-                "tests/cli/test_cli_smoke.py",
-                "-k",
-                "test_cli_compare_json",
-            ],
-            root,
-            "command",
-            ("native",),
-            ("dev", "release"),
-            "smoke",
-        ),
-        _ValidationStep(
-            "cli-unsupported-dynamic",
-            [
-                python,
-                "-m",
-                "pytest",
-                "-q",
-                "tests/cli/test_cli_smoke.py",
-                "-k",
-                "test_cli_run_exec_eval_raise_runtime_error",
+                (
+                    "test_cli_build_json_binary_executes_for_native_profiles "
+                    "or test_cli_compare_json "
+                    "or test_cli_run_exec_eval_raise_runtime_error"
+                ),
             ],
             root,
             "command",
