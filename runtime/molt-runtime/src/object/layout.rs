@@ -714,6 +714,7 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
         }
         let code_bits = MoltObject::from_ptr(code_ptr).bits();
         function_set_code_bits(_py, func_ptr, code_bits);
+        dec_ref_bits(_py, code_bits);
         code_bits
     }
 }

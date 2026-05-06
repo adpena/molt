@@ -116,6 +116,33 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64) -> u64 {
     })
 }
 
+fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> u64 {
+    let Some(slots) = runtime_state(_py).code_slots.get() else {
+        return MoltObject::none().bits();
+    };
+    let Some(idx) = usize::try_from(code_id).ok() else {
+        return MoltObject::none().bits();
+    };
+    let bits = if idx < slots.len() {
+        slots[idx].load(AtomicOrdering::Acquire)
+    } else {
+        MoltObject::none().bits()
+    };
+    if bits == 0 || obj_from_bits(bits).is_none() {
+        return MoltObject::none().bits();
+    }
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_CODE {
+            return MoltObject::none().bits();
+        }
+    }
+    inc_ref_bits(_py, bits);
+    bits
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -147,17 +174,7 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(slots) = runtime_state(_py).code_slots.get() else {
-            return MoltObject::none().bits();
-        };
-        let Some(idx) = usize::try_from(code_id).ok() else {
-            return MoltObject::none().bits();
-        };
-        let code_bits = if idx < slots.len() {
-            slots[idx].load(AtomicOrdering::Acquire)
-        } else {
-            MoltObject::none().bits()
-        };
+        let code_bits = code_slot_acquire(_py, code_id);
         if trace_enter_slot_enabled() {
             let mut name = "<none>".to_string();
             let mut file = "<none>".to_string();
@@ -177,7 +194,7 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
                 code_id, code_bits, name, file
             );
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_owned(_py, code_bits);
         code_bits
     })
 }
@@ -231,17 +248,8 @@ pub extern "C" fn molt_guarded_call(
     }
     if code_id >= 0 {
         crate::with_gil_entry_nopanic!(_py, {
-            if let Some(slots) = runtime_state(_py).code_slots.get() {
-                let idx = code_id as usize;
-                let code_bits = if idx < slots.len() {
-                    slots[idx].load(AtomicOrdering::Acquire)
-                } else {
-                    MoltObject::none().bits()
-                };
-                frame_stack_push(_py, code_bits);
-            } else {
-                frame_stack_push(_py, MoltObject::none().bits());
-            }
+            let code_bits = code_slot_acquire(_py, code_id as u64);
+            frame_stack_push_owned(_py, code_bits);
         });
     }
     let result: u64 = unsafe {
