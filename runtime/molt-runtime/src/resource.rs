@@ -125,9 +125,9 @@ pub enum OperationEstimate {
     /// Left shift. Result bits ~ `value_bits + shift`.
     LeftShift {
         /// Bit-width of the value being shifted.
-        value_bits: u32,
+        value_bits: u64,
         /// Shift amount.
-        shift: u32,
+        shift: u64,
     },
     /// String replacement where the new substring is larger than the old one.
     StringReplace {
@@ -168,7 +168,7 @@ impl OperationEstimate {
                 usize::try_from(result_bytes).ok()
             }
             Self::LeftShift { value_bits, shift } => {
-                let result_bits = (*value_bits as u64) + (*shift as u64);
+                let result_bits = value_bits.checked_add(*shift)?;
                 let result_bytes = result_bits.div_ceil(8);
                 // 2x safety multiplier for BigInt intermediate allocation during shift
                 result_bytes
@@ -645,9 +645,9 @@ pub fn check_pow_size(base_bits: u32, exponent: u64) -> Result<(), String> {
 /// Estimates the result size of `value << shift` where `value` has `value_bits`
 /// significant bits. Returns `Err` when the shift would produce > ~10 MB.
 #[inline]
-pub fn check_lshift_size(value_bits: u32, shift: u32) -> Result<(), String> {
+pub fn check_lshift_size(value_bits: u64, shift: u64) -> Result<(), String> {
     const MAX_RESULT_BITS: u64 = 80_000_000;
-    let estimated_bits = (value_bits as u64) + (shift as u64);
+    let estimated_bits = value_bits.saturating_add(shift);
     if estimated_bits > MAX_RESULT_BITS {
         return Err(format!(
             "left shift result too large: ~{} bits (limit: {} bits)",
