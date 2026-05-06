@@ -42,6 +42,9 @@ It is current-state only. For forward-looking priorities, use
 - Luau is a checked source-emission target for the current/future Luau surface;
   current OpIR support is generated in
   `docs/spec/areas/compiler/luau_support_matrix.generated.md`.
+- Backend-facing native and WASM lowering always runs through the TIR pipeline;
+  the old environment-variable opt-out has been removed so SimpleIR transport
+  metadata cannot bypass typed-IR validation.
 
 ## Intentionally Unsupported
 

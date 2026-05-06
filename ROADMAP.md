@@ -43,6 +43,8 @@ This file is forward-looking only.
 - Tighten compatibility rollups around generated evidence.
 - Make typed SSA / explicit representation facts survive lowering without
   degrading into transport-only hints.
+- Keep the TIR pipeline unconditional for backend-facing lowering; debugging
+  uses dumps and verifier evidence rather than an environment-variable bypass.
 - Close the highest-value native and WASM parity blockers.
 - Keep the generated Luau support matrix current and use it to prioritize
   checked CPython-vs-Luau feature-gap closure.

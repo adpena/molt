@@ -36,7 +36,6 @@ const DEFAULT_BACKEND_BATCH_SIZE: usize = 64;
 const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
 const DEFAULT_STDLIB_BATCH_OP_BUDGET: usize = 12_000;
 const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
-    "MOLT_TIR_OPT",
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
     "MOLT_BACKEND_BATCH_SIZE",
     "MOLT_BACKEND_BATCH_OP_BUDGET",
@@ -711,8 +710,8 @@ impl DaemonRequest {
             }
         };
         // Apply per-request env var overrides so callers can control
-        // MOLT_TIR_OPT, MOLT_DISABLE_DEAD_FUNC_ELIM, etc. without
-        // restarting the daemon.
+        // backend diagnostics and non-TIR tuning without restarting the
+        // daemon. TIR itself is not request-optional.
         for key in DAEMON_REQUEST_ENV_KEYS {
             unsafe {
                 std::env::remove_var(key);
@@ -1620,8 +1619,9 @@ fn default_backend_max_rss_gb() -> u64 {
 
 #[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
 fn main() -> io::Result<()> {
-    // TIR optimization is ON by default. Invalid roundtrips are fatal
-    // compiler bugs; disable with MOLT_TIR_OPT=0 only for targeted bisects.
+    // TIR optimization is mandatory. Invalid roundtrips are fatal compiler
+    // bugs and must be debugged through dumps/verifier evidence, not by
+    // bypassing typed IR.
 
     // Hard memory guard: set rlimit on virtual memory to prevent OOM
     // from crashing the entire machine. The default scales with host memory
