@@ -104,6 +104,19 @@ security = "cargo deny check"
 build = "cargo build --profile release-fast --workspace"
 backend = "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
 compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider --tb=line -q"
+lint = [
+    "{project_python} -m ruff check .",
+    "{project_python} -m ruff format --check .",
+    "{project_python} -m ty check src",
+    "{project_python} tools/verified_subset.py check",
+    "{project_python} tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
+    "{project_python} tools/check_stdlib_intrinsics.py --critical-allowlist",
+    "{project_python} tools/check_dynamic_policy.py",
+    "{project_python} tools/update_status_blocks.py --check",
+    "{project_python} tools/check_docs_architecture.py",
+    "{project_python} tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt",
+    "{project_python} -m molt.cli debug verify --format json",
+]
 gates = [
     "@clippy",
     "@security",

@@ -8398,29 +8398,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return collector.names
 
     def _module_globals_dict_escapes(self, node: ast.Module) -> bool:
-        class GlobalsEscapeCollector(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.escaped = False
-
-            def visit_Call(self, call: ast.Call) -> None:
-                if (
-                    isinstance(call.func, ast.Name)
-                    and call.func.id in {"globals", "vars"}
-                    and not call.args
-                    and not call.keywords
-                ):
-                    self.escaped = True
-                    return
-                self.generic_visit(call)
-
-            def visit_Name(self, node: ast.Name) -> None:
-                if isinstance(node.ctx, ast.Load) and node.id in {"globals", "vars"}:
-                    self.escaped = True
-                    return
-
-        collector = GlobalsEscapeCollector()
-        collector.visit(node)
-        return collector.escaped
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id in {"globals", "vars"}
+                and not child.args
+                and not child.keywords
+            ):
+                return True
+            if (
+                isinstance(child, ast.Name)
+                and isinstance(child.ctx, ast.Load)
+                and child.id in {"globals", "vars"}
+            ):
+                return True
+        return False
 
     def _collect_stable_module_classes(self, node: ast.Module) -> set[str]:
         if self._module_globals_dict_escapes(node):

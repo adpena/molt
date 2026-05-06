@@ -47,12 +47,26 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
 
 def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None:
     module = _load_dev_py()
-    calls: list[tuple[list[str], str | None, bool]] = []
+    calls: list[list[str]] = []
 
-    def fake_run_uv(args, python=None, env=None, tty=False):
-        calls.append((list(args), python, tty))
-
-    monkeypatch.setattr(module, "run_uv", fake_run_uv, raising=True)
+    monkeypatch.setattr(
+        module,
+        "_canonical_env",
+        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_require_project_python",
+        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_repo_cmd",
+        lambda cmd, _env, *, tty: calls.append(list(cmd)),
+        raising=True,
+    )
     monkeypatch.setattr(
         module.sys,
         "argv",
@@ -63,20 +77,14 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
 
     stdlib_calls = [
         args
-        for args, _python, _tty in calls
-        if args[:2] == ["python3", "tools/check_stdlib_intrinsics.py"]
+        for args in calls
+        if len(args) > 1 and args[1] == "tools/check_stdlib_intrinsics.py"
     ]
 
-    assert [
-        "python3",
-        "tools/check_stdlib_intrinsics.py",
-        "--fallback-intrinsic-backed-only",
-    ] in stdlib_calls
-    assert [
-        "python3",
-        "tools/check_stdlib_intrinsics.py",
-        "--critical-allowlist",
-    ] in stdlib_calls
+    assert any("--fallback-intrinsic-backed-only" in args for args in stdlib_calls)
+    assert any("--critical-allowlist" in args for args in stdlib_calls)
+    assert calls[0][1:4] == ["-m", "ruff", "check"]
+    assert calls[1][1:5] == ["-m", "ruff", "format", "--check"]
 
 
 def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch) -> None:

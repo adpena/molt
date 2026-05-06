@@ -8,12 +8,28 @@ import shutil
 import subprocess
 import sys
 import time
-import tomllib
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_PYTHONS = ["3.12", "3.13", "3.14"]
+
+
+def _load_dx_module():
+    dx_path = ROOT / "src" / "molt" / "dx.py"
+    spec = importlib.util.spec_from_file_location("molt_dx_project", dx_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load DX planner from {dx_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_DX_MODULE = _load_dx_module()
+TEST_PYTHONS = _DX_MODULE.TEST_PYTHONS
+DxProject = _DX_MODULE.DxProject
+
+DX = DxProject(ROOT)
 
 
 def _log(msg: str) -> None:
@@ -61,36 +77,15 @@ def _run_with_pty(cmd: list[str], env: dict[str, str]) -> None:
 
 
 def _uv_project_env_dir() -> Path:
-    return ROOT / ".venv"
+    return DX.project_env_dir()
 
 
 def _uv_project_python() -> Path:
-    if os.name == "nt":
-        return _uv_project_env_dir() / "Scripts" / "python.exe"
-    return _uv_project_env_dir() / "bin" / "python3"
+    return DX.project_python()
 
 
 def _uv_project_env_matches_python(requested: str | None) -> bool:
-    project_python = _uv_project_python()
-    if not project_python.exists():
-        return False
-    if not requested:
-        return True
-    try:
-        proc = subprocess.run(
-            [
-                str(project_python),
-                "-c",
-                ("import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return False
-    return proc.stdout.strip() == requested
+    return DX.project_env_matches_python(requested)
 
 
 def _normalized_uv_run_env(
@@ -98,14 +93,7 @@ def _normalized_uv_run_env(
     *,
     python: str | None,
 ) -> dict[str, str]:
-    run_env = env.copy()
-    run_env.setdefault("PYTHONUNBUFFERED", "1")
-    run_env["UV_PROJECT_ENVIRONMENT"] = str(_uv_project_env_dir())
-    for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
-        run_env.pop(name, None)
-    if run_env.get("UV_NO_SYNC") == "1" and not _uv_project_env_matches_python(python):
-        run_env.pop("UV_NO_SYNC", None)
-    return run_env
+    return DX.normalized_uv_run_env(env, python=python)
 
 
 def run_uv(
@@ -168,58 +156,23 @@ def _parse_test_runner_flags(args: list[str]) -> tuple[list[str], bool, str | No
 
 
 def _load_dx_config() -> dict[str, object]:
-    with (ROOT / "pyproject.toml").open("rb") as fh:
-        data = tomllib.load(fh)
-    tool = data.get("tool", {})
-    if not isinstance(tool, dict):
-        return {}
-    molt = tool.get("molt", {})
-    if not isinstance(molt, dict):
-        return {}
-    dx = molt.get("dx", {})
-    return dx if isinstance(dx, dict) else {}
+    return DX.load_config()
 
 
 def _canonical_env() -> dict[str, str]:
-    dx = _load_dx_config()
-    env = os.environ.copy()
-    for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
-        env.pop(name, None)
-    env_cfg = dx.get("env", {})
-    if isinstance(env_cfg, dict):
-        for key, raw_value in env_cfg.items():
-            if not isinstance(key, str) or not isinstance(raw_value, str):
-                continue
-            env[key] = raw_value.format(root=str(ROOT))
-    env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
-    env.setdefault("MOLT_BACKEND_DAEMON", "1" if dx.get("backend_daemon") else "0")
-    env.setdefault("CARGO_BUILD_JOBS", str(dx.get("cargo_build_jobs", 2)))
-    for dirname in (
-        env["CARGO_TARGET_DIR"],
-        env["MOLT_CACHE"],
-        env["MOLT_DIFF_ROOT"],
-        env["MOLT_DIFF_TMPDIR"],
-        env["UV_CACHE_DIR"],
-        env["TMPDIR"],
-    ):
-        Path(dirname).mkdir(parents=True, exist_ok=True)
-    return env
+    return DX.canonical_env()
 
 
 def _dx_commands() -> dict[str, object]:
-    dx = _load_dx_config()
-    commands = dx.get("commands", {})
-    return commands if isinstance(commands, dict) else {}
+    return DX.commands()
 
 
 def _format_dx_command(command: str) -> str:
-    return command.format(root=str(ROOT), project_python=str(_uv_project_python()))
+    return DX.format_command(command)
 
 
 def _split_command(command: object, name: str) -> list[str]:
-    if not isinstance(command, str) or not command.strip():
-        raise RuntimeError(f"Missing [tool.molt.dx.commands].{name}")
-    return shlex.split(_format_dx_command(command), posix=os.name != "nt")
+    return DX.split_command(command, name)
 
 
 def _split_command_sequence(
@@ -229,43 +182,12 @@ def _split_command_sequence(
     commands: dict[str, object] | None = None,
     stack: tuple[str, ...] = (),
 ) -> list[list[str]]:
-    commands = _dx_commands() if commands is None else commands
-
-    def split_item(item: str, item_name: str) -> list[list[str]]:
-        stripped = item.strip()
-        if stripped.startswith("@"):
-            ref = stripped[1:]
-            if not ref or any(ch.isspace() for ch in ref):
-                raise RuntimeError(
-                    f"Invalid [tool.molt.dx.commands].{item_name} reference: {item!r}"
-                )
-            if ref in stack:
-                chain = " -> ".join((*stack, ref))
-                raise RuntimeError(f"Cyclic [tool.molt.dx.commands] reference: {chain}")
-            if ref not in commands:
-                raise RuntimeError(
-                    f"Missing [tool.molt.dx.commands].{ref} referenced by {item_name}"
-                )
-            return _split_command_sequence(
-                commands[ref],
-                ref,
-                commands=commands,
-                stack=(*stack, ref),
-            )
-        return [_split_command(item, item_name)]
-
-    if isinstance(command, str):
-        return split_item(command, name)
-    if isinstance(command, list) and command:
-        split: list[list[str]] = []
-        for idx, item in enumerate(command):
-            if not isinstance(item, str) or not item.strip():
-                raise RuntimeError(
-                    f"Invalid [tool.molt.dx.commands].{name}[{idx}]: expected command string"
-                )
-            split.extend(split_item(item, f"{name}[{idx}]"))
-        return split
-    raise RuntimeError(f"Missing [tool.molt.dx.commands].{name}")
+    return DX.split_command_sequence(
+        command,
+        name,
+        commands=commands,
+        stack=stack,
+    )
 
 
 def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
@@ -282,12 +204,7 @@ def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:
 
 
 def _require_project_python() -> Path:
-    python = _uv_project_python()
-    if not python.exists():
-        raise RuntimeError(
-            f"{python} is missing; run `tools/dev.py install` before compliance gates"
-        )
-    return python
+    return DX.require_project_python("repo gates")
 
 
 def _print_canonical_env(env: dict[str, str]) -> None:
@@ -313,7 +230,9 @@ def _run_dx_gates(args: list[str], *, tty: bool) -> None:
     allow_dirty = "--allow-dirty" in args
     unknown = [arg for arg in args if arg != "--allow-dirty"]
     if unknown:
-        raise RuntimeError("Unrecognized tools/dev.py gates arguments: " + " ".join(unknown))
+        raise RuntimeError(
+            "Unrecognized tools/dev.py gates arguments: " + " ".join(unknown)
+        )
     env = _canonical_env()
     _require_project_python()
     commands = _dx_commands()
@@ -335,7 +254,9 @@ def _run_dx_gates(args: list[str], *, tty: bool) -> None:
     if status:
         print(status, end="")
         if not allow_dirty:
-            raise RuntimeError("working tree is dirty; rerun with --allow-dirty while developing")
+            raise RuntimeError(
+                "working tree is dirty; rerun with --allow-dirty while developing"
+            )
     else:
         _log("git status clean")
 
@@ -363,62 +284,10 @@ def main() -> None:
     elif cmd[0] == "gates":
         _run_dx_gates(cmd[1:], tty=use_tty)
     elif cmd[0] == "lint":
-        run_uv(["ruff", "check", "."], python=TEST_PYTHONS[0], tty=use_tty)
-        run_uv(["ruff", "format", "--check", "."], python=TEST_PYTHONS[0], tty=use_tty)
-        run_uv(["ty", "check", "src"], python=TEST_PYTHONS[0], tty=use_tty)
-        run_uv(
-            ["python3", "tools/verified_subset.py", "check"],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
-        run_uv(
-            [
-                "python3",
-                "tools/check_stdlib_intrinsics.py",
-                "--fallback-intrinsic-backed-only",
-            ],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
-        run_uv(
-            [
-                "python3",
-                "tools/check_stdlib_intrinsics.py",
-                "--critical-allowlist",
-            ],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
-        run_uv(
-            ["python3", "tools/check_dynamic_policy.py"],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
-        run_uv(
-            ["python3", "tools/update_status_blocks.py", "--check"],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
-        run_uv(
-            ["python3", "tools/check_docs_architecture.py"],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
-        run_uv(
-            [
-                "python3",
-                "tools/check_core_lane_lowering.py",
-                "--manifest",
-                "tests/differential/basic/CORE_TESTS.txt",
-            ],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
-        run_uv(
-            ["python3", "-m", "molt.cli", "debug", "verify", "--format", "json"],
-            python=TEST_PYTHONS[0],
-            tty=use_tty,
-        )
+        env = _canonical_env()
+        _require_project_python()
+        for lint_cmd in _split_command_sequence(_dx_commands().get("lint"), "lint"):
+            _run_repo_cmd(lint_cmd, env, tty=use_tty)
     elif cmd[0] == "test":
         env = os.environ.copy()
         _apply_dev_trusted(env)

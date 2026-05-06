@@ -6,6 +6,9 @@ NumPy/NPZ loader graph on the hot path.
 """
 
 import struct
+from importlib import import_module
+from typing import Any, cast
+
 from .tensor import Tensor
 
 
@@ -185,7 +188,7 @@ def from_numpy_array(arr) -> Tensor:
 
 def to_numpy_array(tensor: Tensor):
     try:
-        import numpy as np
+        np = cast(Any, import_module("numpy"))
     except ImportError:
         raise ImportError(
             "numpy is required for to_numpy_array(). Install it with: pip install numpy"

@@ -1545,10 +1545,7 @@ def main():
         i for i, op in enumerate(func_ops) if op.get("var") == cache_vars[0]
     )
     assert first_cache_store < loop_start
-    assert all(
-        op.get("kind") != "module_get_attr"
-        for op in func_ops[loop_start + 1 :]
-    )
+    assert all(op.get("kind") != "module_get_attr" for op in func_ops[loop_start + 1 :])
 
 
 def test_effect_aware_cse_reuses_getattr_generic_obj_without_writes() -> None:

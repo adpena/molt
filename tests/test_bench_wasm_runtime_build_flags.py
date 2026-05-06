@@ -223,7 +223,9 @@ def test_collect_samples_rejects_partial_sample_failure(monkeypatch) -> None:
             bench_wasm._SampleResult(None, 1, "failed", "runtime_error"),
         ]
     )
-    monkeypatch.setattr(bench_wasm, "measure_wasm_run", lambda *args, **kwargs: next(results))
+    monkeypatch.setattr(
+        bench_wasm, "measure_wasm_run", lambda *args, **kwargs: next(results)
+    )
 
     samples, ok, failure = bench_wasm.collect_samples(
         wasm,

@@ -97,6 +97,7 @@ from molt.debug.reduce import (
 )
 from molt.debug.verify import build_verify_result_payload, run_default_verify_checks
 from molt.debug.bisect import bisect_backend_profile_ic, bisect_first_bad_pass
+from molt.dx import DxConfigError, DxProject
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import (
     TypeFacts,
@@ -13548,7 +13549,11 @@ def _compile_with_backend_daemon(
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
         )
-    if request_bytes is None and (cache_key or function_cache_key) and cache_probe_allowed:
+    if (
+        request_bytes is None
+        and (cache_key or function_cache_key)
+        and cache_probe_allowed
+    ):
         probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
             ir=None,
             backend_output=backend_output,
@@ -26729,9 +26734,7 @@ def _cache_fingerprint() -> str:
         root=root,
         source_paths=source_paths,
         scope="compiler-runtime-backend",
-        extra_fingerprint_inputs=(
-            f"rustc:{rustc_info}\nrustflags:{rustflags}\n"
-        ),
+        extra_fingerprint_inputs=(f"rustc:{rustc_info}\nrustflags:{rustflags}\n"),
     )
 
 
@@ -28731,14 +28734,64 @@ def lint(json_output: bool = False, verbose: bool = False) -> int:
     root_error = _require_molt_root(root, json_output, "lint")
     if root_error is not None:
         return root_error
-    cmd = [sys.executable, "tools/dev.py", "lint"]
-    return _run_command(
-        cmd,
-        cwd=root,
-        json_output=json_output,
-        verbose=verbose,
-        label="lint",
-    )
+    project = DxProject(root)
+    try:
+        env = project.canonical_env()
+        project.require_project_python("lint")
+        commands = project.split_command_sequence(
+            project.commands().get("lint"), "lint"
+        )
+    except DxConfigError as exc:
+        if json_output:
+            _emit_json(
+                _json_payload("lint", "error", errors=[str(exc)]),
+                json_output=True,
+            )
+        else:
+            print(f"lint: {exc}", file=sys.stderr)
+        return 2
+    results: list[dict[str, Any]] = []
+    for cmd in commands:
+        if verbose and not json_output:
+            print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
+        result = subprocess.run(
+            [str(part) for part in cmd],
+            cwd=root,
+            env=env,
+            capture_output=json_output,
+            text=True,
+        )
+        result_data: dict[str, Any] = {
+            "cmd": cmd,
+            "returncode": result.returncode,
+        }
+        if json_output:
+            if result.stdout:
+                result_data["stdout"] = result.stdout
+            if result.stderr:
+                result_data["stderr"] = result.stderr
+        results.append(result_data)
+        if result.returncode != 0:
+            if json_output:
+                _emit_json(
+                    _json_payload(
+                        "lint",
+                        "error",
+                        data={"commands": results},
+                    ),
+                    json_output=True,
+                )
+            return result.returncode
+    if json_output:
+        _emit_json(
+            _json_payload(
+                "lint",
+                "ok",
+                data={"returncode": 0, "commands": results},
+            ),
+            json_output=True,
+        )
+    return 0
 
 
 def test(
