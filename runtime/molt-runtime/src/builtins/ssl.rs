@@ -173,6 +173,15 @@ fn return_bytes_val(_py: &PyToken<'_>, data: &[u8]) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+fn ssl_runtime_profile_unavailable(_py: &PyToken<'_>) -> u64 {
+    raise_exception::<u64>(
+        _py,
+        "OSError",
+        "ssl not supported by this runtime profile",
+    )
+}
+
 // ── SSLContext public intrinsics ──────────────────────────────────────────
 
 #[unsafe(no_mangle)]
@@ -814,6 +823,17 @@ pub extern "C" fn molt_ssl_wrap_socket(
 }
 
 #[unsafe(no_mangle)]
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+pub extern "C" fn molt_ssl_wrap_socket(
+    _sock_handle_bits: u64,
+    _ctx_handle_bits: u64,
+    _server_hostname_bits: u64,
+    _server_side_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
+}
+
+#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -894,6 +914,12 @@ pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
+}
+
+#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -940,6 +966,12 @@ pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64
         }
         raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
     })
+}
+
+#[unsafe(no_mangle)]
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -1009,6 +1041,12 @@ pub extern "C" fn molt_ssl_socket_write(_handle_bits: u64, _data_bits: u64) -> u
 }
 
 #[unsafe(no_mangle)]
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+pub extern "C" fn molt_ssl_socket_write(_handle_bits: u64, _data_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
+}
+
+#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1056,6 +1094,15 @@ pub extern "C" fn molt_ssl_socket_getpeercert(_handle_bits: u64, _binary_form_bi
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
     })
+}
+
+#[unsafe(no_mangle)]
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+pub extern "C" fn molt_ssl_socket_getpeercert(
+    _handle_bits: u64,
+    _binary_form_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -1110,6 +1157,12 @@ pub extern "C" fn molt_ssl_socket_cipher(_handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+pub extern "C" fn molt_ssl_socket_cipher(_handle_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
+}
+
+#[unsafe(no_mangle)]
 #[cfg(molt_has_net_io)]
 pub extern "C" fn molt_ssl_socket_version(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1137,6 +1190,12 @@ pub extern "C" fn molt_ssl_socket_version(_handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
     })
+}
+
+#[unsafe(no_mangle)]
+#[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+pub extern "C" fn molt_ssl_socket_version(_handle_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -1173,6 +1232,15 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
             let _ = id;
             raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
         }
+        #[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
+        {
+            let _ = id;
+            raise_exception::<u64>(
+                _py,
+                "OSError",
+                "ssl not supported by this runtime profile",
+            )
+        }
     })
 }
 
@@ -1183,6 +1251,8 @@ pub extern "C" fn molt_ssl_socket_close(handle_bits: u64) -> u64 {
             #[cfg(molt_has_net_io)]
             SOCK_REGISTRY.lock().unwrap().remove(&id);
             #[cfg(target_arch = "wasm32")]
+            let _ = id;
+            #[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
             let _ = id;
         }
         return_none()
