@@ -9907,6 +9907,31 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "dataclass_new_values" => {
+                        let args = op.args.as_ref().unwrap();
+                        let name = locals[&args[0]];
+                        let fields = locals[&args[1]];
+                        let flags = locals[&args[2]];
+                        let out = locals[op.out.as_ref().unwrap()];
+                        func.instruction(&Instruction::I64Const(box_int(args[3..].len() as i64)));
+                        emit_call(func, reloc_enabled, import_ids["list_builder_new"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                        for value_name in &args[3..] {
+                            let value = locals[value_name];
+                            func.instruction(&Instruction::LocalGet(out));
+                            func.instruction(&Instruction::LocalGet(value));
+                            emit_call(func, reloc_enabled, import_ids["list_builder_append"]);
+                        }
+                        func.instruction(&Instruction::LocalGet(out));
+                        emit_call(func, reloc_enabled, import_ids["tuple_builder_finish"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::LocalGet(fields));
+                        func.instruction(&Instruction::LocalGet(out));
+                        func.instruction(&Instruction::LocalGet(flags));
+                        emit_call(func, reloc_enabled, import_ids["dataclass_new"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
                     "dataclass_get" => {
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];

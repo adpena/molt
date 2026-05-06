@@ -17917,6 +17917,97 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "dataclass_new_values" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let name = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[0],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("Dataclass name not found");
+                    let fields = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[1],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("Dataclass fields not found");
+                    let flags = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[2],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("Dataclass flags not found");
+                    let values = &args[3..];
+                    let values_ptr = if values.is_empty() {
+                        builder.ins().iconst(types::I64, 0)
+                    } else {
+                        let values_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            (values.len() * 8) as u32,
+                            3,
+                        ));
+                        for (idx, name) in values.iter().enumerate() {
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                name,
+                                &int_primary_vars,
+                                &float_primary_vars,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .expect("Dataclass value not found");
+                            builder
+                                .ins()
+                                .stack_store(*val, values_slot, (idx * 8) as i32);
+                        }
+                        builder.ins().stack_addr(types::I64, values_slot, 0)
+                    };
+                    let len = builder.ins().iconst(types::I64, values.len() as i64);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_dataclass_new_from_values",
+                        &[types::I64, types::I64, types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*name, *fields, values_ptr, len, *flags]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "dataclass_get" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let obj = var_get_boxed_overflow_safe(
