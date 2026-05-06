@@ -146,6 +146,17 @@ def test_dev_py_command_refs_fail_loudly_on_bad_config() -> None:
         module._split_command_sequence("@a", "root", commands={"a": "@a"})
 
 
+def test_dev_py_canonical_env_keeps_backend_daemon_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_dev_py()
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON", raising=False)
+
+    env = module._canonical_env()
+
+    assert env["MOLT_BACKEND_DAEMON"] == "1"
+
+
 def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[tuple[list[str], str | None, bool]] = []
