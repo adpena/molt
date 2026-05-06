@@ -501,197 +501,194 @@ pub(crate) fn as_float_extended(obj: MoltObject) -> Option<f64> {
 // --- NaN-boxed ops ---
 
 pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
-        if !profile_enabled(_py) {
-            return;
-        }
-        let call_dispatch = CALL_DISPATCH_COUNT.load(AtomicOrdering::Relaxed);
-        let cache_hit = runtime_state(_py)
-            .string_count_cache_hit
-            .load(AtomicOrdering::Relaxed);
-        let cache_miss = runtime_state(_py)
-            .string_count_cache_miss
-            .load(AtomicOrdering::Relaxed);
-        let struct_stores = STRUCT_FIELD_STORE_COUNT.load(AtomicOrdering::Relaxed);
-        let attr_lookups = ATTR_LOOKUP_COUNT.load(AtomicOrdering::Relaxed);
-        let handle_resolves = HANDLE_RESOLVE_COUNT.load(AtomicOrdering::Relaxed);
-        let layout_guard = LAYOUT_GUARD_COUNT.load(AtomicOrdering::Relaxed);
-        let layout_guard_fail = LAYOUT_GUARD_FAIL.load(AtomicOrdering::Relaxed);
-        let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_objects = ALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_exceptions = ALLOC_EXCEPTION_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_dicts = ALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_strings = ALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_callargs = ALLOC_CALLARGS_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_bytes_callargs = ALLOC_BYTES_CALLARGS.load(AtomicOrdering::Relaxed);
-        let tb_builds = TRACEBACK_BUILD_COUNT.load(AtomicOrdering::Relaxed);
-        let tb_frames = TRACEBACK_BUILD_FRAMES.load(AtomicOrdering::Relaxed);
-        let tb_suppressed = TRACEBACK_SUPPRESS_COUNT.load(AtomicOrdering::Relaxed);
-        let async_polls = ASYNC_POLL_COUNT.load(AtomicOrdering::Relaxed);
-        let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
-        let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
-        let async_sleep_reg = ASYNC_SLEEP_REGISTER_COUNT.load(AtomicOrdering::Relaxed);
-        let call_bind_ic_hit = CALL_BIND_IC_HIT_COUNT.load(AtomicOrdering::Relaxed);
-        let call_bind_ic_miss = CALL_BIND_IC_MISS_COUNT.load(AtomicOrdering::Relaxed);
-        let call_indirect_noncallable_deopt =
-            CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
-        let invoke_ffi_bridge_capability_denied =
-            INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT.load(AtomicOrdering::Relaxed);
-        let guard_tag_type_mismatch_deopt =
-            GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
-        let guard_dict_shape_layout_mismatch_deopt =
-            GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
-        let guard_dict_shape_layout_fail_null_obj =
-            GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT.load(AtomicOrdering::Relaxed);
-        let guard_dict_shape_layout_fail_non_object =
-            GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
-        let guard_dict_shape_layout_fail_class_mismatch =
-            GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
-        let guard_dict_shape_layout_fail_non_type_class =
-            GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT.load(AtomicOrdering::Relaxed);
-        let guard_dict_shape_layout_fail_expected_version_invalid =
-            GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT
-                .load(AtomicOrdering::Relaxed);
-        let guard_dict_shape_layout_fail_version_mismatch =
-            GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
-        let attr_site_name_hit = ATTR_SITE_NAME_CACHE_HIT_COUNT.load(AtomicOrdering::Relaxed);
-        let attr_site_name_miss = ATTR_SITE_NAME_CACHE_MISS_COUNT.load(AtomicOrdering::Relaxed);
-        let split_ws_ascii = SPLIT_WS_ASCII_FAST_PATH_COUNT.load(AtomicOrdering::Relaxed);
-        let split_ws_unicode = SPLIT_WS_UNICODE_PATH_COUNT.load(AtomicOrdering::Relaxed);
-        let dict_str_int_prehash_hit = DICT_STR_INT_PREHASH_HIT_COUNT.load(AtomicOrdering::Relaxed);
-        let dict_str_int_prehash_miss =
-            DICT_STR_INT_PREHASH_MISS_COUNT.load(AtomicOrdering::Relaxed);
-        let dict_str_int_prehash_deopt =
-            DICT_STR_INT_PREHASH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
-        let taq_ingest_calls = TAQ_INGEST_CALL_COUNT.load(AtomicOrdering::Relaxed);
-        let taq_ingest_skip_marker = TAQ_INGEST_SKIP_MARKER_COUNT.load(AtomicOrdering::Relaxed);
-        let ascii_i64_parse_fail = ASCII_I64_PARSE_FAIL_COUNT.load(AtomicOrdering::Relaxed);
-        let alloc_bytes_total = ALLOC_BYTES_TOTAL.load(AtomicOrdering::Relaxed);
-        let alloc_bytes_string = ALLOC_BYTES_STRING.load(AtomicOrdering::Relaxed);
-        let alloc_bytes_dict = ALLOC_BYTES_DICT.load(AtomicOrdering::Relaxed);
-        let alloc_bytes_tuple = ALLOC_BYTES_TUPLE.load(AtomicOrdering::Relaxed);
-        let alloc_bytes_list = ALLOC_BYTES_LIST.load(AtomicOrdering::Relaxed);
-        // Take a final RSS sample before dumping.
-        sample_peak_rss();
-        let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
-        let current_rss = current_rss_bytes();
-        eprintln!(
-            "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} alloc_bytes_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
-            call_dispatch,
-            cache_hit,
-            cache_miss,
-            struct_stores,
-            attr_lookups,
-            handle_resolves,
-            layout_guard,
-            layout_guard_fail,
-            allocs,
-            alloc_objects,
-            alloc_exceptions,
-            alloc_dicts,
-            alloc_tuples,
-            alloc_strings,
-            alloc_callargs,
-            alloc_bytes_callargs,
-            tb_builds,
-            tb_frames,
-            tb_suppressed,
-            async_polls,
-            async_pending,
-            async_wakeups,
-            async_sleep_reg,
-            call_bind_ic_hit,
-            call_bind_ic_miss,
-            call_indirect_noncallable_deopt,
-            invoke_ffi_bridge_capability_denied,
-            guard_tag_type_mismatch_deopt,
-            guard_dict_shape_layout_mismatch_deopt,
-            attr_site_name_hit,
-            attr_site_name_miss,
-            split_ws_ascii,
-            split_ws_unicode,
-            dict_str_int_prehash_hit,
-            dict_str_int_prehash_miss,
-            dict_str_int_prehash_deopt,
-            taq_ingest_calls,
-            taq_ingest_skip_marker,
-            ascii_i64_parse_fail,
-            alloc_bytes_total,
-            alloc_bytes_string,
-            alloc_bytes_dict,
-            alloc_bytes_tuple,
-            alloc_bytes_list,
-            peak_rss,
-            current_rss,
-        );
-        let payload = serde_json::json!({
-            "schema_version": 1,
-            "kind": "runtime_feedback",
-            "profile": {
-                "call_dispatch": call_dispatch,
-                "string_count_cache_hit": cache_hit,
-                "string_count_cache_miss": cache_miss,
-                "struct_field_store": struct_stores,
-                "attr_lookup": attr_lookups,
-                "handle_resolve": handle_resolves,
-                "layout_guard": layout_guard,
-                "layout_guard_fail": layout_guard_fail,
-                "alloc_count": allocs,
-                "alloc_object": alloc_objects,
-                "alloc_exception": alloc_exceptions,
-                "alloc_dict": alloc_dicts,
-                "alloc_tuple": alloc_tuples,
-                "alloc_string": alloc_strings,
-                "alloc_callargs": alloc_callargs,
-                "alloc_bytes_callargs": alloc_bytes_callargs,
-                "tb_builds": tb_builds,
-                "tb_frames": tb_frames,
-                "tb_suppressed": tb_suppressed,
-                "async_polls": async_polls,
-                "async_pending": async_pending,
-                "async_wakeups": async_wakeups,
-                "async_sleep_register": async_sleep_reg,
-                "alloc_bytes_total": alloc_bytes_total,
-                "alloc_bytes_string": alloc_bytes_string,
-                "alloc_bytes_dict": alloc_bytes_dict,
-                "alloc_bytes_tuple": alloc_bytes_tuple,
-                "alloc_bytes_list": alloc_bytes_list,
-            },
-            "memory": {
-                "peak_rss_bytes": peak_rss,
-                "current_rss_bytes": current_rss,
-            },
-            "hot_paths": {
-                "call_bind_ic_hit": call_bind_ic_hit,
-                "call_bind_ic_miss": call_bind_ic_miss,
-                "attr_site_name_hit": attr_site_name_hit,
-                "attr_site_name_miss": attr_site_name_miss,
-                "split_ws_ascii": split_ws_ascii,
-                "split_ws_unicode": split_ws_unicode,
-                "dict_str_int_prehash_hit": dict_str_int_prehash_hit,
-                "dict_str_int_prehash_miss": dict_str_int_prehash_miss,
-                "dict_str_int_prehash_deopt": dict_str_int_prehash_deopt,
-                "taq_ingest_calls": taq_ingest_calls,
-                "taq_ingest_skip_marker": taq_ingest_skip_marker,
-                "ascii_i64_parse_fail": ascii_i64_parse_fail,
-            },
-            "deopt_reasons": {
-                "call_indirect_noncallable": call_indirect_noncallable_deopt,
-                "invoke_ffi_bridge_capability_denied": invoke_ffi_bridge_capability_denied,
-                "guard_tag_type_mismatch": guard_tag_type_mismatch_deopt,
-                "guard_dict_shape_layout_mismatch": guard_dict_shape_layout_mismatch_deopt,
-                "guard_dict_shape_layout_fail_null_obj": guard_dict_shape_layout_fail_null_obj,
-                "guard_dict_shape_layout_fail_non_object": guard_dict_shape_layout_fail_non_object,
-                "guard_dict_shape_layout_fail_class_mismatch": guard_dict_shape_layout_fail_class_mismatch,
-                "guard_dict_shape_layout_fail_non_type_class": guard_dict_shape_layout_fail_non_type_class,
-                "guard_dict_shape_layout_fail_expected_version_invalid": guard_dict_shape_layout_fail_expected_version_invalid,
-                "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
-            },
-        });
-        if env_flag_enabled("MOLT_PROFILE_JSON") {
-            eprintln!("molt_profile_json {}", payload);
-        }
-        maybe_emit_runtime_feedback_file(&payload);
+    if !profile_enabled(_py) {
+        return;
+    }
+    let call_dispatch = CALL_DISPATCH_COUNT.load(AtomicOrdering::Relaxed);
+    let cache_hit = runtime_state(_py)
+        .string_count_cache_hit
+        .load(AtomicOrdering::Relaxed);
+    let cache_miss = runtime_state(_py)
+        .string_count_cache_miss
+        .load(AtomicOrdering::Relaxed);
+    let struct_stores = STRUCT_FIELD_STORE_COUNT.load(AtomicOrdering::Relaxed);
+    let attr_lookups = ATTR_LOOKUP_COUNT.load(AtomicOrdering::Relaxed);
+    let handle_resolves = HANDLE_RESOLVE_COUNT.load(AtomicOrdering::Relaxed);
+    let layout_guard = LAYOUT_GUARD_COUNT.load(AtomicOrdering::Relaxed);
+    let layout_guard_fail = LAYOUT_GUARD_FAIL.load(AtomicOrdering::Relaxed);
+    let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_objects = ALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_exceptions = ALLOC_EXCEPTION_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_dicts = ALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_strings = ALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_callargs = ALLOC_CALLARGS_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_bytes_callargs = ALLOC_BYTES_CALLARGS.load(AtomicOrdering::Relaxed);
+    let tb_builds = TRACEBACK_BUILD_COUNT.load(AtomicOrdering::Relaxed);
+    let tb_frames = TRACEBACK_BUILD_FRAMES.load(AtomicOrdering::Relaxed);
+    let tb_suppressed = TRACEBACK_SUPPRESS_COUNT.load(AtomicOrdering::Relaxed);
+    let async_polls = ASYNC_POLL_COUNT.load(AtomicOrdering::Relaxed);
+    let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
+    let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
+    let async_sleep_reg = ASYNC_SLEEP_REGISTER_COUNT.load(AtomicOrdering::Relaxed);
+    let call_bind_ic_hit = CALL_BIND_IC_HIT_COUNT.load(AtomicOrdering::Relaxed);
+    let call_bind_ic_miss = CALL_BIND_IC_MISS_COUNT.load(AtomicOrdering::Relaxed);
+    let call_indirect_noncallable_deopt =
+        CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+    let invoke_ffi_bridge_capability_denied =
+        INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_tag_type_mismatch_deopt =
+        GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_dict_shape_layout_mismatch_deopt =
+        GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_dict_shape_layout_fail_null_obj =
+        GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_dict_shape_layout_fail_non_object =
+        GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_dict_shape_layout_fail_class_mismatch =
+        GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_dict_shape_layout_fail_non_type_class =
+        GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_dict_shape_layout_fail_expected_version_invalid =
+        GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT.load(AtomicOrdering::Relaxed);
+    let guard_dict_shape_layout_fail_version_mismatch =
+        GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT.load(AtomicOrdering::Relaxed);
+    let attr_site_name_hit = ATTR_SITE_NAME_CACHE_HIT_COUNT.load(AtomicOrdering::Relaxed);
+    let attr_site_name_miss = ATTR_SITE_NAME_CACHE_MISS_COUNT.load(AtomicOrdering::Relaxed);
+    let split_ws_ascii = SPLIT_WS_ASCII_FAST_PATH_COUNT.load(AtomicOrdering::Relaxed);
+    let split_ws_unicode = SPLIT_WS_UNICODE_PATH_COUNT.load(AtomicOrdering::Relaxed);
+    let dict_str_int_prehash_hit = DICT_STR_INT_PREHASH_HIT_COUNT.load(AtomicOrdering::Relaxed);
+    let dict_str_int_prehash_miss = DICT_STR_INT_PREHASH_MISS_COUNT.load(AtomicOrdering::Relaxed);
+    let dict_str_int_prehash_deopt = DICT_STR_INT_PREHASH_DEOPT_COUNT.load(AtomicOrdering::Relaxed);
+    let taq_ingest_calls = TAQ_INGEST_CALL_COUNT.load(AtomicOrdering::Relaxed);
+    let taq_ingest_skip_marker = TAQ_INGEST_SKIP_MARKER_COUNT.load(AtomicOrdering::Relaxed);
+    let ascii_i64_parse_fail = ASCII_I64_PARSE_FAIL_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_bytes_total = ALLOC_BYTES_TOTAL.load(AtomicOrdering::Relaxed);
+    let alloc_bytes_string = ALLOC_BYTES_STRING.load(AtomicOrdering::Relaxed);
+    let alloc_bytes_dict = ALLOC_BYTES_DICT.load(AtomicOrdering::Relaxed);
+    let alloc_bytes_tuple = ALLOC_BYTES_TUPLE.load(AtomicOrdering::Relaxed);
+    let alloc_bytes_list = ALLOC_BYTES_LIST.load(AtomicOrdering::Relaxed);
+    // Take a final RSS sample before dumping.
+    sample_peak_rss();
+    let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
+    let current_rss = current_rss_bytes();
+    eprintln!(
+        "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} alloc_bytes_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
+        call_dispatch,
+        cache_hit,
+        cache_miss,
+        struct_stores,
+        attr_lookups,
+        handle_resolves,
+        layout_guard,
+        layout_guard_fail,
+        allocs,
+        alloc_objects,
+        alloc_exceptions,
+        alloc_dicts,
+        alloc_tuples,
+        alloc_strings,
+        alloc_callargs,
+        alloc_bytes_callargs,
+        tb_builds,
+        tb_frames,
+        tb_suppressed,
+        async_polls,
+        async_pending,
+        async_wakeups,
+        async_sleep_reg,
+        call_bind_ic_hit,
+        call_bind_ic_miss,
+        call_indirect_noncallable_deopt,
+        invoke_ffi_bridge_capability_denied,
+        guard_tag_type_mismatch_deopt,
+        guard_dict_shape_layout_mismatch_deopt,
+        attr_site_name_hit,
+        attr_site_name_miss,
+        split_ws_ascii,
+        split_ws_unicode,
+        dict_str_int_prehash_hit,
+        dict_str_int_prehash_miss,
+        dict_str_int_prehash_deopt,
+        taq_ingest_calls,
+        taq_ingest_skip_marker,
+        ascii_i64_parse_fail,
+        alloc_bytes_total,
+        alloc_bytes_string,
+        alloc_bytes_dict,
+        alloc_bytes_tuple,
+        alloc_bytes_list,
+        peak_rss,
+        current_rss,
+    );
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "kind": "runtime_feedback",
+        "profile": {
+            "call_dispatch": call_dispatch,
+            "string_count_cache_hit": cache_hit,
+            "string_count_cache_miss": cache_miss,
+            "struct_field_store": struct_stores,
+            "attr_lookup": attr_lookups,
+            "handle_resolve": handle_resolves,
+            "layout_guard": layout_guard,
+            "layout_guard_fail": layout_guard_fail,
+            "alloc_count": allocs,
+            "alloc_object": alloc_objects,
+            "alloc_exception": alloc_exceptions,
+            "alloc_dict": alloc_dicts,
+            "alloc_tuple": alloc_tuples,
+            "alloc_string": alloc_strings,
+            "alloc_callargs": alloc_callargs,
+            "alloc_bytes_callargs": alloc_bytes_callargs,
+            "tb_builds": tb_builds,
+            "tb_frames": tb_frames,
+            "tb_suppressed": tb_suppressed,
+            "async_polls": async_polls,
+            "async_pending": async_pending,
+            "async_wakeups": async_wakeups,
+            "async_sleep_register": async_sleep_reg,
+            "alloc_bytes_total": alloc_bytes_total,
+            "alloc_bytes_string": alloc_bytes_string,
+            "alloc_bytes_dict": alloc_bytes_dict,
+            "alloc_bytes_tuple": alloc_bytes_tuple,
+            "alloc_bytes_list": alloc_bytes_list,
+        },
+        "memory": {
+            "peak_rss_bytes": peak_rss,
+            "current_rss_bytes": current_rss,
+        },
+        "hot_paths": {
+            "call_bind_ic_hit": call_bind_ic_hit,
+            "call_bind_ic_miss": call_bind_ic_miss,
+            "attr_site_name_hit": attr_site_name_hit,
+            "attr_site_name_miss": attr_site_name_miss,
+            "split_ws_ascii": split_ws_ascii,
+            "split_ws_unicode": split_ws_unicode,
+            "dict_str_int_prehash_hit": dict_str_int_prehash_hit,
+            "dict_str_int_prehash_miss": dict_str_int_prehash_miss,
+            "dict_str_int_prehash_deopt": dict_str_int_prehash_deopt,
+            "taq_ingest_calls": taq_ingest_calls,
+            "taq_ingest_skip_marker": taq_ingest_skip_marker,
+            "ascii_i64_parse_fail": ascii_i64_parse_fail,
+        },
+        "deopt_reasons": {
+            "call_indirect_noncallable": call_indirect_noncallable_deopt,
+            "invoke_ffi_bridge_capability_denied": invoke_ffi_bridge_capability_denied,
+            "guard_tag_type_mismatch": guard_tag_type_mismatch_deopt,
+            "guard_dict_shape_layout_mismatch": guard_dict_shape_layout_mismatch_deopt,
+            "guard_dict_shape_layout_fail_null_obj": guard_dict_shape_layout_fail_null_obj,
+            "guard_dict_shape_layout_fail_non_object": guard_dict_shape_layout_fail_non_object,
+            "guard_dict_shape_layout_fail_class_mismatch": guard_dict_shape_layout_fail_class_mismatch,
+            "guard_dict_shape_layout_fail_non_type_class": guard_dict_shape_layout_fail_non_type_class,
+            "guard_dict_shape_layout_fail_expected_version_invalid": guard_dict_shape_layout_fail_expected_version_invalid,
+            "guard_dict_shape_layout_fail_version_mismatch": guard_dict_shape_layout_fail_version_mismatch,
+        },
+    });
+    if env_flag_enabled("MOLT_PROFILE_JSON") {
+        eprintln!("molt_profile_json {}", payload);
+    }
+    maybe_emit_runtime_feedback_file(&payload);
 }
 
 #[unsafe(no_mangle)]

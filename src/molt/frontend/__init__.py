@@ -9235,8 +9235,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(
             MoltOp(kind="TUPLE_NEW", args=field_name_vals, result=field_names_tuple)
         )
-        values_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=values, result=values_tuple))
         flags = 0
         if class_info.get("frozen"):
             flags |= 0x1
@@ -9251,8 +9249,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         res = MoltValue(self.next_var(), type_hint=class_id)
         self.emit(
             MoltOp(
-                kind="DATACLASS_NEW",
-                args=[name_val, field_names_tuple, values_tuple, flags_val],
+                kind="DATACLASS_NEW_VALUES",
+                args=[name_val, field_names_tuple, flags_val] + values,
                 result=res,
             )
         )
@@ -32748,6 +32746,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "dataclass_new",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "DATACLASS_NEW_VALUES":
+                json_ops.append(
+                    {
+                        "kind": "dataclass_new_values",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
