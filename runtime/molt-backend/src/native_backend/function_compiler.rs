@@ -554,13 +554,14 @@ fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>)
         "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
         | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
         // Single-source: raw iff source is raw.
-        "copy" | "copy_var" | "load_var" | "identity_alias" | "neg" | "pos" | "abs"
-        | "builtin_abs" | "invert" => first_source().is_some_and(|s| candidates.contains(s)),
-        // Two-operand arith: raw iff BOTH operands are raw.
-        "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" | "floordiv"
-        | "mod" | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor"
-        | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" | "lshift" | "rshift"
-        | "shl" | "shr" => op
+        "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" | "invert" => {
+            first_source().is_some_and(|s| candidates.contains(s))
+        }
+        // Two-operand bitwise ops are representation-closed over the current
+        // exact-i64 int-primary domain. Unbounded arithmetic and shifts need
+        // range/shift-count proof before they can re-enter this set.
+        "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
+        | "inplace_bit_xor" => op
             .args
             .as_ref()
             .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
@@ -2925,29 +2926,12 @@ impl SimpleBackend {
                             | "loop_index_start"
                             | "loop_index_next"
                             | "len"
-                            | "add"
-                            | "sub"
-                            | "mul"
-                            | "inplace_add"
-                            | "inplace_sub"
-                            | "inplace_mul"
-                            | "floordiv"
-                            | "mod"
-                            | "inplace_floordiv"
-                            | "inplace_mod"
                             | "bit_and"
                             | "bit_or"
                             | "bit_xor"
                             | "inplace_bit_and"
                             | "inplace_bit_or"
                             | "inplace_bit_xor"
-                            | "lshift"
-                            | "rshift"
-                            | "shl"
-                            | "shr"
-                            | "neg"
-                            | "abs"
-                            | "builtin_abs"
                             | "invert"
                             | "copy"
                             | "copy_var"
@@ -4661,6 +4645,10 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -4671,7 +4659,9 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Typed IR: raw i64 is PRIMARY.  Branchless iadd
                             // with deferred overflow — the 47-bit inline range
                             // check is deferred to boxing escape points
@@ -4970,7 +4960,13 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
                         };
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_val, rhs_val) {
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_val, rhs_val)
+                        {
                             // Typed IR: raw i64 is PRIMARY.  Branchless iadd
                             // with deferred overflow — no boxing emitted here.
                             let raw_result = builder.ins().iadd(lhs_raw, rhs_raw);
@@ -6426,6 +6422,10 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -6436,7 +6436,9 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Typed IR: raw i64 is PRIMARY.  Branchless isub
                             // with deferred overflow — the 47-bit inline range
                             // check is deferred to boxing escape points
@@ -6679,7 +6681,11 @@ impl SimpleBackend {
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
                         }
-                    } else if (int_primary_vars.contains(args[0].as_str()))
+                    } else if op
+                        .out
+                        .as_ref()
+                        .is_some_and(|out| int_primary_vars.contains(out))
+                        && (int_primary_vars.contains(args[0].as_str()))
                         && (int_primary_vars.contains(args[1].as_str()))
                         && op_prefers_int_lane(&op)
                     {
@@ -6959,6 +6965,10 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -6969,7 +6979,9 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Typed IR: raw i64 is PRIMARY.  Branchless imul
                             // with deferred overflow — the 47-bit inline range
                             // check is deferred to boxing escape points
@@ -7204,7 +7216,11 @@ impl SimpleBackend {
                         } else {
                             box_float_value_unchecked(&mut builder, result_f)
                         }
-                    } else if (int_primary_vars.contains(args[0].as_str()))
+                    } else if op
+                        .out
+                        .as_ref()
+                        .is_some_and(|out| int_primary_vars.contains(out))
+                        && (int_primary_vars.contains(args[0].as_str()))
                         && (int_primary_vars.contains(args[1].as_str()))
                         && op_prefers_int_lane(&op)
                     {
@@ -7421,8 +7437,14 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Bitwise OR on raw i64: branchless, no overflow
                             // possible (|a|b| <= max(|a|,|b|)).
                             let raw = builder.ins().bor(lhs_raw, rhs_raw);
@@ -7677,8 +7699,14 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Bitwise AND on raw i64: branchless, no overflow.
                             let raw = builder.ins().band(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
@@ -7932,8 +7960,14 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Bitwise XOR on raw i64: branchless, no overflow.
                             let raw = builder.ins().bxor(lhs_raw, rhs_raw);
                             if let Some(ref out__) = op.out {
@@ -8187,8 +8221,14 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Raw i64 primary: left shift.  Overflow is deferred to
                             // boxing escape points via ensure_boxed_overflow_safe.
                             let raw = builder.ins().ishl(lhs_raw, rhs_raw);
@@ -8257,8 +8297,14 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Raw i64 primary: arithmetic right shift.  Result
                             // magnitude <= input, so no overflow possible.
                             let raw = builder.ins().sshr(lhs_raw, rhs_raw);
@@ -8723,6 +8769,10 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -8733,7 +8783,9 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Raw i64 primary: compute floordiv directly.
                             // Division by zero falls to runtime.
                             let zero = builder.ins().iconst(types::I64, 0);
@@ -9009,6 +9061,10 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
                         };
+                        let out_is_int_primary = op
+                            .out
+                            .as_ref()
+                            .is_some_and(|out| int_primary_vars.contains(out));
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9019,7 +9075,9 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
-                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        if out_is_int_primary
+                            && let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw)
+                        {
                             // Raw i64 primary: compute Python mod directly.
                             let zero = builder.ins().iconst(types::I64, 0);
                             let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_raw, zero);
@@ -35683,9 +35741,10 @@ mod tests {
         ScalarLane, alias_root_name, box_raw_bool_value, cleanup_roots_for_names,
         collect_slot_backed_join_names, compute_float_primary_vars, infer_scalar_lane,
         is_cold_module_chunk_function, live_exception_rebind_vars_for_op, mark_cleanup_root_once,
-        materialize_label_block, op_produces_raw_bool_for_bool_primary, preanalyze_function_ir,
-        protect_cleanup_names, scalar_lane_store_target_names, scan_loop_int_sum_reduction,
-        switch_to_block_materialized, switch_to_block_with_rebind,
+        materialize_label_block, op_produces_raw_bool_for_bool_primary,
+        op_produces_raw_i64_for_int_primary, preanalyze_function_ir, protect_cleanup_names,
+        scalar_lane_store_target_names, scan_loop_int_sum_reduction, switch_to_block_materialized,
+        switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
     use cranelift_codegen::isa::CallConv;
@@ -35817,6 +35876,49 @@ mod tests {
                 &int_primary_vars,
             ),
             "is_truthy has no native codegen arm and must not enter bool_primary_vars",
+        );
+    }
+
+    #[test]
+    fn int_primary_predicate_excludes_unbounded_arithmetic_without_range_proof() {
+        let candidates = BTreeSet::from(["lhs".to_string(), "rhs".to_string()]);
+        for kind in [
+            "add",
+            "sub",
+            "mul",
+            "inplace_add",
+            "inplace_sub",
+            "inplace_mul",
+            "floordiv",
+            "mod",
+            "lshift",
+            "rshift",
+            "neg",
+            "abs",
+            "builtin_abs",
+        ] {
+            let op = OpIR {
+                kind: kind.to_string(),
+                args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                var: Some("lhs".to_string()),
+                out: Some("out".to_string()),
+                ..OpIR::default()
+            };
+            assert!(
+                !op_produces_raw_i64_for_int_primary(&op, &candidates),
+                "{kind} needs range or shift-count proof before it can define int-primary raw i64",
+            );
+        }
+
+        let bitwise = OpIR {
+            kind: "bit_xor".to_string(),
+            args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+            out: Some("out".to_string()),
+            ..OpIR::default()
+        };
+        assert!(
+            op_produces_raw_i64_for_int_primary(&bitwise, &candidates),
+            "bitwise ops remain representation-closed over exact-i64 int-primary values",
         );
     }
 

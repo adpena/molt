@@ -68,6 +68,10 @@ It is current-state only. For forward-looking priorities, use
   through structural TIR `return_type` metadata.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
+  `int_primary_vars` is an exact-i64 representation contract, not a semantic
+  `int` claim: unbounded arithmetic and shifts stay boxed/runtime-backed until
+  a range/shift-count proof can show that the operation cannot overflow i64,
+  promote to BigInt, or raise for Python shift semantics.
   Native float-primary lowering likewise uses static `float_primary_vars` as
   the only authority for F64-primary Cranelift variables; the raw-f64 shadow
   lane has been removed, and non-primary float values are boxed immediately in

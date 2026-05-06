@@ -120,6 +120,20 @@ def hash_coord(x: int, y: int, z: int, seed: int) -> float:
 print(hash_coord(1, 0, 0, 1337))
 """)
 
+    def test_large_int_arithmetic_and_shift_runtime_semantics(self):
+        _assert_match("""\
+a = 3037000500
+product = a * a
+print(product)
+print(product & 0xFFFFFFFF)
+print(3 << 65)
+print((3 << 65) >> 64)
+try:
+    print(3 << -1)
+except Exception as exc:
+    print(type(exc).__name__, str(exc))
+""")
+
 
 # -- PEP 695: Type Parameter Syntax (type X = ...) ----------------------------
 
