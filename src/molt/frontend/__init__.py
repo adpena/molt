@@ -10300,6 +10300,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.container_elem_hints[res.name] = "int"
         return res
 
+    def _emit_list_int_filled(self, count: MoltValue, fill: MoltValue) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_INT_NEW", args=[count, fill], result=res))
+        if self.current_func_name == "molt_main":
+            self.global_elem_hints[res.name] = "int"
+        else:
+            self.container_elem_hints[res.name] = "int"
+        self._list_int_containers = getattr(self, "_list_int_containers", set())
+        self._list_int_containers.add(res.name)
+        return res
+
     def _match_simple_range_list_comp(
         self, node: ast.ListComp
     ) -> tuple[MoltValue, MoltValue, MoltValue] | None:
@@ -10317,6 +10328,42 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         start, stop, step, _ = parsed
         return start, stop, step
+
+    def _match_const_int_range_list_comp(self, node: ast.ListComp) -> int | None:
+        if len(node.generators) != 1:
+            return None
+        comp = node.generators[0]
+        if comp.is_async or comp.ifs:
+            return None
+        if not isinstance(comp.target, ast.Name):
+            return None
+        if not isinstance(node.elt, ast.Constant):
+            return None
+        value = node.elt.value
+        if not isinstance(value, int) or isinstance(value, bool):
+            return None
+        if not isinstance(comp.iter, ast.Call):
+            return None
+        if not isinstance(comp.iter.func, ast.Name) or comp.iter.func.id != "range":
+            return None
+        if len(comp.iter.args) > 3 or comp.iter.keywords:
+            return None
+        return int(value)
+
+    def _emit_const_int_range_list_comp(
+        self, node: ast.ListComp, fill_value: int
+    ) -> MoltValue:
+        comp = node.generators[0]
+        parsed = self._parse_range_call(comp.iter)
+        if parsed is None:
+            raise NotImplementedError("Unsupported range in list comprehension")
+        start, stop, step, _ = parsed
+        range_obj = self._emit_range_obj_from_args(start, stop, step)
+        count = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LEN", args=[range_obj], result=count))
+        fill = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[fill_value], result=fill))
+        return self._emit_list_int_filled(count, fill)
 
     def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
@@ -10779,6 +10826,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="INTARRAY_FROM_SEQ", args=[seq], result=res))
         self.container_elem_hints[res.name] = "int"
         return res
+
+    def _is_flat_list_int_container(self, value: MoltValue) -> bool:
+        return value.name in getattr(self, "_list_int_containers", set())
 
     def _emit_iter_new(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="iter")
@@ -11921,22 +11971,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 count_res = self.visit(count_node)
                 if count_res is None:
                     raise NotImplementedError("Unsupported list repeat count")
-                res = MoltValue(self.next_var(), type_hint="list")
-                self.emit(
-                    MoltOp(
-                        kind="LIST_INT_NEW",
-                        args=[count_res, fill_res],
-                        result=res,
-                    )
-                )
-                # Track container type for downstream INDEX/DICT_SET dispatch
-                if self.current_func_name == "molt_main":
-                    self.global_elem_hints[res.name] = "int"
-                else:
-                    self.container_elem_hints[res.name] = "int"
-                self._list_int_containers = getattr(self, "_list_int_containers", set())
-                self._list_int_containers.add(res.name)
-                return res
+                return self._emit_list_int_filled(count_res, fill_res)
 
         left = self.visit(node.left)
         if left is None:
@@ -13037,6 +13072,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if simple_range is not None:
                 start, stop, step = simple_range
                 return self._emit_range_list(start, stop, step)
+            fill_value = self._match_const_int_range_list_comp(node)
+            if fill_value is not None:
+                return self._emit_const_int_range_list_comp(node, fill_value)
             if self._can_inline_list_comp(node):
                 return self._emit_inline_list_comp(node)
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
@@ -26255,7 +26293,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                     "min": "VEC_MIN_INT",
                                     "max": "VEC_MAX_INT",
                                 }.get(kind, "VEC_SUM_INT")
-                            if kind == "prod" and elem_hint == "int":
+                            if (
+                                kind == "prod"
+                                and elem_hint == "int"
+                                and not self._is_flat_list_int_container(seq_val)
+                            ):
                                 seq_arg = self._emit_intarray_from_seq(seq_val)
                                 args[0] = seq_arg
                             if (
@@ -26467,7 +26509,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             "min": "VEC_MIN_INT",
                             "max": "VEC_MAX_INT",
                         }.get(kind, "VEC_SUM_INT")
-                        if kind == "prod" and elem_hint == "int":
+                        if (
+                            kind == "prod"
+                            and elem_hint == "int"
+                            and not self._is_flat_list_int_container(iterable)
+                        ):
                             seq_arg = self._emit_intarray_from_seq(iterable)
                         if self.type_hint_policy == "trust" and elem_hint == "int":
                             vec_kind = f"{vec_kind}_TRUSTED"
