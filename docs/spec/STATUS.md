@@ -79,7 +79,9 @@ It is current-state only. For forward-looking priorities, use
   map final LIR facts back to legacy names without trusting scalar transport
   hints. Native preanalysis consumes a final-codegen-time
   `NativeRepresentationPlan` for semantic int/bool/float/str/None
-  classifications; raw-primary sets remain stricter carrier-safety subsets.
+  classifications, raw-primary carrier sets, scalar slot escape safety,
+  scalar store-target discovery, and operation lane preference; raw-primary
+  sets remain stricter carrier-safety subsets.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic

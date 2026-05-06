@@ -10,7 +10,7 @@ use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 
 /// Native scalar lane derived from the backend-facing TIR/LIR contract.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum NativeScalarKind {
     Int,
     Bool,
@@ -50,6 +50,16 @@ pub(crate) struct NativeRepresentationPlan {
     facts_by_name: BTreeMap<String, NativeRepresentationFact>,
     conflicted_names: BTreeSet<String>,
     integer_family_names: BTreeSet<String>,
+    primary_names: NativePrimaryNameSets,
+    scalar_slot_exclusion_unsafe: BTreeSet<String>,
+    scalar_store_targets_by_kind: BTreeMap<NativeScalarKind, BTreeSet<String>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct NativePrimaryNameSets {
+    pub(crate) int: BTreeSet<String>,
+    pub(crate) bool_: BTreeSet<String>,
+    pub(crate) float: BTreeSet<String>,
 }
 
 impl NativeRepresentationPlan {
@@ -82,6 +92,9 @@ impl NativeRepresentationPlan {
         }
         plan.propagate_simple_aliases(func_ir);
         plan.propagate_integer_family(func_ir);
+        plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
+        plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(func_ir);
+        plan.primary_names = plan.compute_primary_name_sets(func_ir);
         plan
     }
 
@@ -122,8 +135,64 @@ impl NativeRepresentationPlan {
         (int_like, bool_like, float_like, str_like, none_like)
     }
 
+    #[cfg(test)]
     pub(crate) fn integer_family_names(&self) -> BTreeSet<String> {
         self.integer_family_names.clone()
+    }
+
+    pub(crate) fn primary_name_sets(&self) -> NativePrimaryNameSets {
+        self.primary_names.clone()
+    }
+
+    pub(crate) fn scalar_slot_exclusion_unsafe(&self) -> BTreeSet<String> {
+        self.scalar_slot_exclusion_unsafe.clone()
+    }
+
+    pub(crate) fn scalar_store_targets(&self, kind: NativeScalarKind) -> BTreeSet<String> {
+        self.scalar_store_targets_by_kind
+            .get(&kind)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn op_scalar_lane(&self, op: &OpIR) -> Option<NativeScalarKind> {
+        self.infer_scalar_lane(op)
+    }
+
+    pub(crate) fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
+        matches!(op.kind.as_str(), "mul" | "inplace_mul")
+            || (matches!(
+                op.kind.as_str(),
+                "add"
+                    | "inplace_add"
+                    | "sub"
+                    | "inplace_sub"
+                    | "floordiv"
+                    | "inplace_floordiv"
+                    | "mod"
+                    | "mod_"
+                    | "inplace_mod"
+                    | "bit_and"
+                    | "inplace_bit_and"
+                    | "bit_or"
+                    | "inplace_bit_or"
+                    | "bit_xor"
+                    | "inplace_bit_xor"
+                    | "lshift"
+                    | "rshift"
+                    | "shl"
+                    | "shr"
+                    | "neg"
+                    | "pos"
+                    | "abs"
+                    | "builtin_abs"
+                    | "invert"
+            ) && op.args.as_ref().is_some_and(|args| {
+                !args.is_empty()
+                    && args.iter().all(|arg| {
+                        self.integer_family_names.contains(arg) || self.name_is_bool(arg)
+                    })
+            }))
     }
 
     fn insert_lir_value(&mut self, name: String, value: &LirValue) {
@@ -302,6 +371,691 @@ impl NativeRepresentationPlan {
             .get(name)
             .is_some_and(|fact| fact.scalar_kind() == Some(NativeScalarKind::Bool))
     }
+
+    fn name_has_scalar_kind(&self, name: &str, kind: NativeScalarKind) -> bool {
+        self.facts_by_name
+            .get(name)
+            .is_some_and(|fact| fact.scalar_kind() == Some(kind))
+    }
+
+    fn compute_scalar_store_targets(
+        &self,
+        func_ir: &FunctionIR,
+    ) -> BTreeMap<NativeScalarKind, BTreeSet<String>> {
+        let mut targets = BTreeMap::new();
+        for kind in [
+            NativeScalarKind::Int,
+            NativeScalarKind::Bool,
+            NativeScalarKind::Float,
+            NativeScalarKind::Str,
+        ] {
+            targets.insert(kind, self.scalar_lane_store_target_names(func_ir, kind));
+        }
+        targets
+    }
+
+    fn scalar_lane_store_target_names(
+        &self,
+        func_ir: &FunctionIR,
+        lane: NativeScalarKind,
+    ) -> BTreeSet<String> {
+        let mut lane_outputs = BTreeSet::new();
+        let mut changed = true;
+        while changed {
+            changed = propagate_store_var_targets_in(func_ir, &mut lane_outputs);
+            for op in &func_ir.ops {
+                if op.kind == "store_var" {
+                    continue;
+                }
+                let Some(out) = op.out.as_ref() else {
+                    continue;
+                };
+                let inferred_lane = self.infer_scalar_lane_with_overrides(op, lane, &lane_outputs);
+                let first_arg_is_lane = op
+                    .args
+                    .as_ref()
+                    .and_then(|args| args.first())
+                    .is_some_and(|src| lane_outputs.contains(src));
+                let var_source_is_lane = op
+                    .var
+                    .as_ref()
+                    .is_some_and(|src| lane_outputs.contains(src));
+                let is_lane_alias = matches!(
+                    op.kind.as_str(),
+                    "copy_var" | "copy" | "load_var" | "identity_alias"
+                ) && first_arg_is_lane
+                    || matches!(op.kind.as_str(), "copy_var" | "load_var") && var_source_is_lane;
+
+                if (inferred_lane == Some(lane) || is_lane_alias)
+                    && lane_outputs.insert(out.clone())
+                {
+                    changed = true;
+                }
+            }
+        }
+        store_var_targets_all_sources_in(func_ir, &lane_outputs)
+    }
+
+    fn compute_primary_name_sets(&self, func_ir: &FunctionIR) -> NativePrimaryNameSets {
+        if is_cold_module_chunk_function(&func_ir.name) {
+            return NativePrimaryNameSets::default();
+        }
+
+        let (int_like, bool_like, float_like, str_like, _) = self.scalar_name_sets();
+        let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
+        let int_primary = self.compute_int_primary_names(
+            func_ir,
+            &param_name_set,
+            &int_like,
+            &bool_like,
+            &float_like,
+        );
+        let bool_primary = self.compute_bool_primary_names(
+            func_ir,
+            &param_name_set,
+            &int_primary,
+            &bool_like,
+            &int_like,
+            &float_like,
+            &str_like,
+        );
+        let float_primary =
+            self.compute_float_primary_names(func_ir, &param_name_set, &int_like, &float_like);
+
+        NativePrimaryNameSets {
+            int: int_primary,
+            bool_: bool_primary,
+            float: float_primary,
+        }
+    }
+
+    fn compute_int_primary_names(
+        &self,
+        func_ir: &FunctionIR,
+        param_name_set: &BTreeSet<&str>,
+        int_like: &BTreeSet<String>,
+        bool_like: &BTreeSet<String>,
+        float_like: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let int_unsafe_outputs: BTreeSet<String> = func_ir
+            .ops
+            .iter()
+            .filter_map(|op| {
+                let out = op.out.as_ref()?;
+                let is_safe_int_op = matches!(
+                    op.kind.as_str(),
+                    "const"
+                        | "loop_index_start"
+                        | "loop_index_next"
+                        | "len"
+                        | "gpu_thread_id"
+                        | "gpu_block_id"
+                        | "gpu_block_dim"
+                        | "gpu_grid_dim"
+                        | "bit_and"
+                        | "bit_or"
+                        | "bit_xor"
+                        | "inplace_bit_and"
+                        | "inplace_bit_or"
+                        | "inplace_bit_xor"
+                        | "invert"
+                        | "copy"
+                        | "copy_var"
+                        | "load_var"
+                        | "identity_alias"
+                        | "store_var"
+                );
+                (!is_safe_int_op && int_like.contains(out)).then(|| out.clone())
+            })
+            .collect();
+        let vars_with_non_int_defs = self.vars_with_non_int_defs(func_ir, int_like, bool_like);
+        let passes_filter = |name: &str| {
+            int_like.contains(name)
+                && !param_name_set.contains(name)
+                && !int_unsafe_outputs.contains(name)
+                && !vars_with_non_int_defs.contains(name)
+                && !float_like.contains(name)
+        };
+        let mut candidates = BTreeSet::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for target in store_var_targets_all_sources_in(func_ir, &candidates) {
+                if passes_filter(&target) && candidates.insert(target) {
+                    changed = true;
+                }
+            }
+            for op in &func_ir.ops {
+                if op.kind == "store_var" {
+                    continue;
+                }
+                let Some(out) = op.out.as_ref() else {
+                    continue;
+                };
+                if candidates.contains(out) || !passes_filter(out) {
+                    continue;
+                }
+                if op_produces_raw_i64_for_int_primary(op, &candidates)
+                    && candidates.insert(out.clone())
+                {
+                    changed = true;
+                }
+            }
+        }
+        candidates
+    }
+
+    fn vars_with_non_int_defs(
+        &self,
+        func_ir: &FunctionIR,
+        int_like: &BTreeSet<String>,
+        bool_like: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut non_int = BTreeSet::new();
+        for op in &func_ir.ops {
+            if op.kind == "store_var" {
+                let target = op.var.as_ref().or(op.out.as_ref());
+                let source = op.args.as_ref().and_then(|a| a.first());
+                if let (Some(t), Some(s)) = (target, source)
+                    && !int_like.contains(s)
+                    && !bool_like.contains(s)
+                {
+                    non_int.insert(t.clone());
+                }
+            }
+            if let Some(out) = op.out.as_ref() {
+                let lane = self.infer_scalar_lane(op);
+                let proven_int = matches!(
+                    lane,
+                    Some(NativeScalarKind::Int) | Some(NativeScalarKind::Bool)
+                );
+                if !proven_int && int_like.contains(out) {
+                    non_int.insert(out.clone());
+                }
+            }
+        }
+        non_int
+    }
+
+    fn compute_bool_primary_names(
+        &self,
+        func_ir: &FunctionIR,
+        param_name_set: &BTreeSet<&str>,
+        int_primary: &BTreeSet<String>,
+        bool_like: &BTreeSet<String>,
+        int_like: &BTreeSet<String>,
+        float_like: &BTreeSet<String>,
+        str_like: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let bool_unsafe_outputs: BTreeSet<String> = func_ir
+            .ops
+            .iter()
+            .filter_map(|op| {
+                let out = op.out.as_ref()?;
+                let is_safe_bool_op = op.kind == "store_var"
+                    || op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
+                (!is_safe_bool_op && bool_like.contains(out)).then(|| out.clone())
+            })
+            .collect();
+        let vars_with_non_bool_defs = self.vars_with_non_bool_defs(func_ir, bool_like, int_primary);
+        let passes_filter = |name: &str| {
+            bool_like.contains(name)
+                && !param_name_set.contains(name)
+                && !bool_unsafe_outputs.contains(name)
+                && !vars_with_non_bool_defs.contains(name)
+                && !int_like.contains(name)
+                && !float_like.contains(name)
+                && !str_like.contains(name)
+                && !self.scalar_slot_exclusion_unsafe.contains(name)
+        };
+        let mut candidates = BTreeSet::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for target in store_var_targets_all_sources_in(func_ir, &candidates) {
+                if passes_filter(&target) && candidates.insert(target) {
+                    changed = true;
+                }
+            }
+            for op in &func_ir.ops {
+                if op.kind == "store_var" {
+                    continue;
+                }
+                let Some(out) = op.out.as_ref() else {
+                    continue;
+                };
+                if candidates.contains(out) || !passes_filter(out) {
+                    continue;
+                }
+                if op_produces_raw_bool_for_bool_primary(op, &candidates, int_primary)
+                    && candidates.insert(out.clone())
+                {
+                    changed = true;
+                }
+            }
+        }
+        candidates
+    }
+
+    fn vars_with_non_bool_defs(
+        &self,
+        func_ir: &FunctionIR,
+        bool_like: &BTreeSet<String>,
+        int_primary: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut non_bool = BTreeSet::new();
+        for op in &func_ir.ops {
+            if op.kind == "store_var" {
+                let target = op.var.as_ref().or(op.out.as_ref());
+                let source = op.args.as_ref().and_then(|a| a.first());
+                if let (Some(t), Some(s)) = (target, source)
+                    && !bool_like.contains(s)
+                {
+                    non_bool.insert(t.clone());
+                }
+            }
+            if let Some(out) = op.out.as_ref() {
+                let lane = self.infer_scalar_lane(op);
+                let raw_bool_output =
+                    op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
+                if lane != Some(NativeScalarKind::Bool)
+                    && !raw_bool_output
+                    && bool_like.contains(out)
+                {
+                    non_bool.insert(out.clone());
+                }
+            }
+        }
+        non_bool
+    }
+
+    fn compute_float_primary_names(
+        &self,
+        func_ir: &FunctionIR,
+        param_name_set: &BTreeSet<&str>,
+        int_like: &BTreeSet<String>,
+        float_like: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let float_unsafe_outputs: BTreeSet<String> = func_ir
+            .ops
+            .iter()
+            .filter_map(|op| {
+                let out = op.out.as_ref()?;
+                let is_safe_float_op = matches!(
+                    op.kind.as_str(),
+                    "const_float"
+                        | "add"
+                        | "sub"
+                        | "mul"
+                        | "div"
+                        | "inplace_add"
+                        | "inplace_sub"
+                        | "inplace_mul"
+                        | "neg"
+                        | "unary_neg"
+                        | "copy_var"
+                        | "load_var"
+                        | "identity_alias"
+                        | "store_var"
+                        | "float_from_obj"
+                );
+                (!is_safe_float_op && float_like.contains(out)).then(|| out.clone())
+            })
+            .collect();
+        let vars_with_non_float_defs = self.vars_with_non_float_defs(func_ir, float_like);
+        float_like
+            .iter()
+            .filter(|name| {
+                !param_name_set.contains(name.as_str())
+                    && !float_unsafe_outputs.contains(*name)
+                    && !int_like.contains(*name)
+                    && !vars_with_non_float_defs.contains(*name)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn vars_with_non_float_defs(
+        &self,
+        func_ir: &FunctionIR,
+        float_like: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let mut non_float = BTreeSet::new();
+        for op in &func_ir.ops {
+            if op.kind == "store_var" {
+                let target = op.var.as_ref().or(op.out.as_ref());
+                let source = op.args.as_ref().and_then(|a| a.first());
+                if let (Some(t), Some(s)) = (target, source)
+                    && !float_like.contains(s)
+                {
+                    non_float.insert(t.clone());
+                }
+            }
+            if let Some(out) = op.out.as_ref() {
+                let lane = self.infer_scalar_lane(op);
+                if lane != Some(NativeScalarKind::Float) && float_like.contains(out) {
+                    non_float.insert(out.clone());
+                }
+            }
+        }
+        non_float
+    }
+
+    fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> BTreeSet<String> {
+        let mut unsafe_set = BTreeSet::new();
+        for op in &func_ir.ops {
+            match op.kind.as_str() {
+                "call"
+                | "call_method"
+                | "call_builtin"
+                | "call_function_value"
+                | "call_super"
+                | "call_kw"
+                | "call_star"
+                | "call_ex"
+                | "bytearray_fill_range" => {
+                    self.collect_scalar_args(op, &mut unsafe_set);
+                }
+                "store_attr" | "store_global" | "store_name" => {
+                    self.collect_scalar_args(op, &mut unsafe_set);
+                }
+                "store_index" => {
+                    let is_list_int = op.container_type.as_deref() == Some("list_int");
+                    if !is_list_int
+                        && let Some(args) = &op.args
+                        && let Some(val_name) = args.get(2)
+                        && self.name_is_slot_scalar(val_name)
+                    {
+                        unsafe_set.insert(val_name.clone());
+                    }
+                }
+                "ret" => {
+                    if let Some(var) = &op.var
+                        && self.name_is_slot_scalar(var)
+                    {
+                        unsafe_set.insert(var.clone());
+                    }
+                    self.collect_scalar_args(op, &mut unsafe_set);
+                }
+                "inc_ref" | "dec_ref" | "borrow" | "release" => {
+                    self.collect_scalar_args(op, &mut unsafe_set);
+                    if let Some(var) = &op.var
+                        && self.name_is_slot_scalar(var)
+                    {
+                        unsafe_set.insert(var.clone());
+                    }
+                }
+                "state_yield" | "chan_send_yield" | "chan_recv_yield" => {
+                    self.collect_scalar_args(op, &mut unsafe_set);
+                    if let Some(var) = &op.var
+                        && self.name_is_slot_scalar(var)
+                    {
+                        unsafe_set.insert(var.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        unsafe_set
+    }
+
+    fn collect_scalar_args(&self, op: &OpIR, into: &mut BTreeSet<String>) {
+        if let Some(args) = &op.args {
+            for arg in args {
+                if self.name_is_slot_scalar(arg) {
+                    into.insert(arg.clone());
+                }
+            }
+        }
+    }
+
+    fn name_is_slot_scalar(&self, name: &str) -> bool {
+        matches!(
+            self.facts_by_name
+                .get(name)
+                .and_then(NativeRepresentationFact::scalar_kind),
+            Some(NativeScalarKind::Int | NativeScalarKind::Bool | NativeScalarKind::Float)
+        )
+    }
+
+    fn infer_scalar_lane(&self, op: &OpIR) -> Option<NativeScalarKind> {
+        self.infer_scalar_lane_with_overrides(op, NativeScalarKind::NoneValue, &BTreeSet::new())
+    }
+
+    fn infer_scalar_lane_with_overrides(
+        &self,
+        op: &OpIR,
+        override_kind: NativeScalarKind,
+        override_names: &BTreeSet<String>,
+    ) -> Option<NativeScalarKind> {
+        let first_source = || {
+            op.var.as_deref().or_else(|| {
+                op.args
+                    .as_ref()
+                    .and_then(|args| args.first())
+                    .map(String::as_str)
+            })
+        };
+        let args = op.args.as_deref().unwrap_or(&[]);
+        let args_all =
+            |pred: &dyn Fn(&str) -> bool| !args.is_empty() && args.iter().all(|arg| pred(arg));
+        let args_any = |pred: &dyn Fn(&str) -> bool| args.iter().any(|arg| pred(arg));
+        let has_kind = |name: &str, kind| {
+            self.name_has_scalar_kind(name, kind)
+                || (override_kind == kind && override_names.contains(name))
+        };
+        let is_float = |name: &str| has_kind(name, NativeScalarKind::Float);
+        let is_str = |name: &str| has_kind(name, NativeScalarKind::Str);
+        let is_int = |name: &str| {
+            has_kind(name, NativeScalarKind::Int) || has_kind(name, NativeScalarKind::Bool)
+        };
+        match op.kind.as_str() {
+            "const" | "loop_index_start" | "loop_index_next" | "len" => Some(NativeScalarKind::Int),
+            "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => {
+                Some(NativeScalarKind::Int)
+            }
+            "const_bool" => Some(NativeScalarKind::Bool),
+            "const_float" => Some(NativeScalarKind::Float),
+            "const_str" => Some(NativeScalarKind::Str),
+            "float_from_obj" => Some(NativeScalarKind::Float),
+            "copy" | "copy_var" | "load_var" | "identity_alias" => first_source().and_then(|src| {
+                if has_kind(src, NativeScalarKind::Int) {
+                    Some(NativeScalarKind::Int)
+                } else if has_kind(src, NativeScalarKind::Bool) {
+                    Some(NativeScalarKind::Bool)
+                } else if has_kind(src, NativeScalarKind::Float) {
+                    Some(NativeScalarKind::Float)
+                } else if has_kind(src, NativeScalarKind::Str) {
+                    Some(NativeScalarKind::Str)
+                } else {
+                    None
+                }
+            }),
+            "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is" => Some(NativeScalarKind::Bool),
+            "bool" | "cast_bool" | "builtin_bool" | "is_truthy" | "not" => {
+                first_source().and_then(|src| {
+                    if has_kind(src, NativeScalarKind::Bool) {
+                        Some(NativeScalarKind::Bool)
+                    } else if is_int(src) {
+                        Some(NativeScalarKind::Int)
+                    } else {
+                        None
+                    }
+                })
+            }
+            "if" => first_source().and_then(|src| {
+                if has_kind(src, NativeScalarKind::Bool) {
+                    Some(NativeScalarKind::Bool)
+                } else if is_int(src) {
+                    Some(NativeScalarKind::Int)
+                } else {
+                    None
+                }
+            }),
+            "add" | "inplace_add" => {
+                if args_all(&is_str) {
+                    Some(NativeScalarKind::Str)
+                } else if args_all(&is_float)
+                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+                {
+                    Some(NativeScalarKind::Float)
+                } else if args_all(&is_int) {
+                    Some(NativeScalarKind::Int)
+                } else {
+                    None
+                }
+            }
+            "sub" | "mul" | "inplace_sub" | "inplace_mul" | "floordiv" | "mod" | "mod_"
+            | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor" | "bitand"
+            | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" => {
+                if args_all(&is_float)
+                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+                {
+                    Some(NativeScalarKind::Float)
+                } else if args_all(&is_int) {
+                    Some(NativeScalarKind::Int)
+                } else {
+                    None
+                }
+            }
+            "pow" => {
+                if args.len() >= 2 && is_float(&args[1]) {
+                    Some(NativeScalarKind::Float)
+                } else if args_all(&is_float)
+                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+                {
+                    Some(NativeScalarKind::Float)
+                } else {
+                    None
+                }
+            }
+            "div" => {
+                if args_all(&is_float)
+                    || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+                {
+                    Some(NativeScalarKind::Float)
+                } else {
+                    None
+                }
+            }
+            "lshift" | "rshift" | "shl" | "shr" => {
+                if args_all(&is_int) {
+                    Some(NativeScalarKind::Int)
+                } else {
+                    None
+                }
+            }
+            "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
+                if has_kind(src, NativeScalarKind::Float) {
+                    Some(NativeScalarKind::Float)
+                } else if is_int(src) {
+                    Some(NativeScalarKind::Int)
+                } else {
+                    None
+                }
+            }),
+            "invert" => first_source()
+                .filter(|src| is_int(src))
+                .map(|_| NativeScalarKind::Int),
+            "index" | "store_index" | "dict_set" => args
+                .get(1)
+                .filter(|k| is_int(k))
+                .map(|_| NativeScalarKind::Int),
+            _ => None,
+        }
+    }
+}
+
+fn store_var_targets_all_sources_in(
+    func_ir: &FunctionIR,
+    proven_outputs: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut targets: BTreeMap<String, bool> = BTreeMap::new();
+    for op in &func_ir.ops {
+        let Some(target) = store_var_target_name(op) else {
+            continue;
+        };
+        let source_proven =
+            store_var_source_name(op).is_some_and(|src| proven_outputs.contains(src));
+        targets
+            .entry(target.to_string())
+            .and_modify(|all_sources_proven| *all_sources_proven &= source_proven)
+            .or_insert(source_proven);
+    }
+    targets
+        .into_iter()
+        .filter_map(|(target, all_sources_proven)| all_sources_proven.then_some(target))
+        .collect()
+}
+
+fn propagate_store_var_targets_in(
+    func_ir: &FunctionIR,
+    proven_outputs: &mut BTreeSet<String>,
+) -> bool {
+    let mut changed = false;
+    for target in store_var_targets_all_sources_in(func_ir, proven_outputs) {
+        if proven_outputs.insert(target) {
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>) -> bool {
+    let first_source = || {
+        op.var.as_deref().or_else(|| {
+            op.args
+                .as_ref()
+                .and_then(|args| args.first().map(String::as_str))
+        })
+    };
+    match op.kind.as_str() {
+        "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
+        | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
+        "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" | "invert" => {
+            first_source().is_some_and(|s| candidates.contains(s))
+        }
+        "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
+        | "inplace_bit_xor" => op
+            .args
+            .as_ref()
+            .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
+        _ => false,
+    }
+}
+
+fn op_produces_raw_bool_for_bool_primary(
+    op: &OpIR,
+    candidates: &BTreeSet<String>,
+    int_primary: &BTreeSet<String>,
+) -> bool {
+    let first_source = || {
+        op.var.as_deref().or_else(|| {
+            op.args
+                .as_ref()
+                .and_then(|args| args.first().map(String::as_str))
+        })
+    };
+    match op.kind.as_str() {
+        "const_bool" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "string_eq" | "is" | "not"
+        | "bool" | "cast_bool" | "builtin_bool" => true,
+        "copy" | "copy_var" | "load_var" | "identity_alias" => {
+            first_source().is_some_and(|s| candidates.contains(s))
+        }
+        "index" => {
+            op.container_type.as_deref() == Some("list")
+                && op
+                    .args
+                    .as_ref()
+                    .and_then(|args| args.get(1))
+                    .is_some_and(|idx| int_primary.contains(idx))
+        }
+        _ => false,
+    }
+}
+
+fn is_cold_module_chunk_function(name: &str) -> bool {
+    name.contains("__molt_module_chunk_")
 }
 
 fn integer_arithmetic_result_op(kind: &str) -> bool {
@@ -414,6 +1168,15 @@ mod tests {
             kind: "const_bool".to_string(),
             out: Some(out.to_string()),
             value: Some(i64::from(value)),
+            ..OpIR::default()
+        }
+    }
+
+    fn const_float(out: &str, value: f64) -> OpIR {
+        OpIR {
+            kind: "const_float".to_string(),
+            out: Some(out.to_string()),
+            f_value: Some(value),
             ..OpIR::default()
         }
     }
@@ -547,5 +1310,243 @@ mod tests {
         assert!(!int_like.contains("wide"));
         assert!(!float_like.contains("wide"));
         assert!(!float_like.contains("masked"));
+    }
+
+    #[test]
+    fn primary_int_names_exclude_unbounded_arithmetic_without_range_proof() {
+        let func = function(
+            "int_primary",
+            &[],
+            None,
+            vec![
+                const_int("lhs", 5),
+                const_int("rhs", 3),
+                op("bit_xor", Some("masked"), None, &["lhs", "rhs"]),
+                op("add", Some("sum"), None, &["lhs", "rhs"]),
+                op("lshift", Some("shifted"), None, &["lhs", "rhs"]),
+            ],
+        );
+
+        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(primary.int.contains("lhs"));
+        assert!(primary.int.contains("rhs"));
+        assert!(primary.int.contains("masked"));
+        assert!(!primary.int.contains("sum"));
+        assert!(!primary.int.contains("shifted"));
+    }
+
+    #[test]
+    fn bool_primary_predicate_is_raw_closed() {
+        let candidates = BTreeSet::from(["flag".to_string()]);
+        let int_primary = BTreeSet::from(["idx".to_string()]);
+        let const_bool = const_bool("flag", true);
+        assert!(op_produces_raw_bool_for_bool_primary(
+            &const_bool,
+            &BTreeSet::new(),
+            &int_primary,
+        ));
+
+        let copy = op("copy_var", Some("flag_copy"), Some("flag"), &[]);
+        assert!(op_produces_raw_bool_for_bool_primary(
+            &copy,
+            &candidates,
+            &int_primary,
+        ));
+
+        let comparison = op("eq", Some("cmp"), None, &["lhs", "rhs"]);
+        assert!(op_produces_raw_bool_for_bool_primary(
+            &comparison,
+            &candidates,
+            &int_primary,
+        ));
+
+        let boolean_cast = op("bool", Some("casted"), None, &["flag"]);
+        assert!(op_produces_raw_bool_for_bool_primary(
+            &boolean_cast,
+            &candidates,
+            &int_primary,
+        ));
+
+        let mut list_bool_index = op("index", Some("item"), None, &["items", "idx"]);
+        list_bool_index.container_type = Some("list".to_string());
+        assert!(op_produces_raw_bool_for_bool_primary(
+            &list_bool_index,
+            &candidates,
+            &int_primary,
+        ));
+
+        let mut boxed_index = op("index", Some("item"), None, &["items", "boxed_idx"]);
+        boxed_index.container_type = Some("list".to_string());
+        assert!(!op_produces_raw_bool_for_bool_primary(
+            &boxed_index,
+            &candidates,
+            &int_primary,
+        ));
+
+        let generic_index = op("index", Some("item"), None, &["items", "idx"]);
+        assert!(!op_produces_raw_bool_for_bool_primary(
+            &generic_index,
+            &candidates,
+            &int_primary,
+        ));
+
+        let legacy_is_truthy = op("is_truthy", Some("truthy"), None, &["flag"]);
+        assert!(!op_produces_raw_bool_for_bool_primary(
+            &legacy_is_truthy,
+            &candidates,
+            &int_primary,
+        ));
+    }
+
+    #[test]
+    fn scalar_lane_does_not_classify_unbounded_int_pow_as_inline_int() {
+        let pow = op("pow", Some("powv"), None, &["base", "exp"]);
+        let func = function(
+            "int_pow",
+            &["base", "exp"],
+            Some(vec!["int", "int"]),
+            vec![pow.clone()],
+        );
+
+        let plan = NativeRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.op_scalar_lane(&pow), None);
+    }
+
+    #[test]
+    fn scalar_lane_keeps_float_pow_on_float_lane() {
+        let pow = op("pow", Some("powv"), None, &["base", "exp"]);
+        let func = function(
+            "float_pow",
+            &["base", "exp"],
+            Some(vec!["float", "float"]),
+            vec![pow.clone()],
+        );
+
+        let plan = NativeRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.op_scalar_lane(&pow), Some(NativeScalarKind::Float));
+    }
+
+    #[test]
+    fn scalar_store_targets_are_plan_owned_and_all_sources() {
+        let func = function(
+            "scalar_store_targets",
+            &["callable", "args"],
+            None,
+            vec![
+                const_int("i_seed", 7),
+                op("copy_var", Some("i_copy"), None, &["i_seed"]),
+                op("store_var", None, Some("i_slot"), &["i_copy"]),
+                const_float("f_seed", 1.25),
+                op("copy_var", Some("f_copy"), Some("f_seed"), &[]),
+                op("store_var", None, Some("f_slot"), &["f_copy"]),
+                const_bool("b_seed", true),
+                op("identity_alias", Some("b_copy"), None, &["b_seed"]),
+                op("store_var", None, Some("b_slot"), &["b_copy"]),
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("s_seed".to_string()),
+                    s_value: Some("lane".to_string()),
+                    ..OpIR::default()
+                },
+                op("copy", Some("s_copy"), None, &["s_seed"]),
+                op("store_var", None, Some("s_slot"), &["s_copy"]),
+                op("store_var", None, Some("mixed_slot"), &["i_seed"]),
+                op("store_var", None, Some("mixed_slot"), &["f_seed"]),
+                op(
+                    "call_indirect",
+                    Some("dynamic"),
+                    None,
+                    &["callable", "args"],
+                ),
+                op("store_var", None, Some("dynamic_slot"), &["dynamic"]),
+            ],
+        );
+
+        let plan = NativeRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(
+            plan.scalar_store_targets(NativeScalarKind::Int),
+            BTreeSet::from(["i_slot".to_string()]),
+        );
+        assert_eq!(
+            plan.scalar_store_targets(NativeScalarKind::Float),
+            BTreeSet::from(["f_slot".to_string()]),
+        );
+        assert_eq!(
+            plan.scalar_store_targets(NativeScalarKind::Bool),
+            BTreeSet::from(["b_slot".to_string()]),
+        );
+        assert_eq!(
+            plan.scalar_store_targets(NativeScalarKind::Str),
+            BTreeSet::from(["s_slot".to_string()]),
+        );
+    }
+
+    #[test]
+    fn float_primary_scope_excludes_pow_without_disabling_unrelated_float_defs() {
+        let func = function(
+            "float_primary_pow_scope",
+            &["p"],
+            Some(vec!["float"]),
+            vec![
+                const_float("base", 2.0),
+                const_float("exp", 3.0),
+                op("pow", Some("pow_result"), None, &["base", "exp"]),
+                op("add", Some("sum"), None, &["base", "exp"]),
+                op("copy_var", Some("sum_copy"), Some("sum"), &[]),
+                op("copy_var", Some("param_copy"), Some("p"), &[]),
+            ],
+        );
+
+        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(primary.float.contains("base"));
+        assert!(primary.float.contains("exp"));
+        assert!(primary.float.contains("sum"));
+        assert!(primary.float.contains("sum_copy"));
+        assert!(!primary.float.contains("pow_result"));
+        assert!(!primary.float.contains("p"));
+        assert!(primary.float.contains("param_copy"));
+    }
+
+    #[test]
+    fn float_primary_store_targets_require_all_sources() {
+        let func = function(
+            "float_primary_store_sources",
+            &[],
+            None,
+            vec![
+                const_float("f_seed", 1.5),
+                op("store_var", None, Some("float_slot"), &["f_seed"]),
+                const_int("i_seed", 2),
+                op("store_var", None, Some("mixed_slot"), &["f_seed"]),
+                op("store_var", None, Some("mixed_slot"), &["i_seed"]),
+            ],
+        );
+
+        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(primary.float.contains("f_seed"));
+        assert!(primary.float.contains("float_slot"));
+        assert!(!primary.float.contains("mixed_slot"));
+    }
+
+    #[test]
+    fn cold_module_chunk_functions_have_empty_primary_sets() {
+        let func = function(
+            "__molt_module_chunk_0",
+            &[],
+            None,
+            vec![const_int("value", 1), const_bool("flag", true)],
+        );
+
+        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(primary.int.is_empty());
+        assert!(primary.bool_.is_empty());
+        assert!(primary.float.is_empty());
     }
 }

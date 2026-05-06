@@ -73,9 +73,10 @@ This file is forward-looking only.
   now builds a final-codegen-time `NativeRepresentationPlan` from refined
   TIR/LIR facts, `SimpleValueNames`, and explicit single-output provenance,
   then derives semantic scalar/None classifications from that plan instead of
-  recomputing them from SimpleIR op strings. The remaining native cleanup is to
-  move all raw-primary carrier eligibility bookkeeping onto that same plan while
-  preserving the existing exact-carrier safety predicates.
+  recomputing them from SimpleIR op strings. The plan also owns raw-primary
+  carrier eligibility, scalar slot escape safety, scalar store-target
+  discovery, and operation lane preference, while preserving the stricter
+  exact-carrier safety predicates needed by codegen.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
@@ -115,8 +116,8 @@ This file is forward-looking only.
 - Incomplete compatibility coverage across language and stdlib.
 - Some backend lowering still degrades typed representation facts into legacy
   transport names before codegen; native scalar preanalysis now consumes a
-  LIR-derived representation plan, but raw-primary carrier bookkeeping and
-  non-native backends still need to converge on the same contract.
+  LIR-derived representation plan that owns raw-primary carrier bookkeeping,
+  but non-native backends still need to converge on the same contract.
 - Benchmark suite results are not yet consistently faster than CPython across
   all tracked lanes.
 
