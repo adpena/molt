@@ -9,9 +9,9 @@ use crate::tir::ops::AttrValue;
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 
-/// Native scalar lane derived from the backend-facing TIR/LIR contract.
+/// Scalar lane derived from the backend-facing TIR/LIR contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum NativeScalarKind {
+pub(crate) enum ScalarKind {
     Int,
     Bool,
     Float,
@@ -21,48 +21,48 @@ pub(crate) enum NativeScalarKind {
 
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NativeRepresentationFact {
+pub(crate) struct ScalarRepresentationFact {
     pub(crate) ty: TirType,
     pub(crate) repr: LirRepr,
 }
 
-impl NativeRepresentationFact {
-    fn scalar_kind(&self) -> Option<NativeScalarKind> {
+impl ScalarRepresentationFact {
+    fn scalar_kind(&self) -> Option<ScalarKind> {
         match (&self.ty, self.repr) {
-            (TirType::I64, LirRepr::I64) => Some(NativeScalarKind::Int),
-            (TirType::Bool, LirRepr::Bool1) => Some(NativeScalarKind::Bool),
-            (TirType::F64, LirRepr::F64) => Some(NativeScalarKind::Float),
-            (TirType::Str, _) => Some(NativeScalarKind::Str),
-            (TirType::None, _) => Some(NativeScalarKind::NoneValue),
+            (TirType::I64, LirRepr::I64) => Some(ScalarKind::Int),
+            (TirType::Bool, LirRepr::Bool1) => Some(ScalarKind::Bool),
+            (TirType::F64, LirRepr::F64) => Some(ScalarKind::Float),
+            (TirType::Str, _) => Some(ScalarKind::Str),
+            (TirType::None, _) => Some(ScalarKind::NoneValue),
             _ => None,
         }
     }
 }
 
-/// The native backend's read-only view of final typed representation facts.
+/// A backend's read-only view of final typed representation facts.
 ///
-/// This is built from the exact `FunctionIR` that Cranelift is about to lower,
+/// This is built from the exact `FunctionIR` that a backend is about to lower,
 /// after module-level TIR roundtrip and post-TIR SimpleIR rewrites have already
 /// run. It deliberately does not trust transport hints (`fast_int`,
 /// `fast_float`, or `type_hint`) as representation authority.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct NativeRepresentationPlan {
-    facts_by_name: BTreeMap<String, NativeRepresentationFact>,
+pub(crate) struct ScalarRepresentationPlan {
+    facts_by_name: BTreeMap<String, ScalarRepresentationFact>,
     conflicted_names: BTreeSet<String>,
     integer_family_names: BTreeSet<String>,
-    primary_names: NativePrimaryNameSets,
+    primary_names: ScalarPrimaryNameSets,
     scalar_slot_exclusion_unsafe: BTreeSet<String>,
-    scalar_store_targets_by_kind: BTreeMap<NativeScalarKind, BTreeSet<String>>,
+    scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct NativePrimaryNameSets {
+pub(crate) struct ScalarPrimaryNameSets {
     pub(crate) int: BTreeSet<String>,
     pub(crate) bool_: BTreeSet<String>,
     pub(crate) float: BTreeSet<String>,
 }
 
-impl NativeRepresentationPlan {
+impl ScalarRepresentationPlan {
     pub(crate) fn for_function_ir(func_ir: &FunctionIR) -> Self {
         let mut tir_func = lower_to_tir(func_ir);
         refine_types(&mut tir_func);
@@ -114,19 +114,19 @@ impl NativeRepresentationPlan {
         let mut none_like = BTreeSet::new();
         for (name, fact) in &self.facts_by_name {
             match fact.scalar_kind() {
-                Some(NativeScalarKind::Int) => {
+                Some(ScalarKind::Int) => {
                     int_like.insert(name.clone());
                 }
-                Some(NativeScalarKind::Bool) => {
+                Some(ScalarKind::Bool) => {
                     bool_like.insert(name.clone());
                 }
-                Some(NativeScalarKind::Float) => {
+                Some(ScalarKind::Float) => {
                     float_like.insert(name.clone());
                 }
-                Some(NativeScalarKind::Str) => {
+                Some(ScalarKind::Str) => {
                     str_like.insert(name.clone());
                 }
-                Some(NativeScalarKind::NoneValue) => {
+                Some(ScalarKind::NoneValue) => {
                     none_like.insert(name.clone());
                 }
                 None => {}
@@ -140,22 +140,26 @@ impl NativeRepresentationPlan {
         self.integer_family_names.clone()
     }
 
-    pub(crate) fn primary_name_sets(&self) -> NativePrimaryNameSets {
+    #[cfg(any(feature = "native-backend", test))]
+    pub(crate) fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
         self.primary_names.clone()
     }
 
+    #[cfg(any(feature = "native-backend", test))]
+    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub(crate) fn scalar_slot_exclusion_unsafe(&self) -> BTreeSet<String> {
         self.scalar_slot_exclusion_unsafe.clone()
     }
 
-    pub(crate) fn scalar_store_targets(&self, kind: NativeScalarKind) -> BTreeSet<String> {
+    #[cfg(any(feature = "native-backend", test))]
+    pub(crate) fn scalar_store_targets(&self, kind: ScalarKind) -> BTreeSet<String> {
         self.scalar_store_targets_by_kind
             .get(&kind)
             .cloned()
             .unwrap_or_default()
     }
 
-    pub(crate) fn op_scalar_lane(&self, op: &OpIR) -> Option<NativeScalarKind> {
+    pub(crate) fn op_scalar_lane(&self, op: &OpIR) -> Option<ScalarKind> {
         self.infer_scalar_lane(op)
     }
 
@@ -198,14 +202,14 @@ impl NativeRepresentationPlan {
     fn insert_lir_value(&mut self, name: String, value: &LirValue) {
         self.insert_fact(
             name,
-            NativeRepresentationFact {
+            ScalarRepresentationFact {
                 ty: value.ty.clone(),
                 repr: value.repr,
             },
         );
     }
 
-    fn insert_fact(&mut self, name: String, fact: NativeRepresentationFact) -> bool {
+    fn insert_fact(&mut self, name: String, fact: ScalarRepresentationFact) -> bool {
         if self.conflicted_names.contains(&name) {
             return false;
         }
@@ -262,8 +266,8 @@ impl NativeRepresentationPlan {
     fn store_target_facts(
         &self,
         func_ir: &FunctionIR,
-    ) -> BTreeMap<String, Option<NativeRepresentationFact>> {
-        let mut facts_by_target: BTreeMap<String, Option<NativeRepresentationFact>> =
+    ) -> BTreeMap<String, Option<ScalarRepresentationFact>> {
+        let mut facts_by_target: BTreeMap<String, Option<ScalarRepresentationFact>> =
             BTreeMap::new();
         for op in &func_ir.ops {
             let Some(target) = store_var_target_name(op) else {
@@ -286,7 +290,7 @@ impl NativeRepresentationPlan {
 
     fn propagate_store_targets(
         &mut self,
-        facts_by_target: BTreeMap<String, Option<NativeRepresentationFact>>,
+        facts_by_target: BTreeMap<String, Option<ScalarRepresentationFact>>,
     ) -> bool {
         let mut changed = false;
         for (target, fact) in facts_by_target {
@@ -366,13 +370,31 @@ impl NativeRepresentationPlan {
         changed
     }
 
+    pub(crate) fn name_scalar_kind(&self, name: &str) -> Option<ScalarKind> {
+        self.facts_by_name
+            .get(name)
+            .and_then(ScalarRepresentationFact::scalar_kind)
+    }
+
+    pub(crate) fn name_is_integer_family(&self, name: &str) -> bool {
+        self.integer_family_names.contains(name)
+            || self.name_scalar_kind(name) == Some(ScalarKind::Bool)
+    }
+
+    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
+    pub(crate) fn op_args_are_integer_family(&self, op: &OpIR) -> bool {
+        op.args.as_ref().is_some_and(|args| {
+            !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
+        })
+    }
+
     fn name_is_bool(&self, name: &str) -> bool {
         self.facts_by_name
             .get(name)
-            .is_some_and(|fact| fact.scalar_kind() == Some(NativeScalarKind::Bool))
+            .is_some_and(|fact| fact.scalar_kind() == Some(ScalarKind::Bool))
     }
 
-    fn name_has_scalar_kind(&self, name: &str, kind: NativeScalarKind) -> bool {
+    fn name_has_scalar_kind(&self, name: &str, kind: ScalarKind) -> bool {
         self.facts_by_name
             .get(name)
             .is_some_and(|fact| fact.scalar_kind() == Some(kind))
@@ -381,13 +403,13 @@ impl NativeRepresentationPlan {
     fn compute_scalar_store_targets(
         &self,
         func_ir: &FunctionIR,
-    ) -> BTreeMap<NativeScalarKind, BTreeSet<String>> {
+    ) -> BTreeMap<ScalarKind, BTreeSet<String>> {
         let mut targets = BTreeMap::new();
         for kind in [
-            NativeScalarKind::Int,
-            NativeScalarKind::Bool,
-            NativeScalarKind::Float,
-            NativeScalarKind::Str,
+            ScalarKind::Int,
+            ScalarKind::Bool,
+            ScalarKind::Float,
+            ScalarKind::Str,
         ] {
             targets.insert(kind, self.scalar_lane_store_target_names(func_ir, kind));
         }
@@ -397,7 +419,7 @@ impl NativeRepresentationPlan {
     fn scalar_lane_store_target_names(
         &self,
         func_ir: &FunctionIR,
-        lane: NativeScalarKind,
+        lane: ScalarKind,
     ) -> BTreeSet<String> {
         let mut lane_outputs = BTreeSet::new();
         let mut changed = true;
@@ -436,9 +458,9 @@ impl NativeRepresentationPlan {
         store_var_targets_all_sources_in(func_ir, &lane_outputs)
     }
 
-    fn compute_primary_name_sets(&self, func_ir: &FunctionIR) -> NativePrimaryNameSets {
+    fn compute_primary_name_sets(&self, func_ir: &FunctionIR) -> ScalarPrimaryNameSets {
         if is_cold_module_chunk_function(&func_ir.name) {
-            return NativePrimaryNameSets::default();
+            return ScalarPrimaryNameSets::default();
         }
 
         let (int_like, bool_like, float_like, str_like, _) = self.scalar_name_sets();
@@ -462,7 +484,7 @@ impl NativeRepresentationPlan {
         let float_primary =
             self.compute_float_primary_names(func_ir, &param_name_set, &int_like, &float_like);
 
-        NativePrimaryNameSets {
+        ScalarPrimaryNameSets {
             int: int_primary,
             bool_: bool_primary,
             float: float_primary,
@@ -565,10 +587,7 @@ impl NativeRepresentationPlan {
             }
             if let Some(out) = op.out.as_ref() {
                 let lane = self.infer_scalar_lane(op);
-                let proven_int = matches!(
-                    lane,
-                    Some(NativeScalarKind::Int) | Some(NativeScalarKind::Bool)
-                );
+                let proven_int = matches!(lane, Some(ScalarKind::Int) | Some(ScalarKind::Bool));
                 if !proven_int && int_like.contains(out) {
                     non_int.insert(out.clone());
                 }
@@ -658,10 +677,7 @@ impl NativeRepresentationPlan {
                 let lane = self.infer_scalar_lane(op);
                 let raw_bool_output =
                     op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
-                if lane != Some(NativeScalarKind::Bool)
-                    && !raw_bool_output
-                    && bool_like.contains(out)
-                {
+                if lane != Some(ScalarKind::Bool) && !raw_bool_output && bool_like.contains(out) {
                     non_bool.insert(out.clone());
                 }
             }
@@ -733,7 +749,7 @@ impl NativeRepresentationPlan {
             }
             if let Some(out) = op.out.as_ref() {
                 let lane = self.infer_scalar_lane(op);
-                if lane != Some(NativeScalarKind::Float) && float_like.contains(out) {
+                if lane != Some(ScalarKind::Float) && float_like.contains(out) {
                     non_float.insert(out.clone());
                 }
             }
@@ -813,21 +829,21 @@ impl NativeRepresentationPlan {
         matches!(
             self.facts_by_name
                 .get(name)
-                .and_then(NativeRepresentationFact::scalar_kind),
-            Some(NativeScalarKind::Int | NativeScalarKind::Bool | NativeScalarKind::Float)
+                .and_then(ScalarRepresentationFact::scalar_kind),
+            Some(ScalarKind::Int | ScalarKind::Bool | ScalarKind::Float)
         )
     }
 
-    fn infer_scalar_lane(&self, op: &OpIR) -> Option<NativeScalarKind> {
-        self.infer_scalar_lane_with_overrides(op, NativeScalarKind::NoneValue, &BTreeSet::new())
+    fn infer_scalar_lane(&self, op: &OpIR) -> Option<ScalarKind> {
+        self.infer_scalar_lane_with_overrides(op, ScalarKind::NoneValue, &BTreeSet::new())
     }
 
     fn infer_scalar_lane_with_overrides(
         &self,
         op: &OpIR,
-        override_kind: NativeScalarKind,
+        override_kind: ScalarKind,
         override_names: &BTreeSet<String>,
-    ) -> Option<NativeScalarKind> {
+    ) -> Option<ScalarKind> {
         let first_source = || {
             op.var.as_deref().or_else(|| {
                 op.args
@@ -844,63 +860,62 @@ impl NativeRepresentationPlan {
             self.name_has_scalar_kind(name, kind)
                 || (override_kind == kind && override_names.contains(name))
         };
-        let is_float = |name: &str| has_kind(name, NativeScalarKind::Float);
-        let is_str = |name: &str| has_kind(name, NativeScalarKind::Str);
-        let is_int = |name: &str| {
-            has_kind(name, NativeScalarKind::Int) || has_kind(name, NativeScalarKind::Bool)
-        };
+        let is_float = |name: &str| has_kind(name, ScalarKind::Float);
+        let is_str = |name: &str| has_kind(name, ScalarKind::Str);
+        let is_int =
+            |name: &str| has_kind(name, ScalarKind::Int) || has_kind(name, ScalarKind::Bool);
         match op.kind.as_str() {
-            "const" | "loop_index_start" | "loop_index_next" | "len" => Some(NativeScalarKind::Int),
+            "const" | "loop_index_start" | "loop_index_next" | "len" => Some(ScalarKind::Int),
             "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => {
-                Some(NativeScalarKind::Int)
+                Some(ScalarKind::Int)
             }
-            "const_bool" => Some(NativeScalarKind::Bool),
-            "const_float" => Some(NativeScalarKind::Float),
-            "const_str" => Some(NativeScalarKind::Str),
-            "float_from_obj" => Some(NativeScalarKind::Float),
+            "const_bool" => Some(ScalarKind::Bool),
+            "const_float" => Some(ScalarKind::Float),
+            "const_str" => Some(ScalarKind::Str),
+            "float_from_obj" => Some(ScalarKind::Float),
             "copy" | "copy_var" | "load_var" | "identity_alias" => first_source().and_then(|src| {
-                if has_kind(src, NativeScalarKind::Int) {
-                    Some(NativeScalarKind::Int)
-                } else if has_kind(src, NativeScalarKind::Bool) {
-                    Some(NativeScalarKind::Bool)
-                } else if has_kind(src, NativeScalarKind::Float) {
-                    Some(NativeScalarKind::Float)
-                } else if has_kind(src, NativeScalarKind::Str) {
-                    Some(NativeScalarKind::Str)
+                if has_kind(src, ScalarKind::Int) {
+                    Some(ScalarKind::Int)
+                } else if has_kind(src, ScalarKind::Bool) {
+                    Some(ScalarKind::Bool)
+                } else if has_kind(src, ScalarKind::Float) {
+                    Some(ScalarKind::Float)
+                } else if has_kind(src, ScalarKind::Str) {
+                    Some(ScalarKind::Str)
                 } else {
                     None
                 }
             }),
-            "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is" => Some(NativeScalarKind::Bool),
+            "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is" => Some(ScalarKind::Bool),
             "bool" | "cast_bool" | "builtin_bool" | "is_truthy" | "not" => {
                 first_source().and_then(|src| {
-                    if has_kind(src, NativeScalarKind::Bool) {
-                        Some(NativeScalarKind::Bool)
+                    if has_kind(src, ScalarKind::Bool) {
+                        Some(ScalarKind::Bool)
                     } else if is_int(src) {
-                        Some(NativeScalarKind::Int)
+                        Some(ScalarKind::Int)
                     } else {
                         None
                     }
                 })
             }
             "if" => first_source().and_then(|src| {
-                if has_kind(src, NativeScalarKind::Bool) {
-                    Some(NativeScalarKind::Bool)
+                if has_kind(src, ScalarKind::Bool) {
+                    Some(ScalarKind::Bool)
                 } else if is_int(src) {
-                    Some(NativeScalarKind::Int)
+                    Some(ScalarKind::Int)
                 } else {
                     None
                 }
             }),
             "add" | "inplace_add" => {
                 if args_all(&is_str) {
-                    Some(NativeScalarKind::Str)
+                    Some(ScalarKind::Str)
                 } else if args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
-                    Some(NativeScalarKind::Float)
+                    Some(ScalarKind::Float)
                 } else if args_all(&is_int) {
-                    Some(NativeScalarKind::Int)
+                    Some(ScalarKind::Int)
                 } else {
                     None
                 }
@@ -911,20 +926,20 @@ impl NativeRepresentationPlan {
                 if args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
-                    Some(NativeScalarKind::Float)
+                    Some(ScalarKind::Float)
                 } else if args_all(&is_int) {
-                    Some(NativeScalarKind::Int)
+                    Some(ScalarKind::Int)
                 } else {
                     None
                 }
             }
             "pow" => {
                 if args.len() >= 2 && is_float(&args[1]) {
-                    Some(NativeScalarKind::Float)
+                    Some(ScalarKind::Float)
                 } else if args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
-                    Some(NativeScalarKind::Float)
+                    Some(ScalarKind::Float)
                 } else {
                     None
                 }
@@ -933,34 +948,33 @@ impl NativeRepresentationPlan {
                 if args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
-                    Some(NativeScalarKind::Float)
+                    Some(ScalarKind::Float)
                 } else {
                     None
                 }
             }
             "lshift" | "rshift" | "shl" | "shr" => {
                 if args_all(&is_int) {
-                    Some(NativeScalarKind::Int)
+                    Some(ScalarKind::Int)
                 } else {
                     None
                 }
             }
             "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
-                if has_kind(src, NativeScalarKind::Float) {
-                    Some(NativeScalarKind::Float)
+                if has_kind(src, ScalarKind::Float) {
+                    Some(ScalarKind::Float)
                 } else if is_int(src) {
-                    Some(NativeScalarKind::Int)
+                    Some(ScalarKind::Int)
                 } else {
                     None
                 }
             }),
             "invert" => first_source()
                 .filter(|src| is_int(src))
-                .map(|_| NativeScalarKind::Int),
-            "index" | "store_index" | "dict_set" => args
-                .get(1)
-                .filter(|k| is_int(k))
-                .map(|_| NativeScalarKind::Int),
+                .map(|_| ScalarKind::Int),
+            "index" | "store_index" | "dict_set" => {
+                args.get(1).filter(|k| is_int(k)).map(|_| ScalarKind::Int)
+            }
             _ => None,
         }
     }
@@ -1183,10 +1197,10 @@ mod tests {
 
     #[test]
     fn dynbox_i64_fact_is_not_a_scalar_integer() {
-        let mut plan = NativeRepresentationPlan::default();
+        let mut plan = ScalarRepresentationPlan::default();
         plan.insert_fact(
             "boxed_word".to_string(),
-            NativeRepresentationFact {
+            ScalarRepresentationFact {
                 ty: TirType::I64,
                 repr: LirRepr::DynBox,
             },
@@ -1201,17 +1215,17 @@ mod tests {
 
     #[test]
     fn conflicting_facts_do_not_pick_order_dependent_scalar_lane() {
-        let mut plan = NativeRepresentationPlan::default();
+        let mut plan = ScalarRepresentationPlan::default();
         plan.insert_fact(
             "ambiguous".to_string(),
-            NativeRepresentationFact {
+            ScalarRepresentationFact {
                 ty: TirType::I64,
                 repr: LirRepr::I64,
             },
         );
         plan.insert_fact(
             "ambiguous".to_string(),
-            NativeRepresentationFact {
+            ScalarRepresentationFact {
                 ty: TirType::Bool,
                 repr: LirRepr::Bool1,
             },
@@ -1235,7 +1249,7 @@ mod tests {
         );
 
         let (int_like, bool_like, _, _, _) =
-            NativeRepresentationPlan::for_function_ir(&func).scalar_name_sets();
+            ScalarRepresentationPlan::for_function_ir(&func).scalar_name_sets();
 
         assert!(int_like.contains("x"));
         assert!(bool_like.contains("flag"));
@@ -1256,7 +1270,7 @@ mod tests {
             ],
         );
         let (int_like, bool_like, _, _, _) =
-            NativeRepresentationPlan::for_function_ir(&mixed).scalar_name_sets();
+            ScalarRepresentationPlan::for_function_ir(&mixed).scalar_name_sets();
         assert!(!int_like.contains("slot"));
         assert!(!bool_like.contains("slot"));
 
@@ -1271,7 +1285,7 @@ mod tests {
             ],
         );
         let (int_like, _, _, _, _) =
-            NativeRepresentationPlan::for_function_ir(&uniform).scalar_name_sets();
+            ScalarRepresentationPlan::for_function_ir(&uniform).scalar_name_sets();
         assert!(int_like.contains("slot"));
     }
 
@@ -1282,7 +1296,7 @@ mod tests {
         let func = function("generic_hint", &[], None, vec![generic]);
 
         let (int_like, _, _, _, _) =
-            NativeRepresentationPlan::for_function_ir(&func).scalar_name_sets();
+            ScalarRepresentationPlan::for_function_ir(&func).scalar_name_sets();
 
         assert!(!int_like.contains("maybe_int"));
     }
@@ -1301,7 +1315,7 @@ mod tests {
             ],
         );
 
-        let plan = NativeRepresentationPlan::for_function_ir(&func);
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
         let (int_like, _, float_like, _, _) = plan.scalar_name_sets();
         let integer_family = plan.integer_family_names();
 
@@ -1327,7 +1341,7 @@ mod tests {
             ],
         );
 
-        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
 
         assert!(primary.int.contains("lhs"));
         assert!(primary.int.contains("rhs"));
@@ -1409,9 +1423,40 @@ mod tests {
             vec![pow.clone()],
         );
 
-        let plan = NativeRepresentationPlan::for_function_ir(&func);
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         assert_eq!(plan.op_scalar_lane(&pow), None);
+    }
+
+    #[test]
+    fn transport_hints_do_not_prove_scalar_representation() {
+        let mut add = op("add", Some("sum"), None, &["lhs", "rhs"]);
+        add.fast_int = Some(true);
+        add.fast_float = Some(true);
+        add.type_hint = Some("int".to_string());
+        let func = function("hinted_add", &["lhs", "rhs"], None, vec![add.clone()]);
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.op_scalar_lane(&add), None);
+        assert!(!plan.op_prefers_integer_runtime_lane(&add));
+        assert!(!plan.op_args_are_integer_family(&add));
+    }
+
+    #[test]
+    fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
+        let add = op("add", Some("sum"), None, &["lhs", "rhs"]);
+        let func = function(
+            "typed_add",
+            &["lhs", "rhs"],
+            Some(vec!["int", "int"]),
+            vec![add.clone()],
+        );
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert!(plan.op_prefers_integer_runtime_lane(&add));
+        assert!(plan.op_args_are_integer_family(&add));
     }
 
     #[test]
@@ -1424,9 +1469,9 @@ mod tests {
             vec![pow.clone()],
         );
 
-        let plan = NativeRepresentationPlan::for_function_ir(&func);
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
-        assert_eq!(plan.op_scalar_lane(&pow), Some(NativeScalarKind::Float));
+        assert_eq!(plan.op_scalar_lane(&pow), Some(ScalarKind::Float));
     }
 
     #[test]
@@ -1465,22 +1510,22 @@ mod tests {
             ],
         );
 
-        let plan = NativeRepresentationPlan::for_function_ir(&func);
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         assert_eq!(
-            plan.scalar_store_targets(NativeScalarKind::Int),
+            plan.scalar_store_targets(ScalarKind::Int),
             BTreeSet::from(["i_slot".to_string()]),
         );
         assert_eq!(
-            plan.scalar_store_targets(NativeScalarKind::Float),
+            plan.scalar_store_targets(ScalarKind::Float),
             BTreeSet::from(["f_slot".to_string()]),
         );
         assert_eq!(
-            plan.scalar_store_targets(NativeScalarKind::Bool),
+            plan.scalar_store_targets(ScalarKind::Bool),
             BTreeSet::from(["b_slot".to_string()]),
         );
         assert_eq!(
-            plan.scalar_store_targets(NativeScalarKind::Str),
+            plan.scalar_store_targets(ScalarKind::Str),
             BTreeSet::from(["s_slot".to_string()]),
         );
     }
@@ -1501,7 +1546,7 @@ mod tests {
             ],
         );
 
-        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
 
         assert!(primary.float.contains("base"));
         assert!(primary.float.contains("exp"));
@@ -1527,7 +1572,7 @@ mod tests {
             ],
         );
 
-        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
 
         assert!(primary.float.contains("f_seed"));
         assert!(primary.float.contains("float_slot"));
@@ -1543,7 +1588,7 @@ mod tests {
             vec![const_int("value", 1), const_bool("flag", true)],
         );
 
-        let primary = NativeRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
 
         assert!(primary.int.is_empty());
         assert!(primary.bool_.is_empty());
