@@ -69,12 +69,13 @@ This file is forward-looking only.
   TIR functions now own a persistent `value_types` map, and type refinement
   writes op-result facts back into that map instead of leaving them as a
   transient extraction side table; range/list devirtualization also records the
-  I64/Bool facts it synthesizes for loop-carried values. The next native
-  cleanup must consume these typed facts through a LIR-derived representation
-  plan instead of recomputing scalar lanes from SimpleIR op strings. TIR-to-
-  SimpleIR value naming now has a first-class `SimpleValueNames` bridge so
-  representation planning can use the same param and block-argument naming
-  contract as the legacy lowering surface.
+  I64/Bool facts it synthesizes for loop-carried values. Native preanalysis
+  now builds a final-codegen-time `NativeRepresentationPlan` from refined
+  TIR/LIR facts, `SimpleValueNames`, and explicit single-output provenance,
+  then derives semantic scalar/None classifications from that plan instead of
+  recomputing them from SimpleIR op strings. The remaining native cleanup is to
+  move all raw-primary carrier eligibility bookkeeping onto that same plan while
+  preserving the existing exact-carrier safety predicates.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
@@ -112,8 +113,10 @@ This file is forward-looking only.
 
 - Incomplete same-contract parity between native and WASM for important surfaces.
 - Incomplete compatibility coverage across language and stdlib.
-- Current backend lowering still degrades typed representation facts into
-  transport hints before codegen.
+- Some backend lowering still degrades typed representation facts into legacy
+  transport names before codegen; native scalar preanalysis now consumes a
+  LIR-derived representation plan, but raw-primary carrier bookkeeping and
+  non-native backends still need to converge on the same contract.
 - Benchmark suite results are not yet consistently faster than CPython across
   all tracked lanes.
 

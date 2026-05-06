@@ -12,3 +12,4 @@ pub(crate) struct TrampolineKey {
 }
 
 mod function_compiler;
+mod representation_plan;
