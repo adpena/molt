@@ -5063,13 +5063,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             merged = dict(prev_type_params)
             merged.update(type_param_map)
             self.annotation_type_params = merged
-        annotate_val = self._emit_annotate_function_obj(
-            items=annotated_items,
-            exec_map_name=None,
-            stringize=self.future_annotations,
-        )
         try:
             if not self.future_annotations and not self.eager_annotations:
+                annotate_val = self._emit_annotate_function_obj(
+                    items=annotated_items,
+                    exec_map_name=None,
+                    stringize=self.future_annotations,
+                )
                 self.emit(
                     MoltOp(
                         kind="SETATTR_GENERIC_OBJ",

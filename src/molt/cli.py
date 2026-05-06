@@ -16109,15 +16109,19 @@ def _build_isolate_import_ops(
     code_slot_count: int,
     module_order: Sequence[str],
     register_global_code_id: Callable[[str], int],
-    per_module_code_ops: Mapping[str, Sequence[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     # Runtime-side module imports can reach this function before either
     # `molt_main` or `molt_isolate_bootstrap` has initialized the global
-    # code-slot table. Import-time code-slot replay therefore must make the
-    # slot table available on its own rather than assuming caller ordering.
+    # code-slot table. The import dispatcher owns table allocation only; each
+    # module init body owns its module-frame CODE_NEW/CODE_SLOT_SET sequence.
     import_ops: list[dict[str, Any]] = [
         {"kind": "code_slots_init", "value": code_slot_count},
     ]
+    # Module-frame code metadata has one authority: each `molt_init_*` body emits
+    # its own CODE_NEW/CODE_SLOT_SET immediately before TRACE_ENTER_SLOT.  The
+    # import dispatcher must not replay a second synthetic code object for the
+    # same symbol, because that turns code slots into replaceable roots and makes
+    # frame/trace ownership harder to reason about.
     import_var_idx = 0
 
     def import_var() -> str:
@@ -16125,31 +16129,6 @@ def _build_isolate_import_ops(
         name = f"v{import_var_idx}"
         import_var_idx += 1
         return name
-
-    def _revar_ops(ops: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Re-number variable names in *ops* into the import_var namespace."""
-        var_map: dict[str, str] = {}
-        rewritten: list[dict[str, Any]] = []
-        for op in ops:
-            new_op = dict(op)
-            out = new_op.get("out")
-            if isinstance(out, str) and out.startswith("v"):
-                mapped = var_map.get(out)
-                if mapped is None:
-                    mapped = import_var()
-                    var_map[out] = mapped
-                new_op["out"] = mapped
-            args = new_op.get("args")
-            if isinstance(args, list):
-                new_args = []
-                for a in args:
-                    if isinstance(a, str) and a.startswith("v"):
-                        new_args.append(var_map.get(a, a))
-                    else:
-                        new_args.append(a)
-                new_op["args"] = new_args
-            rewritten.append(new_op)
-        return rewritten
 
     name_var = "p0"
     module_var = import_var()
@@ -16178,15 +16157,11 @@ def _build_isolate_import_ops(
                 }
             )
             import_ops.append({"kind": "if", "args": [match_var]})
-            # Emit lazy code-slot setup for this module (if available).
-            if per_module_code_ops and module_name in per_module_code_ops:
-                import_ops.extend(_revar_ops(per_module_code_ops[module_name]))
-            # Match `molt_main` and `molt_isolate_bootstrap`: per-module
-            # code replay can leave a stale pending exception bit from
-            # code_new/code_slot_set. Imported module init functions start
-            # with check_exception-based error paths and often predeclare
-            # globals to None, so entering them with a stale flag corrupts
-            # module publication instead of executing the real body.
+            # Match `molt_main` and `molt_isolate_bootstrap`: startup helpers
+            # can leave stale pending exception bits. Imported module init
+            # functions start with check_exception-based error paths and often
+            # predeclare globals to None, so entering them with a stale flag
+            # corrupts module publication instead of executing the real body.
             import_ops.append({"kind": "exception_clear"})
             init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
             init_out = import_var()
@@ -16488,16 +16463,6 @@ def _prepare_backend_ir(
     for mod_name in eager_modules:
         entry_module_code_ops.extend(per_module_ops.get(mod_name, []))
 
-    # Lazy modules: all modules NOT in the eager set.  Their code-slot ops
-    # are emitted inside ``molt_isolate_import`` (for isolate callers) and
-    # are already present inside each ``molt_init_*`` body (emitted by the
-    # frontend).
-    lazy_module_ops: dict[str, list[dict[str, Any]]] = {
-        mod_name: ops
-        for mod_name, ops in per_module_ops.items()
-        if mod_name not in eager_modules
-    }
-
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
     entry_ops[entry_call_idx:entry_call_idx] = entry_module_code_ops
     host_init_ops = _build_entry_main_ops(
@@ -16538,7 +16503,6 @@ def _prepare_backend_ir(
         code_slot_count=len(global_code_ids),
         module_order=module_order,
         register_global_code_id=register_global_code_id,
-        per_module_code_ops=lazy_module_ops,
     )
     functions.append(
         {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
