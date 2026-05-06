@@ -244,6 +244,16 @@ class _TempDirStub:
         pass
 
 
+class _BatchServerStub:
+    closed = False
+
+    def __init__(self, env: dict[str, str]) -> None:
+        self.env = env
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _bench_results_with_mocked_native_outputs(
     monkeypatch,
     tmp_path: Path,
@@ -260,6 +270,7 @@ def _bench_results_with_mocked_native_outputs(
     molt_iter = iter(molt_outputs)
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
     monkeypatch.setattr(
         bench_tool,
         "prepare_molt_binary",
@@ -295,6 +306,56 @@ def _bench_results_with_mocked_native_outputs(
         nuitka_cmd=None,
         pyodide_cmd=None,
     )[script.name]
+
+
+def test_prepare_molt_binary_uses_batch_build_server(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_sample.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    requests: list[tuple[dict[str, object], float]] = []
+
+    class _FakeBatchServer:
+        def request_build(
+            self, params: dict[str, object], *, timeout_s: float
+        ) -> dict[str, object]:
+            requests.append((params, timeout_s))
+            out_dir = Path(str(params["out_dir"]))
+            output = out_dir / "bench_sample_molt"
+            output.write_bytes(b"binary")
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": json.dumps({"data": {"output": str(output)}}),
+                "stderr": "",
+            }
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+
+    binary = bench_tool.prepare_molt_binary(
+        str(script),
+        ["--type-hints", "trust"],
+        env={},
+        build_profile="release",
+        batch_server=_FakeBatchServer(),
+        build_timeout_s=12.5,
+    )
+
+    assert binary is not None
+    try:
+        assert binary.path.read_bytes() == b"binary"
+        assert binary.size_kb > 0
+        params, timeout_s = requests[0]
+        assert timeout_s == 12.5
+        assert params["file_path"] == str(script)
+        assert params["profile"] == "release"
+        assert params["type_hints"] == "trust"
+        assert params["trusted"] is True
+        assert params["json_output"] is True
+        assert params["env_overrides"] == {"BASE": "1"}
+    finally:
+        binary.temp_dir.cleanup()
 
 
 def test_bench_results_records_raw_native_sample_arrays(
