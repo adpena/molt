@@ -83,7 +83,10 @@ This file is forward-looking only.
   discovery is now shared across int, float, bool, and str lanes, preserving
   the all-sources rule. The native raw-bool shadow lane is retired as well:
   `bool_primary_vars` is the only raw-bool authority, and non-primary bools
-  stay boxed in their main I64 variables.
+  stay boxed in their main I64 variables. Native int-primary now means exact
+  i64 representation, not semantic Python `int`; unbounded arithmetic and
+  shifts stay boxed/runtime-backed until shared range and shift-count proofs
+  make raw lowering sound.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 
