@@ -259,14 +259,10 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
 /// Assemble a `TirFunction` from a `FunctionIR`, its `CFG`, and the `SsaOutput`.
 fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction {
     let SsaOutput {
-        blocks: tir_blocks,
+        blocks: mut tir_blocks,
         mut types,
         next_value,
     } = ssa;
-
-    // Forward type propagation: when all operands of an arithmetic op are
-    // known-typed (e.g., I64), infer the result type.
-    propagate_arithmetic_types(&tir_blocks, &mut types);
 
     // Determine parameter types — default to DynBox, but honour param_types if
     // the frontend provided string annotations.
@@ -288,6 +284,18 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
             }
         }
     }
+    if let Some(entry) = tir_blocks.first_mut() {
+        for (arg_val, param_ty) in entry.args.iter_mut().zip(param_types.iter()) {
+            if *param_ty != TirType::DynBox {
+                arg_val.ty = param_ty.clone();
+            }
+        }
+    }
+
+    // Forward type propagation: when all operands of an Add/Sub/Mul/etc. are
+    // known-typed from constants or parameter signatures, infer the result
+    // type before deriving the function return contract.
+    propagate_arithmetic_types(&tir_blocks, &mut types);
 
     // Infer a return type from the SSA output by inspecting return terminators.
     let return_type = infer_return_type(&tir_blocks, &types);
@@ -483,30 +491,16 @@ fn detect_loop_cond_blocks(ir: &FunctionIR, cfg: &CFG) -> HashMap<BlockId, Block
     loop_cond_blocks
 }
 
-/// Forward type propagation for arithmetic and comparison ops.
+/// Forward type propagation for scalar return-relevant operation results.
 ///
-/// When all operands of an Add/Sub/Mul/etc. are I64 (from param_types,
-/// const hints, or prior propagation), the result is also I64.
+/// Parameter signatures are seeded before this pass, so the same canonical
+/// scalar result inference used by TIR refinement can derive return contracts
+/// from typed parameters, constants, and prior propagation. Container and
+/// aggregate types are deliberately left to the full refinement pipeline after
+/// TIR construction so this pre-assembly pass cannot duplicate richer type
+/// lattice behavior.
 /// This runs iteratively until no new types are discovered.
 fn propagate_arithmetic_types(blocks: &[TirBlock], types: &mut HashMap<ValueId, TirType>) {
-    use super::ops::OpCode;
-    let arithmetic_ops = [
-        OpCode::Add,
-        OpCode::Sub,
-        OpCode::Mul,
-        OpCode::InplaceAdd,
-        OpCode::InplaceSub,
-        OpCode::InplaceMul,
-    ];
-    let comparison_ops = [
-        OpCode::Lt,
-        OpCode::Le,
-        OpCode::Gt,
-        OpCode::Ge,
-        OpCode::Eq,
-        OpCode::Ne,
-    ];
-
     let mut changed = true;
     while changed {
         changed = false;
@@ -521,38 +515,15 @@ fn propagate_arithmetic_types(blocks: &[TirBlock], types: &mut HashMap<ValueId, 
                     continue;
                 }
 
-                if arithmetic_ops.contains(&op.opcode) && op.operands.len() == 2 {
-                    let lhs_ty = types.get(&op.operands[0]);
-                    let rhs_ty = types.get(&op.operands[1]);
-                    match (lhs_ty, rhs_ty) {
-                        (Some(TirType::I64), Some(TirType::I64)) => {
-                            types.insert(result_id, TirType::I64);
-                            changed = true;
-                        }
-                        (Some(TirType::F64), _) | (_, Some(TirType::F64)) => {
-                            types.insert(result_id, TirType::F64);
-                            changed = true;
-                        }
-                        _ => {}
-                    }
-                } else if comparison_ops.contains(&op.opcode) && op.operands.len() == 2 {
-                    // Comparison results are always Bool
-                    let lhs_ty = types.get(&op.operands[0]);
-                    let rhs_ty = types.get(&op.operands[1]);
-                    if lhs_ty.is_some_and(|t| t.is_numeric())
-                        && rhs_ty.is_some_and(|t| t.is_numeric())
-                    {
-                        types.insert(result_id, TirType::Bool);
-                        changed = true;
-                    }
-                } else if op.opcode == OpCode::ConstInt {
-                    types.insert(result_id, TirType::I64);
-                    changed = true;
-                } else if op.opcode == OpCode::ConstFloat {
-                    types.insert(result_id, TirType::F64);
-                    changed = true;
-                } else if op.opcode == OpCode::ConstBool {
-                    types.insert(result_id, TirType::Bool);
+                let operand_types: Vec<TirType> = op
+                    .operands
+                    .iter()
+                    .map(|id| types.get(id).cloned().unwrap_or(TirType::DynBox))
+                    .collect();
+                if let Some(inferred) =
+                    super::type_refine::infer_scalar_return_result_type(op.opcode, &operand_types)
+                {
+                    types.insert(result_id, inferred);
                     changed = true;
                 }
             }

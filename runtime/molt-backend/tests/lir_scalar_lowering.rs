@@ -2,11 +2,13 @@ use std::collections::HashMap;
 
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
+use molt_backend::tir::lower_from_simple::lower_to_tir;
 use molt_backend::tir::lower_to_lir::lower_function_to_lir;
 use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
 use molt_backend::tir::verify_lir::verify_lir_function;
+use molt_backend::{FunctionIR, OpIR};
 
 fn single_block_func(ops: Vec<TirOp>, return_type: TirType, next_value: u32) -> TirFunction {
     let entry_id = BlockId(0);
@@ -71,6 +73,36 @@ fn float_attr(value: f64) -> AttrDict {
     attrs
 }
 
+fn opir(kind: &str, args: &[&str], out: Option<&str>) -> OpIR {
+    OpIR {
+        kind: kind.into(),
+        args: if args.is_empty() {
+            None
+        } else {
+            Some(args.iter().map(|arg| (*arg).into()).collect())
+        },
+        out: out.map(str::to_string),
+        ..OpIR::default()
+    }
+}
+
+fn const_float_opir(out: &str, value: f64) -> OpIR {
+    OpIR {
+        kind: "const_float".into(),
+        f_value: Some(value),
+        out: Some(out.into()),
+        ..OpIR::default()
+    }
+}
+
+fn ret_opir(var: &str) -> OpIR {
+    OpIR {
+        kind: "ret".into(),
+        var: Some(var.into()),
+        ..OpIR::default()
+    }
+}
+
 #[test]
 fn lower_const_int_to_i64_repr() {
     let ops = vec![make_op(
@@ -123,6 +155,96 @@ fn lower_mixed_add_to_f64_repr() {
     assert_eq!(
         op.result_values[0].repr,
         molt_backend::tir::lir::LirRepr::F64
+    );
+}
+
+#[test]
+fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
+    let func_ir = FunctionIR {
+        name: "interpolate_like".into(),
+        params: vec!["a".into(), "b".into(), "w".into()],
+        param_types: Some(vec!["float".into(), "float".into(), "float".into()]),
+        ops: vec![
+            opir("sub", &["b", "a"], Some("v0")),
+            const_float_opir("c3", 3.0),
+            const_float_opir("c2", 2.0),
+            opir("mul", &["w", "c2"], Some("v1")),
+            opir("sub", &["c3", "v1"], Some("v2")),
+            opir("mul", &["v0", "v2"], Some("v3")),
+            opir("mul", &["v3", "w"], Some("v4")),
+            opir("mul", &["v4", "w"], Some("v5")),
+            opir("add", &["v5", "a"], Some("v6")),
+            ret_opir("v6"),
+        ],
+        source_file: None,
+        is_extern: false,
+    };
+
+    let tir = lower_to_tir(&func_ir);
+    assert_eq!(tir.return_type, TirType::F64);
+    assert_eq!(tir.blocks[&tir.entry_block].args[0].ty, TirType::F64);
+
+    let lir = lower_function_to_lir(&tir);
+    let entry = &lir.blocks[&lir.entry_block];
+    let return_value = match &entry.terminator {
+        molt_backend::tir::lir::LirTerminator::Return { values } => values[0],
+        other => panic!("expected return terminator, got {other:?}"),
+    };
+    let return_def = entry
+        .ops
+        .iter()
+        .flat_map(|op| op.result_values.iter())
+        .find(|value| value.id == return_value)
+        .expect("return value should be defined by arithmetic chain");
+
+    assert_eq!(return_def.ty, TirType::F64);
+    assert_eq!(return_def.repr, molt_backend::tir::lir::LirRepr::F64);
+    assert!(
+        verify_lir_function(&lir).is_ok(),
+        "float parameter arithmetic return must satisfy LIR verifier"
+    );
+}
+
+#[test]
+fn lower_dynbox_float_arithmetic_return_stays_dynbox() {
+    let func_ir = FunctionIR {
+        name: "dynamic_float_mix".into(),
+        params: vec!["x".into()],
+        param_types: None,
+        ops: vec![
+            const_float_opir("c", 1.5),
+            opir("add", &["x", "c"], Some("v0")),
+            ret_opir("v0"),
+        ],
+        source_file: None,
+        is_extern: false,
+    };
+
+    let tir = lower_to_tir(&func_ir);
+    assert_eq!(
+        tir.return_type,
+        TirType::DynBox,
+        "unproven dynamic+float arithmetic must not create an F64 return contract"
+    );
+
+    let lir = lower_function_to_lir(&tir);
+    let entry = &lir.blocks[&lir.entry_block];
+    let return_value = match &entry.terminator {
+        molt_backend::tir::lir::LirTerminator::Return { values } => values[0],
+        other => panic!("expected return terminator, got {other:?}"),
+    };
+    let return_def = entry
+        .ops
+        .iter()
+        .flat_map(|op| op.result_values.iter())
+        .find(|value| value.id == return_value)
+        .expect("return value should be defined by arithmetic op");
+
+    assert_eq!(return_def.ty, TirType::DynBox);
+    assert_eq!(return_def.repr, molt_backend::tir::lir::LirRepr::DynBox);
+    assert!(
+        verify_lir_function(&lir).is_ok(),
+        "dynamic+float arithmetic return should not violate LIR verifier"
     );
 }
 
