@@ -713,6 +713,44 @@ fn ensure_boxed_primitive_safe(
     }
 }
 
+/// Define a named backend variable from boxed I64 transport.
+///
+/// Stack slots, closure state, future/channel payloads, runtime call returns,
+/// and return edges use boxed I64 transport unless they have an explicit typed
+/// ABI. Native scalar-primary variables, however, have raw homes (`I64` for
+/// int/bool and `F64` for float). This helper is the authoritative boundary
+/// between those contracts: callers that hold boxed transport must use it
+/// instead of writing directly through `def_var_named`.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn def_var_from_boxed_transport(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    vars: &BTreeMap<String, Variable>,
+    int_primary_vars: &BTreeSet<String>,
+    bool_primary_vars: &BTreeSet<String>,
+    float_primary_vars: &BTreeSet<String>,
+    nbc: &crate::NanBoxConsts,
+    name: &str,
+    boxed: Value,
+) {
+    if float_primary_vars.contains(name) {
+        let raw_f64 =
+            float_value_from_boxed_extended(module, import_ids, builder, import_refs, boxed);
+        def_var_named(builder, vars, name, raw_f64);
+    } else if bool_primary_vars.contains(name) {
+        let raw_bool = builder.ins().band_imm(boxed, 1);
+        def_var_named(builder, vars, name, raw_bool);
+    } else if int_primary_vars.contains(name) {
+        let raw_i64 = unbox_int_or_bool(builder, boxed, nbc);
+        def_var_named(builder, vars, name, raw_i64);
+    } else {
+        def_var_named(builder, vars, name, boxed);
+    }
+}
+
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Copy)]
 enum BoxedBitwiseOp {
@@ -11680,18 +11718,66 @@ impl SimpleBackend {
                                 .load(types::I64, MemFlags::trusted(), value_ptr, 0);
 
                         if !done_name.is_empty() && done_name != "none" {
-                            def_var_named(&mut builder, &vars, done_name, done_bits);
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                &done_name,
+                                done_bits,
+                            );
                         }
                         // Define val_name for SSA completeness (as key).
                         if !val_name.is_empty() && val_name != "none" {
-                            def_var_named(&mut builder, &vars, &val_name, loaded_key);
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                &val_name,
+                                loaded_key,
+                            );
                         }
 
                         // Define unpack outputs directly.
                         let unpack_args = ops[ui].args.as_ref().unwrap();
                         if unpack_args.len() >= 3 {
-                            def_var_named(&mut builder, &vars, &unpack_args[1], loaded_key);
-                            def_var_named(&mut builder, &vars, &unpack_args[2], loaded_value);
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                &unpack_args[1],
+                                loaded_key,
+                            );
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                &unpack_args[2],
+                                loaded_value,
+                            );
                         }
 
                         skip_ops.insert(ui);
@@ -11719,10 +11805,34 @@ impl SimpleBackend {
                                 .load(types::I64, MemFlags::trusted(), val_ptr, 0);
 
                         if !done_name.is_empty() && done_name != "none" {
-                            def_var_named(&mut builder, &vars, done_name, done_bits);
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                &done_name,
+                                done_bits,
+                            );
                         }
                         if !val_name.is_empty() && val_name != "none" {
-                            def_var_named(&mut builder, &vars, val_name, loaded_val);
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                &val_name,
+                                loaded_val,
+                            );
                         }
                     }
                 }
@@ -20732,7 +20842,19 @@ impl SimpleBackend {
                     if args.len() <= 1
                         && let Some(out__) = op.out
                     {
-                        def_var_named(&mut builder, &vars, out__, res);
+                        def_var_from_boxed_transport(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &vars,
+                            &int_primary_vars,
+                            &bool_primary_vars,
+                            &float_primary_vars,
+                            &nbc,
+                            &out__,
+                            res,
+                        );
                     }
                     jump_block(&mut builder, next_block, &[]);
 
@@ -20935,7 +21057,19 @@ impl SimpleBackend {
                     );
                     builder.ins().call(set_state_csend2, &[self_ptr, state_val]);
                     if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
+                        def_var_from_boxed_transport(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &vars,
+                            &int_primary_vars,
+                            &bool_primary_vars,
+                            &float_primary_vars,
+                            &nbc,
+                            &out__,
+                            res,
+                        );
                     }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
@@ -21061,7 +21195,19 @@ impl SimpleBackend {
                     );
                     builder.ins().call(set_state_crecv2, &[self_ptr, state_val]);
                     if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
+                        def_var_from_boxed_transport(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &vars,
+                            &int_primary_vars,
+                            &bool_primary_vars,
+                            &float_primary_vars,
+                            &nbc,
+                            &out__,
+                            res,
+                        );
                     }
                     reachable_blocks.insert(next_block);
                     jump_block(&mut builder, next_block, &[]);
@@ -33780,16 +33926,19 @@ impl SimpleBackend {
                             let val = builder.ins().stack_load(types::I64, slot, 0);
                             emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
                             if let Some(ref out_name) = op.out {
-                                if float_primary_vars.contains(out_name) {
-                                    // Slot-backed join slots store NaN-boxed I64;
-                                    // output Variable is F64-typed.  Bitcast to
-                                    // extract raw f64.
-                                    let f64_val =
-                                        builder.ins().bitcast(types::F64, MemFlags::new(), val);
-                                    def_var_named(&mut builder, &vars, out_name, f64_val);
-                                } else {
-                                    def_var_named(&mut builder, &vars, out_name, val);
-                                }
+                                def_var_from_boxed_transport(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    &vars,
+                                    &int_primary_vars,
+                                    &bool_primary_vars,
+                                    &float_primary_vars,
+                                    &nbc,
+                                    out_name,
+                                    val,
+                                );
                             }
                             continue;
                         }
@@ -33892,7 +34041,19 @@ impl SimpleBackend {
                             let val = builder.ins().stack_load(types::I64, slot, 0);
                             emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
                             if let Some(ref out_name) = op.out {
-                                def_var_named(&mut builder, &vars, out_name, val);
+                                def_var_from_boxed_transport(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    &vars,
+                                    &int_primary_vars,
+                                    &bool_primary_vars,
+                                    &float_primary_vars,
+                                    &nbc,
+                                    out_name,
+                                    val,
+                                );
                             }
                             continue;
                         }
@@ -34541,8 +34702,8 @@ impl SimpleBackend {
 mod tests {
     use super::{
         FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name, box_raw_bool_value,
-        cleanup_roots_for_names, collect_slot_backed_join_names, generic_list_int_lane_eligible,
-        index_fallback_import_name, is_cold_module_chunk_function,
+        cleanup_roots_for_names, collect_slot_backed_join_names, def_var_from_boxed_transport,
+        generic_list_int_lane_eligible, index_fallback_import_name, is_cold_module_chunk_function,
         live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
         preanalyze_function_ir, protect_cleanup_names, scan_loop_int_sum_reduction,
         store_index_fallback_import_name, switch_to_block_materialized,
@@ -34739,6 +34900,89 @@ mod tests {
 
         let flags = settings::Flags::new(settings::builder());
         verify_function(&func, &flags).expect("raw bool boxing must verify with an i64 carrier");
+    }
+
+    #[test]
+    fn boxed_transport_defines_scalar_primary_homes() {
+        let mut backend = SimpleBackend::new();
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+        let mut context = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut func, &mut context);
+            let entry = builder.create_block();
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+
+            let float_var = builder.declare_var(types::F64);
+            let bool_var = builder.declare_var(types::I64);
+            let int_var = builder.declare_var(types::I64);
+            let mut vars = BTreeMap::new();
+            vars.insert("float_home".to_string(), float_var);
+            vars.insert("bool_home".to_string(), bool_var);
+            vars.insert("int_home".to_string(), int_var);
+
+            let int_primary_vars = BTreeSet::from(["int_home".to_string()]);
+            let bool_primary_vars = BTreeSet::from(["bool_home".to_string()]);
+            let float_primary_vars = BTreeSet::from(["float_home".to_string()]);
+            let mut import_refs = BTreeMap::new();
+            let nbc = crate::NanBoxConsts::new(&mut builder);
+
+            let boxed_float = builder.ins().iconst(types::I64, 1.25f64.to_bits() as i64);
+            def_var_from_boxed_transport(
+                &mut backend.module,
+                &mut backend.import_ids,
+                &mut builder,
+                &mut import_refs,
+                &vars,
+                &int_primary_vars,
+                &bool_primary_vars,
+                &float_primary_vars,
+                &nbc,
+                "float_home",
+                boxed_float,
+            );
+
+            let raw_bool = builder.ins().iconst(types::I64, 1);
+            let boxed_bool = box_raw_bool_value(&mut builder, raw_bool, &nbc);
+            def_var_from_boxed_transport(
+                &mut backend.module,
+                &mut backend.import_ids,
+                &mut builder,
+                &mut import_refs,
+                &vars,
+                &int_primary_vars,
+                &bool_primary_vars,
+                &float_primary_vars,
+                &nbc,
+                "bool_home",
+                boxed_bool,
+            );
+
+            let boxed_int = builder.ins().iconst(types::I64, nbc.qnan_tag_int | 7);
+            def_var_from_boxed_transport(
+                &mut backend.module,
+                &mut backend.import_ids,
+                &mut builder,
+                &mut import_refs,
+                &vars,
+                &int_primary_vars,
+                &bool_primary_vars,
+                &float_primary_vars,
+                &nbc,
+                "int_home",
+                boxed_int,
+            );
+
+            let raw_int = builder.use_var(int_var);
+            builder.ins().return_(&[raw_int]);
+            builder.finalize();
+        }
+
+        let flags = settings::Flags::new(settings::builder());
+        verify_function(&func, &flags)
+            .expect("boxed transport must define scalar-primary homes with matching CLIF types");
     }
 
     #[test]
