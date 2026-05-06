@@ -95,7 +95,10 @@ It is current-state only. For forward-looking priorities, use
   `len`/`contains`, and LLVM `len`; `container_type` / `type_hint` strings
   alone no longer select those specialized paths. Semantic `list[int]` remains
   distinct from flat `list_int` storage proof, so direct storage optimizations
-  still require a separate structural storage fact.
+  now require a separate `ContainerStorageKind::FlatListInt` fact seeded by
+  structural `list_int_new` producers and queried through the shared
+  representation plan. `bce_safe` remains an independent bounds proof rather
+  than storage authority.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic

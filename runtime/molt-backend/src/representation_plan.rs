@@ -1,13 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ir::{FunctionIR, OpIR};
+use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::lower_to_lir::lower_function_to_lir;
 use crate::tir::lower_to_simple::SimpleValueNames;
-use crate::tir::ops::AttrValue;
+use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
+use crate::tir::values::ValueId;
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -27,6 +29,19 @@ pub(crate) enum ContainerKind {
     Set,
     Tuple,
     Str,
+}
+
+/// Physical container storage proof derived from structural producers.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ContainerStorageKind {
+    FlatListInt,
+}
+
+/// A proven physical storage layout for a container value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ContainerStorageFact {
+    pub(crate) kind: ContainerStorageKind,
+    pub(crate) elem_ty: TirType,
 }
 
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
@@ -71,6 +86,9 @@ pub(crate) struct ScalarRepresentationPlan {
     facts_by_name: BTreeMap<String, ScalarRepresentationFact>,
     conflicted_names: BTreeSet<String>,
     integer_family_names: BTreeSet<String>,
+    container_storage_by_name: BTreeMap<String, ContainerStorageFact>,
+    container_storage_conflicted_names: BTreeSet<String>,
+    container_storage_ops: BTreeMap<usize, ContainerStorageFact>,
     primary_names: ScalarPrimaryNameSets,
     scalar_slot_exclusion_unsafe: BTreeSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
@@ -91,6 +109,7 @@ impl ScalarRepresentationPlan {
         let lir_func = lower_function_to_lir(&tir_func);
 
         let mut plan = Self::default();
+        plan.seed_container_storage_from_tir(&tir_func, &names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
         for block_id in block_ids {
@@ -113,6 +132,8 @@ impl ScalarRepresentationPlan {
         }
         plan.propagate_simple_aliases(func_ir);
         plan.propagate_integer_family(func_ir);
+        plan.propagate_container_storage(func_ir);
+        plan.mark_container_storage_ops(func_ir);
         plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
         plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(func_ir);
         plan.primary_names = plan.compute_primary_name_sets(func_ir);
@@ -184,6 +205,28 @@ impl ScalarRepresentationPlan {
         self.infer_scalar_lane(op)
     }
 
+    pub(crate) fn name_container_storage_kind(&self, name: &str) -> Option<ContainerStorageKind> {
+        self.container_storage_by_name
+            .get(name)
+            .map(|fact| fact.kind)
+    }
+
+    pub(crate) fn op_has_container_storage(
+        &self,
+        op_index: usize,
+        op: &OpIR,
+        kind: ContainerStorageKind,
+    ) -> bool {
+        op.args
+            .as_ref()
+            .and_then(|args| args.first())
+            .is_some_and(|name| self.name_container_storage_kind(name) == Some(kind))
+            && self
+                .container_storage_ops
+                .get(&op_index)
+                .is_some_and(|fact| fact.kind == kind)
+    }
+
     pub(crate) fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
         matches!(op.kind.as_str(), "mul" | "inplace_mul")
             || (matches!(
@@ -244,6 +287,62 @@ impl ScalarRepresentationPlan {
         }
         self.facts_by_name.insert(name, fact);
         true
+    }
+
+    fn insert_container_storage_fact(&mut self, name: String, fact: ContainerStorageFact) -> bool {
+        if self.container_storage_conflicted_names.contains(&name) {
+            return false;
+        }
+        if let Some(existing) = self.container_storage_by_name.get(&name) {
+            if existing != &fact {
+                self.container_storage_by_name.remove(&name);
+                self.container_storage_conflicted_names.insert(name);
+                return true;
+            }
+            return false;
+        }
+        self.container_storage_by_name.insert(name, fact);
+        true
+    }
+
+    fn remove_container_storage_fact(&mut self, name: &str) -> bool {
+        self.container_storage_by_name.remove(name).is_some()
+    }
+
+    fn seed_container_storage_from_tir(
+        &mut self,
+        tir_func: &TirFunction,
+        names: &SimpleValueNames,
+    ) {
+        let storage_by_value = tir_container_storage_facts(tir_func);
+        let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
+        block_ids.sort_by_key(|block_id| block_id.0);
+        for block_id in block_ids {
+            let block = &tir_func.blocks[&block_id];
+            for (index, arg) in block.args.iter().enumerate() {
+                if let Some(fact) = storage_by_value.get(&arg.id) {
+                    self.insert_container_storage_fact(names.value_name(arg.id), fact.clone());
+                    self.insert_container_storage_fact(
+                        names.block_arg_slot(block.id, index),
+                        fact.clone(),
+                    );
+                }
+            }
+            for op in &block.ops {
+                for result in &op.results {
+                    if let Some(fact) = storage_by_value.get(result) {
+                        self.insert_container_storage_fact(names.value_name(*result), fact.clone());
+                    }
+                }
+                if op.results.len() == 1
+                    && let Some(AttrValue::Str(simple_out)) = op.attrs.get("_simple_out")
+                    && let Some(result) = op.results.first()
+                    && let Some(fact) = storage_by_value.get(result)
+                {
+                    self.insert_container_storage_fact(simple_out.clone(), fact.clone());
+                }
+            }
+        }
     }
 
     fn propagate_simple_aliases(&mut self, func_ir: &FunctionIR) {
@@ -323,6 +422,123 @@ impl ScalarRepresentationPlan {
             }
         }
         changed
+    }
+
+    fn propagate_container_storage(&mut self, func_ir: &FunctionIR) {
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let store_target_facts = self.container_storage_store_target_facts(func_ir);
+            for (target, fact) in &store_target_facts {
+                if fact.is_none() {
+                    changed |= self.remove_container_storage_fact(target);
+                }
+            }
+            changed |= self.propagate_container_storage_store_targets(store_target_facts.clone());
+            for op in &func_ir.ops {
+                if let Some(out) = op.out.as_ref()
+                    && let Some(source) = alias_source_name(op)
+                {
+                    if store_target_facts
+                        .get(source)
+                        .is_some_and(|fact| fact.is_none())
+                    {
+                        changed |= self.remove_container_storage_fact(out);
+                        continue;
+                    }
+                    if !self.container_storage_by_name.contains_key(out)
+                        && let Some(fact) = self.container_storage_by_name.get(source).cloned()
+                    {
+                        changed |= self.insert_container_storage_fact(out.clone(), fact);
+                    }
+                }
+                if op.kind == "store_index" {
+                    let Some(args) = op.args.as_ref() else {
+                        continue;
+                    };
+                    let Some(container) = args.first() else {
+                        continue;
+                    };
+                    if self.name_container_storage_kind(container)
+                        != Some(ContainerStorageKind::FlatListInt)
+                    {
+                        continue;
+                    }
+                    let value_preserves_flat_int = args.get(2).is_some_and(|value| {
+                        self.name_scalar_kind(value) == Some(ScalarKind::Int)
+                            || self.name_is_integer_family(value)
+                    });
+                    if value_preserves_flat_int {
+                        if let Some(out) = op.out.as_ref()
+                            && let Some(fact) =
+                                self.container_storage_by_name.get(container).cloned()
+                        {
+                            changed |= self.insert_container_storage_fact(out.clone(), fact);
+                        }
+                    } else {
+                        changed |= self.remove_container_storage_fact(container);
+                        if let Some(out) = op.out.as_ref() {
+                            changed |= self.remove_container_storage_fact(out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn container_storage_store_target_facts(
+        &self,
+        func_ir: &FunctionIR,
+    ) -> BTreeMap<String, Option<ContainerStorageFact>> {
+        let mut facts_by_target: BTreeMap<String, Option<ContainerStorageFact>> = BTreeMap::new();
+        for op in &func_ir.ops {
+            let Some(target) = store_var_target_name(op) else {
+                continue;
+            };
+            let source_fact = store_var_source_name(op)
+                .and_then(|source| self.container_storage_by_name.get(source))
+                .cloned();
+            facts_by_target
+                .entry(target.to_string())
+                .and_modify(|existing| {
+                    if existing.as_ref() != source_fact.as_ref() {
+                        *existing = None;
+                    }
+                })
+                .or_insert(source_fact);
+        }
+        facts_by_target
+    }
+
+    fn propagate_container_storage_store_targets(
+        &mut self,
+        facts_by_target: BTreeMap<String, Option<ContainerStorageFact>>,
+    ) -> bool {
+        let mut changed = false;
+        for (target, fact) in facts_by_target {
+            let Some(fact) = fact else {
+                continue;
+            };
+            if self.container_storage_by_name.get(&target) != Some(&fact) {
+                changed |= self.insert_container_storage_fact(target, fact);
+            }
+        }
+        changed
+    }
+
+    fn mark_container_storage_ops(&mut self, func_ir: &FunctionIR) {
+        self.container_storage_ops.clear();
+        for (op_index, op) in func_ir.ops.iter().enumerate() {
+            if !matches!(op.kind.as_str(), "index" | "store_index" | "dict_set") {
+                continue;
+            }
+            let Some(container) = op.args.as_ref().and_then(|args| args.first()) else {
+                continue;
+            };
+            if let Some(fact) = self.container_storage_by_name.get(container) {
+                self.container_storage_ops.insert(op_index, fact.clone());
+            }
+        }
     }
 
     fn propagate_integer_family(&mut self, func_ir: &FunctionIR) {
@@ -786,7 +1002,7 @@ impl ScalarRepresentationPlan {
 
     fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> BTreeSet<String> {
         let mut unsafe_set = BTreeSet::new();
-        for op in &func_ir.ops {
+        for (op_index, op) in func_ir.ops.iter().enumerate() {
             match op.kind.as_str() {
                 "call"
                 | "call_method"
@@ -803,8 +1019,12 @@ impl ScalarRepresentationPlan {
                     self.collect_scalar_args(op, &mut unsafe_set);
                 }
                 "store_index" => {
-                    let is_list_int = op.container_type.as_deref() == Some("list_int");
-                    if !is_list_int
+                    let has_flat_int_storage = self.op_has_container_storage(
+                        op_index,
+                        op,
+                        ContainerStorageKind::FlatListInt,
+                    );
+                    if !has_flat_int_storage
                         && let Some(args) = &op.args
                         && let Some(val_name) = args.get(2)
                         && self.name_is_slot_scalar(val_name)
@@ -1042,6 +1262,65 @@ fn propagate_store_var_targets_in(
     changed
 }
 
+fn flat_list_int_storage_fact() -> ContainerStorageFact {
+    ContainerStorageFact {
+        kind: ContainerStorageKind::FlatListInt,
+        elem_ty: TirType::I64,
+    }
+}
+
+fn tir_container_storage_facts(tir_func: &TirFunction) -> HashMap<ValueId, ContainerStorageFact> {
+    let mut facts = HashMap::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
+        block_ids.sort_by_key(|block_id| block_id.0);
+        for block_id in block_ids {
+            let block = &tir_func.blocks[&block_id];
+            for op in &block.ops {
+                if tir_op_original_kind(op) == Some("list_int_new") {
+                    for result in &op.results {
+                        changed |= insert_value_storage_fact(
+                            &mut facts,
+                            *result,
+                            flat_list_int_storage_fact(),
+                        );
+                    }
+                    continue;
+                }
+                if op.is_plain_value_copy()
+                    && let Some(source) = op.operands.first()
+                    && let Some(result) = op.results.first()
+                    && let Some(fact) = facts.get(source).cloned()
+                {
+                    changed |= insert_value_storage_fact(&mut facts, *result, fact);
+                }
+            }
+        }
+    }
+    facts
+}
+
+fn insert_value_storage_fact(
+    facts: &mut HashMap<ValueId, ContainerStorageFact>,
+    value: ValueId,
+    fact: ContainerStorageFact,
+) -> bool {
+    if facts.get(&value) == Some(&fact) {
+        return false;
+    }
+    facts.insert(value, fact);
+    true
+}
+
+fn tir_op_original_kind(op: &TirOp) -> Option<&str> {
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
+    }
+}
+
 fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>) -> bool {
     let first_source = || {
         op.var.as_deref().or_else(|| {
@@ -1273,6 +1552,56 @@ mod tests {
 
         assert_eq!(plan.name_container_kind("xs"), None);
         assert_eq!(plan.name_container_kind("item"), None);
+    }
+
+    #[test]
+    fn flat_list_storage_requires_structural_producer() {
+        let mut index = op("index", Some("item"), None, &["xs", "i"]);
+        index.container_type = Some("list_int".to_string());
+        let func = function(
+            "transport_only_storage",
+            &["xs", "i"],
+            None,
+            vec![index.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.name_container_storage_kind("xs"), None);
+        assert!(!plan.op_has_container_storage(0, &index, ContainerStorageKind::FlatListInt));
+    }
+
+    #[test]
+    fn list_int_new_seeds_flat_storage_and_aliases() {
+        let list_new = op("list_int_new", Some("xs"), None, &[]);
+        let copy = op("copy", Some("ys"), None, &["xs"]);
+        let store = op("store_var", None, Some("slot"), &["ys"]);
+        let load = op("load_var", Some("zs"), Some("slot"), &[]);
+        let index = op("index", Some("item"), None, &["zs", "i"]);
+        let func = function(
+            "storage_aliases",
+            &["i"],
+            Some(vec!["int"]),
+            vec![list_new, copy, store, load, index.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(
+            plan.name_container_storage_kind("xs"),
+            Some(ContainerStorageKind::FlatListInt)
+        );
+        assert_eq!(
+            plan.name_container_storage_kind("ys"),
+            Some(ContainerStorageKind::FlatListInt)
+        );
+        assert_eq!(
+            plan.name_container_storage_kind("slot"),
+            Some(ContainerStorageKind::FlatListInt)
+        );
+        assert_eq!(
+            plan.name_container_storage_kind("zs"),
+            Some(ContainerStorageKind::FlatListInt)
+        );
+        assert!(plan.op_has_container_storage(4, &index, ContainerStorageKind::FlatListInt));
     }
 
     #[test]
