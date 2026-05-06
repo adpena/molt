@@ -1023,6 +1023,9 @@ fn ensure_boxed_overflow_safe(
 
         switch_to_block_materialized(builder, merge_blk);
         seal_block_once(builder, sealed_blocks, merge_blk);
+        if let Some(&var) = vars.get(name) {
+            builder.def_var(var, raw_val);
+        }
         builder.block_params(merge_blk)[0]
     } else {
         *var_get(builder, vars, name).expect("Variable not found for overflow-safe boxing")
@@ -1215,6 +1218,80 @@ fn ensure_boxed_primitive_safe(
             name,
         )
     }
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy)]
+enum BoxedBitwiseOp {
+    And,
+    Or,
+    Xor,
+}
+
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn emit_guarded_boxed_bitwise(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    lhs: Value,
+    rhs: Value,
+    runtime_name: &'static str,
+    op: BoxedBitwiseOp,
+    nbc: &crate::NanBoxConsts,
+    box_int_mask_var: Variable,
+    box_int_tag_var: Variable,
+) -> Value {
+    let callee = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        runtime_name,
+        &[types::I64, types::I64],
+        &[types::I64],
+    );
+    let (lhs_xored, lhs_val) = fused_tag_check_and_unbox_int(builder, lhs, nbc);
+    let (rhs_xored, rhs_val) = fused_tag_check_and_unbox_int(builder, rhs, nbc);
+    let both_inline_int = fused_both_int_check(builder, lhs_xored, rhs_xored, nbc);
+    let fast_block = builder.create_block();
+    let slow_block = builder.create_block();
+    builder.set_cold_block(slow_block);
+    let merge_block = builder.create_block();
+    builder.append_block_param(merge_block, types::I64);
+    builder
+        .ins()
+        .brif(both_inline_int, fast_block, &[], slow_block, &[]);
+
+    switch_to_block_materialized(builder, fast_block);
+    seal_block_once(builder, sealed_blocks, fast_block);
+    let raw = match op {
+        BoxedBitwiseOp::And => builder.ins().band(lhs_val, rhs_val),
+        BoxedBitwiseOp::Or => builder.ins().bor(lhs_val, rhs_val),
+        BoxedBitwiseOp::Xor => builder.ins().bxor(lhs_val, rhs_val),
+    };
+    let fast_res = box_int_value_hoisted(builder, raw, box_int_mask_var, box_int_tag_var);
+    let fits_inline = int_value_fits_inline(builder, raw);
+    brif_block(
+        builder,
+        fits_inline,
+        merge_block,
+        &[fast_res],
+        slow_block,
+        &[],
+    );
+
+    switch_to_block_materialized(builder, slow_block);
+    seal_block_once(builder, sealed_blocks, slow_block);
+    let call = builder.ins().call(callee, &[lhs, rhs]);
+    let slow_res = builder.inst_results(call)[0];
+    jump_block(builder, merge_block, &[slow_res]);
+
+    switch_to_block_materialized(builder, merge_block);
+    seal_block_once(builder, sealed_blocks, merge_block);
+    builder.block_params(merge_block)[0]
 }
 
 /// Get a raw f64 value from a variable, checking float-primary Variables
@@ -7382,48 +7459,20 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("RHS not found");
-                            let callee = Self::import_func_id_split(
+                            emit_guarded_boxed_bitwise(
                                 &mut self.module,
                                 &mut self.import_ids,
-                                "molt_bit_or",
-                                &[types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee =
-                                self.module.declare_func_in_func(callee, builder.func);
-                            let fast_block = builder.create_block();
-                            let slow_block = builder.create_block();
-                            builder.set_cold_block(slow_block);
-                            let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64);
-
-                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                            let raw = builder.ins().bor(lhs_val, rhs_val);
-                            let fits_inline = int_value_fits_inline(&mut builder, raw);
-                            builder
-                                .ins()
-                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                            switch_to_block_materialized(&mut builder, fast_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = box_int_value_hoisted(
                                 &mut builder,
-                                raw,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                *lhs,
+                                *rhs,
+                                "molt_bit_or",
+                                BoxedBitwiseOp::Or,
+                                &nbc,
                                 box_int_mask_var,
                                 box_int_tag_var,
-                            );
-                            jump_block(&mut builder, merge_block, &[fast_res]);
-
-                            switch_to_block_materialized(&mut builder, slow_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                            let slow_res = builder.inst_results(call)[0];
-                            jump_block(&mut builder, merge_block, &[slow_res]);
-
-                            switch_to_block_materialized(&mut builder, merge_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            builder.block_params(merge_block)[0]
+                            )
                         }
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -7541,47 +7590,20 @@ impl SimpleBackend {
                     )
                     .expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
+                        emit_guarded_boxed_bitwise(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_inplace_bit_or",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let raw = builder.ins().bor(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(
                             &mut builder,
-                            raw,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            *lhs,
+                            *rhs,
+                            "molt_inplace_bit_or",
+                            BoxedBitwiseOp::Or,
+                            &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
-                        );
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        )
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -7692,48 +7714,20 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("RHS not found");
-                            let callee = Self::import_func_id_split(
+                            emit_guarded_boxed_bitwise(
                                 &mut self.module,
                                 &mut self.import_ids,
-                                "molt_bit_and",
-                                &[types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee =
-                                self.module.declare_func_in_func(callee, builder.func);
-                            let fast_block = builder.create_block();
-                            let slow_block = builder.create_block();
-                            builder.set_cold_block(slow_block);
-                            let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64);
-
-                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                            let raw = builder.ins().band(lhs_val, rhs_val);
-                            let fits_inline = int_value_fits_inline(&mut builder, raw);
-                            builder
-                                .ins()
-                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                            switch_to_block_materialized(&mut builder, fast_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = box_int_value_hoisted(
                                 &mut builder,
-                                raw,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                *lhs,
+                                *rhs,
+                                "molt_bit_and",
+                                BoxedBitwiseOp::And,
+                                &nbc,
                                 box_int_mask_var,
                                 box_int_tag_var,
-                            );
-                            jump_block(&mut builder, merge_block, &[fast_res]);
-
-                            switch_to_block_materialized(&mut builder, slow_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                            let slow_res = builder.inst_results(call)[0];
-                            jump_block(&mut builder, merge_block, &[slow_res]);
-
-                            switch_to_block_materialized(&mut builder, merge_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            builder.block_params(merge_block)[0]
+                            )
                         }
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -7851,47 +7845,20 @@ impl SimpleBackend {
                     )
                     .expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
+                        emit_guarded_boxed_bitwise(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_inplace_bit_and",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let raw = builder.ins().band(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(
                             &mut builder,
-                            raw,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            *lhs,
+                            *rhs,
+                            "molt_inplace_bit_and",
+                            BoxedBitwiseOp::And,
+                            &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
-                        );
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        )
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -8002,48 +7969,20 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("RHS not found");
-                            let callee = Self::import_func_id_split(
+                            emit_guarded_boxed_bitwise(
                                 &mut self.module,
                                 &mut self.import_ids,
-                                "molt_bit_xor",
-                                &[types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee =
-                                self.module.declare_func_in_func(callee, builder.func);
-                            let fast_block = builder.create_block();
-                            let slow_block = builder.create_block();
-                            builder.set_cold_block(slow_block);
-                            let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64);
-
-                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                            let raw = builder.ins().bxor(lhs_val, rhs_val);
-                            let fits_inline = int_value_fits_inline(&mut builder, raw);
-                            builder
-                                .ins()
-                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                            switch_to_block_materialized(&mut builder, fast_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = box_int_value_hoisted(
                                 &mut builder,
-                                raw,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                *lhs,
+                                *rhs,
+                                "molt_bit_xor",
+                                BoxedBitwiseOp::Xor,
+                                &nbc,
                                 box_int_mask_var,
                                 box_int_tag_var,
-                            );
-                            jump_block(&mut builder, merge_block, &[fast_res]);
-
-                            switch_to_block_materialized(&mut builder, slow_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                            let slow_res = builder.inst_results(call)[0];
-                            jump_block(&mut builder, merge_block, &[slow_res]);
-
-                            switch_to_block_materialized(&mut builder, merge_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            builder.block_params(merge_block)[0]
+                            )
                         }
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -8161,47 +8100,20 @@ impl SimpleBackend {
                     )
                     .expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
+                        emit_guarded_boxed_bitwise(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_inplace_bit_xor",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let raw = builder.ins().bxor(lhs_val, rhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, raw);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let fast_res = box_int_value_hoisted(
                             &mut builder,
-                            raw,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            *lhs,
+                            *rhs,
+                            "molt_inplace_bit_xor",
+                            BoxedBitwiseOp::Xor,
+                            &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
-                        );
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        )
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
