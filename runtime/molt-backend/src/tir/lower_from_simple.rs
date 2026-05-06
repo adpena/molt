@@ -538,15 +538,10 @@ fn string_to_tir_type(s: &str) -> TirType {
     match s {
         "int" | "i64" => TirType::I64,
         "float" | "f64" => TirType::F64,
-        "bool" => TirType::Bool,
-        "str" => TirType::Str,
-        "bytes" => TirType::Bytes,
-        "None" | "none" => TirType::None,
-        "list" => TirType::List(Box::new(TirType::DynBox)),
-        "dict" => TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox)),
-        "set" => TirType::Set(Box::new(TirType::DynBox)),
-        "tuple" => TirType::Tuple(vec![]),
-        _ => TirType::DynBox,
+        _ => match TirType::from_type_hint(s) {
+            TirType::UserClass(_) => TirType::DynBox,
+            ty => ty,
+        },
     }
 }
 
@@ -1116,6 +1111,33 @@ mod tests {
     }
 
     #[test]
+    fn compound_param_types_from_annotation() {
+        let func_ir = FunctionIR {
+            name: "typed_container".to_string(),
+            params: vec!["items".to_string()],
+            ops: vec![op_args("ret", &["items"])],
+            param_types: Some(vec!["list[int]".to_string()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir = lower_to_tir(&func_ir);
+        let expected = TirType::List(Box::new(TirType::I64));
+
+        assert_eq!(tir.param_types, vec![expected.clone()]);
+        let entry = &tir.blocks[&tir.entry_block];
+        assert_eq!(
+            tir.value_types.get(&entry.args[0].id),
+            Some(&expected),
+            "entry param compound type fact must be present in the function-owned map"
+        );
+        assert_eq!(
+            entry.args[0].ty, expected,
+            "entry param argument must carry the structured compound type"
+        );
+    }
+
+    #[test]
     fn abi_i64_param_type_is_not_a_semantic_int_fact() {
         let func_ir = FunctionIR {
             name: "boxed_carrier".to_string(),
@@ -1151,6 +1173,14 @@ mod tests {
         assert_eq!(string_to_tir_type("bytes"), TirType::Bytes);
         assert_eq!(string_to_tir_type("None"), TirType::None);
         assert_eq!(string_to_tir_type("none"), TirType::None);
+        assert_eq!(
+            string_to_tir_type("list[int]"),
+            TirType::List(Box::new(TirType::I64))
+        );
+        assert_eq!(
+            string_to_tir_type("dict[str, float]"),
+            TirType::Dict(Box::new(TirType::Str), Box::new(TirType::F64))
+        );
         assert_eq!(string_to_tir_type("unknown_type"), TirType::DynBox);
     }
 }

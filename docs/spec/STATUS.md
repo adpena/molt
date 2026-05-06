@@ -86,6 +86,10 @@ It is current-state only. For forward-looking priorities, use
   integer-family arithmetic, comparison, truthiness, and index-key scalar
   decisions instead of trusting `fast_int`, `fast_float`, or scalar
   `type_hint` transport metadata.
+  Generic container annotations now enter TIR as structured `TirType` facts
+  (`list[T]`, `dict[K, V]`, `set[T]`, and fixed-arity `tuple[...]`) instead of
+  remaining opaque string hints; malformed, dynamic, or unsupported compound
+  hints stay `DynBox`.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic

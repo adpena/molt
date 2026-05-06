@@ -183,13 +183,16 @@ impl TirType {
     ///   - `"int"`, `"bool"` → `I64` / `Bool` (canonical unboxed)
     ///   - `"float"` → `F64`
     ///   - `"str"`, `"bytes"` → `Str` / `Bytes`
-    ///   - `"list"`, `"dict"`, `"set"`, `"tuple"` → container with
-    ///     `DynBox` element type (the frontend doesn't carry
-    ///     parameter types in the hint string)
+    ///   - `"list"`, `"dict"`, `"set"`, `"tuple"` → containers with
+    ///     `DynBox` members
+    ///   - `"list[T]"`, `"dict[K, V]"`, `"set[T]"`, `"tuple[T, U]"` →
+    ///     containers with recursively parsed member types.  Fixed-arity
+    ///     tuple hints are represented exactly; variadic tuple hints defer to
+    ///     `DynBox` until TIR has a first-class variadic tuple shape.
     ///   - `"None"`, `"NoneType"` → `None`
     ///   - `"BigInt"` → `BigInt`
     ///
-    /// Compound hints fall back to `DynBox` for safety:
+    /// Unsupported compound hints fall back to `DynBox` for safety:
     ///   - `"Func:<symbol>"`, `"BoundMethod:<class>:<method>"`,
     ///     `"type"`, `"Any"`, `"Unknown"`, the empty string, and
     ///     anything containing punctuation that the simple-
@@ -223,13 +226,16 @@ impl TirType {
             }
             "set" => return TirType::Set(Box::new(TirType::DynBox)),
             "tuple" => return TirType::Tuple(Vec::new()),
-            "None" | "NoneType" => return TirType::None,
+            "None" | "NoneType" | "none" => return TirType::None,
             "BigInt" | "bigint" => return TirType::BigInt,
             "Any" | "Unknown" | "" | "type" => return TirType::DynBox,
             _ => {}
         }
-        // Compound hints (Func:..., BoundMethod:...) — defer to
-        // a future commit that adds proper signature parsing.
+        if let Some(parsed) = parse_compound_type_hint(hint) {
+            return parsed;
+        }
+        // Callable/dynamic hints (Func:..., BoundMethod:...) and unsupported
+        // parameterized forms are outside this structural container parser.
         if hint.contains(':') || hint.contains('[') || hint.contains('(') {
             return TirType::DynBox;
         }
@@ -249,6 +255,112 @@ impl TirType {
         }
         TirType::UserClass(hint.to_string())
     }
+}
+
+fn parse_compound_type_hint(hint: &str) -> Option<TirType> {
+    let (outer, inner) = split_outer_generic(hint)?;
+    match outer {
+        "list" | "List" => parse_single_generic_arg(inner)
+            .map(|item| TirType::List(Box::new(item)))
+            .or(Some(TirType::DynBox)),
+        "set" | "Set" => parse_single_generic_arg(inner)
+            .map(|item| TirType::Set(Box::new(item)))
+            .or(Some(TirType::DynBox)),
+        "dict" | "Dict" => {
+            let parts = split_top_level_commas(inner);
+            if parts.len() != 2 {
+                return Some(TirType::DynBox);
+            }
+            let key = parse_type_arg(parts[0])?;
+            let value = parse_type_arg(parts[1])?;
+            Some(TirType::Dict(Box::new(key), Box::new(value)))
+        }
+        "tuple" | "Tuple" => {
+            if inner.trim().is_empty() {
+                return Some(TirType::DynBox);
+            }
+            let parts = split_top_level_commas(inner);
+            if parts.iter().any(|part| *part == "...") {
+                return Some(TirType::DynBox);
+            }
+            let mut items = Vec::with_capacity(parts.len());
+            for part in parts {
+                items.push(parse_type_arg(part)?);
+            }
+            Some(TirType::Tuple(items))
+        }
+        _ => None,
+    }
+}
+
+fn parse_single_generic_arg(inner: &str) -> Option<TirType> {
+    let parts = split_top_level_commas(inner);
+    if parts.len() == 1 {
+        parse_type_arg(parts[0])
+    } else {
+        None
+    }
+}
+
+fn parse_type_arg(arg: &str) -> Option<TirType> {
+    let ty = TirType::from_type_hint(arg.trim());
+    if matches!(ty, TirType::DynBox) {
+        None
+    } else {
+        Some(ty)
+    }
+}
+
+fn split_outer_generic(hint: &str) -> Option<(&str, &str)> {
+    let open = hint.find('[')?;
+    if !hint.ends_with(']') {
+        return None;
+    }
+    let outer = hint[..open].trim();
+    if outer.is_empty() {
+        return None;
+    }
+    let inner = &hint[(open + 1)..(hint.len() - 1)];
+    if !generic_brackets_balanced(inner) {
+        return None;
+    }
+    Some((outer, inner))
+}
+
+fn generic_brackets_balanced(text: &str) -> bool {
+    let mut depth = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                let Some(next_depth) = depth.checked_sub(1) else {
+                    return false;
+                };
+                depth = next_depth;
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(text[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts
 }
 
 #[cfg(test)]
@@ -418,15 +530,16 @@ mod tests {
         assert_eq!(TirType::from_type_hint("tuple"), TirType::Tuple(Vec::new()));
         assert_eq!(TirType::from_type_hint("None"), TirType::None);
         assert_eq!(TirType::from_type_hint("NoneType"), TirType::None);
+        assert_eq!(TirType::from_type_hint("none"), TirType::None);
         assert_eq!(TirType::from_type_hint("BigInt"), TirType::BigInt);
     }
 
-    /// Compound or unknown hints fall back to DynBox — soundness
-    /// over precision.  A compound hint contains punctuation
-    /// (`:`, `[`, `(`) that the simple-identifier check would
-    /// otherwise erroneously promote to UserClass.
+    /// Dynamic, malformed, or intentionally unsupported hints fall back to
+    /// DynBox — soundness over precision.  Callable signatures and dynamic
+    /// optional forms contain punctuation (`:`, `(`) that the simple-identifier
+    /// check would otherwise erroneously promote to UserClass.
     #[test]
-    fn from_type_hint_compound_falls_back_to_dynbox() {
+    fn from_type_hint_dynamic_or_malformed_falls_back_to_dynbox() {
         assert_eq!(TirType::from_type_hint("Any"), TirType::DynBox);
         assert_eq!(TirType::from_type_hint("Unknown"), TirType::DynBox);
         assert_eq!(TirType::from_type_hint(""), TirType::DynBox);
@@ -441,16 +554,53 @@ mod tests {
             TirType::from_type_hint("BoundMethod:list:append"),
             TirType::DynBox,
         );
-        assert_eq!(
-            TirType::from_type_hint("list[int]"),
-            TirType::DynBox,
-            "Parameterized hints contain `[` — defer to DynBox"
-        );
         assert_eq!(TirType::from_type_hint("Optional(Point)"), TirType::DynBox,);
+        assert_eq!(TirType::from_type_hint("list[]"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("list[int, str]"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("dict[str]"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("dict[str, Any]"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("tuple[]"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("tuple[int, ...]"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("Foo[int]"), TirType::DynBox);
+        assert_eq!(TirType::from_type_hint("list[int"), TirType::DynBox);
         // Hints that look almost-identifier but aren't valid
         // (start with digit, contain whitespace) fall back.
         assert_eq!(TirType::from_type_hint("1Point"), TirType::DynBox);
         assert_eq!(TirType::from_type_hint("My Class"), TirType::DynBox);
+    }
+
+    /// Structured generic container hints are canonical TIR facts.  Backends
+    /// must use these typed facts instead of SimpleIR transport flags when
+    /// choosing scalar/container fast paths.
+    #[test]
+    fn from_type_hint_compound_containers_refine() {
+        assert_eq!(
+            TirType::from_type_hint("list[int]"),
+            TirType::List(Box::new(TirType::I64))
+        );
+        assert_eq!(
+            TirType::from_type_hint("list[list[int]]"),
+            TirType::List(Box::new(TirType::List(Box::new(TirType::I64))))
+        );
+        assert_eq!(
+            TirType::from_type_hint("dict[str, int]"),
+            TirType::Dict(Box::new(TirType::Str), Box::new(TirType::I64))
+        );
+        assert_eq!(
+            TirType::from_type_hint("set[bool]"),
+            TirType::Set(Box::new(TirType::Bool))
+        );
+        assert_eq!(
+            TirType::from_type_hint("tuple[int, str, bool]"),
+            TirType::Tuple(vec![TirType::I64, TirType::Str, TirType::Bool])
+        );
+        assert_eq!(
+            TirType::from_type_hint("List[dict[str, list[float]]]"),
+            TirType::List(Box::new(TirType::Dict(
+                Box::new(TirType::Str),
+                Box::new(TirType::List(Box::new(TirType::F64))),
+            )))
+        );
     }
 
     /// Identifier-shaped non-builtin hints refine to UserClass.
