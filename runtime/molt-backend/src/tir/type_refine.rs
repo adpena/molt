@@ -914,10 +914,6 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     proven
 }
 
-/// Parse a frontend `return_type` string ("int", "float", "bool", "str",
-/// "bytes", "None") into a [`TirType`] for opaque-call type seeding.
-/// Container/user types are not promoted to `TirType` here — they remain
-/// `DynBox` for now; lane inference cares mostly about the scalar lanes.
 /// Parse a return-type hint string into a `TirType`, returning
 /// `None` when the hint carries no useful refinement (so callers
 /// fall through to operand-based inference instead of forcing the
@@ -2294,7 +2290,20 @@ mod tests {
             Some(TirType::UserClass("MyDataClass".into()))
         );
 
-        // Compound / unknown hints fall through to None so the
+        // Structured compound containers refine through the same helper.
+        assert_eq!(
+            parse_return_type_str("list[int]"),
+            Some(TirType::List(Box::new(TirType::I64)))
+        );
+        assert_eq!(
+            parse_return_type_str("dict[str, list[float]]"),
+            Some(TirType::Dict(
+                Box::new(TirType::Str),
+                Box::new(TirType::List(Box::new(TirType::F64)))
+            ))
+        );
+
+        // Dynamic / malformed / unknown hints fall through to None so the
         // caller's operand-based inference takes over (rather than
         // forcing DynBox).
         assert_eq!(parse_return_type_str("Any"), None);
@@ -2302,7 +2311,8 @@ mod tests {
         assert_eq!(parse_return_type_str(""), None);
         assert_eq!(parse_return_type_str("Func:foo"), None);
         assert_eq!(parse_return_type_str("BoundMethod:list:append"), None);
-        assert_eq!(parse_return_type_str("list[int]"), None);
+        assert_eq!(parse_return_type_str("list[]"), None);
+        assert_eq!(parse_return_type_str("list[Any]"), None);
     }
 
     #[test]
