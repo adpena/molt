@@ -29932,6 +29932,8 @@ def _planned_validate_steps(
                 python,
                 "tools/bench.py",
                 "--smoke",
+                "--warmup",
+                "1",
                 "--molt-profile",
                 bench_profile,
                 "--json-out",

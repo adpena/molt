@@ -83,6 +83,9 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "wasm-parity" in names
     assert "conformance-smoke" in names
     assert "bench-smoke" in names
+    bench_step = next(entry for entry in steps if entry["name"] == "bench-smoke")
+    assert "--warmup" in bench_step["cmd"]
+    assert bench_step["cmd"][bench_step["cmd"].index("--warmup") + 1] == "1"
 
 
 def test_tools_dev_validate_delegates_to_canonical_cli() -> None:
