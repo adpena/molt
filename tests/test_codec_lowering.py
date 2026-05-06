@@ -299,6 +299,20 @@ def test_bool_range_listcomp_does_not_lower_to_flat_int_list():
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
     assert "list_int_new" not in kinds
+    assert "list_fill_new" in kinds
+
+
+def test_const_str_range_listcomp_lowers_to_fill_list():
+    src = """
+n = 5
+x = ["a" for _ in range(n)]
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "range_new" in kinds
+    assert "len" in kinds
+    assert "list_fill_new" in kinds
+    assert "list_append" not in kinds
 
 
 def test_prod_reduction_over_flat_listcomp_skips_intarray_conversion():

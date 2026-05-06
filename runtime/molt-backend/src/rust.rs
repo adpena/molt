@@ -3241,6 +3241,22 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     &self.hoisted_vars.clone(),
                 ));
             }
+            "list_fill_new" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let count = args
+                    .first()
+                    .map(|a| rust_ident(a))
+                    .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                let fill = args
+                    .get(1)
+                    .map(|a| rust_ident(a))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                let rhs = format!(
+                    "{{ let __n = match &{count} {{ MoltValue::Int(v) => (*v).max(0) as usize, MoltValue::Bool(v) => if *v {{ 1 }} else {{ 0 }}, _ => 0 }}; MoltValue::List(vec![{fill}.clone(); __n]) }}"
+                );
+                self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+            }
             "unpack_sequence" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(seq_name) = args.first() {
