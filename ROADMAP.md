@@ -80,6 +80,10 @@ This file is forward-looking only.
   Luau scalar fast paths now consume the same plan for integer-family
   arithmetic, comparison, truthiness, and index-key scalar decisions instead of
   trusting `fast_int`, `fast_float`, or scalar `type_hint` transport metadata.
+  Generic container annotations now parse through the same TIR type authority:
+  `list[T]`, `dict[K, V]`, `set[T]`, and fixed-arity `tuple[...]` produce
+  structured `TirType` facts for SSA/value maps while malformed, dynamic, or
+  unsupported compound hints remain `DynBox`.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
