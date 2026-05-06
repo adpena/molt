@@ -2207,6 +2207,28 @@ impl LuauBackend {
                     .join(", ");
                 self.emit_line(&format!("local {out}: {{any}} = {{{items}}}"));
             }
+            "list_fill_new" => {
+                let out = self.out_var(op);
+                if let Some(ref out_name) = op.out {
+                    self.var_type_hints
+                        .insert(out_name.clone(), "list".to_string());
+                }
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let count = args
+                    .first()
+                    .map(|a| sanitize_ident(a))
+                    .unwrap_or_else(|| "0".to_string());
+                let fill = args
+                    .get(1)
+                    .map(|a| sanitize_ident(a))
+                    .unwrap_or_else(|| "nil".to_string());
+                self.emit_line(&format!("local {out}: {{any}} = {{}}"));
+                self.emit_line(&format!("for __i = 1, math.max(0, {count}) do"));
+                self.indent += 1;
+                self.emit_line(&format!("{out}[__i] = {fill}"));
+                self.indent -= 1;
+                self.emit_line("end");
+            }
             "tuple_new" | "tuple_from_list" => {
                 let out = self.out_var(op);
                 // Track this variable so return sites can unpack it.

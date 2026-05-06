@@ -10909,6 +10909,49 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let count_obj = obj_from_bits(count);
+        let n = if let Some(v) = count_obj.as_int() {
+            if v < 0 { 0usize } else { v as usize }
+        } else if count_obj.is_bool() {
+            if count_obj.as_bool().unwrap_or(false) {
+                1usize
+            } else {
+                0usize
+            }
+        } else {
+            return MoltObject::none().bits();
+        };
+
+        let total = std::mem::size_of::<crate::object::MoltHeader>()
+            + std::mem::size_of::<*mut crate::object::DataclassDesc>()
+            + std::mem::size_of::<*mut Vec<u64>>()
+            + std::mem::size_of::<u64>();
+        let ptr = alloc_object(_py, total, TYPE_ID_LIST);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            let mut vec = Vec::with_capacity(n);
+            vec.resize(n, fill_value);
+            let vec_ptr = Box::into_raw(Box::new(vec));
+            *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+            if let Some(fill_ptr) = obj_from_bits(fill_value).as_ptr() {
+                let mut remaining = n;
+                while remaining > 0 {
+                    let batch = remaining.min(u32::MAX as usize) as u32;
+                    crate::object::inc_ref_n_ptr(_py, fill_ptr, batch);
+                    remaining -= batch as usize;
+                }
+                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+            }
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
 /// Get element from a specialized list[int].
 /// Returns a NaN-boxed int (boxes the raw i64 on return).
 /// No refcounting needed — ints are inline NaN-boxed values.
