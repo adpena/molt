@@ -3712,11 +3712,7 @@ fn read_source_line(filename: &str, lineno: i64) -> Option<String> {
 
 // --- Frame stack and traceback helpers ---
 
-pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
-    crate::gil_assert();
-    if code_bits != 0 {
-        inc_ref_bits(_py, code_bits);
-    }
+fn frame_stack_push_entry(code_bits: u64) {
     let line = if let Some(ptr) = obj_from_bits(code_bits).as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_CODE {
@@ -3737,6 +3733,25 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
             locals_bits: 0,
         });
     });
+}
+
+pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
+    crate::gil_assert();
+    if code_bits != 0 {
+        inc_ref_bits(_py, code_bits);
+    }
+    frame_stack_push_entry(code_bits);
+}
+
+/// Push a frame entry for a code object reference already owned by the caller.
+///
+/// The frame stack takes ownership and releases it in `frame_stack_pop`.
+/// Use this for runtime registries that acquire a strong reference as part of
+/// lookup; calling `frame_stack_push` there would create a second transient
+/// ownership protocol at every call site.
+pub(crate) fn frame_stack_push_owned(_py: &PyToken<'_>, code_bits: u64) {
+    crate::gil_assert();
+    frame_stack_push_entry(code_bits);
 }
 
 pub(crate) fn frame_stack_set_line(line: i64) {
@@ -3884,12 +3899,7 @@ pub extern "C" fn molt_frame_push_info(filename_bits: u64, name_bits: u64, linen
             0, // kwonlyargcount
         );
         let code_bits = MoltObject::from_ptr(code_ptr).bits();
-        frame_stack_push(_py, code_bits);
-        // frame_stack_push inc_ref'd the code_bits; balance with dec_ref
-        // so the code object is owned solely by the frame stack entry.
-        if code_bits != 0 {
-            dec_ref_bits(_py, code_bits);
-        }
+        frame_stack_push_owned(_py, code_bits);
         MoltObject::none().bits()
     })
 }
@@ -6023,11 +6033,63 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        generator_exception_stack_drop, generator_exception_stack_store,
-        generator_exception_stack_take, task_exception_stack_drop, task_exception_stack_store,
-        task_exception_stack_take,
+        frame_stack_pop, frame_stack_push, frame_stack_push_owned, generator_exception_stack_drop,
+        generator_exception_stack_store, generator_exception_stack_take,
+        task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
     };
+    use crate::object::builders::alloc_code_obj;
+    use crate::object::header_from_obj_ptr;
+    use crate::{alloc_string, dec_ref_bits, inc_ref_bits};
     use molt_obj_model::MoltObject;
+    use std::sync::atomic::Ordering;
+
+    unsafe fn ref_count(ptr: *mut u8) -> u32 {
+        unsafe { (*header_from_obj_ptr(ptr)).ref_count.load(Ordering::Relaxed) }
+    }
+
+    fn alloc_test_code(_py: &crate::PyToken<'_>) -> (*mut u8, u64) {
+        let filename_ptr = alloc_string(_py, b"<frame-test>");
+        let name_ptr = alloc_string(_py, b"frame_test");
+        let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let code_ptr = alloc_code_obj(_py, filename_bits, name_bits, 7, 0, 0, 0, 0, 0);
+        dec_ref_bits(_py, filename_bits);
+        dec_ref_bits(_py, name_bits);
+        (code_ptr, MoltObject::from_ptr(code_ptr).bits())
+    }
+
+    #[test]
+    fn frame_stack_push_borrowed_balances_refcount_on_pop() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let (code_ptr, code_bits) = alloc_test_code(_py);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 1);
+
+            frame_stack_push(_py, code_bits);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 2);
+            frame_stack_pop(_py);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 1);
+
+            dec_ref_bits(_py, code_bits);
+        });
+    }
+
+    #[test]
+    fn frame_stack_push_owned_takes_existing_reference() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let (code_ptr, code_bits) = alloc_test_code(_py);
+            inc_ref_bits(_py, code_bits);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 2);
+
+            frame_stack_push_owned(_py, code_bits);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 2);
+            frame_stack_pop(_py);
+            assert_eq!(unsafe { ref_count(code_ptr) }, 1);
+
+            dec_ref_bits(_py, code_bits);
+        });
+    }
 
     #[test]
     fn generator_exception_stack_drop_clears_entries() {
