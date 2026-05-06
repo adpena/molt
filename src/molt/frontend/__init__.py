@@ -4478,6 +4478,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             self.bytearray_len_hints.pop(dest, None)
 
+    def _record_list_element_write(
+        self,
+        target: MoltValue,
+        target_name: str | None,
+        elem_hint: str | None,
+    ) -> None:
+        elem_map = (
+            self.global_elem_hints
+            if self.current_func_name == "molt_main"
+            else self.container_elem_hints
+        )
+        keys = [target.name]
+        if target_name is not None:
+            keys.append(target_name)
+        current = next((elem_map[key] for key in keys if key in elem_map), None)
+        if elem_hint in {None, "Any", "Unknown", "missing"}:
+            for key in keys:
+                elem_map.pop(key, None)
+            return
+        if current is not None and current != elem_hint:
+            for key in keys:
+                elem_map.pop(key, None)
+            return
+        for key in keys:
+            elem_map[key] = elem_hint
+
     def _remember_bytearray_len_hint(
         self, value: MoltValue, length: int | None
     ) -> None:
@@ -4503,9 +4529,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if name is not None:
             self.bytearray_len_hints.pop(name, None)
 
-    def _copy_container_hints_for_boxed(self, var_name: str, ssa_name: str) -> None:
-        """Copy container element/dict hints from a Python variable name to a
-        fresh SSA name produced when loading a boxed local."""
+    def _copy_container_hints_for_name_load(self, var_name: str, ssa_name: str) -> None:
+        """Copy container element/dict hints from a Python variable binding to
+        a fresh SSA name produced by a load."""
         if self.current_func_name == "molt_main":
             elem_map = self.global_elem_hints
             key_map = self.global_dict_key_hints
@@ -8603,7 +8629,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if hint is not None:
                 res.type_hint = hint
             self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
-            self._copy_container_hints_for_boxed(name, res.name)
+            self._copy_container_hints_for_name_load(name, res.name)
             if name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
@@ -8636,6 +8662,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     metadata={"var": name},
                 )
             )
+            self._copy_container_hints_for_name_load(name, res.name)
             if name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
@@ -8653,7 +8680,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if hint is not None:
                 res.type_hint = hint
             self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
-            self._copy_container_hints_for_boxed(name, res.name)
+            self._copy_container_hints_for_name_load(name, res.name)
             return res
         if self.is_async() and name in self.async_locals:
             offset = self.async_locals[name]
@@ -8682,6 +8709,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     metadata={"var": name},
                 )
             )
+            self._copy_container_hints_for_name_load(name, res.name)
             return res
         return cached
 
@@ -9164,6 +9192,78 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for idx, slot, hint in spills:
             values[idx] = self._reload_async_value(slot, hint)
         return values
+
+    def _try_emit_static_dataclass_constructor(
+        self,
+        node: ast.Call,
+        class_id: str,
+        class_info: ClassInfo,
+        class_ref: MoltValue,
+    ) -> MoltValue | None:
+        dataclass_params = class_info.get("dataclass_params", {})
+        field_order = class_info.get("field_order", [])
+        methods = class_info.get("methods", {})
+        if not isinstance(dataclass_params, dict) or not isinstance(field_order, list):
+            return None
+        if (
+            class_info.get("dynamic")
+            or class_info.get("slots")
+            or class_info.get("custom_metaclass")
+            or class_info.get("decorated")
+            or class_info.get("class_attrs")
+            or not dataclass_params.get("init", True)
+            or dataclass_params.get("kw_only", False)
+            or methods.get("__init__") is not None
+            or methods.get("__post_init__") is not None
+            or methods.get("__setattr__") is not None
+            or methods.get("__getattribute__") is not None
+            or node.keywords
+            or any(isinstance(arg, ast.Starred) for arg in node.args)
+            or len(node.args) != len(field_order)
+        ):
+            return None
+
+        values = self._emit_call_args(list(node.args))
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[class_id], result=name_val))
+        field_name_vals: list[MoltValue] = []
+        for field in field_order:
+            field_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[field], result=field_val))
+            field_name_vals.append(field_val)
+        field_names_tuple = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(
+            MoltOp(kind="TUPLE_NEW", args=field_name_vals, result=field_names_tuple)
+        )
+        values_tuple = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=values, result=values_tuple))
+        flags = 0
+        if class_info.get("frozen"):
+            flags |= 0x1
+        if class_info.get("eq"):
+            flags |= 0x2
+        if class_info.get("repr"):
+            flags |= 0x4
+        if class_info.get("slots"):
+            flags |= 0x8
+        flags_val = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[flags], result=flags_val))
+        res = MoltValue(self.next_var(), type_hint=class_id)
+        self.emit(
+            MoltOp(
+                kind="DATACLASS_NEW",
+                args=[name_val, field_names_tuple, values_tuple, flags_val],
+                result=res,
+            )
+        )
+        self.emit(
+            MoltOp(
+                kind="DATACLASS_SET_CLASS",
+                args=[res, class_ref],
+                result=MoltValue("none"),
+            )
+        )
+        return res
 
     @staticmethod
     def _call_needs_bind(node: ast.Call) -> bool:
@@ -16521,6 +16621,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self._store_local_value(node.name, applied_cls)
                 else:
                     self._store_local_value(node.name, applied_cls)
+                class_val = applied_cls
         else:
             # Dynamic path
             if self.current_func_name == "molt_main":
@@ -16658,7 +16759,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             and not dynamic_build
             and bound_class is not None
             and bound_class.name == class_val.name
-            and not class_info.get("dataclass")
+            and (
+                not class_info.get("dataclass")
+                or not class_info.get("dataclass_params", {}).get("slots", False)
+            )
         ):
             class_info["class_value_name"] = class_val.name
         else:
@@ -18058,8 +18162,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     raise NotImplementedError("list.append expects 1 argument")
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 arg = self.visit(node.args[0])
+                if arg is None:
+                    raise NotImplementedError("list.append expects a value")
                 if recv_slot is not None:
                     receiver = self._reload_async_value(recv_slot, receiver.type_hint)
+                self._record_list_element_write(receiver, obj_name, arg.type_hint)
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_APPEND", args=[receiver, arg], result=res))
                 return res
@@ -18068,8 +18175,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     raise NotImplementedError("list.extend expects 1 argument")
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 other = self.visit(node.args[0])
+                if other is None:
+                    raise NotImplementedError("list.extend expects an iterable")
                 if recv_slot is not None:
                     receiver = self._reload_async_value(recv_slot, receiver.type_hint)
+                self._record_list_element_write(
+                    receiver,
+                    obj_name,
+                    self._iterable_element_hint(other),
+                )
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(kind="LIST_EXTEND", args=[receiver, other], result=res)
@@ -18081,8 +18195,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 idx = self.visit(node.args[0])
                 val = self.visit(node.args[1])
+                if idx is None or val is None:
+                    raise NotImplementedError("list.insert expects index and value")
                 if recv_slot is not None:
                     receiver = self._reload_async_value(recv_slot, receiver.type_hint)
+                self._record_list_element_write(receiver, obj_name, val.type_hint)
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(kind="LIST_INSERT", args=[receiver, idx, val], result=res)
@@ -20531,6 +20648,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     return res
                 if class_info.get("dataclass"):
+                    static_dataclass = self._try_emit_static_dataclass_constructor(
+                        node,
+                        class_id,
+                        class_info,
+                        class_ref,
+                    )
+                    if static_dataclass is not None:
+                        return static_dataclass
                     field_order = class_info["field_order"]
                     name_val = MoltValue(self.next_var(), type_hint="str")
                     self.emit(
@@ -23028,15 +23153,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if target is not None:
             if target.type_hint == "memoryview":
                 res_type = "int"
-            elif self.type_hint_policy == "trust":
-                if target.type_hint in {"list", "tuple"}:
-                    elem_hint = self._container_elem_hint(target)
-                    if elem_hint:
-                        res_type = elem_hint
-                elif target.type_hint == "dict":
-                    val_hint = self._dict_value_hint(target)
-                    if val_hint:
-                        res_type = val_hint
+            elif target.type_hint in {"list", "tuple"}:
+                elem_hint = self._container_elem_hint(target)
+                if elem_hint:
+                    res_type = elem_hint
+            elif target.type_hint == "dict" and self.type_hint_policy == "trust":
+                val_hint = self._dict_value_hint(target)
+                if val_hint:
+                    res_type = val_hint
         res = MoltValue(self.next_var(), type_hint=res_type)
         self.emit(MoltOp(kind="INDEX", args=[target, index_val], result=res))
         return res
@@ -23940,6 +24064,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 return
             index_val = self.visit(target.slice)
+            if target_obj is not None and target_obj.type_hint == "list":
+                self._record_list_element_write(
+                    target_obj, target_name, value_node.type_hint
+                )
             self.emit(
                 MoltOp(
                     kind="STORE_INDEX",
