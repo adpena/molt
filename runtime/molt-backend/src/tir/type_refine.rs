@@ -63,7 +63,7 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 Some(&op.attrs),
                 op.results.len(),
             );
-            for (&result_id, inferred) in op.results.iter().zip(inferred_types.into_iter()) {
+            for (&result_id, inferred) in op.results.iter().zip(inferred_types) {
                 if let Some(inferred) = inferred {
                     env.insert(result_id, inferred);
                 } else {
@@ -269,7 +269,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 } else {
                     infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
                 };
-                for (&result_id, inferred) in results.iter().zip(inferred_types.into_iter()) {
+                for (&result_id, inferred) in results.iter().zip(inferred_types) {
                     if let Some(new_ty) = inferred {
                         env.insert(result_id, new_ty);
                     }
@@ -399,7 +399,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
                 };
 
-                for (&result_id, inferred) in results.iter().zip(inferred_types.into_iter()) {
+                for (&result_id, inferred) in results.iter().zip(inferred_types) {
                     // Skip frozen values — they have been fixed to DynBox.
                     if frozen.contains(&result_id) {
                         continue;
@@ -819,7 +819,7 @@ fn propagate_guard_types(
                 Some(&op.attrs),
                 op.results.len(),
             );
-            for (&result_id, result_ty) in op.results.iter().zip(result_types.into_iter()) {
+            for (&result_id, result_ty) in op.results.iter().zip(result_types) {
                 if let Some(result_ty) = result_ty {
                     proven_types.insert(result_id, result_ty.clone());
                     let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
@@ -923,7 +923,7 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 Some(&op.attrs),
                 op.results.len(),
             );
-            for (&result_id, result_ty) in op.results.iter().zip(result_types.into_iter()) {
+            for (&result_id, result_ty) in op.results.iter().zip(result_types) {
                 if let Some(result_ty) = result_ty {
                     proven.insert(result_id, result_ty.clone());
                 }
