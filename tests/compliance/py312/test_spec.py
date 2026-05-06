@@ -134,6 +134,37 @@ except Exception as exc:
     print(type(exc).__name__, str(exc))
 """)
 
+    def test_bigint_shift_count_runtime_semantics(self):
+        _assert_match("""\
+class IndexOnly:
+    def __index__(self):
+        return 2
+
+huge_inline = 2 ** 32
+huge_heap = 2 ** 70
+huge_negative = -(2 ** 70)
+very_huge = 10 ** 100
+
+print(1 >> huge_inline)
+print(-8 >> huge_inline)
+print((2 ** 80) >> huge_heap)
+print(-(2 ** 80) >> huge_heap)
+print(0 << very_huge)
+for expr in (
+    lambda: 1 << huge_negative,
+    lambda: 1 >> huge_negative,
+    lambda: 1 << 1.0,
+    lambda: 1.0 << 2,
+    lambda: 1 << IndexOnly(),
+    lambda: IndexOnly() << 1,
+    lambda: 1 << very_huge,
+):
+    try:
+        print(expr())
+    except Exception as exc:
+        print(type(exc).__name__, str(exc))
+""")
+
 
 # -- PEP 695: Type Parameter Syntax (type X = ...) ----------------------------
 

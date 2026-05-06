@@ -3633,66 +3633,168 @@ fn trace_bigint_shift_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_BIGINT_SHIFT").as_deref() == Ok("1"))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShiftCount {
+    FitsUsize(usize),
+    TooLarge,
+}
+
+enum StrictInteger {
+    Inline(i64),
+    Big(BigInt),
+}
+
+impl StrictInteger {
+    fn is_zero(&self) -> bool {
+        match self {
+            Self::Inline(value) => *value == 0,
+            Self::Big(value) => value.is_zero(),
+        }
+    }
+
+    fn magnitude_bits(&self) -> u64 {
+        match self {
+            Self::Inline(value) => BigInt::from(*value).bits(),
+            Self::Big(value) => value.bits(),
+        }
+    }
+
+    fn is_negative(&self) -> bool {
+        match self {
+            Self::Inline(value) => *value < 0,
+            Self::Big(value) => value.is_negative(),
+        }
+    }
+}
+
+fn strict_integer_from_obj(obj_bits: u64) -> Option<StrictInteger> {
+    let obj = obj_from_bits(obj_bits);
+    if obj.is_int() {
+        return Some(StrictInteger::Inline(obj.as_int_unchecked()));
+    }
+    if obj.is_bool() {
+        return Some(StrictInteger::Inline(if (obj.bits() & 0x1) == 1 {
+            1
+        } else {
+            0
+        }));
+    }
+    if let Some(ptr) = bigint_ptr_from_bits(obj_bits) {
+        return Some(StrictInteger::Big(unsafe { bigint_ref(ptr).clone() }));
+    }
+    if let Some(bits) = int_subclass_value_bits_raw(obj_bits) {
+        let val_obj = obj_from_bits(bits);
+        if val_obj.is_int() {
+            return Some(StrictInteger::Inline(val_obj.as_int_unchecked()));
+        }
+        if val_obj.is_bool() {
+            return Some(StrictInteger::Inline(if (val_obj.bits() & 0x1) == 1 {
+                1
+            } else {
+                0
+            }));
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(bits) {
+            return Some(StrictInteger::Big(unsafe { bigint_ref(ptr).clone() }));
+        }
+    }
+    None
+}
+
+fn shift_count_from_integer(_py: &PyToken<'_>, count: StrictInteger) -> Option<ShiftCount> {
+    match count {
+        StrictInteger::Inline(value) => {
+            if value < 0 {
+                raise_exception::<u64>(_py, "ValueError", "negative shift count");
+                return None;
+            }
+            Some(match usize::try_from(value) {
+                Ok(value) => ShiftCount::FitsUsize(value),
+                Err(_) => ShiftCount::TooLarge,
+            })
+        }
+        StrictInteger::Big(value) => {
+            if value.is_negative() {
+                raise_exception::<u64>(_py, "ValueError", "negative shift count");
+                return None;
+            }
+            Some(match value.to_usize() {
+                Some(value) => ShiftCount::FitsUsize(value),
+                None => ShiftCount::TooLarge,
+            })
+        }
+    }
+}
+
+fn right_shift_saturation_result(_py: &PyToken<'_>, value: &StrictInteger) -> u64 {
+    if value.is_negative() {
+        int_bits_from_i64(_py, -1)
+    } else {
+        int_bits_from_i64(_py, 0)
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let trace_shift = trace_bigint_shift_enabled();
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        let shift = index_i64_from_obj(_py, b, "shift count must be int");
-        if shift < 0 {
-            return raise_exception::<_>(_py, "ValueError", "negative shift count");
+        let Some(value) = strict_integer_from_obj(a) else {
+            return binary_type_error(_py, lhs, rhs, "<<");
+        };
+        let Some(count) = strict_integer_from_obj(b) else {
+            return binary_type_error(_py, lhs, rhs, "<<");
+        };
+        let Some(shift) = shift_count_from_integer(_py, count) else {
+            return MoltObject::none().bits();
+        };
+        if value.is_zero() {
+            return int_bits_from_i64(_py, 0);
         }
-        let shift_u = shift as u32;
-        if let Some(value) = to_i64(lhs) {
-            if shift_u >= 63 {
-                let res = BigInt::from(value) << shift_u;
-                let bits = bigint_bits(_py, res.clone());
-                if trace_shift {
-                    eprintln!(
-                        "[molt shift] i64-bigint lhs={} shift={} branch=wide result={} bits=0x{:x}",
-                        value, shift_u, res, bits
-                    );
+        let shift_u = match shift {
+            ShiftCount::FitsUsize(value) => value,
+            ShiftCount::TooLarge => {
+                return raise_exception::<_>(_py, "OverflowError", "too many digits in integer");
+            }
+        };
+        let value_bits = value.magnitude_bits();
+        let shift_bits = match u64::try_from(shift_u) {
+            Ok(value) => value,
+            Err(_) => {
+                return raise_exception::<_>(_py, "OverflowError", "too many digits in integer");
+            }
+        };
+        if let Err(msg) = crate::resource::check_lshift_size(value_bits, shift_bits) {
+            return raise_exception::<_>(_py, "MemoryError", &msg);
+        }
+        let value = match value {
+            StrictInteger::Inline(value) => {
+                if shift_u < 127
+                    && let Some(result) = (value as i128).checked_shl(shift_u as u32)
+                {
+                    return int_bits_from_i128(_py, result);
                 }
-                return bits;
+                BigInt::from(value)
             }
-            let res = value << shift_u;
-            if inline_int_from_i128(res as i128).is_some() {
-                return int_bits_from_i64(_py, res);
-            }
-            let wide = BigInt::from(value) << shift_u;
-            let bits = bigint_bits(_py, wide.clone());
-            if trace_shift {
-                eprintln!(
-                    "[molt shift] i64-bigint lhs={} shift={} branch=promote result={} bits=0x{:x}",
-                    value, shift_u, wide, bits
-                );
-            }
-            return bits;
+            StrictInteger::Big(value) => value,
+        };
+        let value_for_trace = trace_shift.then(|| value.clone());
+        let res = value << shift_u;
+        if let Some(i) = bigint_to_inline(&res) {
+            return MoltObject::from_int(i).bits();
         }
-        if let Some(value) = to_bigint(lhs) {
-            let value_for_trace = if trace_shift {
-                Some(value.clone())
-            } else {
-                None
-            };
-            let res = value << shift_u;
-            if let Some(i) = bigint_to_inline(&res) {
-                return MoltObject::from_int(i).bits();
-            }
-            let bits = bigint_bits(_py, res.clone());
-            if trace_shift {
-                eprintln!(
-                    "[molt shift] bigint lhs={} shift={} branch=bigint result={} bits=0x{:x}",
-                    value_for_trace.expect("trace clone present"),
-                    shift_u,
-                    res,
-                    bits
-                );
-            }
-            return bits;
+        let bits = bigint_bits(_py, res.clone());
+        if trace_shift {
+            eprintln!(
+                "[molt shift] bigint lhs={} shift={} branch=bigint result={} bits=0x{:x}",
+                value_for_trace.expect("trace clone present"),
+                shift_u,
+                res,
+                bits
+            );
         }
-        binary_type_error(_py, lhs, rhs, "<<")
+        bits
     })
 }
 
@@ -3718,27 +3820,33 @@ pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        let shift = index_i64_from_obj(_py, b, "shift count must be int");
-        if shift < 0 {
-            return raise_exception::<_>(_py, "ValueError", "negative shift count");
+        let Some(value) = strict_integer_from_obj(a) else {
+            return binary_type_error(_py, lhs, rhs, ">>");
+        };
+        let Some(count) = strict_integer_from_obj(b) else {
+            return binary_type_error(_py, lhs, rhs, ">>");
+        };
+        let Some(shift) = shift_count_from_integer(_py, count) else {
+            return MoltObject::none().bits();
+        };
+        if value.is_zero() {
+            return int_bits_from_i64(_py, 0);
         }
-        let shift_u = shift as u32;
-        if let Some(value) = to_i64(lhs) {
-            let res = if shift_u >= 63 {
-                if value >= 0 { 0 } else { -1 }
-            } else {
-                value >> shift_u
-            };
-            return int_bits_from_i64(_py, res);
+        let shift_u = match shift {
+            ShiftCount::FitsUsize(value) => value,
+            ShiftCount::TooLarge => return right_shift_saturation_result(_py, &value),
+        };
+        if u64::try_from(shift_u).map_or(true, |shift_bits| shift_bits >= value.magnitude_bits()) {
+            return right_shift_saturation_result(_py, &value);
         }
-        if let Some(value) = to_bigint(lhs) {
-            let res = value >> shift_u;
-            if let Some(i) = bigint_to_inline(&res) {
-                return MoltObject::from_int(i).bits();
-            }
-            return bigint_bits(_py, res);
+        let res = match value {
+            StrictInteger::Inline(value) => return int_bits_from_i64(_py, value >> shift_u),
+            StrictInteger::Big(value) => value >> shift_u,
+        };
+        if let Some(i) = bigint_to_inline(&res) {
+            return MoltObject::from_int(i).bits();
         }
-        binary_type_error(_py, lhs, rhs, ">>")
+        bigint_bits(_py, res)
     })
 }
 
@@ -3761,7 +3869,32 @@ pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::builtins::exceptions::molt_exception_message;
     use crate::*;
+    use num_bigint::BigInt;
+
+    fn repr_string(_py: &PyToken<'_>, bits: u64) -> String {
+        let repr_bits = crate::molt_repr_from_obj(bits);
+        let rendered =
+            string_obj_to_owned(obj_from_bits(repr_bits)).expect("repr must be a string object");
+        dec_ref_bits(_py, repr_bits);
+        rendered
+    }
+
+    fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> (String, String) {
+        let exc_bits = crate::molt_exception_last();
+        let kind_bits = crate::molt_exception_kind(exc_bits);
+        let msg_bits = molt_exception_message(exc_bits);
+        let kind =
+            string_obj_to_owned(obj_from_bits(kind_bits)).expect("exception kind must be string");
+        let msg =
+            string_obj_to_owned(obj_from_bits(msg_bits)).expect("exception message must be string");
+        dec_ref_bits(_py, msg_bits);
+        dec_ref_bits(_py, kind_bits);
+        dec_ref_bits(_py, exc_bits);
+        let _ = crate::molt_exception_clear();
+        (kind, msg)
+    }
 
     #[test]
     fn molt_lshift_promotes_bigint_operand_correctly() {
@@ -3782,6 +3915,99 @@ mod tests {
             dec_ref_bits(_py, repr_bits);
             dec_ref_bits(_py, out);
             assert_eq!(rendered, "72623859790382848");
+        });
+    }
+
+    #[test]
+    fn molt_shift_counts_do_not_truncate_at_u32_width() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let huge_inline_count = int_bits_from_i128(_py, 1_i128 << 32);
+            let one = MoltObject::from_int(1).bits();
+            let minus_eight = MoltObject::from_int(-8).bits();
+
+            let pos_out = molt_rshift(one, huge_inline_count);
+            assert_eq!(repr_string(_py, pos_out), "0");
+            assert_eq!(crate::molt_exception_pending(), 0);
+
+            let neg_out = molt_rshift(minus_eight, huge_inline_count);
+            assert_eq!(repr_string(_py, neg_out), "-1");
+            assert_eq!(crate::molt_exception_pending(), 0);
+        });
+    }
+
+    #[test]
+    fn molt_shift_counts_accept_heap_bigint_sign_without_i64_narrowing() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let huge_count = int_bits_from_i128(_py, 1_i128 << 70);
+            let huge_negative_count = int_bits_from_i128(_py, -(1_i128 << 70));
+
+            let zero_lshift = molt_lshift(MoltObject::from_int(0).bits(), huge_count);
+            assert_eq!(repr_string(_py, zero_lshift), "0");
+            assert_eq!(crate::molt_exception_pending(), 0);
+
+            let right = molt_rshift(MoltObject::from_int(1).bits(), huge_count);
+            assert_eq!(repr_string(_py, right), "0");
+            assert_eq!(crate::molt_exception_pending(), 0);
+
+            let invalid = molt_lshift(MoltObject::from_int(1).bits(), huge_negative_count);
+            assert!(obj_from_bits(invalid).is_none());
+            let (kind, msg) = pending_exception_kind_and_message(_py);
+            assert_eq!(kind, "ValueError");
+            assert_eq!(msg, "negative shift count");
+        });
+    }
+
+    #[test]
+    fn molt_lshift_rejects_unallocatable_counts_before_bigint_shift() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let count = bigint_bits(_py, BigInt::from(10u32).pow(100));
+            let out = molt_lshift(MoltObject::from_int(1).bits(), count);
+            assert!(obj_from_bits(out).is_none());
+            let (kind, msg) = pending_exception_kind_and_message(_py);
+            assert_eq!(kind, "OverflowError");
+            assert_eq!(msg, "too many digits in integer");
+
+            let resource_limited_count = int_bits_from_i128(_py, 1_i128 << 32);
+            let out = molt_lshift(MoltObject::from_int(1).bits(), resource_limited_count);
+            assert!(obj_from_bits(out).is_none());
+            let (kind, msg) = pending_exception_kind_and_message(_py);
+            assert_eq!(kind, "MemoryError");
+            assert!(msg.starts_with("left shift result too large:"));
+        });
+    }
+
+    #[test]
+    fn molt_shift_operands_reject_exact_floats_and_generic_index_objects() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let one = MoltObject::from_int(1).bits();
+            let one_float = MoltObject::from_float(1.0).bits();
+            let out = molt_lshift(one, one_float);
+            assert!(obj_from_bits(out).is_none());
+            let (kind, msg) = pending_exception_kind_and_message(_py);
+            assert_eq!(kind, "TypeError");
+            assert_eq!(msg, "unsupported operand type(s) for <<: 'int' and 'float'");
+
+            let out = molt_lshift(one_float, MoltObject::from_int(2).bits());
+            assert!(obj_from_bits(out).is_none());
+            let (kind, msg) = pending_exception_kind_and_message(_py);
+            assert_eq!(kind, "TypeError");
+            assert_eq!(msg, "unsupported operand type(s) for <<: 'float' and 'int'");
         });
     }
 }
