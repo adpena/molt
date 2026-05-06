@@ -5802,6 +5802,93 @@ mod tests {
     }
 
     #[test]
+    fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
+        let func = FunctionIR {
+            name: "shift_runtime_contract".to_string(),
+            params: vec!["lhs".to_string(), "rhs".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(8),
+                    out: Some("const_lhs".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(1),
+                    out: Some("const_rhs".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "lshift".to_string(),
+                    args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                    out: Some("left".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "rshift".to_string(),
+                    args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                    out: Some("right".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "shl".to_string(),
+                    args: Some(vec!["const_lhs".to_string(), "const_rhs".to_string()]),
+                    out: Some("const_left".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "shr".to_string(),
+                    args: Some(vec!["const_lhs".to_string(), "const_rhs".to_string()]),
+                    out: Some("const_right".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".to_string(),
+                    args: Some(vec!["left".to_string(), "right".to_string()]),
+                    out: Some("param_sum".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".to_string(),
+                    args: Some(vec!["const_left".to_string(), "const_right".to_string()]),
+                    out: Some("const_sum".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".to_string(),
+                    args: Some(vec!["param_sum".to_string(), "const_sum".to_string()]),
+                    out: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["int".to_string(), "int".to_string()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let clif = compile_function_to_clif_text(vec![func], "shift_runtime_contract");
+        let binary_calls = clif
+            .lines()
+            .filter(|line| line.contains(" = call fn"))
+            .count();
+
+        assert!(
+            binary_calls >= 4,
+            "native shifts over typed params and raw-primary constants must remain runtime calls until range and shift-count proof exists:\n{clif}"
+        );
+        assert!(
+            !clif.contains("ishl.i64 v1, v2") && !clif.contains("sshr v1, v2"),
+            "native shifts must not lower directly to raw Cranelift shifts without proof:\n{clif}"
+        );
+    }
+
+    #[test]
     fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
         let clif = compile_function_to_clif_text(
             vec![FunctionIR {
