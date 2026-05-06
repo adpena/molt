@@ -1,5 +1,5 @@
-use super::representation_plan::{NativeRepresentationPlan, NativeScalarKind};
 use super::*;
+use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
 
 #[cfg(feature = "native-backend")]
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
@@ -1384,7 +1384,7 @@ fn analyze_direct_field_stores(
 fn preanalyze_function_ir(
     func_ir: &FunctionIR,
     return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
-    representation_plan: &NativeRepresentationPlan,
+    representation_plan: &ScalarRepresentationPlan,
 ) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
@@ -2043,7 +2043,7 @@ impl SimpleBackend {
         }
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
-        let representation_plan = NativeRepresentationPlan::for_function_ir(&func_ir);
+        let representation_plan = ScalarRepresentationPlan::for_function_ir(&func_ir);
         let FunctionPreanalysis {
             has_ret,
             stateful,
@@ -2308,23 +2308,23 @@ impl SimpleBackend {
         };
         let op_prefers_int_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
-                && representation_plan.op_scalar_lane(op) == Some(NativeScalarKind::Int)
+                && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
         };
         let op_prefers_integer_runtime_lane = |op: &OpIR| {
             scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
         };
         let op_prefers_bool_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
-                && representation_plan.op_scalar_lane(op) == Some(NativeScalarKind::Bool)
+                && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Bool)
         };
         let op_prefers_float_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
                 && !op_prefers_integer_runtime_lane(op)
-                && representation_plan.op_scalar_lane(op) == Some(NativeScalarKind::Float)
+                && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
         };
         let op_prefers_str_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
-                && representation_plan.op_scalar_lane(op) == Some(NativeScalarKind::Str)
+                && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Str)
         };
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -2351,7 +2351,7 @@ impl SimpleBackend {
         // causing arithmetic operators to take the fast-int path and produce
         // garbage (e.g., set subtraction returning an int).
         let int_store_target_names = if scalar_fast_paths_enabled {
-            let int_store_targets = representation_plan.scalar_store_targets(NativeScalarKind::Int);
+            let int_store_targets = representation_plan.scalar_store_targets(ScalarKind::Int);
             if std::env::var("MOLT_DUMP_INT_STORE_TARGETS").as_deref() == Ok(func_ir.name.as_str())
             {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
@@ -34659,7 +34659,7 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        FunctionPreanalysis, NativeRepresentationPlan, alias_root_name, box_raw_bool_value,
+        FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name, box_raw_bool_value,
         cleanup_roots_for_names, collect_slot_backed_join_names, is_cold_module_chunk_function,
         live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
         preanalyze_function_ir, protect_cleanup_names, scan_loop_int_sum_reduction,
@@ -34679,7 +34679,7 @@ mod tests {
         func_ir: &FunctionIR,
         return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
     ) -> FunctionPreanalysis {
-        let representation_plan = NativeRepresentationPlan::for_function_ir(func_ir);
+        let representation_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
         preanalyze_function_ir(func_ir, return_alias_summaries, &representation_plan)
     }
 
@@ -34848,7 +34848,7 @@ mod tests {
             is_extern: false,
         };
 
-        let plan = NativeRepresentationPlan::for_function_ir(&func);
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
         let analysis = preanalyze_for_test(&func, &BTreeMap::new());
 
         assert!(plan.integer_family_names().contains("_v7"));
