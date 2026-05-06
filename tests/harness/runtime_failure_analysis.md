@@ -113,7 +113,7 @@ module initialization).
 the module object instead of retaining its assigned value.
 
 ### Findings
-- `MOLT_TIR_OPT=0` (all passes disabled): PASSES
+- Legacy pre-unconditional-TIR bypass (all passes disabled): PASSES
 - Skipping any single pass: PASSES
 - Only SCCP + DCE: PASSES
 - All passes together: FAILS
@@ -177,8 +177,9 @@ to the correct attribute name on the correct module object.
 {x for x in [1, 2, 3]}     → set()  (should be {1, 2, 3})
 ```
 
-Same bug as the `while False` corruption — with MOLT_TIR_OPT=0 it works.
-Skipping any single pass also works. Same pass-interaction root cause.
+Same bug as the `while False` corruption — the historical full-TIR bypass
+worked before the bypass was removed. Skipping any single pass also works.
+Same pass-interaction root cause.
 
 This is the HIGHEST IMPACT bug — it blocks ALL comprehension, set/frozenset
 construction from iterables, and likely dict comprehension too.
@@ -199,7 +200,7 @@ in `runtime/molt-backend/src/tir/lower_to_simple.rs`.
 1. SimpleIR JSON is byte-for-byte identical between TIR-on and TIR-off
 2. Binary output differs by 150K bytes (0.8% of 19MB)
 3. Skipping all TIR passes (but keeping the roundtrip) produces broken output
-4. MOLT_TIR_OPT=0 (no roundtrip at all) produces correct output
+4. The historical no-roundtrip bypass produced correct output
 5. The IR is identical yet the compiled behavior differs
 
 **Conclusion:**
@@ -261,7 +262,7 @@ But `f.set_x(42)` via a regular method works. And `Foo.__init__(f)` explicit
 call works. The bug is in the `Foo()` constructor dispatch path.
 
 ### Key Evidence
-- `MOLT_TIR_OPT=0` → correct (42)
+- Historical no-roundtrip bypass → correct (42)
 - Skipping any single TIR pass → correct (42)
 - All passes together → broken (0.0)
 - Direct `f.x = 42` (no __init__) → correct

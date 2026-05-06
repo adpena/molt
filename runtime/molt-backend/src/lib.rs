@@ -3350,18 +3350,16 @@ impl SimpleBackend {
             );
         }
 
-        // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        // The TIR roundtrip (lower->refine->optimize->lower-back) is enabled by
-        // default.  Functions that crash Cranelift compilation get a trap stub
-        // via the catch_unwind retry path in flush_deferred_defines.
-        //
+        // ── TIR optimization pipeline ──
+        // The TIR roundtrip (lower->refine->optimize->lower-back) is mandatory
+        // for backend-facing functions. Debugging must use dumps and verifier
+        // evidence rather than bypassing typed IR.
         // All TIR-lowered control flow uses pure label/jump/br_if patterns
         // (no structured loop_start/loop_end).  The Cranelift function compiler
         // handles back-edges via has_loop_or_backedge detection.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        // TIR default ON: loop markers preserved, EH functions bypassed.
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -4457,9 +4455,6 @@ mod tests {
 
     fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {
         let _guard = backend_env_lock().lock().expect("env lock poisoned");
-        // Disable TIR for these tests — they test native backend import emission,
-        // not the optimisation pipeline.
-        unsafe { std::env::set_var("MOLT_TIR_OPT", "0") };
         match emit_traces_env {
             Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_EMIT_TRACES", value) },
             None => unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") },
@@ -4491,7 +4486,6 @@ mod tests {
         };
         let output = SimpleBackend::new().compile(ir);
         unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") };
-        unsafe { std::env::remove_var("MOLT_TIR_OPT") };
         output.bytes
     }
 
@@ -5070,8 +5064,6 @@ mod tests {
     #[test]
     fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
         let _guard = backend_env_lock().lock().expect("env lock poisoned");
-        // Disable TIR for this test — it tests native backend import emission.
-        unsafe { std::env::set_var("MOLT_TIR_OPT", "0") };
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 name: "molt_main".to_string(),
@@ -5108,7 +5100,6 @@ mod tests {
         };
 
         let output = SimpleBackend::new().compile(ir);
-        unsafe { std::env::remove_var("MOLT_TIR_OPT") };
 
         assert!(
             output

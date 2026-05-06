@@ -167,7 +167,6 @@ _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 3
 _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 1
 _BACKEND_REQUEST_ENV_KNOBS = (
-    "MOLT_TIR_OPT",
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
     "MOLT_BACKEND_BATCH_SIZE",
     "MOLT_BACKEND_BATCH_OP_BUDGET",
@@ -26611,13 +26610,10 @@ def _cache_fingerprint() -> str:
     root = Path(__file__).resolve().parents[2]
     rustc_info = _rustc_version() or ""
     rustflags = os.environ.get("RUSTFLAGS", "")
-    # TIR setting affects codegen output — different TIR configs need
-    # different caches. Source file hashing (below) already catches
-    # backend code changes. We intentionally do NOT hash the backend
+    # Source file hashing (below) catches backend code changes. We intentionally do NOT hash the backend
     # binary itself — that over-invalidates on every incremental
     # rebuild even without source changes, destroying the user's
     # cached binaries and causing 30s+ cold starts.
-    tir_opt = os.environ.get("MOLT_TIR_OPT", "")
     # Keep cache invalidation scoped to runtime/backend codegen sources.
     # Frontend/stdlib semantics already flow into the IR payload hash, so
     # hashing the entire stdlib tree here would over-invalidate unrelated builds.
@@ -26629,7 +26625,7 @@ def _cache_fingerprint() -> str:
         source_paths=source_paths,
         scope="compiler-runtime-backend",
         extra_fingerprint_inputs=(
-            f"rustc:{rustc_info}\nrustflags:{rustflags}\ntir_opt:{tir_opt}\n"
+            f"rustc:{rustc_info}\nrustflags:{rustflags}\n"
         ),
     )
 

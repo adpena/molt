@@ -11226,13 +11226,6 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     native_changed = cli._backend_codegen_env_digest(is_wasm=False)
     assert native_changed != baseline_native
 
-    monkeypatch.delenv("MOLT_BACKEND_REGALLOC_ALGORITHM", raising=False)
-    baseline_native = cli._backend_codegen_env_digest(is_wasm=False)
-    monkeypatch.setenv("MOLT_TIR_OPT", "0")
-    native_tir_changed = cli._backend_codegen_env_digest(is_wasm=False)
-    assert native_tir_changed != baseline_native
-
-    monkeypatch.delenv("MOLT_TIR_OPT", raising=False)
     baseline_native = cli._backend_codegen_env_digest(is_wasm=False)
     monkeypatch.setenv("MOLT_BACKEND", "llvm")
     native_backend_changed = cli._backend_codegen_env_digest(is_wasm=False)
