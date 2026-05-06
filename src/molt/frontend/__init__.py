@@ -30634,6 +30634,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return self._emit_await_anext(
                 iter_obj, default_val=default_val, has_default=has_default
             )
+        if not self.is_async():
+            coro = self.visit(node.value)
+            coro = self._emit_awaitable_transform(coro)
+            res = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(MoltOp(kind="ASYNC_BLOCK_ON", args=[coro], result=res))
+            self._emit_raise_if_pending()
+            return res
+        self.state_count += 1
+        pending_state_id = self.state_count
+        self.emit(
+            MoltOp(
+                kind="STATE_LABEL", args=[pending_state_id], result=MoltValue("none")
+            )
+        )
+        pending_state_val = MoltValue(self.next_var(), type_hint="int")
+        self.emit(
+            MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
+        )
         awaitable_slot = None
         if self.is_async():
             awaitable_slot = self._async_local_offset(
@@ -30688,19 +30706,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.state_count += 1
-            pending_state_id = self.state_count
-            self.emit(
-                MoltOp(
-                    kind="STATE_LABEL",
-                    args=[pending_state_id],
-                    result=MoltValue("none"),
-                )
-            )
-            pending_state_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
-            )
             coro = MoltValue(self.next_var(), type_hint="Future")
             self.emit(
                 MoltOp(
@@ -30709,9 +30714,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=coro,
                 )
             )
-        else:
-            coro = self.visit(node.value)
-            coro = self._emit_awaitable_transform(coro)
         result_slot = self._async_local_offset(
             f"__await_result_{len(self.async_locals)}"
         )

@@ -5395,6 +5395,7 @@ def _compile_with_backend_daemon_non_wasm(
     skip_function_output_if_synced: bool = False,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_object_manifest: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
     daemon_pid: int | None = None,
@@ -5415,6 +5416,7 @@ def _compile_with_backend_daemon_non_wasm(
         skip_function_output_if_synced=skip_function_output_if_synced,
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
+        stdlib_object_manifest=stdlib_object_manifest,
         timeout=timeout,
         request_bytes=request_bytes,
         daemon_pid=daemon_pid,
@@ -11731,6 +11733,15 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
 ) -> None:
     backend_output = tmp_path / "output.o"
     stdlib_object_path = tmp_path / "cache" / "main.stdlib.o"
+    stdlib_object_path.parent.mkdir(parents=True)
+    stdlib_object_path.write_bytes(b"\x7fELF")
+    cli._stdlib_object_key_sidecar_path(stdlib_object_path).write_text(
+        "stdlib-cache-key\n", encoding="utf-8"
+    )
+    stdlib_manifest = '{"cache_key":"stdlib-cache-key"}'
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object_path).write_text(
+        stdlib_manifest + "\n", encoding="utf-8"
+    )
     seen_payloads: list[dict[str, object]] = []
     connects = 0
 
@@ -11809,6 +11820,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         skip_function_output_if_synced=False,
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key="stdlib-cache-key",
+        stdlib_object_manifest=stdlib_manifest,
         timeout=0.1,
     )
 
@@ -11822,6 +11834,89 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert seen_payloads[1]["jobs"][0]["ir"] == {"functions": [{"name": "heavy"}]}
     assert seen_payloads[1]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
+
+
+def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    stdlib_object_path = tmp_path / "cache" / "missing.stdlib.o"
+    seen_payloads: list[dict[str, object]] = []
+
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self._chunks: list[bytes] = []
+
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 0.1
+
+        def connect(self, address: str) -> None:
+            assert address == "/tmp/fake.sock"
+
+        def sendall(self, data: bytes) -> None:
+            payload = json.loads(data)
+            seen_payloads.append(payload)
+            job = payload["jobs"][0]
+            assert "probe_cache_only" not in job
+            assert job["ir"] == {"functions": [{"name": "heavy"}]}
+            assert payload["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+            backend_output.write_bytes(b"\x7fELF")
+            self._chunks = [
+                json.dumps(
+                    {
+                        "ok": True,
+                        "jobs": [
+                            {
+                                "id": "job0",
+                                "ok": True,
+                                "cached": False,
+                                "output_written": True,
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+                + b"\n"
+            ]
+
+        def shutdown(self, how: int) -> None:
+            assert how in (cli.socket.SHUT_WR,)
+
+        def recv_into(self, buffer: memoryview) -> int:
+            if not self._chunks:
+                return 0
+            chunk = self._chunks.pop(0)
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
+    result = _compile_with_backend_daemon_non_wasm(
+        Path("/tmp/fake.sock"),
+        ir={"functions": [{"name": "heavy"}]},
+        backend_output=backend_output,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        stdlib_object_path=stdlib_object_path,
+        stdlib_object_cache_key="stdlib-cache-key",
+        stdlib_object_manifest='{"cache_key":"stdlib-cache-key"}',
+        timeout=0.1,
+    )
+
+    assert result.ok is True
+    assert len(seen_payloads) == 1
 
 
 def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(

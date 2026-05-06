@@ -798,13 +798,19 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return "<file_handle>".to_string();
             }
             if type_id == TYPE_ID_FUNCTION {
-                // Match CPython: <function NAME at 0xADDR>
                 let name_bits = function_name_bits(_py, ptr);
                 let name = if name_bits != 0 {
                     string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default()
                 } else {
                     String::new()
                 };
+                if object_class_bits(ptr) == builtin_classes(_py).builtin_function_or_method {
+                    if name.is_empty() {
+                        return "<built-in function>".to_string();
+                    }
+                    return format!("<built-in function {name}>");
+                }
+                // Match CPython: <function NAME at 0xADDR>
                 if name.is_empty() {
                     return format!("<function at 0x{:x}>", ptr as usize);
                 }
