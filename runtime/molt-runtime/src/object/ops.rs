@@ -500,9 +500,7 @@ pub(crate) fn as_float_extended(obj: MoltObject) -> Option<f64> {
 
 // --- NaN-boxed ops ---
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_dump() {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
         if !profile_enabled(_py) {
             return;
         }
@@ -694,6 +692,12 @@ pub extern "C" fn molt_profile_dump() {
             eprintln!("molt_profile_json {}", payload);
         }
         maybe_emit_runtime_feedback_file(&payload);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_dump() {
+    crate::with_gil_entry_nopanic!(_py, {
+        profile_dump_with_gil(_py);
     })
 }
 
