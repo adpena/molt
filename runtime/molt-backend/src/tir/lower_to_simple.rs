@@ -43,8 +43,65 @@ struct LoopRegion {
     exit_args: Vec<ValueId>,
 }
 
+/// Canonical naming bridge from TIR SSA values and block arguments to the
+/// legacy SimpleIR variable namespace consumed by existing backends.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SimpleValueNames {
+    value_overrides: HashMap<ValueId, String>,
+    block_arg_slots: HashMap<(BlockId, usize), String>,
+}
+
+impl SimpleValueNames {
+    pub fn for_function(func: &TirFunction) -> Self {
+        let mut names = Self::default();
+        if let Some(entry_block) = func.blocks.get(&func.entry_block) {
+            for (idx, arg) in entry_block.args.iter().enumerate() {
+                if let Some(name) = func.param_names.get(idx) {
+                    names.value_overrides.insert(arg.id, name.clone());
+                }
+            }
+        }
+        for (bid, block) in &func.blocks {
+            for index in 0..block.args.len() {
+                names
+                    .block_arg_slots
+                    .insert((*bid, index), Self::canonical_block_arg_slot(*bid, index));
+            }
+        }
+        names
+    }
+
+    pub fn value_name(&self, id: ValueId) -> String {
+        self.value_overrides
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| Self::canonical_value_name(id))
+    }
+
+    pub fn block_arg_slot(&self, block: BlockId, index: usize) -> String {
+        self.block_arg_slots
+            .get(&(block, index))
+            .cloned()
+            .unwrap_or_else(|| Self::canonical_block_arg_slot(block, index))
+    }
+
+    pub fn block_arg_slots(&self, block: BlockId, arity: usize) -> Vec<String> {
+        (0..arity)
+            .map(|index| self.block_arg_slot(block, index))
+            .collect()
+    }
+
+    pub fn canonical_value_name(id: ValueId) -> String {
+        format!("_v{}", id.0)
+    }
+
+    pub fn canonical_block_arg_slot(block: BlockId, index: usize) -> String {
+        format!("_bb{}_arg{}", block.0, index)
+    }
+}
+
 thread_local! {
-    static VALUE_NAME_OVERRIDES: RefCell<HashMap<ValueId, String>> = RefCell::new(HashMap::new());
+    static VALUE_NAMES: RefCell<SimpleValueNames> = RefCell::new(SimpleValueNames::default());
 }
 
 fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<BlockId> {
@@ -86,17 +143,8 @@ fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<Bl
 /// carries representation proof inside the midend, and SimpleIR `type_hint`
 /// remains non-authoritative transport metadata.
 pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
-    VALUE_NAME_OVERRIDES.with(|overrides| {
-        let mut overrides = overrides.borrow_mut();
-        overrides.clear();
-        if let Some(entry_block) = func.blocks.get(&func.entry_block) {
-            for (idx, arg) in entry_block.args.iter().enumerate() {
-                if let Some(name) = func.param_names.get(idx) {
-                    overrides.insert(arg.id, name.clone());
-                }
-            }
-        }
-    });
+    let simple_value_names = SimpleValueNames::for_function(func);
+    VALUE_NAMES.with(|names| *names.borrow_mut() = simple_value_names.clone());
 
     let mut out = Vec::new();
 
@@ -180,20 +228,15 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     // Collect block argument info for all blocks so we can generate
     // `store_var` assignments at branch sites.
     // Map: (source_block, target_block) → Vec<(arg_value, param_var_name)>
-    // We synthesise variable names for block arguments as "_bb<id>_arg<n>".
-
     // Build param-variable names for every block that has args.
     let block_param_vars: HashMap<BlockId, Vec<String>> = func
         .blocks
         .iter()
         .map(|(bid, block)| {
-            let vars: Vec<String> = block
-                .args
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("_bb{}_arg{}", bid.0, i))
-                .collect();
-            (*bid, vars)
+            (
+                *bid,
+                simple_value_names.block_arg_slots(*bid, block.args.len()),
+            )
         })
         .collect();
 
@@ -882,7 +925,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         }
     }
 
-    VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
+    VALUE_NAMES.with(|names| *names.borrow_mut() = SimpleValueNames::default());
 
     if debug_loop_if_return {
         eprintln!("LOWER_DEBUG_PRE_ELIM: {out:#?}");
@@ -2820,13 +2863,7 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp) {
 
 /// Synthesise a SimpleIR variable name from a ValueId.
 fn value_var(id: ValueId) -> String {
-    VALUE_NAME_OVERRIDES.with(|overrides| {
-        overrides
-            .borrow()
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| format!("_v{}", id.0))
-    })
+    VALUE_NAMES.with(|names| names.borrow().value_name(id))
 }
 
 fn binary_op(kind: &str, op: &TirOp, out: Option<String>) -> OpIR {
@@ -4271,6 +4308,51 @@ mod tests {
     fn value_var_naming() {
         assert_eq!(value_var(ValueId(0)), "_v0");
         assert_eq!(value_var(ValueId(42)), "_v42");
+    }
+
+    #[test]
+    fn simple_value_names_use_entry_param_names() {
+        let mut func = TirFunction::new(
+            "params".into(),
+            vec![TirType::I64, TirType::Bool],
+            TirType::DynBox,
+        );
+        func.param_names = vec!["lhs".into(), "flag".into()];
+
+        let names = SimpleValueNames::for_function(&func);
+
+        assert_eq!(names.value_name(ValueId(0)), "lhs");
+        assert_eq!(names.value_name(ValueId(1)), "flag");
+        assert_eq!(names.value_name(ValueId(99)), "_v99");
+    }
+
+    #[test]
+    fn simple_value_names_record_block_arg_slots_without_shadowing_values() {
+        let mut func = TirFunction::new("join".into(), vec![TirType::I64], TirType::I64);
+        let join = func.fresh_block();
+        let arg_id = func.fresh_value();
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: arg_id,
+                    ty: TirType::I64,
+                }],
+                ops: Vec::new(),
+                terminator: Terminator::Unreachable,
+            },
+        );
+
+        let names = SimpleValueNames::for_function(&func);
+
+        assert_eq!(names.block_arg_slot(join, 0), "_bb1_arg0");
+        assert_eq!(names.block_arg_slots(join, 1), vec!["_bb1_arg0"]);
+        assert_eq!(
+            names.value_name(arg_id),
+            SimpleValueNames::canonical_value_name(arg_id),
+            "block argument storage slots are separate from SSA value names",
+        );
     }
 
     /// Verify that typed TIR does not re-emit integer transport hints.
