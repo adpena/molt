@@ -355,6 +355,7 @@ pub fn print_type(ty: &TirType) -> String {
             let inner = elems.iter().map(print_type).collect::<Vec<_>>().join(", ");
             format!("tuple<{}>", inner)
         }
+        TirType::Iterator(inner) => format!("iterator<{}>", print_type(inner)),
         TirType::Box(inner) => format!("box<{}>", print_type(inner)),
         TirType::DynBox => "dynbox".to_string(),
         TirType::UserClass(class_id) => format!("user_class<{}>", class_id),
@@ -731,6 +732,10 @@ mod tests {
         assert_eq!(
             print_type(&TirType::List(Box::new(TirType::I64))),
             "list<i64>"
+        );
+        assert_eq!(
+            print_type(&TirType::Iterator(Box::new(TirType::Str))),
+            "iterator<str>"
         );
         assert_eq!(
             print_type(&TirType::Dict(

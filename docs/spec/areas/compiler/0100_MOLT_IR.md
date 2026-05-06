@@ -43,7 +43,8 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 
 ## Type system (minimum set)
 - **Primitives**: `Int`, `Float`, `Bool`, `None`.
-- **Objects**: `Class(Id)`, `List(T)`, `Dict(K,V)`, `Tuple([...])`, `Str`, `Bytes`, `MemoryView`, `Range`, `Slice`.
+- **Objects**: `Class(Id)`, `List(T)`, `Dict(K,V)`, `Tuple([...])`,
+  `Iterator(T)`, `Str`, `Bytes`, `MemoryView`, `Range`, `Slice`.
 - **Unions**: `Union(T1, T2, ...)`, `Any` (Tier 1 only).
 Coverage status and planned additions are tracked in `docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md` with TODO tags for new ops.
 

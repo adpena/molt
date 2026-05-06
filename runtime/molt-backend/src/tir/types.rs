@@ -14,6 +14,9 @@ pub enum TirType {
     Dict(Box<TirType>, Box<TirType>),
     Set(Box<TirType>),
     Tuple(Vec<TirType>),
+    /// Iterator with a known yielded element type. This is a semantic iterator
+    /// fact only; it does not prove any physical container storage layout.
+    Iterator(Box<TirType>),
     // Boxed
     /// NaN-boxed with known inner type.
     Box(Box<TirType>),
@@ -109,6 +112,11 @@ impl TirType {
         {
             let merged: Vec<TirType> = a.iter().zip(b.iter()).map(|(x, y)| x.meet(y)).collect();
             return TirType::Tuple(merged);
+        }
+
+        // Iterator(T) meet Iterator(U) = Iterator(meet(T, U)).
+        if let (TirType::Iterator(a), TirType::Iterator(b)) = (self, other) {
+            return TirType::Iterator(Box::new(a.meet(b)));
         }
 
         // Flatten unions when building the join.
@@ -419,6 +427,16 @@ mod tests {
         let a = TirType::List(Box::new(TirType::I64));
         let b = TirType::List(Box::new(TirType::I64));
         assert_eq!(a.meet(&b), TirType::List(Box::new(TirType::I64)));
+    }
+
+    #[test]
+    fn meet_iterators_recurse() {
+        let a = TirType::Iterator(Box::new(TirType::I64));
+        let b = TirType::Iterator(Box::new(TirType::Str));
+        assert_eq!(
+            a.meet(&b),
+            TirType::Iterator(Box::new(TirType::Union(vec![TirType::I64, TirType::Str])))
+        );
     }
 
     #[test]
