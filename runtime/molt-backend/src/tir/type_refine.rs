@@ -1080,6 +1080,12 @@ fn infer_result_type_with_attrs(
         )),
         OpCode::BuildSet => Some(TirType::Set(Box::new(TirType::DynBox))),
         OpCode::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
+        OpCode::Index => match operand_types {
+            [TirType::List(elem_ty), TirType::I64 | TirType::Bool] => {
+                Some(elem_ty.as_ref().clone())
+            }
+            _ => None,
+        },
 
         // Copy propagates type.
         OpCode::Copy => operand_types.first().cloned(),
@@ -2181,6 +2187,55 @@ mod tests {
         let proven = extract_proven_map(&func);
 
         assert_eq!(proven.get(&ValueId(2)), Some(&TirType::I64));
+    }
+
+    #[test]
+    fn list_index_refines_to_element_type() {
+        let list = ValueId(0);
+        let index = ValueId(1);
+        let item = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::Index,
+            vec![list, index],
+            vec![item],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types
+            .insert(list, TirType::List(Box::new(TirType::Bool)));
+        func.value_types.insert(index, TirType::I64);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&item), Some(&TirType::Bool));
+        assert_eq!(
+            func.value_types.get(&item),
+            Some(&TirType::Bool),
+            "refine_types must persist list element facts for backend plans"
+        );
+    }
+
+    #[test]
+    fn list_index_with_non_integer_index_stays_dynbox() {
+        let list = ValueId(0);
+        let index = ValueId(1);
+        let item = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::Index,
+            vec![list, index],
+            vec![item],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types
+            .insert(list, TirType::List(Box::new(TirType::Bool)));
+        func.value_types.insert(index, TirType::Str);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&item), Some(&TirType::DynBox));
     }
 
     // ---- Test: parse_guard_type handles various type strings ----
