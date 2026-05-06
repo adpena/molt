@@ -117,6 +117,41 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
     assert env["CARGO_TARGET_DIR"].startswith(str(root / "target" / "pytest_wasm"))
 
 
+def test_wasm_test_target_dir_uses_stable_local_lane(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    out_dir = tmp_path / "out"
+    monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    first = wasm_runner._wasm_test_target_dir(root, out_dir, root)
+    second = wasm_runner._wasm_test_target_dir(root, out_dir, root)
+
+    assert first == root / "target" / "pytest_wasm" / "local"
+    assert second == first
+
+
+def test_wasm_test_target_dir_preserves_explicit_and_worker_lanes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
+    monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
+    worker_target = wasm_runner._wasm_test_target_dir(root, out_dir, root)
+    assert worker_target == root / "target" / "pytest_wasm" / "worker_gw2"
+
+    monkeypatch.setenv("MOLT_WASM_TEST_LANE", "custom-lane")
+    explicit_target = wasm_runner._wasm_test_target_dir(root, out_dir, root)
+    assert explicit_target == root / "target" / "pytest_wasm" / "custom-lane"
+
+
 def test_build_wasm_linked_does_not_mutate_process_runtime_env(
     monkeypatch,
     tmp_path: Path,

@@ -9,11 +9,18 @@ from pathlib import Path
 
 import pytest
 
-_WASM_TEST_LANE = (
-    os.environ.get("MOLT_WASM_TEST_LANE", "").strip() or f"lane_{os.getpid()}"
-)
 _MIN_NODE_MAJOR = 18
 _NODE_BIN_CACHE: str | None = None
+
+
+def _wasm_test_lane() -> str:
+    configured = os.environ.get("MOLT_WASM_TEST_LANE", "").strip()
+    if configured:
+        return configured
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "").strip()
+    if worker:
+        return f"worker_{worker}"
+    return "local"
 
 
 def _artifact_root(root: Path) -> Path:
@@ -162,7 +169,7 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Pat
     if allow_external and not _same_location(artifact_root, root):
         target = artifact_root / "target"
     else:
-        target = root / "target" / "pytest_wasm" / _WASM_TEST_LANE
+        target = root / "target" / "pytest_wasm" / _wasm_test_lane()
     target.mkdir(parents=True, exist_ok=True)
     return target
 
@@ -195,7 +202,7 @@ def build_wasm_linked(
     env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, artifact_root))
     env.setdefault(
         "MOLT_SESSION_ID",
-        f"test-wasm-{_WASM_TEST_LANE}-{src.stem}-{out_dir.name}",
+        f"test-wasm-{_wasm_test_lane()}-{src.stem}-{out_dir.name}",
     )
     env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
