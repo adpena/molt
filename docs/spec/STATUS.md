@@ -74,8 +74,12 @@ It is current-state only. For forward-looking priorities, use
   Bool facts it synthesizes for generated loop carriers and comparisons instead
   of leaving those facts solely in `_fast_int` attrs. TIR-to-SimpleIR value
   naming is now centralized in `SimpleValueNames`, keeping parameter identity
-  and block-argument storage names on one reusable contract for the upcoming
-  native representation-plan bridge.
+  and block-argument storage names on one reusable contract. TIR lift also
+  records explicit single-output SimpleIR provenance so the native backend can
+  map final LIR facts back to legacy names without trusting scalar transport
+  hints. Native preanalysis consumes a final-codegen-time
+  `NativeRepresentationPlan` for semantic int/bool/float/str/None
+  classifications; raw-primary sets remain stricter carrier-safety subsets.
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic

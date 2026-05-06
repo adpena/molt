@@ -264,10 +264,11 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         next_value,
     } = ssa;
 
-    // Determine parameter types — default to DynBox, but honour param_types if
-    // the frontend provided string annotations.
+    // Determine semantic parameter types. `param_types` also carries the
+    // native ABI carrier marker `i64` for boxed Molt object words; that marker
+    // is not a Python `int` proof and must remain DynBox in TIR.
     let param_types: Vec<TirType> = if let Some(ref pt) = ir.param_types {
-        pt.iter().map(|s| string_to_tir_type(s)).collect()
+        pt.iter().map(|s| param_string_to_tir_type(s)).collect()
     } else {
         ir.params.iter().map(|_| TirType::DynBox).collect()
     };
@@ -546,6 +547,13 @@ fn string_to_tir_type(s: &str) -> TirType {
         "set" => TirType::Set(Box::new(TirType::DynBox)),
         "tuple" => TirType::Tuple(vec![]),
         _ => TirType::DynBox,
+    }
+}
+
+fn param_string_to_tir_type(s: &str) -> TirType {
+    match s {
+        "i64" => TirType::DynBox,
+        _ => string_to_tir_type(s),
     }
 }
 
@@ -1104,6 +1112,28 @@ mod tests {
             tir.value_types.get(&add_result),
             Some(&TirType::F64),
             "arithmetic propagation must persist op-result facts on TirFunction"
+        );
+    }
+
+    #[test]
+    fn abi_i64_param_type_is_not_a_semantic_int_fact() {
+        let func_ir = FunctionIR {
+            name: "boxed_carrier".to_string(),
+            params: vec!["obj".to_string()],
+            ops: vec![op_args("ret", &["obj"])],
+            param_types: Some(vec!["i64".to_string()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir = lower_to_tir(&func_ir);
+
+        assert_eq!(tir.param_types, vec![TirType::DynBox]);
+        let entry = &tir.blocks[&tir.entry_block];
+        assert_eq!(
+            tir.value_types.get(&entry.args[0].id),
+            Some(&TirType::DynBox),
+            "native ABI carrier `i64` must stay a boxed dynamic value, not semantic I64"
         );
     }
 

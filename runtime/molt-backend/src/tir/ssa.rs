@@ -1122,6 +1122,9 @@ impl<'a> SsaContext<'a> {
         if let Some(v) = op.ic_index {
             attrs.insert("ic_index".into(), AttrValue::Int(v));
         }
+        if let Some(ref out) = op.out {
+            attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
+        }
         // Preserve fast_int / fast_float / type_hint so that the round-trip does
         // not lose type annotations even without the type-refine pass running.
         if op.fast_int == Some(true) {
