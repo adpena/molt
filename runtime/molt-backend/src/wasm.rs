@@ -1,4 +1,4 @@
-use crate::representation_plan::{ContainerKind, ScalarRepresentationPlan};
+use crate::representation_plan::{ContainerKind, ContainerStorageKind, ScalarRepresentationPlan};
 use crate::{FunctionIR, OpIR, SimpleIR, TrampolineKind, TrampolineSpec};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -98,38 +98,54 @@ fn wasm_scalar_truthiness_fast_path_for_name(plan: &ScalarRepresentationPlan, na
 
 fn wasm_specialized_container_import(
     plan: &ScalarRepresentationPlan,
+    op_index: usize,
     kind: &str,
     op: &OpIR,
 ) -> Option<&'static str> {
-    let container = op.args.as_ref()?.first()?;
-    let container_kind = plan.name_container_kind(container)?;
     match kind {
-        "contains" => match container_kind {
-            ContainerKind::Set => Some("set_contains"),
-            ContainerKind::Dict => Some("dict_contains"),
-            ContainerKind::List => Some("list_contains"),
-            ContainerKind::Str => Some("str_contains"),
-            ContainerKind::Tuple => None,
-        },
-        "len" => match container_kind {
-            ContainerKind::List => Some("len_list"),
-            ContainerKind::Str => Some("len_str"),
-            ContainerKind::Dict => Some("len_dict"),
-            ContainerKind::Tuple => Some("len_tuple"),
-            ContainerKind::Set => Some("len_set"),
-        },
-        "index" => match container_kind {
-            ContainerKind::Dict => Some("dict_getitem"),
-            ContainerKind::Tuple => Some("tuple_getitem"),
-            ContainerKind::List | ContainerKind::Set | ContainerKind::Str => None,
-        },
-        "store_index" => match container_kind {
-            ContainerKind::Dict => Some("dict_setitem"),
-            ContainerKind::List
-            | ContainerKind::Set
-            | ContainerKind::Tuple
-            | ContainerKind::Str => None,
-        },
+        "index"
+            if plan.op_has_container_storage(op_index, op, ContainerStorageKind::FlatListInt) =>
+        {
+            Some("list_int_getitem")
+        }
+        "store_index"
+            if plan.op_has_container_storage(op_index, op, ContainerStorageKind::FlatListInt) =>
+        {
+            Some("list_int_setitem")
+        }
+        "contains" | "len" | "index" | "store_index" => {
+            let container = op.args.as_ref()?.first()?;
+            let container_kind = plan.name_container_kind(container)?;
+            match kind {
+                "contains" => match container_kind {
+                    ContainerKind::Set => Some("set_contains"),
+                    ContainerKind::Dict => Some("dict_contains"),
+                    ContainerKind::List => Some("list_contains"),
+                    ContainerKind::Str => Some("str_contains"),
+                    ContainerKind::Tuple => None,
+                },
+                "len" => match container_kind {
+                    ContainerKind::List => Some("len_list"),
+                    ContainerKind::Str => Some("len_str"),
+                    ContainerKind::Dict => Some("len_dict"),
+                    ContainerKind::Tuple => Some("len_tuple"),
+                    ContainerKind::Set => Some("len_set"),
+                },
+                "index" => match container_kind {
+                    ContainerKind::Dict => Some("dict_getitem"),
+                    ContainerKind::Tuple => Some("tuple_getitem"),
+                    ContainerKind::List | ContainerKind::Set | ContainerKind::Str => None,
+                },
+                "store_index" => match container_kind {
+                    ContainerKind::Dict => Some("dict_setitem"),
+                    ContainerKind::List
+                    | ContainerKind::Set
+                    | ContainerKind::Tuple
+                    | ContainerKind::Str => None,
+                },
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -1690,7 +1706,7 @@ impl WasmBackend {
         // Scan IR ops: each op declares its own import dependencies.
         for func_ir in &ir.functions {
             let scalar_plan = ScalarRepresentationPlan::for_function_ir(func_ir);
-            for op in &func_ir.ops {
+            for (op_index, op) in func_ir.ops.iter().enumerate() {
                 let kind = op.kind.as_str();
                 if matches!(
                     std::env::var("MOLT_DEBUG_WASM_IMPORTS").ok().as_deref(),
@@ -1774,7 +1790,8 @@ impl WasmBackend {
                 // final TIR/LIR container facts at codegen time. Mirror that
                 // logic here so Auto mode keeps the same import lane that
                 // compile_func will actually emit.
-                let specialized_import = wasm_specialized_container_import(&scalar_plan, kind, op);
+                let specialized_import =
+                    wasm_specialized_container_import(&scalar_plan, op_index, kind, op);
                 if let Some(import_name) = specialized_import {
                     required.insert(import_name.to_string());
                 }
@@ -7410,7 +7427,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(container));
                         func.instruction(&Instruction::LocalGet(item));
                         let import_key =
-                            wasm_specialized_container_import(&scalar_plan, "contains", op)
+                            wasm_specialized_container_import(&scalar_plan, op_idx, "contains", op)
                                 .unwrap_or("contains");
                         let import_id = selected_import_id(
                             import_ids,
@@ -7672,8 +7689,9 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(arg));
                         // Dispatch to specialized fast-path len when container
                         // type is known, skipping the 18-type dispatch.
-                        let import_key = wasm_specialized_container_import(&scalar_plan, "len", op)
-                            .unwrap_or("len");
+                        let import_key =
+                            wasm_specialized_container_import(&scalar_plan, op_idx, "len", op)
+                                .unwrap_or("len");
                         let import_id = selected_import_id(
                             import_ids,
                             import_key,
@@ -8730,7 +8748,7 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(idx));
                         // Dispatch: list_int / dict / tuple → generic
                         let import_key =
-                            wasm_specialized_container_import(&scalar_plan, "index", op)
+                            wasm_specialized_container_import(&scalar_plan, op_idx, "index", op)
                                 .unwrap_or("index");
                         let import_id = selected_import_id(
                             import_ids,
@@ -8755,9 +8773,13 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(idx));
                         func.instruction(&Instruction::LocalGet(val));
                         // Dispatch: list_int / dict → generic
-                        let import_key =
-                            wasm_specialized_container_import(&scalar_plan, "store_index", op)
-                                .unwrap_or("store_index");
+                        let import_key = wasm_specialized_container_import(
+                            &scalar_plan,
+                            op_idx,
+                            "store_index",
+                            op,
+                        )
+                        .unwrap_or("store_index");
                         let import_id = selected_import_id(
                             import_ids,
                             import_key,
@@ -15864,7 +15886,7 @@ mod tests {
         let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         assert_eq!(
-            wasm_specialized_container_import(&plan, "index", &index),
+            wasm_specialized_container_import(&plan, 0, "index", &index),
             None
         );
     }
@@ -15883,18 +15905,41 @@ mod tests {
         let plan = ScalarRepresentationPlan::for_function_ir(&func);
 
         assert_eq!(
-            wasm_specialized_container_import(&plan, "index", &index),
+            wasm_specialized_container_import(&plan, 0, "index", &index),
             None,
             "semantic list[int] is not a physical flat-list storage proof"
         );
         assert_eq!(
-            wasm_specialized_container_import(&plan, "store_index", &set),
+            wasm_specialized_container_import(&plan, 1, "store_index", &set),
             None,
             "semantic list[int] is not a physical flat-list storage proof"
         );
         assert_eq!(
-            wasm_specialized_container_import(&plan, "len", &len),
+            wasm_specialized_container_import(&plan, 2, "len", &len),
             Some("len_list")
+        );
+    }
+
+    #[test]
+    fn container_import_selection_uses_flat_list_storage_proof() {
+        let make = wasm_test_op("list_int_new", Some("xs"), vec!["n"]);
+        let index = wasm_test_op("index", Some("item"), vec!["xs", "i"]);
+        let set = wasm_test_op("store_index", None, vec!["xs", "i", "v"]);
+        let func = wasm_test_function(
+            "flat_list_storage",
+            vec!["n", "i", "v"],
+            Some(vec!["int", "int", "int"]),
+            vec![make, index.clone(), set.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(
+            wasm_specialized_container_import(&plan, 1, "index", &index),
+            Some("list_int_getitem")
+        );
+        assert_eq!(
+            wasm_specialized_container_import(&plan, 2, "store_index", &set),
+            Some("list_int_setitem")
         );
     }
 
