@@ -940,6 +940,16 @@ fn parse_return_type_str(name: &str) -> Option<TirType> {
     }
 }
 
+fn tuple_index_result_type(items: &[TirType]) -> TirType {
+    items
+        .iter()
+        .fold(TirType::Never, |acc, item| acc.meet(item))
+}
+
+fn dict_index_key_matches(dict_key_ty: &TirType, index_ty: &TirType) -> bool {
+    matches!(dict_key_ty, TirType::DynBox) || dict_key_ty == index_ty
+}
+
 /// Infer the result type of an operation from its operand types.
 /// Returns `None` if the result type cannot be determined (stays as-is).
 pub(super) fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirType> {
@@ -1083,6 +1093,14 @@ fn infer_result_type_with_attrs(
         OpCode::Index => match operand_types {
             [TirType::List(elem_ty), TirType::I64 | TirType::Bool] => {
                 Some(elem_ty.as_ref().clone())
+            }
+            [TirType::Tuple(items), TirType::I64 | TirType::Bool] if !items.is_empty() => {
+                Some(tuple_index_result_type(items))
+            }
+            [TirType::Dict(key_ty, value_ty), index_ty]
+                if dict_index_key_matches(key_ty.as_ref(), index_ty) =>
+            {
+                Some(value_ty.as_ref().clone())
             }
             _ => None,
         },
@@ -2231,6 +2249,103 @@ mod tests {
         func.value_types
             .insert(list, TirType::List(Box::new(TirType::Bool)));
         func.value_types.insert(index, TirType::Str);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&item), Some(&TirType::DynBox));
+    }
+
+    #[test]
+    fn tuple_index_refines_homogeneous_element_type() {
+        let tuple = ValueId(0);
+        let index = ValueId(1);
+        let item = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::Index,
+            vec![tuple, index],
+            vec![item],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types
+            .insert(tuple, TirType::Tuple(vec![TirType::Str, TirType::Str]));
+        func.value_types.insert(index, TirType::I64);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&item), Some(&TirType::Str));
+    }
+
+    #[test]
+    fn tuple_index_refines_to_element_join_for_mixed_tuple() {
+        let tuple = ValueId(0);
+        let index = ValueId(1);
+        let item = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::Index,
+            vec![tuple, index],
+            vec![item],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types.insert(
+            tuple,
+            TirType::Tuple(vec![TirType::I64, TirType::Str, TirType::I64]),
+        );
+        func.value_types.insert(index, TirType::I64);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(
+            type_map.get(&item),
+            Some(&TirType::Union(vec![TirType::I64, TirType::Str]))
+        );
+    }
+
+    #[test]
+    fn dict_index_refines_matching_key_to_value_type() {
+        let dict = ValueId(0);
+        let key = ValueId(1);
+        let item = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::Index,
+            vec![dict, key],
+            vec![item],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types.insert(
+            dict,
+            TirType::Dict(Box::new(TirType::Str), Box::new(TirType::I64)),
+        );
+        func.value_types.insert(key, TirType::Str);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&item), Some(&TirType::I64));
+    }
+
+    #[test]
+    fn dict_index_with_nonmatching_key_stays_dynbox() {
+        let dict = ValueId(0);
+        let key = ValueId(1);
+        let item = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::Index,
+            vec![dict, key],
+            vec![item],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types.insert(
+            dict,
+            TirType::Dict(Box::new(TirType::Str), Box::new(TirType::I64)),
+        );
+        func.value_types.insert(key, TirType::I64);
 
         refine_types(&mut func);
         let type_map = extract_type_map(&func);
