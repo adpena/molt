@@ -14,6 +14,7 @@
 //! Phi nodes are hoisted to function-top `let mut` declarations, same
 //! strategy as the Luau backend.
 
+use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -48,6 +49,7 @@ pub struct RustBackend {
     /// Current function params (as Rust identifiers) for call-by-object writeback.
     current_params: Vec<String>,
     current_is_main: bool,
+    current_scalar_plan: Option<ScalarRepresentationPlan>,
 }
 
 impl Default for RustBackend {
@@ -67,6 +69,7 @@ impl RustBackend {
             aliases: BTreeMap::new(),
             current_params: Vec::new(),
             current_is_main: false,
+            current_scalar_plan: None,
         }
     }
 
@@ -1329,6 +1332,15 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
         let ops = lower_early_returns(&func.ops);
         let ops = strip_dead_after_return(&ops);
         let ops = lower_iter_to_for(&ops);
+        let plan_func = FunctionIR {
+            name: func.name.clone(),
+            params: func.params.clone(),
+            ops: ops.clone(),
+            param_types: func.param_types.clone(),
+            source_file: func.source_file.clone(),
+            is_extern: func.is_extern,
+        };
+        self.current_scalar_plan = Some(ScalarRepresentationPlan::for_function_ir(&plan_func));
 
         // Collect loop index vars (need pre-declaration so they persist across iterations)
         let loop_idx_vars: Vec<String> = ops
@@ -1639,9 +1651,16 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
         self.aliases.clear();
         self.current_params.clear();
         self.current_is_main = false;
+        self.current_scalar_plan = None;
     }
 
     // ── Op emission ───────────────────────────────────────────────────────────
+
+    fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
+        self.current_scalar_plan
+            .as_ref()
+            .is_some_and(|plan| plan.op_prefers_integer_runtime_lane(op))
+    }
 
     fn emit_op(&mut self, op: &OpIR) {
         let out = || out_var(op);
@@ -1836,8 +1855,7 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
             "add" | "inplace_add" | "binop_add" => {
                 let o = out();
                 let (a, b) = args2(op);
-                // Fast int path
-                if op.fast_int == Some(true) {
+                if self.op_prefers_integer_runtime_lane(op) {
                     self.emit_line(&declare(
                         &o,
                         &format!("MoltValue::Int(molt_int(&{a}).wrapping_add(molt_int(&{b})))"),
@@ -1854,7 +1872,7 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
             "sub" | "inplace_sub" | "binop_sub" => {
                 let o = out();
                 let (a, b) = args2(op);
-                if op.fast_int == Some(true) {
+                if self.op_prefers_integer_runtime_lane(op) {
                     self.emit_line(&declare(
                         &o,
                         &format!("MoltValue::Int(molt_int(&{a}).wrapping_sub(molt_int(&{b})))"),
@@ -1871,7 +1889,7 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
             "mul" | "inplace_mul" | "binop_mul" => {
                 let o = out();
                 let (a, b) = args2(op);
-                if op.fast_int == Some(true) {
+                if self.op_prefers_integer_runtime_lane(op) {
                     self.emit_line(&declare(
                         &o,
                         &format!("MoltValue::Int(molt_int(&{a}).wrapping_mul(molt_int(&{b})))"),
@@ -3677,6 +3695,77 @@ mod tests {
         assert!(source.contains("fn molt_is_numeric(x: &MoltValue) -> bool"));
         assert!(source.contains("_ if molt_is_numeric(a) && molt_is_numeric(b) =>"));
         assert!(source.contains("_ => false,"));
+    }
+
+    #[test]
+    fn compile_rust_arithmetic_fast_path_ignores_transport_hints() {
+        let mut backend = RustBackend::new();
+        let mut add = OpIR {
+            kind: "add".to_string(),
+            args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+            out: Some("sum".to_string()),
+            ..OpIR::default()
+        };
+        add.fast_int = Some(true);
+        add.type_hint = Some("int".to_string());
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "helper".to_string(),
+                params: vec!["lhs".to_string(), "rhs".to_string()],
+                ops: vec![
+                    add,
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("sum".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("let mut sum: MoltValue = molt_add(lhs.clone(), rhs.clone());"));
+        assert!(!source.contains(
+            "let mut sum: MoltValue = MoltValue::Int(molt_int(&lhs).wrapping_add(molt_int(&rhs)))"
+        ));
+    }
+
+    #[test]
+    fn compile_rust_arithmetic_fast_path_uses_typed_operands_without_transport_hints() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "helper".to_string(),
+                params: vec!["lhs".to_string(), "rhs".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "add".to_string(),
+                        args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                        out: Some("sum".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("sum".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: Some(vec!["int".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains(
+            "let mut sum: MoltValue = MoltValue::Int(molt_int(&lhs).wrapping_add(molt_int(&rhs)))"
+        ));
+        assert!(!source.contains("let mut sum: MoltValue = molt_add(lhs.clone(), rhs.clone());"));
     }
 
     #[test]
