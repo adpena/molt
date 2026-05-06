@@ -61,6 +61,9 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
         native_path,
         {
             "created_at": "2026-04-03T12:00:00Z",
+            "timing_mode": "warm_throughput",
+            "warmup": 1,
+            "samples": 3,
             "system": {"platform": "macos-14", "machine": "arm64", "python": "3.12.9"},
             "benchmarks": {
                 "bench_sum.py": {
@@ -76,6 +79,9 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
         wasm_path,
         {
             "created_at": "2026-04-03T12:10:00Z",
+            "timing_mode": "cold_first_run",
+            "warmup": 0,
+            "samples": 1,
             "system": {"platform": "wasmtime", "machine": "wasm32", "python": "n/a"},
             "benchmarks": {
                 "bench_sum.py": {
@@ -113,6 +119,8 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
     assert "Generated:" not in report
     assert "`bench/results/native.json`" in report
     assert "`bench/results/wasm.json`" in report
+    assert "timing_mode=warm_throughput, warmup=1, samples=3" in report
+    assert "timing_mode=cold_first_run, warmup=0, samples=1" in report
     assert str(native_path) not in report
     assert str(wasm_path) not in report
 
@@ -364,7 +372,9 @@ def test_failed_native_stale_values_do_not_feed_report_ratios(tmp_path: Path) ->
     assert "100.00x" not in report
 
 
-def test_failed_comparator_stale_values_do_not_feed_ratio_tables(tmp_path: Path) -> None:
+def test_failed_comparator_stale_values_do_not_feed_ratio_tables(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
     module.ROOT = tmp_path
     native_path = tmp_path / "native.json"

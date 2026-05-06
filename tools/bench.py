@@ -19,13 +19,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = REPO_ROOT / "src"
 BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
 BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
 DEFAULT_BASELINE_PATH = BENCH_RESULTS_DIR / "baseline.json"
 
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+
+from bench_evidence import comparable_run_metadata_errors  # noqa: E402
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -747,7 +752,11 @@ def _output_parity_evidence(
 def _has_native_output_parity_failures(payload: dict) -> bool:
     for stats in payload.get("benchmarks", {}).values():
         parity = stats.get("molt_output_parity")
-        if isinstance(parity, dict) and parity.get("checked") and parity.get("ok") is False:
+        if (
+            isinstance(parity, dict)
+            and parity.get("checked")
+            and parity.get("ok") is False
+        ):
             return True
     return False
 
@@ -1285,6 +1294,14 @@ def load_json(path: Path) -> dict:
 
 
 def compare_baseline(current: dict, baseline: dict, max_regression: float) -> list[str]:
+    metadata_errors = comparable_run_metadata_errors(current, baseline)
+    if metadata_errors:
+        return [
+            "incompatible benchmark baseline: "
+            + "; ".join(metadata_errors)
+            + "; regenerate the baseline with matching benchmark timing settings"
+        ]
+
     regressions = []
     baseline_bench = baseline.get("benchmarks", {})
     for name, stats in current.get("benchmarks", {}).items():

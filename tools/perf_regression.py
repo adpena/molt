@@ -51,6 +51,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from bench_evidence import (  # noqa: E402
+    comparable_run_metadata_errors,
     native_molt_time,
     valid_positive_number,
     validated_runtime_samples,
@@ -461,6 +462,14 @@ def compare_benchmarks(
 ) -> list[MetricComparison]:
     """Compare current benchmark results against a baseline."""
     results: list[MetricComparison] = []
+    metadata_errors = comparable_run_metadata_errors(current, baseline)
+    if metadata_errors:
+        raise ValueError(
+            "incompatible benchmark baseline: "
+            + "; ".join(metadata_errors)
+            + "; regenerate the baseline with matching benchmark timing settings"
+        )
+
     current_benches = current.get("benchmarks", {})
     baseline_benches = baseline.get("benchmarks", {})
 
@@ -890,14 +899,26 @@ def check_perf_regression(
         )
         return (True, report)
 
-    report = build_report(
-        current_path,
-        current,
-        resolved_baseline_path,
-        baseline,
-        baselines,
-        resolved_thresholds,
-    )
+    try:
+        report = build_report(
+            current_path,
+            current,
+            resolved_baseline_path,
+            baseline,
+            baselines,
+            resolved_thresholds,
+        )
+    except ValueError as exc:
+        report = RegressionReport(
+            created_at=datetime.now(timezone.utc).isoformat(),
+            current_file=str(current_path),
+            baseline_file=str(resolved_baseline_path) if resolved_baseline_path else "",
+            current_git_rev=current.get("git_rev"),
+            baseline_git_rev=baseline.get("git_rev"),
+            thresholds=dict(resolved_thresholds),
+            summary={"error": str(exc)},
+        )
+        return (False, report)
 
     return (not report.has_errors, report)
 
@@ -1039,9 +1060,13 @@ def main() -> None:
             )
             sys.exit(2)
 
-    report = build_report(
-        current_path, current, baseline_path, baseline, baselines, thresholds
-    )
+    try:
+        report = build_report(
+            current_path, current, baseline_path, baseline, baselines, thresholds
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     # Output
     if not args.quiet and not args.json:

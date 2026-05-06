@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tools.bench_evidence import (
+    comparable_run_metadata_errors,
     comparator_time,
     metric_is_comparable,
     native_molt_speedup,
@@ -17,6 +18,23 @@ def test_valid_positive_number_rejects_invalid_values() -> None:
 
     assert valid_positive_number(1) == 1.0
     assert valid_positive_number(1.25) == 1.25
+
+
+def test_comparable_run_metadata_rejects_cold_warm_mixes() -> None:
+    current = {"timing_mode": "warm_throughput", "warmup": 1, "samples": 3}
+    baseline = {"timing_mode": "cold_first_run", "warmup": 0, "samples": 3}
+
+    assert comparable_run_metadata_errors(current, baseline) == [
+        "timing_mode differs: current='warm_throughput', baseline='cold_first_run'",
+        "warmup differs: current=1, baseline=0",
+    ]
+
+
+def test_comparable_run_metadata_rejects_legacy_artifacts_without_mode() -> None:
+    assert comparable_run_metadata_errors(
+        {"timing_mode": "warm_throughput", "warmup": 1, "samples": 3},
+        {"warmup": 1, "samples": 3},
+    ) == ["baseline missing timing_mode"]
 
 
 def test_native_molt_evidence_requires_success_gate() -> None:
@@ -82,4 +100,6 @@ def test_validated_runtime_samples_accepts_legacy_super_stats() -> None:
 
 
 def test_validated_runtime_samples_requires_success_gate() -> None:
-    assert validated_runtime_samples({"molt_ok": False, "molt_samples_s": [0.1]}) is None
+    assert (
+        validated_runtime_samples({"molt_ok": False, "molt_samples_s": [0.1]}) is None
+    )
