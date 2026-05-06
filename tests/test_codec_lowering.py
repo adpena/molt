@@ -280,6 +280,46 @@ def test_simple_range_listcomp_lowering():
     assert "list_from_range" in kinds
 
 
+def test_const_int_range_listcomp_lowers_to_flat_list_int():
+    src = """
+n = 5
+x = [1 for _ in range(n)]
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "range_new" in kinds
+    assert "len" in kinds
+    assert "list_int_new" in kinds
+    assert "list_append" not in kinds
+    assert "intarray_from_seq" not in kinds
+
+
+def test_bool_range_listcomp_does_not_lower_to_flat_int_list():
+    src = "x = [True for _ in range(5)]"
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "list_int_new" not in kinds
+
+
+def test_prod_reduction_over_flat_listcomp_skips_intarray_conversion():
+    src = """
+def main():
+    n = 5
+    nums = [1 for _ in range(n)]
+    acc = 1
+    for x in nums:
+        acc = acc * x
+    print(acc)
+
+main()
+"""
+    ir = compile_to_tir(src)
+    kinds = [op["kind"] for op in _ops_by_func_suffix(ir, "molt_user_main")]
+    assert "list_int_new" in kinds
+    assert "vec_prod_int" in kinds
+    assert "intarray_from_seq" not in kinds
+
+
 def test_dict_increment_lowering():
     src = """
 counts = {}

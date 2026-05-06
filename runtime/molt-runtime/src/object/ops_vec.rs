@@ -153,6 +153,11 @@ fn prod_ints_unboxed(elems: &[i64], acc: i64) -> i64 {
     prod
 }
 
+fn prod_list_int_storage(ptr: *mut u8, acc: i64) -> i64 {
+    let elems = unsafe { crate::object::layout::list_int_vec_ref(ptr) };
+    prod_ints_unboxed(elems.as_slice(), acc)
+}
+
 fn prod_ints_checked(elems: &[u64], acc: i64) -> Option<i64> {
     #[cfg(target_arch = "aarch64")]
     {
@@ -633,6 +638,10 @@ pub extern "C" fn molt_vec_prod_int(seq_bits: u64, acc_bits: u64) -> u64 {
                 let prod = prod_ints_unboxed(elems, acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
+            if type_id == TYPE_ID_LIST_INT {
+                let prod = prod_list_int_storage(ptr, acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
@@ -664,6 +673,10 @@ pub extern "C" fn molt_vec_prod_int_trusted(seq_bits: u64, acc_bits: u64) -> u64
             if type_id == TYPE_ID_INTARRAY {
                 let elems = intarray_slice(ptr);
                 let prod = prod_ints_unboxed(elems, acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+            if type_id == TYPE_ID_LIST_INT {
+                let prod = prod_list_int_storage(ptr, acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
@@ -1156,6 +1169,13 @@ pub extern "C" fn molt_vec_prod_int_range(seq_bits: u64, acc_bits: u64, start_bi
                 let prod = prod_ints_unboxed(slice, acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
+            if type_id == TYPE_ID_LIST_INT {
+                let elems = crate::object::layout::list_int_vec_ref(ptr);
+                let slice = elems.as_slice();
+                let start_idx = (start as usize).min(slice.len());
+                let prod = prod_ints_unboxed(&slice[start_idx..], acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                 seq_vec_ref(ptr)
             } else {
@@ -1203,6 +1223,13 @@ pub extern "C" fn molt_vec_prod_int_range_trusted(
                 let start_idx = (start as usize).min(elems.len());
                 let slice = &elems[start_idx..];
                 let prod = prod_ints_unboxed(slice, acc);
+                return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
+            }
+            if type_id == TYPE_ID_LIST_INT {
+                let elems = crate::object::layout::list_int_vec_ref(ptr);
+                let slice = elems.as_slice();
+                let start_idx = (start as usize).min(slice.len());
+                let prod = prod_ints_unboxed(&slice[start_idx..], acc);
                 return vec_sum_result(_py, MoltObject::from_int(prod).bits(), true);
             }
             let elems = if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
