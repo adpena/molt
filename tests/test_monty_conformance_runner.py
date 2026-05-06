@@ -9,6 +9,49 @@ sys.path.insert(0, "tests/harness")
 import run_molt_conformance
 
 
+class _FakeConformanceBatchCompiler:
+    instances: list["_FakeConformanceBatchCompiler"] = []
+
+    def __init__(
+        self,
+        molt_cmd: list[str],
+        env: dict[str, str],
+        *,
+        repo_root: Path,
+    ) -> None:
+        self.molt_cmd = molt_cmd
+        self.env = env
+        self.repo_root = repo_root
+        self.entered = False
+        self.exited = False
+        self.pinged = False
+        _FakeConformanceBatchCompiler.instances.append(self)
+
+    @property
+    def command(self) -> list[str]:
+        return [*self.molt_cmd, "internal-batch-build-server"]
+
+    def __enter__(self) -> "_FakeConformanceBatchCompiler":
+        self.entered = True
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.exited = True
+
+    def ping(self) -> None:
+        self.pinged = True
+
+
+def _install_fake_batch_compiler(monkeypatch):
+    _FakeConformanceBatchCompiler.instances.clear()
+    monkeypatch.setattr(
+        run_molt_conformance,
+        "ConformanceBatchCompiler",
+        _FakeConformanceBatchCompiler,
+    )
+    return _FakeConformanceBatchCompiler.instances
+
+
 def test_find_molt_prefers_repo_checkout_cli(monkeypatch, tmp_path: Path):
     repo_root = tmp_path / "repo"
     cli_path = repo_root / "src" / "molt" / "cli.py"
@@ -164,6 +207,112 @@ def test_stats_summary_contains_required_fields():
     }
 
 
+def test_batch_build_params_are_native_error_fallback_and_canonical_env():
+    src = Path("/tmp/corpus/alpha.py")
+    out = Path("/tmp/out/alpha")
+    env = {
+        "MOLT_EXT_ROOT": "/repo",
+        "CARGO_TARGET_DIR": "/repo/target",
+        "MOLT_DIFF_CARGO_TARGET_DIR": "/repo/target",
+        "MOLT_CACHE": "/repo/.molt_cache",
+        "MOLT_DIFF_ROOT": "/repo/tmp/diff",
+        "MOLT_DIFF_TMPDIR": "/repo/tmp",
+        "UV_CACHE_DIR": "/repo/.uv-cache",
+        "TMPDIR": "/repo/tmp",
+        "PYTHONPATH": "/repo/src",
+        "MOLT_SESSION_ID": "conformance-test",
+        "MOLT_CODEC": "json",
+    }
+
+    params = run_molt_conformance._molt_batch_build_params(src, out, env)
+
+    assert params["file_path"] == str(src)
+    assert params["output"] == str(out)
+    assert params["target"] == "native"
+    assert params["fallback"] == "error"
+    assert params["trusted"] is False
+    assert params["profile"] == "release"
+    assert params["codec"] == "json"
+    assert params["env_overrides"] == {
+        key: env[key]
+        for key in (
+            "MOLT_EXT_ROOT",
+            "CARGO_TARGET_DIR",
+            "MOLT_DIFF_CARGO_TARGET_DIR",
+            "MOLT_CACHE",
+            "MOLT_DIFF_ROOT",
+            "MOLT_DIFF_TMPDIR",
+            "UV_CACHE_DIR",
+            "TMPDIR",
+            "PYTHONPATH",
+            "MOLT_SESSION_ID",
+        )
+    }
+
+
+def test_compile_file_uses_batch_compiler_response(tmp_path: Path):
+    src = tmp_path / "alpha.py"
+    src.write_text("print('ok')\n", encoding="utf-8")
+    out = tmp_path / "alpha_molt"
+    calls: list[tuple[Path, Path, float]] = []
+
+    class FakeCompiler:
+        def build(self, build_src: Path, build_out: Path, *, timeout: float):
+            calls.append((build_src, build_out, timeout))
+            build_out.write_text("binary", encoding="utf-8")
+            return {"ok": True, "returncode": 0}
+
+    result = run_molt_conformance.compile_file(FakeCompiler(), src, out, timeout=4.5)
+
+    assert result == run_molt_conformance.CompileResult(True)
+    assert calls == [(src, out, 4.5)]
+
+
+def test_compile_file_reports_batch_error_without_host_fallback(tmp_path: Path):
+    src = tmp_path / "bad.py"
+    out = tmp_path / "bad_molt"
+
+    class FakeCompiler:
+        def build(self, build_src: Path, build_out: Path, *, timeout: float):
+            return {
+                "ok": False,
+                "returncode": 17,
+                "stdout": "stdout detail",
+                "stderr": "stderr detail",
+                "error": "server detail",
+            }
+
+    result = run_molt_conformance.compile_file(FakeCompiler(), src, out)
+
+    assert not result.ok
+    assert not result.timed_out
+    assert "compile failed (rc=17)" in result.detail
+    assert "stderr detail" in result.detail
+    assert "stdout detail" in result.detail
+    assert "server detail" in result.detail
+    assert not out.exists()
+
+
+def test_compile_file_restarts_batch_server_after_timeout(tmp_path: Path):
+    src = tmp_path / "slow.py"
+    out = tmp_path / "slow_molt"
+    restarted: list[bool] = []
+
+    class FakeCompiler:
+        def build(self, build_src: Path, build_out: Path, *, timeout: float):
+            raise TimeoutError("slow build")
+
+        def restart(self) -> None:
+            restarted.append(True)
+
+    result = run_molt_conformance.compile_file(FakeCompiler(), src, out, timeout=0.01)
+
+    assert result == run_molt_conformance.CompileResult(
+        False, "compile timeout", timed_out=True
+    )
+    assert restarted == [True]
+
+
 def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatch):
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
@@ -176,11 +325,16 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     monkeypatch.setattr(run_molt_conformance, "CORPUS_DIR", corpus_dir)
     monkeypatch.setattr(run_molt_conformance, "SMOKE_MANIFEST", smoke_manifest)
     monkeypatch.setattr(run_molt_conformance, "find_molt", lambda: "molt")
+    batch_instances = _install_fake_batch_compiler(monkeypatch)
     monkeypatch.setattr(
-        run_molt_conformance, "preflight", lambda molt, selected_files, tmpdir: True
+        run_molt_conformance,
+        "preflight",
+        lambda compiler, selected_files, tmpdir: True,
     )
     monkeypatch.setattr(
-        run_molt_conformance, "compile_file", lambda molt, src, out: (True, "")
+        run_molt_conformance,
+        "compile_file",
+        lambda compiler, src, out: run_molt_conformance.CompileResult(True),
     )
     monkeypatch.setattr(run_molt_conformance, "run_binary", lambda binary: (0, "", ""))
     monkeypatch.setattr(
@@ -202,6 +356,11 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     assert summary["compile_error"] == 0
     assert summary["timeout"] == 0
     assert summary["skipped"] == 0
+    assert len(batch_instances) == 1
+    assert batch_instances[0].molt_cmd == ["molt"]
+    assert batch_instances[0].entered
+    assert batch_instances[0].pinged
+    assert batch_instances[0].exited
 
 
 def test_main_preflight_honors_requested_suite_selection(tmp_path: Path, monkeypatch):
@@ -213,16 +372,19 @@ def test_main_preflight_honors_requested_suite_selection(tmp_path: Path, monkeyp
     smoke_manifest.write_text("alpha.py\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
-    def fake_preflight(molt, selected_files, tmpdir):
+    def fake_preflight(compiler, selected_files, tmpdir):
         captured["selected_files"] = selected_files
         return True
 
     monkeypatch.setattr(run_molt_conformance, "CORPUS_DIR", corpus_dir)
     monkeypatch.setattr(run_molt_conformance, "SMOKE_MANIFEST", smoke_manifest)
     monkeypatch.setattr(run_molt_conformance, "find_molt", lambda: "molt")
+    _install_fake_batch_compiler(monkeypatch)
     monkeypatch.setattr(run_molt_conformance, "preflight", fake_preflight)
     monkeypatch.setattr(
-        run_molt_conformance, "compile_file", lambda molt, src, out: (True, "")
+        run_molt_conformance,
+        "compile_file",
+        lambda compiler, src, out: run_molt_conformance.CompileResult(True),
     )
     monkeypatch.setattr(run_molt_conformance, "run_binary", lambda binary: (0, "", ""))
     monkeypatch.setattr(

@@ -1,7 +1,8 @@
 """Run Monty conformance suite through Molt compilation.
 
 Unlike run_monty_conformance.py (which runs against CPython), this runner
-compiles each .py file via `molt build` and runs the resulting binary.
+compiles each .py file through Molt's internal batch build server and runs the
+resulting binary.
 
 Usage:
     python3 tests/harness/run_molt_conformance.py [--limit N] [--category PREFIX] [--verbose]
@@ -26,6 +27,8 @@ _HARNESS_DIR = Path(__file__).resolve().parent
 if str(_HARNESS_DIR) not in sys.path:
     sys.path.insert(0, str(_HARNESS_DIR))
 REPO_ROOT = _HARNESS_DIR.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
@@ -38,6 +41,7 @@ from molt.harness_conformance import (  # noqa: E402
     write_molt_conformance_summary,
 )
 from run_monty_conformance import parse_expectation  # noqa: E402
+from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402
 
 CORPUS_DIR = _HARNESS_DIR / "corpus" / "monty_compat"
 SMOKE_MANIFEST = CORPUS_DIR / "SMOKE.txt"
@@ -62,6 +66,17 @@ class Stats:
     failures: list[tuple[str, str]] = field(default_factory=list)
     compile_errors: list[tuple[str, str]] = field(default_factory=list)
     timeouts: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CompileResult:
+    ok: bool
+    detail: str = ""
+    timed_out: bool = False
+
+
+class BatchBuildServerError(RuntimeError):
+    """Raised when the shared batch build server cannot honor the protocol."""
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +109,158 @@ def _molt_build_env(repo_root: Path = REPO_ROOT) -> dict[str, str]:
     session_id = env.get("MOLT_SESSION_ID") or "monty-conformance"
     env.update(build_molt_conformance_env(repo_root, session_id))
     return env
+
+
+def _batch_server_cmd(molt_cmd: list[str]) -> list[str]:
+    return [*molt_cmd, "internal-batch-build-server"]
+
+
+def _batch_env_overrides(env: dict[str, str]) -> dict[str, str]:
+    """Return per-request env overrides that must stay canonical."""
+    keys = (
+        "MOLT_EXT_ROOT",
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_CACHE",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "UV_CACHE_DIR",
+        "TMPDIR",
+        "PYTHONPATH",
+        "MOLT_SESSION_ID",
+    )
+    return {key: env[key] for key in keys if key in env}
+
+
+def _molt_batch_build_params(
+    src: Path, out: Path, env: dict[str, str]
+) -> dict[str, object]:
+    """Build-server params matching the previous native `molt build` contract."""
+    return {
+        "file_path": str(src),
+        "target": "native",
+        "codec": env.get("MOLT_CODEC", "msgpack"),
+        "type_hints": "check",
+        "fallback": "error",
+        "output": str(out),
+        "json_output": False,
+        "deterministic": True,
+        "trusted": False,
+        "cache": True,
+        "profile": "release",
+        "env_overrides": _batch_env_overrides(env),
+    }
+
+
+def _response_text(response: dict[str, object], key: str) -> str:
+    value = response.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _compile_failure_detail(response: dict[str, object], *, limit: int = 300) -> str:
+    returncode = response.get("returncode")
+    rc = returncode if isinstance(returncode, int) else 1
+    parts = [
+        text.strip()
+        for text in (
+            _response_text(response, "stderr"),
+            _response_text(response, "stdout"),
+            _response_text(response, "error"),
+        )
+        if text.strip()
+    ]
+    detail = "\n".join(parts)
+    if len(detail) > limit:
+        detail = detail[-limit:]
+    return f"compile failed (rc={rc})" + (f": {detail}" if detail else "")
+
+
+class ConformanceBatchCompiler:
+    """Shared native compiler backed by Molt's internal batch build server."""
+
+    def __init__(
+        self,
+        molt_cmd: list[str],
+        env: dict[str, str],
+        *,
+        repo_root: Path = REPO_ROOT,
+    ) -> None:
+        self._molt_cmd = list(molt_cmd)
+        self._env = dict(env)
+        self._repo_root = repo_root
+        self._client: BatchCompileServerClient | None = None
+
+    @property
+    def command(self) -> list[str]:
+        return _batch_server_cmd(self._molt_cmd)
+
+    def __enter__(self) -> "ConformanceBatchCompiler":
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close(force=exc_type is not None)
+
+    def start(self) -> None:
+        if self._client is not None:
+            return
+        try:
+            self._client = BatchCompileServerClient(
+                self.command,
+                cwd=self._repo_root,
+                env=self._env,
+                reader_name="molt-conformance-batch-server-reader",
+            )
+        except OSError as exc:
+            raise BatchBuildServerError(
+                f"failed to start batch compile server: {exc}"
+            ) from exc
+
+    def close(self, *, force: bool = False) -> None:
+        client = self._client
+        self._client = None
+        if client is not None:
+            client.close(force=force, timeout=5.0)
+
+    def restart(self) -> None:
+        self.close(force=True)
+        self.start()
+
+    def _request(
+        self,
+        op: str,
+        *,
+        params: dict[str, object] | None = None,
+        timeout: float,
+    ) -> dict[str, object]:
+        self.start()
+        if self._client is None:
+            raise BatchBuildServerError("batch compile server did not start")
+        try:
+            return self._client.request(op, params=params, timeout=timeout)
+        except TimeoutError:
+            self.close(force=True)
+            raise
+        except RuntimeError as exc:
+            self.close(force=True)
+            raise BatchBuildServerError(f"batch compile server failed: {exc}") from exc
+
+    def ping(self, *, timeout: float = 10.0) -> None:
+        try:
+            response = self._request("ping", timeout=timeout)
+        except TimeoutError as exc:
+            raise BatchBuildServerError("batch compile server ping timed out") from exc
+        if response.get("ok") is not True or response.get("pong") is not True:
+            raise BatchBuildServerError(
+                f"batch compile server ping failed: {response!r}"
+            )
+
+    def build(self, src: Path, out: Path, *, timeout: float) -> dict[str, object]:
+        return self._request(
+            "build",
+            params=_molt_batch_build_params(src, out, self._env),
+            timeout=timeout,
+        )
 
 
 def _ensure_build_dirs(env: dict[str, str]) -> None:
@@ -178,7 +345,9 @@ def _pick_preflight_files(test_files: list[Path], n: int = 5) -> list[Path]:
     return success_files
 
 
-def preflight(molt_cmd: list[str], test_files: list[Path], tmpdir: Path) -> bool:
+def preflight(
+    compiler: ConformanceBatchCompiler, test_files: list[Path], tmpdir: Path
+) -> bool:
     """Compile a handful of trivial files to verify Molt works.
 
     The very first compilation may trigger a full Rust recompile of the
@@ -192,38 +361,36 @@ def preflight(molt_cmd: list[str], test_files: list[Path], tmpdir: Path) -> bool
         return False
 
     ok = 0
-    env = _molt_build_env()
-    _ensure_build_dirs(env)
     for i, f in enumerate(candidates):
         timeout = WARMUP_TIMEOUT if i == 0 else COMPILE_TIMEOUT
         out = tmpdir / f"preflight_{f.stem}"
         try:
             t0 = time.monotonic()
-            r = subprocess.run(
-                [*molt_cmd, "build", str(f), "--output", str(out)],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-            )
+            result = compile_file(compiler, f, out, timeout=timeout)
             elapsed = time.monotonic() - t0
-            if r.returncode == 0 and out.exists():
+            if result.ok and out.exists():
                 ok += 1
                 print(
                     f"  preflight [{i + 1}/{len(candidates)}] "
                     f"{f.name}: OK ({elapsed:.1f}s)"
                 )
+            elif result.timed_out:
+                print(
+                    f"  preflight [{i + 1}/{len(candidates)}] "
+                    f"{f.name}: TIMEOUT ({timeout}s)"
+                )
             else:
-                detail = (r.stderr or r.stdout or "").strip()[-200:]
+                detail = result.detail.strip()[-200:]
                 print(
                     f"  preflight [{i + 1}/{len(candidates)}] "
                     f"{f.name}: FAIL ({elapsed:.1f}s) {detail}"
                 )
-        except subprocess.TimeoutExpired:
+        except BatchBuildServerError as exc:
             print(
-                f"  preflight [{i + 1}/{len(candidates)}] "
-                f"{f.name}: TIMEOUT ({timeout}s)"
+                f"ERROR: batch build preflight failed for {f.name}: {exc}",
+                file=sys.stderr,
             )
+            return False
         finally:
             out.unlink(missing_ok=True)
 
@@ -231,26 +398,24 @@ def preflight(molt_cmd: list[str], test_files: list[Path], tmpdir: Path) -> bool
     return ok > 0
 
 
-def compile_file(molt_cmd: list[str], src: Path, out: Path) -> tuple[bool, str]:
-    """Compile *src* to a native binary at *out*. Returns (success, detail)."""
-    env = _molt_build_env()
-    _ensure_build_dirs(env)
+def compile_file(
+    compiler: ConformanceBatchCompiler,
+    src: Path,
+    out: Path,
+    *,
+    timeout: float = COMPILE_TIMEOUT,
+) -> CompileResult:
+    """Compile *src* to a native binary at *out* through the batch server."""
     try:
-        r = subprocess.run(
-            [*molt_cmd, "build", str(src), "--output", str(out)],
-            capture_output=True,
-            text=True,
-            timeout=COMPILE_TIMEOUT,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return False, "compile timeout"
-    if r.returncode != 0:
-        detail = (r.stderr or r.stdout or "").strip()[-300:]
-        return False, f"compile failed (rc={r.returncode}): {detail}"
+        response = compiler.build(src, out, timeout=timeout)
+    except TimeoutError:
+        compiler.restart()
+        return CompileResult(False, "compile timeout", timed_out=True)
+    if response.get("ok") is not True:
+        return CompileResult(False, _compile_failure_detail(response))
     if not out.exists():
-        return False, "binary not produced"
-    return True, ""
+        return CompileResult(False, "binary not produced")
+    return CompileResult(True)
 
 
 def run_binary(binary: Path) -> tuple[int | None, str, str]:
@@ -359,78 +524,89 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Selected {len(test_files)} test files\n")
 
-    tmp_root = Path(
-        build_molt_conformance_env(REPO_ROOT, "monty-conformance")["TMPDIR"]
-    )
+    env = _molt_build_env()
+    _ensure_build_dirs(env)
+    tmp_root = Path(env["TMPDIR"])
     tmp_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="molt_conform_", dir=tmp_root) as tmpdir:
         tmp = Path(tmpdir)
 
-        # Preflight -- also warms up the runtime build cache
-        print(
-            "Running preflight (first build may take minutes if runtime "
-            "needs recompilation)..."
-        )
-        if not preflight(molt_cmd, test_files, tmp):
-            print(
-                "ERROR: preflight failed -- Molt cannot compile any files.",
-                file=sys.stderr,
-            )
+        try:
+            with ConformanceBatchCompiler(
+                molt_cmd, env, repo_root=REPO_ROOT
+            ) as compiler:
+                print(f"Using Molt batch build server: {shlex.join(compiler.command)}")
+                compiler.ping()
+
+                # Preflight -- also warms up the runtime build cache
+                print(
+                    "Running preflight (first build may take minutes if runtime "
+                    "needs recompilation)..."
+                )
+                if not preflight(compiler, test_files, tmp):
+                    print(
+                        "ERROR: preflight failed -- Molt cannot compile any files.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print()
+
+                stats = Stats()
+                t0 = time.monotonic()
+
+                for i, filepath in enumerate(test_files, 1):
+                    kind, _ = parse_expectation(filepath)
+                    if kind == "skip":
+                        stats.skipped += 1
+                        if args.verbose:
+                            print(f"  [{i:3d}] SKIP   {filepath.name}")
+                        continue
+
+                    binary = tmp / filepath.stem
+                    compile_result = compile_file(compiler, filepath, binary)
+
+                    if not compile_result.ok:
+                        detail = compile_result.detail
+                        if compile_result.timed_out:
+                            stats.timeout += 1
+                            stats.timeouts.append(filepath.name)
+                            if args.verbose:
+                                print(f"  [{i:3d}] TMOUT  {filepath.name}: {detail}")
+                        else:
+                            stats.compile_error += 1
+                            stats.compile_errors.append((filepath.name, detail))
+                            if args.verbose:
+                                print(f"  [{i:3d}] CERR   {filepath.name}: {detail}")
+                        continue
+
+                    rc, stdout, stderr = run_binary(binary)
+                    passed, detail = check_result(filepath, rc, stdout, stderr)
+
+                    if passed is None:
+                        stats.skipped += 1
+                        if args.verbose:
+                            print(f"  [{i:3d}] SKIP   {filepath.name}: {detail}")
+                    elif passed:
+                        stats.passed += 1
+                        if args.verbose:
+                            print(f"  [{i:3d}] PASS   {filepath.name}: {detail}")
+                    else:
+                        if rc is None:
+                            stats.timeout += 1
+                            stats.timeouts.append(filepath.name)
+                            if args.verbose:
+                                print(f"  [{i:3d}] TMOUT  {filepath.name}: {detail}")
+                        else:
+                            stats.failed += 1
+                            stats.failures.append((filepath.name, detail))
+                            if args.verbose:
+                                print(f"  [{i:3d}] FAIL   {filepath.name}: {detail}")
+
+                    # Clean up binary between runs to save disk space
+                    binary.unlink(missing_ok=True)
+        except BatchBuildServerError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
             return 1
-        print()
-
-        stats = Stats()
-        t0 = time.monotonic()
-
-        for i, filepath in enumerate(test_files, 1):
-            kind, _ = parse_expectation(filepath)
-            if kind == "skip":
-                stats.skipped += 1
-                if args.verbose:
-                    print(f"  [{i:3d}] SKIP   {filepath.name}")
-                continue
-
-            binary = tmp / filepath.stem
-            ok, detail = compile_file(molt_cmd, filepath, binary)
-
-            if not ok:
-                if "timeout" in detail:
-                    stats.timeout += 1
-                    stats.timeouts.append(filepath.name)
-                    if args.verbose:
-                        print(f"  [{i:3d}] TMOUT  {filepath.name}: {detail}")
-                else:
-                    stats.compile_error += 1
-                    stats.compile_errors.append((filepath.name, detail))
-                    if args.verbose:
-                        print(f"  [{i:3d}] CERR   {filepath.name}: {detail}")
-                continue
-
-            rc, stdout, stderr = run_binary(binary)
-            passed, detail = check_result(filepath, rc, stdout, stderr)
-
-            if passed is None:
-                stats.skipped += 1
-                if args.verbose:
-                    print(f"  [{i:3d}] SKIP   {filepath.name}: {detail}")
-            elif passed:
-                stats.passed += 1
-                if args.verbose:
-                    print(f"  [{i:3d}] PASS   {filepath.name}: {detail}")
-            else:
-                if rc is None:
-                    stats.timeout += 1
-                    stats.timeouts.append(filepath.name)
-                    if args.verbose:
-                        print(f"  [{i:3d}] TMOUT  {filepath.name}: {detail}")
-                else:
-                    stats.failed += 1
-                    stats.failures.append((filepath.name, detail))
-                    if args.verbose:
-                        print(f"  [{i:3d}] FAIL   {filepath.name}: {detail}")
-
-            # Clean up binary between runs to save disk space
-            binary.unlink(missing_ok=True)
 
     elapsed = time.monotonic() - t0
     total_run = stats.passed + stats.failed
