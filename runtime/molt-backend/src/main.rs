@@ -470,6 +470,11 @@ fn stdlib_cache_key_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
 }
 
 #[cfg(feature = "native-backend")]
+fn stdlib_cache_manifest_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
+    stdlib_path.with_extension("manifest.json")
+}
+
+#[cfg(feature = "native-backend")]
 fn stdlib_cache_publish_lock_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_file_name(format!(
         "{}.publish.lock",
@@ -561,11 +566,35 @@ fn read_stdlib_cache_key(stdlib_path: &Path) -> Option<String> {
 }
 
 #[cfg(feature = "native-backend")]
-fn shared_stdlib_cache_matches(stdlib_path: &Path, expected_key: Option<&str>) -> bool {
+fn read_stdlib_cache_manifest(stdlib_path: &Path) -> Option<String> {
+    std::fs::read_to_string(stdlib_cache_manifest_sidecar_path(stdlib_path))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "native-backend")]
+fn remove_shared_stdlib_cache_artifacts(stdlib_path: &Path) {
+    let _ = std::fs::remove_file(stdlib_path);
+    let _ = std::fs::remove_file(stdlib_cache_count_sidecar_path(stdlib_path));
+    let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
+    let _ = std::fs::remove_file(stdlib_cache_manifest_sidecar_path(stdlib_path));
+}
+
+#[cfg(feature = "native-backend")]
+fn shared_stdlib_cache_matches(
+    stdlib_path: &Path,
+    expected_key: Option<&str>,
+    expected_manifest: Option<&str>,
+) -> bool {
     let Some(expected_key) = expected_key.filter(|key| !key.is_empty()) else {
         return false;
     };
+    let Some(expected_manifest) = expected_manifest.filter(|manifest| !manifest.is_empty()) else {
+        return false;
+    };
     read_stdlib_cache_key(stdlib_path).as_deref() == Some(expected_key)
+        && read_stdlib_cache_manifest(stdlib_path).as_deref() == Some(expected_manifest)
 }
 
 #[cfg(feature = "native-backend")]
@@ -573,6 +602,7 @@ fn write_shared_stdlib_cache_sidecars(
     stdlib_path: &Path,
     stdlib_count: usize,
     cache_key: Option<&str>,
+    cache_manifest: Option<&str>,
 ) -> io::Result<()> {
     let count_path = stdlib_cache_count_sidecar_path(stdlib_path);
     write_atomic_text_file(&count_path, &stdlib_count.to_string())?;
@@ -587,6 +617,17 @@ fn write_shared_stdlib_cache_sidecars(
             Err(err) => return Err(err),
         }
     }
+
+    let manifest_path = stdlib_cache_manifest_sidecar_path(stdlib_path);
+    if let Some(cache_manifest) = cache_manifest.filter(|manifest| !manifest.is_empty()) {
+        write_atomic_text_file(&manifest_path, cache_manifest)?;
+    } else {
+        match std::fs::remove_file(&manifest_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
     Ok(())
 }
 
@@ -596,12 +637,17 @@ fn publish_shared_stdlib_cache_object(
     temp_object_path: &Path,
     stdlib_count: usize,
     cache_key: Option<&str>,
+    cache_manifest: Option<&str>,
 ) -> io::Result<()> {
     let result = with_shared_stdlib_cache_publish_lock(stdlib_path, || {
-        write_shared_stdlib_cache_sidecars(stdlib_path, stdlib_count, cache_key)?;
         if let Err(err) = atomic_replace_file(temp_object_path, stdlib_path) {
-            let _ = std::fs::remove_file(stdlib_cache_count_sidecar_path(stdlib_path));
-            let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
+            remove_shared_stdlib_cache_artifacts(stdlib_path);
+            return Err(err);
+        }
+        if let Err(err) =
+            write_shared_stdlib_cache_sidecars(stdlib_path, stdlib_count, cache_key, cache_manifest)
+        {
+            remove_shared_stdlib_cache_artifacts(stdlib_path);
             return Err(err);
         }
         Ok(())
@@ -1134,6 +1180,8 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 // CLI links output.o + stdlib_shared_*.o together.
                 let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
                 let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
+                let expected_stdlib_cache_manifest =
+                    std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
                 let entry_module =
                     std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
                 let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
@@ -1158,31 +1206,36 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         if !shared_stdlib_cache_matches(
                             stdlib_path,
                             expected_stdlib_cache_key.as_deref(),
+                            expected_stdlib_cache_manifest.as_deref(),
                         ) {
                             let cached_key = read_stdlib_cache_key(stdlib_path);
+                            let cached_manifest = read_stdlib_cache_manifest(stdlib_path);
                             eprintln!(
-                                "MOLT_BACKEND(daemon): stdlib cache key mismatch \
-                                 (cached key {}, expected key {}) — honoring explicit stdlib object {}",
+                                "MOLT_BACKEND(daemon): stdlib cache contract mismatch \
+                                 (cached key {}, expected key {}; cached manifest {}, expected manifest present {}) — rebuilding",
                                 cached_key.as_deref().unwrap_or("<missing>"),
                                 expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
+                                cached_manifest.as_deref().unwrap_or("<missing>"),
+                                expected_stdlib_cache_manifest.is_some(),
+                            );
+                            remove_shared_stdlib_cache_artifacts(stdlib_path);
+                        } else {
+                            let mut retained = std::mem::take(&mut user_remaining);
+                            let mut extern_count = 0usize;
+                            for mut func in std::mem::take(&mut stdlib_funcs) {
+                                func.is_extern = true;
+                                func.ops.clear();
+                                extern_count += 1;
+                                retained.push(func);
+                            }
+                            let user_count = retained.len().saturating_sub(extern_count);
+                            ir.functions = retained;
+                            eprintln!(
+                                "MOLT_BACKEND(daemon): incremental — compiling {user_count} user functions \
+                             ({extern_count} stdlib extern from {})",
                                 stdlib_path.display()
                             );
                         }
-                        let mut retained = std::mem::take(&mut user_remaining);
-                        let mut extern_count = 0usize;
-                        for mut func in std::mem::take(&mut stdlib_funcs) {
-                            func.is_extern = true;
-                            func.ops.clear();
-                            extern_count += 1;
-                            retained.push(func);
-                        }
-                        let user_count = retained.len().saturating_sub(extern_count);
-                        ir.functions = retained;
-                        eprintln!(
-                            "MOLT_BACKEND(daemon): incremental — compiling {user_count} user functions \
-                             ({extern_count} stdlib extern from {})",
-                            stdlib_path.display()
-                        );
                     }
 
                     if !stdlib_path.exists()
@@ -1234,6 +1287,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                 &temp_stdlib_path,
                                 stdlib_count,
                                 expected_stdlib_cache_key.as_deref(),
+                                expected_stdlib_cache_manifest.as_deref(),
                             ) {
                                 let _ = std::fs::remove_file(&temp_stdlib_path);
                                 return DaemonJobResponse {
@@ -2032,6 +2086,7 @@ fn main() -> io::Result<()> {
             // recompile.  This reduces builds from ~5min to ~3sec.
             let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
             let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
+            let expected_stdlib_cache_manifest = std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
             let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
@@ -2059,9 +2114,11 @@ fn main() -> io::Result<()> {
                         .and_then(|s| s.trim().parse().ok())
                         .unwrap_or(0);
                     let cached_key = read_stdlib_cache_key(stdlib_path);
+                    let cached_manifest = read_stdlib_cache_manifest(stdlib_path);
                     if shared_stdlib_cache_matches(
                         stdlib_path,
                         expected_stdlib_cache_key.as_deref(),
+                        expected_stdlib_cache_manifest.as_deref(),
                     ) {
                         // Cache exactly matches the requested stdlib IR — mark
                         // stdlib functions as extern stubs so the backend declares
@@ -2083,15 +2140,15 @@ fn main() -> io::Result<()> {
                     } else {
                         // Cache is stale or from a different stdlib IR topology.
                         eprintln!(
-                            "MOLT_BACKEND: stdlib cache key mismatch (cached key {}, expected key {}; cached {} functions, need {}) — rebuilding",
+                            "MOLT_BACKEND: stdlib cache contract mismatch (cached key {}, expected key {}; cached manifest {}, expected manifest present {}; cached {} functions, need {}) — rebuilding",
                             cached_key.as_deref().unwrap_or("<missing>"),
                             expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
+                            cached_manifest.as_deref().unwrap_or("<missing>"),
+                            expected_stdlib_cache_manifest.is_some(),
                             cached_count,
                             current_stdlib_count,
                         );
-                        let _ = std::fs::remove_file(stdlib_path);
-                        let _ = std::fs::remove_file(&count_path);
-                        let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
+                        remove_shared_stdlib_cache_artifacts(stdlib_path);
                     }
                 } else {
                     // First build — compile stdlib separately, cache it
@@ -2123,6 +2180,7 @@ fn main() -> io::Result<()> {
                         &temp_stdlib_path,
                         stdlib_count,
                         expected_stdlib_cache_key.as_deref(),
+                        expected_stdlib_cache_manifest.as_deref(),
                     )?;
                     // Now compile user functions only
                     ir.functions = std::mem::take(&mut user_remaining);
@@ -2659,11 +2717,34 @@ mod tests {
         let stdlib_path = tmp_dir.join("stdlib.o");
         std::fs::write(&stdlib_path, b"placeholder").expect("write stdlib object");
 
-        write_shared_stdlib_cache_sidecars(&stdlib_path, 7, Some("abc123"))
-            .expect("write sidecars");
-        assert!(shared_stdlib_cache_matches(&stdlib_path, Some("abc123")));
-        assert!(!shared_stdlib_cache_matches(&stdlib_path, Some("def456")));
-        assert!(!shared_stdlib_cache_matches(&stdlib_path, None));
+        write_shared_stdlib_cache_sidecars(
+            &stdlib_path,
+            7,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}"),
+        )
+        .expect("write sidecars");
+        assert!(shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}")
+        ));
+        assert!(!shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("def456"),
+            Some("{\"cache_key\":\"abc123\"}")
+        ));
+        assert!(!shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            Some("{\"cache_key\":\"def456\"}")
+        ));
+        assert!(!shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            None
+        ));
+        assert!(!shared_stdlib_cache_matches(&stdlib_path, None, None));
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -2683,8 +2764,13 @@ mod tests {
         std::fs::write(&blocking, b"x").expect("write blocking file");
         let stdlib_path = blocking.join("stdlib.o");
 
-        let err = write_shared_stdlib_cache_sidecars(&stdlib_path, 7, Some("abc123"))
-            .expect_err("sidecar writes should fail when parent is not a directory");
+        let err = write_shared_stdlib_cache_sidecars(
+            &stdlib_path,
+            7,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}"),
+        )
+        .expect_err("sidecar writes should fail when parent is not a directory");
         assert!(!err.to_string().is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
