@@ -1026,7 +1026,11 @@ fn infer_result_types_with_attrs(
         return vec![];
     }
     if matches!(opcode, OpCode::IterNextUnboxed) && result_count == 2 {
-        return vec![None, Some(TirType::Bool)];
+        let elem_ty = match operand_types {
+            [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),
+            _ => None,
+        };
+        return vec![elem_ty, Some(TirType::Bool)];
     }
     if result_count != 1 {
         return vec![None; result_count];
@@ -1159,6 +1163,24 @@ fn infer_single_result_type_with_attrs(
         )),
         OpCode::BuildSet => Some(TirType::Set(Box::new(TirType::DynBox))),
         OpCode::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
+        OpCode::GetIter => match operand_types {
+            [TirType::List(elem_ty) | TirType::Set(elem_ty)] => {
+                Some(TirType::Iterator(Box::new(elem_ty.as_ref().clone())))
+            }
+            [TirType::Tuple(items)] if !items.is_empty() => {
+                Some(TirType::Iterator(Box::new(tuple_index_result_type(items))))
+            }
+            [TirType::Dict(key_ty, _)] => {
+                Some(TirType::Iterator(Box::new(key_ty.as_ref().clone())))
+            }
+            [TirType::Str] => Some(TirType::Iterator(Box::new(TirType::Str))),
+            [TirType::Bytes] => Some(TirType::Iterator(Box::new(TirType::I64))),
+            _ => None,
+        },
+        OpCode::ForIter | OpCode::IterNext => match operand_types {
+            [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),
+            _ => None,
+        },
         OpCode::Index => match operand_types {
             [TirType::Str, TirType::I64 | TirType::Bool] => Some(TirType::Str),
             [TirType::Bytes, TirType::I64 | TirType::Bool] => Some(TirType::I64),
@@ -2636,6 +2658,92 @@ mod tests {
             Some(&TirType::Bool),
             "refine_types must persist multi-result done-flag facts"
         );
+    }
+
+    #[test]
+    fn get_iter_refines_known_iterable_element_types() {
+        let cases = [
+            (
+                TirType::List(Box::new(TirType::I64)),
+                TirType::Iterator(Box::new(TirType::I64)),
+            ),
+            (
+                TirType::Set(Box::new(TirType::Str)),
+                TirType::Iterator(Box::new(TirType::Str)),
+            ),
+            (
+                TirType::Tuple(vec![TirType::I64, TirType::Str]),
+                TirType::Iterator(Box::new(TirType::Union(vec![TirType::I64, TirType::Str]))),
+            ),
+            (
+                TirType::Dict(Box::new(TirType::Str), Box::new(TirType::I64)),
+                TirType::Iterator(Box::new(TirType::Str)),
+            ),
+            (TirType::Str, TirType::Iterator(Box::new(TirType::Str))),
+            (TirType::Bytes, TirType::Iterator(Box::new(TirType::I64))),
+        ];
+
+        for (iterable_ty, expected_iter_ty) in cases {
+            let iterable = ValueId(0);
+            let iter = ValueId(1);
+            let ops = vec![make_op(
+                OpCode::GetIter,
+                vec![iterable],
+                vec![iter],
+                AttrDict::new(),
+            )];
+            let mut func = single_block_func(ops, 2);
+            func.value_types.insert(iterable, iterable_ty.clone());
+
+            refine_types(&mut func);
+            let type_map = extract_type_map(&func);
+
+            assert_eq!(
+                type_map.get(&iter),
+                Some(&expected_iter_ty),
+                "GetIter({iterable_ty:?}) should refine to {expected_iter_ty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn iterator_consumers_refine_element_types() {
+        let iter = ValueId(0);
+        let iter_next_elem = ValueId(1);
+        let unboxed_elem = ValueId(2);
+        let done = ValueId(3);
+        let for_iter_elem = ValueId(4);
+        let ops = vec![
+            make_op(
+                OpCode::IterNext,
+                vec![iter],
+                vec![iter_next_elem],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::IterNextUnboxed,
+                vec![iter],
+                vec![unboxed_elem, done],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::ForIter,
+                vec![iter],
+                vec![for_iter_elem],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 5);
+        func.value_types
+            .insert(iter, TirType::Iterator(Box::new(TirType::I64)));
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&iter_next_elem), Some(&TirType::I64));
+        assert_eq!(type_map.get(&unboxed_elem), Some(&TirType::I64));
+        assert_eq!(type_map.get(&done), Some(&TirType::Bool));
+        assert_eq!(type_map.get(&for_iter_elem), Some(&TirType::I64));
     }
 
     #[test]

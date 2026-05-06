@@ -334,6 +334,7 @@ fn type_name(ty: &TirType) -> String {
             let inner = items.iter().map(type_name).collect::<Vec<_>>().join(",");
             format!("tuple[{inner}]")
         }
+        TirType::Iterator(inner) => format!("iterator[{}]", type_name(inner)),
         TirType::Box(inner) => format!("box[{}]", type_name(inner)),
         TirType::DynBox => "dynbox".to_string(),
         TirType::UserClass(name) => format!("userclass[{name}]"),

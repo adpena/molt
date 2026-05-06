@@ -102,6 +102,10 @@ fn size_class(ty: &crate::tir::types::TirType) -> SizeClass {
         // class id directly in the size class delegates the
         // equality check to the existing `Eq` impl on `TirType`.
         TirType::UserClass(_) => SizeClass::Typed(ty.clone()),
+        // Iterator is a semantic element-type fact, not a concrete iterator
+        // layout. Different iterator implementations can carry different
+        // payloads, so reuse must stay conservative.
+        TirType::Iterator(_) => SizeClass::Dynamic,
         // Func, Ptr, Union — conservative, treat as unique.
         TirType::Func(_) => SizeClass::Typed(ty.clone()),
         TirType::Ptr(_) => SizeClass::Dynamic,
