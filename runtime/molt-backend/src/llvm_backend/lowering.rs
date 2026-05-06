@@ -6149,15 +6149,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 1 {
                     return false;
                 }
-                let fn_name = match op.attrs.get("container_type").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) {
-                    Some("list") | Some("list_int") => "molt_len_list",
-                    Some("str") => "molt_len_str",
-                    Some("dict") => "molt_len_dict",
-                    Some("tuple") => "molt_len_tuple",
-                    Some("set") | Some("frozenset") => "molt_len_set",
+                let operand_ty = self
+                    .value_types
+                    .get(&op.operands[0])
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                let fn_name = match operand_ty {
+                    TirType::List(_) => "molt_len_list",
+                    TirType::Str => "molt_len_str",
+                    TirType::Dict(_, _) => "molt_len_dict",
+                    TirType::Tuple(_) => "molt_len_tuple",
+                    TirType::Set(_) => "molt_len_set",
                     _ => "molt_len",
                 };
                 let len_fn = self.ensure_runtime_i64_fn(fn_name, 1);

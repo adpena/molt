@@ -19,6 +19,16 @@ pub(crate) enum ScalarKind {
     NoneValue,
 }
 
+/// Container dispatch lane derived from the backend-facing TIR/LIR contract.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ContainerKind {
+    List,
+    Dict,
+    Set,
+    Tuple,
+    Str,
+}
+
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ScalarRepresentationFact {
@@ -34,6 +44,17 @@ impl ScalarRepresentationFact {
             (TirType::F64, LirRepr::F64) => Some(ScalarKind::Float),
             (TirType::Str, _) => Some(ScalarKind::Str),
             (TirType::None, _) => Some(ScalarKind::NoneValue),
+            _ => None,
+        }
+    }
+
+    fn container_kind(&self) -> Option<ContainerKind> {
+        match &self.ty {
+            TirType::List(_) => Some(ContainerKind::List),
+            TirType::Dict(_, _) => Some(ContainerKind::Dict),
+            TirType::Set(_) => Some(ContainerKind::Set),
+            TirType::Tuple(_) => Some(ContainerKind::Tuple),
+            TirType::Str => Some(ContainerKind::Str),
             _ => None,
         }
     }
@@ -374,6 +395,12 @@ impl ScalarRepresentationPlan {
         self.facts_by_name
             .get(name)
             .and_then(ScalarRepresentationFact::scalar_kind)
+    }
+
+    pub(crate) fn name_container_kind(&self, name: &str) -> Option<ContainerKind> {
+        self.facts_by_name
+            .get(name)
+            .and_then(ScalarRepresentationFact::container_kind)
     }
 
     pub(crate) fn name_is_integer_family(&self, name: &str) -> bool {
@@ -1211,6 +1238,41 @@ mod tests {
 
         assert!(!int_like.contains("boxed_word"));
         assert!(!plan.integer_family_names().contains("boxed_word"));
+    }
+
+    #[test]
+    fn container_kind_comes_from_structured_tir_types() {
+        let func = function(
+            "typed_containers",
+            &["xs", "d", "s", "t", "text"],
+            Some(vec![
+                "list[int]",
+                "dict[str, int]",
+                "set[bool]",
+                "tuple[int, str]",
+                "str",
+            ]),
+            vec![op("ret", None, None, &["xs"])],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.name_container_kind("xs"), Some(ContainerKind::List));
+        assert_eq!(plan.name_container_kind("d"), Some(ContainerKind::Dict));
+        assert_eq!(plan.name_container_kind("s"), Some(ContainerKind::Set));
+        assert_eq!(plan.name_container_kind("t"), Some(ContainerKind::Tuple));
+        assert_eq!(plan.name_container_kind("text"), Some(ContainerKind::Str));
+    }
+
+    #[test]
+    fn container_transport_metadata_does_not_seed_container_kind() {
+        let mut index = op("index", Some("item"), None, &["xs", "i"]);
+        index.container_type = Some("list_int".to_string());
+        index.type_hint = Some("list".to_string());
+        let func = function("transport_only", &["xs", "i"], None, vec![index]);
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.name_container_kind("xs"), None);
+        assert_eq!(plan.name_container_kind("item"), None);
     }
 
     #[test]

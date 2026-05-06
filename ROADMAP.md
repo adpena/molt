@@ -84,6 +84,12 @@ This file is forward-looking only.
   `list[T]`, `dict[K, V]`, `set[T]`, and fixed-arity `tuple[...]` produce
   structured `TirType` facts for SSA/value maps while malformed, dynamic, or
   unsupported compound hints remain `DynBox`.
+  Backend semantic container dispatch now reads those facts through the shared
+  plan for Luau, WASM import selection/emission, native `len`/`contains`, and
+  LLVM `len`; `container_type` / `type_hint` strings alone no longer select
+  those specialized paths. Semantic `list[int]` is not treated as flat
+  `list_int` storage proof; direct storage optimizations require a separate
+  structural storage fact.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
