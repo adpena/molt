@@ -36,6 +36,10 @@ def _ir_with_stdlib(*, user_ops: list[dict], stdlib_ops: list[dict]) -> dict:
     }
 
 
+def _manifest(cache_key: str) -> str:
+    return f'{{"cache_key":"{cache_key}"}}'
+
+
 def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys")
@@ -425,20 +429,47 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
     assert key_a != key_b
 
 
-def test_shared_stdlib_cache_matches_key_requires_present_matching_sidecar(
+def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
     tmp_path: Path,
 ) -> None:
     stdlib_object = tmp_path / "stdlib_shared_test.o"
     stdlib_object.write_bytes(b"fake")
 
-    assert not cli._shared_stdlib_cache_matches_key(stdlib_object, "abc123")
+    assert not cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
 
     key_sidecar = cli._stdlib_object_key_sidecar_path(stdlib_object)
     key_sidecar.write_text("wrong-key\n", encoding="utf-8")
-    assert not cli._shared_stdlib_cache_matches_key(stdlib_object, "abc123")
+    assert not cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
 
     key_sidecar.write_text("abc123\n", encoding="utf-8")
-    assert cli._shared_stdlib_cache_matches_key(stdlib_object, "abc123")
+    assert not cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
+
+    manifest_sidecar = cli._stdlib_object_manifest_sidecar_path(stdlib_object)
+    manifest_sidecar.write_text(_manifest("wrong-key") + "\n", encoding="utf-8")
+    assert not cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
+
+    manifest_sidecar.write_text(_manifest("abc123") + "\n", encoding="utf-8")
+    assert cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
 
 
 def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
@@ -519,6 +550,9 @@ def test_invalidate_stale_stdlib_cache_tracks_active_artifact_profiles(
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "active-key\n", encoding="utf-8"
     )
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+        _manifest("active-key") + "\n", encoding="utf-8"
+    )
     cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "1\n", encoding="utf-8"
     )
@@ -542,11 +576,13 @@ def test_invalidate_stale_stdlib_cache_tracks_active_artifact_profiles(
         stdlib_object,
         project_root,
         expected_key="active-key",
+        expected_manifest=_manifest("active-key"),
     )
 
     assert not stdlib_object.exists()
     assert not cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
     assert not cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
+    assert not cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
 
 
 def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
@@ -560,6 +596,9 @@ def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
     cli._stdlib_object_key_sidecar_path(active).write_text(
         "active-key\n", encoding="utf-8"
     )
+    cli._stdlib_object_manifest_sidecar_path(active).write_text(
+        _manifest("active-key") + "\n", encoding="utf-8"
+    )
     cli._stdlib_object_count_sidecar_path(active).write_text("1\n", encoding="utf-8")
 
     sibling = cache_root / "stdlib_shared_sibling.o"
@@ -567,18 +606,23 @@ def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
     cli._stdlib_object_key_sidecar_path(sibling).write_text(
         "sibling-key\n", encoding="utf-8"
     )
+    cli._stdlib_object_manifest_sidecar_path(sibling).write_text(
+        _manifest("sibling-key") + "\n", encoding="utf-8"
+    )
     cli._stdlib_object_count_sidecar_path(sibling).write_text("2\n", encoding="utf-8")
 
     cli._invalidate_stale_stdlib_cache(
         active,
         project_root=tmp_path,
         expected_key="active-key",
+        expected_manifest=_manifest("active-key"),
     )
 
     assert active.exists()
     assert sibling.exists()
     assert cli._stdlib_object_key_sidecar_path(sibling).exists()
     assert cli._stdlib_object_count_sidecar_path(sibling).exists()
+    assert cli._stdlib_object_manifest_sidecar_path(sibling).exists()
 
 
 def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sidecar(
@@ -589,20 +633,22 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     stdlib_object.write_bytes(b"shared-stdlib")
     artifacts_root = tmp_path / "artifacts"
 
-    with pytest.raises(OSError, match="Shared stdlib cache key mismatch"):
+    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
         cli._stage_shared_stdlib_object_for_link(
             stdlib_object,
             stdlib_object_cache_key="abc123",
+            stdlib_object_manifest=_manifest("abc123"),
             artifacts_root=artifacts_root,
         )
 
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
-    with pytest.raises(OSError, match="Shared stdlib cache key mismatch"):
+    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
         cli._stage_shared_stdlib_object_for_link(
             stdlib_object,
             stdlib_object_cache_key="abc123",
+            stdlib_object_manifest=_manifest("abc123"),
             artifacts_root=artifacts_root,
         )
 
@@ -612,10 +658,22 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "7\n", encoding="utf-8"
     )
+    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
+        cli._stage_shared_stdlib_object_for_link(
+            stdlib_object,
+            stdlib_object_cache_key="abc123",
+            stdlib_object_manifest=_manifest("abc123"),
+            artifacts_root=artifacts_root,
+        )
+
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+        _manifest("abc123") + "\n", encoding="utf-8"
+    )
 
     staged = cli._stage_shared_stdlib_object_for_link(
         stdlib_object,
         stdlib_object_cache_key="abc123",
+        stdlib_object_manifest=_manifest("abc123"),
         artifacts_root=artifacts_root,
     )
 
@@ -627,4 +685,8 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     assert (
         cli._stdlib_object_count_sidecar_path(staged).read_text(encoding="utf-8")
         == "7\n"
+    )
+    assert (
+        cli._stdlib_object_manifest_sidecar_path(staged).read_text(encoding="utf-8")
+        == _manifest("abc123") + "\n"
     )

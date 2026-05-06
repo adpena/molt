@@ -1676,6 +1676,7 @@ class _BackendCacheSetup:
     function_cache_path: Path | None
     stdlib_object_path: Path | None
     stdlib_object_cache_key: str | None
+    stdlib_object_manifest: str | None
     cache_candidates: tuple[tuple[str, Path], ...]
     cache_hit: bool
     cache_hit_tier: str | None
@@ -12814,6 +12815,7 @@ def _try_cached_backend_candidates(
     cache_path: Path | None,
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
+    stdlib_object_manifest: str | None,
     stdlib_module_symbols: Collection[str] | None = None,
     warnings: list[str],
 ) -> tuple[bool, str | None]:
@@ -12827,13 +12829,17 @@ def _try_cached_backend_candidates(
     for tier, candidate in cache_candidates:
         if stdlib_object_path is not None:
             if not _shared_stdlib_cache_matches_key(
-                stdlib_object_path, stdlib_object_cache_key
+                stdlib_object_path,
+                stdlib_object_cache_key,
+                stdlib_object_manifest=stdlib_object_manifest,
             ):
                 if stdlib_object_path.exists():
                     warnings.append(
-                        "Ignoring shared stdlib cache with mismatched key: "
+                        "Ignoring shared stdlib cache with mismatched contract: "
                         + _shared_stdlib_cache_mismatch_detail(
-                            stdlib_object_path, stdlib_object_cache_key
+                            stdlib_object_path,
+                            stdlib_object_cache_key,
+                            stdlib_object_manifest=stdlib_object_manifest,
                         )
                     )
                     _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
@@ -12887,6 +12893,7 @@ def _backend_daemon_skip_output_sync_flags(
     function_cache_key: str | None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_object_manifest: str | None = None,
     stdlib_module_symbols: Collection[str] | None = None,
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
@@ -12900,7 +12907,9 @@ def _backend_daemon_skip_output_sync_flags(
     ):
         return False, False
     if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key(
-        stdlib_object_path, stdlib_object_cache_key
+        stdlib_object_path,
+        stdlib_object_cache_key,
+        stdlib_object_manifest=stdlib_object_manifest,
     ):
         return False, False
     if state_path is None:
@@ -13170,6 +13179,7 @@ def _backend_daemon_compile_request_bytes(
     entry_module: str | None = None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
     probe_cache_only: bool = False,
     include_health: bool = False,
@@ -13225,6 +13235,8 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough["MOLT_STDLIB_OBJ"] = str(stdlib_object_path)
     if stdlib_object_cache_key:
         env_passthrough["MOLT_STDLIB_CACHE_KEY"] = stdlib_object_cache_key
+    if stdlib_object_manifest:
+        env_passthrough["MOLT_STDLIB_CACHE_MANIFEST"] = stdlib_object_manifest
     if stdlib_module_symbols_json:
         env_passthrough["MOLT_STDLIB_MODULE_SYMBOLS"] = stdlib_module_symbols_json
     if env_passthrough:
@@ -13521,6 +13533,7 @@ def _compile_with_backend_daemon(
     entry_module: str | None = None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
@@ -13546,6 +13559,7 @@ def _compile_with_backend_daemon(
             entry_module=entry_module,
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key=stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
             probe_cache_only=True,
             include_health=False,
@@ -13572,6 +13586,7 @@ def _compile_with_backend_daemon(
             entry_module=entry_module,
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key=stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
             include_health=False,
         )
@@ -13672,6 +13687,7 @@ def _compile_with_backend_daemon(
                 entry_module=entry_module,
                 stdlib_object_path=stdlib_object_path,
                 stdlib_object_cache_key=stdlib_object_cache_key,
+                stdlib_object_manifest=stdlib_object_manifest,
                 stdlib_module_symbols_json=stdlib_module_symbols_json,
                 include_health=False,
             )
@@ -13824,8 +13840,33 @@ def _stdlib_object_key_sidecar_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_suffix(".key")
 
 
+def _stdlib_object_manifest_sidecar_path(stdlib_object_path: Path) -> Path:
+    return stdlib_object_path.with_suffix(".manifest.json")
+
+
 def _shared_stdlib_publish_lock_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_name(f"{stdlib_object_path.name}.publish.lock")
+
+
+def _shared_stdlib_manifest(
+    *,
+    cache_key: str | None,
+    cache_variant: str,
+    target_triple: str | None,
+    compiler_fingerprint: str | None = None,
+) -> str | None:
+    if not cache_key:
+        return None
+    if compiler_fingerprint is None:
+        compiler_fingerprint = _shared_stdlib_compiler_fingerprint()
+    payload = {
+        "schema": _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
+        "cache_key": cache_key,
+        "cache_variant": cache_variant,
+        "compiler_fingerprint": compiler_fingerprint,
+        "target_triple": target_triple,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 @contextmanager
@@ -13854,22 +13895,29 @@ def _stage_shared_stdlib_object_for_link(
     stdlib_object_path: Path,
     *,
     stdlib_object_cache_key: str | None,
+    stdlib_object_manifest: str | None,
     artifacts_root: Path,
 ) -> Path:
     staged_stdlib_obj = artifacts_root / stdlib_object_path.name
     staged_key_path = _stdlib_object_key_sidecar_path(staged_stdlib_obj)
     staged_count_path = _stdlib_object_count_sidecar_path(staged_stdlib_obj)
+    staged_manifest_path = _stdlib_object_manifest_sidecar_path(staged_stdlib_obj)
     source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
     source_count_path = _stdlib_object_count_sidecar_path(stdlib_object_path)
+    source_manifest_path = _stdlib_object_manifest_sidecar_path(stdlib_object_path)
     try:
         with _shared_stdlib_cache_lock(stdlib_object_path):
-            if stdlib_object_cache_key and not _shared_stdlib_cache_matches_key(
-                stdlib_object_path, stdlib_object_cache_key
+            if not _shared_stdlib_cache_matches_key(
+                stdlib_object_path,
+                stdlib_object_cache_key,
+                stdlib_object_manifest=stdlib_object_manifest,
             ):
                 raise OSError(
-                    "Shared stdlib cache key mismatch during staging: "
+                    "Shared stdlib cache contract mismatch during staging: "
                     + _shared_stdlib_cache_mismatch_detail(
-                        stdlib_object_path, stdlib_object_cache_key
+                        stdlib_object_path,
+                        stdlib_object_cache_key,
+                        stdlib_object_manifest=stdlib_object_manifest,
                     )
                 )
             _atomic_link_or_copy_file(stdlib_object_path, staged_stdlib_obj)
@@ -13886,6 +13934,15 @@ def _stage_shared_stdlib_object_for_link(
                 _atomic_link_or_copy_file(source_count_path, staged_count_path)
             elif staged_count_path.exists():
                 staged_count_path.unlink()
+            if source_manifest_path.exists():
+                _atomic_link_or_copy_file(source_manifest_path, staged_manifest_path)
+            elif stdlib_object_manifest:
+                raise OSError(
+                    "Shared stdlib cache contract mismatch during staging: "
+                    f"missing manifest sidecar for {stdlib_object_path}"
+                )
+            elif staged_manifest_path.exists():
+                staged_manifest_path.unlink()
     except OSError:
         _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
         raise
@@ -13899,13 +13956,21 @@ def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
         _stdlib_object_count_sidecar_path(stdlib_object_path).unlink()
     with contextlib.suppress(OSError):
         _stdlib_object_key_sidecar_path(stdlib_object_path).unlink()
+    with contextlib.suppress(OSError):
+        _stdlib_object_manifest_sidecar_path(stdlib_object_path).unlink()
 
 
 def _shared_stdlib_cache_matches_key(
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
+    *,
+    stdlib_object_manifest: str | None,
 ) -> bool:
-    if stdlib_object_path is None or stdlib_object_cache_key is None:
+    if (
+        stdlib_object_path is None
+        or stdlib_object_cache_key is None
+        or stdlib_object_manifest is None
+    ):
         return False
     if not stdlib_object_path.exists():
         return False
@@ -13915,7 +13980,15 @@ def _shared_stdlib_cache_matches_key(
         )
     except OSError:
         return False
-    return cached_key.strip() == stdlib_object_cache_key
+    if cached_key.strip() != stdlib_object_cache_key:
+        return False
+    try:
+        cached_manifest = _stdlib_object_manifest_sidecar_path(
+            stdlib_object_path
+        ).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return cached_manifest.strip() == stdlib_object_manifest
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
@@ -16804,6 +16877,8 @@ def _read_stdlib_cache_key(stdlib_path: Path) -> str | None:
 def _shared_stdlib_cache_mismatch_detail(
     stdlib_path: Path,
     expected_key: str | None,
+    *,
+    stdlib_object_manifest: str | None = None,
 ) -> str:
     actual_key = _read_stdlib_cache_key(stdlib_path)
     if not expected_key:
@@ -16811,6 +16886,14 @@ def _shared_stdlib_cache_mismatch_detail(
     if actual_key is None:
         return f"{stdlib_path} (missing sidecar; expected key {expected_key})"
     if actual_key == expected_key:
+        if stdlib_object_manifest is not None:
+            manifest_path = _stdlib_object_manifest_sidecar_path(stdlib_path)
+            try:
+                actual_manifest = manifest_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                return f"{stdlib_path} (missing manifest sidecar)"
+            if actual_manifest != stdlib_object_manifest:
+                return f"{stdlib_path} (manifest sidecar mismatch)"
         return str(stdlib_path)
     return f"{stdlib_path} (expected {expected_key}, found {actual_key})"
 
@@ -16831,6 +16914,8 @@ def _invalidate_stale_stdlib_cache(
     stdlib_object_path: Path,
     project_root: Path | None,
     expected_key: str | None = None,
+    *,
+    expected_manifest: str | None = None,
 ) -> None:
     """Delete the cached stdlib .o if the backend binary or runtime library is newer.
 
@@ -16840,6 +16925,13 @@ def _invalidate_stale_stdlib_cache(
     compares against the cached stdlib file instead of the daemon PID.
     """
     if not stdlib_object_path.exists():
+        return
+    if not _shared_stdlib_cache_matches_key(
+        stdlib_object_path,
+        expected_key,
+        stdlib_object_manifest=expected_manifest,
+    ):
+        _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
         return
     try:
         stdlib_mtime = stdlib_object_path.stat().st_mtime
@@ -17566,6 +17658,7 @@ def _prepare_native_object_artifact(
     artifacts_root: Path,
     stdlib_obj_path: Path | None,
     stdlib_object_cache_key: str | None,
+    stdlib_object_manifest: str | None,
     json_output: bool,
     link_timeout: float | None,
     target_triple: str | None = None,
@@ -17573,12 +17666,16 @@ def _prepare_native_object_artifact(
 ) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, _CliFailure | None]:
     if stdlib_obj_path is None or not stdlib_obj_path.exists():
         return output_artifact, None, None
-    if not _shared_stdlib_cache_matches_key(stdlib_obj_path, stdlib_object_cache_key):
+    if not _shared_stdlib_cache_matches_key(
+        stdlib_obj_path,
+        stdlib_object_cache_key,
+        stdlib_object_manifest=stdlib_object_manifest,
+    ):
         return (
             None,
             None,
             _fail(
-                "Shared stdlib cache key mismatch before native object link",
+                "Shared stdlib cache mismatch before native object link",
                 json_output,
                 command="build",
             ),
@@ -19605,6 +19702,7 @@ def _execute_backend_compile(
                 ),
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+                stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                 state_path=output_sync_state_path,
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
@@ -19649,6 +19747,7 @@ def _execute_backend_compile(
                 entry_module=entry_module,
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+                stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                 stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                 timeout=None,
                 request_bytes=None,
@@ -19707,6 +19806,7 @@ def _execute_backend_compile(
                         entry_module=entry_module,
                         stdlib_object_path=cache_setup.stdlib_object_path,
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+                        stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                         timeout=None,
                         request_bytes=None,
@@ -19754,6 +19854,7 @@ def _execute_backend_compile(
                 # into a later native compile.
                 backend_env.pop("MOLT_STDLIB_OBJ", None)
                 backend_env.pop("MOLT_STDLIB_CACHE_KEY", None)
+                backend_env.pop("MOLT_STDLIB_CACHE_MANIFEST", None)
                 backend_env.pop("MOLT_STDLIB_MODULE_SYMBOLS", None)
             stdlib_obj_path = cache_setup.stdlib_object_path
             if not is_wasm and not _is_transpile and stdlib_obj_path is not None:
@@ -19766,6 +19867,12 @@ def _execute_backend_compile(
                         )
                     else:
                         backend_env.pop("MOLT_STDLIB_CACHE_KEY", None)
+                    if cache_setup.stdlib_object_manifest:
+                        backend_env["MOLT_STDLIB_CACHE_MANIFEST"] = (
+                            cache_setup.stdlib_object_manifest
+                        )
+                    else:
+                        backend_env.pop("MOLT_STDLIB_CACHE_MANIFEST", None)
                     if cache_setup.stdlib_module_symbols_json:
                         backend_env["MOLT_STDLIB_MODULE_SYMBOLS"] = (
                             cache_setup.stdlib_module_symbols_json
@@ -20041,6 +20148,7 @@ def _prepare_backend_compile(
                 cache_path=cache_path,
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+                stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                 warnings=warnings,
             )
 
@@ -20532,6 +20640,7 @@ def _run_backend_pipeline(
                 artifacts_root=artifacts_root,
                 stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
+                stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
                 json_output=json_output,
                 link_timeout=prepared_build_config.link_timeout,
                 target_triple=output_layout.target_triple,
@@ -20585,6 +20694,7 @@ def _run_backend_pipeline(
             staged_stdlib_obj = _stage_shared_stdlib_object_for_link(
                 stdlib_link_obj_path,
                 stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
+                stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
                 artifacts_root=artifacts_root,
             )
         except OSError as exc:
@@ -20630,6 +20740,7 @@ def _run_backend_pipeline(
         warnings=prepared_build_preamble.warnings,
         stdlib_obj_path=stdlib_link_obj_path,
         stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
+        stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
     )
     if prepared_native_link_error is not None:
         return prepared_native_link_error
@@ -21138,12 +21249,15 @@ def _prepare_native_link(
     warnings: list[str],
     stdlib_obj_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_object_manifest: str | None = None,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
     if stdlib_obj_path is not None:
         if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key(
-            stdlib_obj_path, stdlib_object_cache_key
+            stdlib_obj_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
         ):
             return None, _fail(
                 "Shared stdlib cache key mismatch before native link",
@@ -21155,6 +21269,7 @@ def _prepare_native_link(
                 staged_stdlib_obj = _stage_shared_stdlib_object_for_link(
                     stdlib_obj_path,
                     stdlib_object_cache_key=stdlib_object_cache_key,
+                    stdlib_object_manifest=stdlib_object_manifest,
                     artifacts_root=artifacts_root,
                 )
             except OSError as exc:
@@ -22104,6 +22219,7 @@ def _prepare_backend_cache_setup(
         # stdlib functions but the linker never sees stdlib_shared.o.
         _nocache_stdlib_path = None
         _nocache_stdlib_key = None
+        _nocache_stdlib_manifest = None
         if split_stdlib_object:
             _nocache_stdlib_key = _shared_stdlib_cache_key(
                 ir,
@@ -22111,6 +22227,11 @@ def _prepare_backend_cache_setup(
                 stdlib_module_symbols=stdlib_module_symbols,
                 target_triple=target_triple,
                 cache_variant=cache_variant,
+            )
+            _nocache_stdlib_manifest = _shared_stdlib_manifest(
+                cache_key=_nocache_stdlib_key,
+                cache_variant=cache_variant,
+                target_triple=target_triple,
             )
             _nocache_cache_root = _resolve_cache_root(project_root, cache_dir)
             try:
@@ -22126,6 +22247,7 @@ def _prepare_backend_cache_setup(
                     _nocache_stdlib_path,
                     project_root,
                     _nocache_stdlib_key,
+                    expected_manifest=_nocache_stdlib_manifest,
                 )
         return _BackendCacheSetup(
             cache_enabled=False,
@@ -22135,6 +22257,7 @@ def _prepare_backend_cache_setup(
             function_cache_path=None,
             stdlib_object_path=_nocache_stdlib_path,
             stdlib_object_cache_key=_nocache_stdlib_key,
+            stdlib_object_manifest=_nocache_stdlib_manifest,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -22168,6 +22291,7 @@ def _prepare_backend_cache_setup(
             function_cache_path=None,
             stdlib_object_path=None,
             stdlib_object_cache_key=None,
+            stdlib_object_manifest=None,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -22180,6 +22304,7 @@ def _prepare_backend_cache_setup(
         function_cache_path = cache_root / f"{function_cache_key}.{ext}"
     stdlib_object_path = None
     stdlib_object_cache_key = None
+    stdlib_object_manifest = None
     if split_stdlib_object:
         stdlib_object_cache_key = _shared_stdlib_cache_key(
             ir,
@@ -22187,6 +22312,11 @@ def _prepare_backend_cache_setup(
             stdlib_module_symbols=stdlib_module_symbols,
             target_triple=target_triple,
             cache_variant=cache_variant,
+        )
+        stdlib_object_manifest = _shared_stdlib_manifest(
+            cache_key=stdlib_object_cache_key,
+            cache_variant=cache_variant,
+            target_triple=target_triple,
         )
         stdlib_object_path = _stdlib_object_cache_path(
             cache_path, stdlib_object_cache_key
@@ -22196,6 +22326,7 @@ def _prepare_backend_cache_setup(
                 stdlib_object_path,
                 project_root,
                 stdlib_object_cache_key,
+                expected_manifest=stdlib_object_manifest,
             )
     cache_candidates: list[tuple[str, Path]] = []
     if cache_path is not None:
@@ -22212,6 +22343,7 @@ def _prepare_backend_cache_setup(
         cache_path=cache_path,
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
+        stdlib_object_manifest=stdlib_object_manifest,
         warnings=warnings,
     )
     return _BackendCacheSetup(
@@ -22222,6 +22354,7 @@ def _prepare_backend_cache_setup(
         function_cache_path=function_cache_path,
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
+        stdlib_object_manifest=stdlib_object_manifest,
         cache_candidates=tuple(cache_candidates),
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
@@ -26540,6 +26673,7 @@ _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v2"
 _CACHE_KEY_SCHEMA_VERSION = "v4"
 _FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
 _SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v2"
+_SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v1"
 
 
 def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
