@@ -224,10 +224,8 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             ));
         }
     }
-    if op.bce_safe == Some(true) {
-        if !BCE_SAFE_KINDS.contains(&op.kind.as_str()) {
-            return Err(format!("op `{}` cannot carry bce_safe", op.kind));
-        }
+    if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind.as_str()) {
+        return Err(format!("op `{}` cannot carry bce_safe", op.kind));
     }
     if op.arena_eligible == Some(true) && !ARENA_ELIGIBLE_KINDS.contains(&op.kind.as_str()) {
         return Err(format!("op `{}` cannot carry arena_eligible", op.kind));

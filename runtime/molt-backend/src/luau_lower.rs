@@ -634,15 +634,6 @@ fn binary_op_stmt(op: &OpIR, bin_op: LuauBinOp) -> LuauStmt {
     if args.len() >= 2 {
         let lhs = var_expr(&args[0]);
         let rhs = var_expr(&args[1]);
-        if matches!(
-            bin_op,
-            LuauBinOp::Add
-                | LuauBinOp::Sub
-                | LuauBinOp::Mul
-                | LuauBinOp::Div
-                | LuauBinOp::Mod
-                | LuauBinOp::Pow
-        ) {}
         LuauStmt::Local(
             out,
             None,
