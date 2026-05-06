@@ -631,6 +631,17 @@ impl ScalarRepresentationPlan {
             .and_then(ScalarRepresentationFact::container_kind)
     }
 
+    pub(crate) fn op_container_kind(&self, op: &OpIR) -> Option<ContainerKind> {
+        op.args
+            .as_ref()
+            .and_then(|args| args.first())
+            .and_then(|name| self.name_container_kind(name))
+    }
+
+    pub(crate) fn op_has_container_kind(&self, op: &OpIR, kind: ContainerKind) -> bool {
+        self.op_container_kind(op) == Some(kind)
+    }
+
     pub(crate) fn name_is_integer_family(&self, name: &str) -> bool {
         if self.non_scalar_names.contains(name) {
             return false;
@@ -862,7 +873,7 @@ impl ScalarRepresentationPlan {
             .filter_map(|op| {
                 let out = op.out.as_ref()?;
                 let is_safe_bool_op = op.kind == "store_var"
-                    || op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
+                    || self.op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
                 (!is_safe_bool_op && bool_like.contains(out)).then(|| out.clone())
             })
             .collect();
@@ -896,7 +907,7 @@ impl ScalarRepresentationPlan {
                 if candidates.contains(out) || !passes_filter(out) {
                     continue;
                 }
-                if op_produces_raw_bool_for_bool_primary(op, &candidates, int_primary)
+                if self.op_produces_raw_bool_for_bool_primary(op, &candidates, int_primary)
                     && candidates.insert(out.clone())
                 {
                     changed = true;
@@ -926,13 +937,44 @@ impl ScalarRepresentationPlan {
             if let Some(out) = op.out.as_ref() {
                 let lane = self.infer_scalar_lane(op);
                 let raw_bool_output =
-                    op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
+                    self.op_produces_raw_bool_for_bool_primary(op, bool_like, int_primary);
                 if lane != Some(ScalarKind::Bool) && !raw_bool_output && bool_like.contains(out) {
                     non_bool.insert(out.clone());
                 }
             }
         }
         non_bool
+    }
+
+    fn op_produces_raw_bool_for_bool_primary(
+        &self,
+        op: &OpIR,
+        candidates: &BTreeSet<String>,
+        int_primary: &BTreeSet<String>,
+    ) -> bool {
+        let first_source = || {
+            op.var.as_deref().or_else(|| {
+                op.args
+                    .as_ref()
+                    .and_then(|args| args.first().map(String::as_str))
+            })
+        };
+        match op.kind.as_str() {
+            "const_bool" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "string_eq" | "is" | "not"
+            | "bool" | "cast_bool" | "builtin_bool" => true,
+            "copy" | "copy_var" | "load_var" | "identity_alias" => {
+                first_source().is_some_and(|s| candidates.contains(s))
+            }
+            "index" => {
+                self.op_has_container_kind(op, ContainerKind::List)
+                    && op
+                        .args
+                        .as_ref()
+                        .and_then(|args| args.get(1))
+                        .is_some_and(|idx| int_primary.contains(idx))
+            }
+            _ => false,
+        }
     }
 
     fn compute_float_primary_names(
@@ -1347,36 +1389,6 @@ fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>)
             .args
             .as_ref()
             .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
-        _ => false,
-    }
-}
-
-fn op_produces_raw_bool_for_bool_primary(
-    op: &OpIR,
-    candidates: &BTreeSet<String>,
-    int_primary: &BTreeSet<String>,
-) -> bool {
-    let first_source = || {
-        op.var.as_deref().or_else(|| {
-            op.args
-                .as_ref()
-                .and_then(|args| args.first().map(String::as_str))
-        })
-    };
-    match op.kind.as_str() {
-        "const_bool" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "string_eq" | "is" | "not"
-        | "bool" | "cast_bool" | "builtin_bool" => true,
-        "copy" | "copy_var" | "load_var" | "identity_alias" => {
-            first_source().is_some_and(|s| candidates.contains(s))
-        }
-        "index" => {
-            op.container_type.as_deref() == Some("list")
-                && op
-                    .args
-                    .as_ref()
-                    .and_then(|args| args.get(1))
-                    .is_some_and(|idx| int_primary.contains(idx))
-        }
         _ => false,
     }
 }
@@ -1823,59 +1835,68 @@ mod tests {
     fn bool_primary_predicate_is_raw_closed() {
         let candidates = BTreeSet::from(["flag".to_string()]);
         let int_primary = BTreeSet::from(["idx".to_string()]);
+        let empty_plan = ScalarRepresentationPlan::default();
         let const_bool = const_bool("flag", true);
-        assert!(op_produces_raw_bool_for_bool_primary(
+        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(
             &const_bool,
             &BTreeSet::new(),
             &int_primary,
         ));
 
         let copy = op("copy_var", Some("flag_copy"), Some("flag"), &[]);
-        assert!(op_produces_raw_bool_for_bool_primary(
-            &copy,
-            &candidates,
-            &int_primary,
-        ));
+        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(&copy, &candidates, &int_primary));
 
         let comparison = op("eq", Some("cmp"), None, &["lhs", "rhs"]);
-        assert!(op_produces_raw_bool_for_bool_primary(
+        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(
             &comparison,
             &candidates,
             &int_primary,
         ));
 
         let boolean_cast = op("bool", Some("casted"), None, &["flag"]);
-        assert!(op_produces_raw_bool_for_bool_primary(
+        assert!(empty_plan.op_produces_raw_bool_for_bool_primary(
             &boolean_cast,
             &candidates,
             &int_primary,
         ));
 
-        let mut list_bool_index = op("index", Some("item"), None, &["items", "idx"]);
-        list_bool_index.container_type = Some("list".to_string());
-        assert!(op_produces_raw_bool_for_bool_primary(
+        let list_bool_index = op("index", Some("item"), None, &["items", "idx"]);
+        let list_plan = ScalarRepresentationPlan::for_function_ir(&function(
+            "list_bool_index",
+            &["items", "idx"],
+            Some(vec!["list[bool]", "int"]),
+            vec![list_bool_index.clone()],
+        ));
+        assert!(list_plan.op_produces_raw_bool_for_bool_primary(
             &list_bool_index,
             &candidates,
             &int_primary,
         ));
 
-        let mut boxed_index = op("index", Some("item"), None, &["items", "boxed_idx"]);
-        boxed_index.container_type = Some("list".to_string());
-        assert!(!op_produces_raw_bool_for_bool_primary(
+        let boxed_index = op("index", Some("item"), None, &["items", "boxed_idx"]);
+        assert!(!list_plan.op_produces_raw_bool_for_bool_primary(
             &boxed_index,
             &candidates,
             &int_primary,
         ));
 
+        let mut transport_index = op("index", Some("item"), None, &["items", "idx"]);
+        transport_index.container_type = Some("list".to_string());
+        assert!(!empty_plan.op_produces_raw_bool_for_bool_primary(
+            &transport_index,
+            &candidates,
+            &int_primary,
+        ));
+
         let generic_index = op("index", Some("item"), None, &["items", "idx"]);
-        assert!(!op_produces_raw_bool_for_bool_primary(
+        assert!(!empty_plan.op_produces_raw_bool_for_bool_primary(
             &generic_index,
             &candidates,
             &int_primary,
         ));
 
         let legacy_is_truthy = op("is_truthy", Some("truthy"), None, &["flag"]);
-        assert!(!op_produces_raw_bool_for_bool_primary(
+        assert!(!empty_plan.op_produces_raw_bool_for_bool_primary(
             &legacy_is_truthy,
             &candidates,
             &int_primary,
