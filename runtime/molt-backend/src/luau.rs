@@ -3010,12 +3010,9 @@ impl LuauBackend {
                 if let Some(obj) = args.first() {
                     let obj_s = sanitize_ident(obj);
                     let is_known_lennable = matches!(
-                        op.type_hint.as_deref(),
-                        Some("list") | Some("str") | Some("string") | Some("bytes") | Some("tuple")
-                    ) || self
-                        .var_type_hints
-                        .get(obj.as_str())
-                        .is_some_and(|h| h == "list" || h == "str");
+                        self.scalar_plan.name_container_kind(obj),
+                        Some(ContainerKind::List | ContainerKind::Tuple | ContainerKind::Str)
+                    );
                     if is_known_lennable {
                         self.emit_line(&format!("local {out} = #{obj_s}"));
                     } else {
@@ -10175,6 +10172,83 @@ mod tests {
             !output.contains("list index out of range")
                 && !output.contains("list assignment index out of range"),
             "transport hints must not select list bounds-guard path, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_len_transport_hint_does_not_force_luau_raw_length() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "hinted_len".to_string(),
+                params: vec!["xs".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "len".to_string(),
+                        args: Some(vec!["xs".to_string()]),
+                        out: Some("n".to_string()),
+                        type_hint: Some("list".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["n".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("local n = molt_len(xs)"),
+            "unknown len operand must stay on runtime len, got:\n{output}"
+        );
+        assert!(
+            !output.contains("local n = #xs"),
+            "result-side type_hint must not select raw Luau length, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_len_uses_tir_container_fact_for_luau_raw_length() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "typed_len".to_string(),
+                params: vec!["xs".to_string()],
+                param_types: Some(vec!["list[int]".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "len".to_string(),
+                        args: Some(vec!["xs".to_string()]),
+                        out: Some("n".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["n".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("local n = #xs"),
+            "typed list len should use raw Luau length, got:\n{output}"
+        );
+        assert!(
+            !output.contains("local n = molt_len(xs)"),
+            "typed list len should not call runtime len, got:\n{output}"
         );
     }
 
