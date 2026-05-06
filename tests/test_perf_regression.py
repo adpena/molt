@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import tools.perf_regression as perf_regression
@@ -33,7 +35,12 @@ def _payload(
         if samples_s is not None:
             stats["samples_s"] = samples_s
         entry["super_stats"] = {"molt": stats}
-    return {"benchmarks": {"bench.py": entry}}
+    return {
+        "timing_mode": "warm_throughput",
+        "warmup": 1,
+        "samples": 3,
+        "benchmarks": {"bench.py": entry},
+    }
 
 
 def test_summary_only_super_stats_do_not_emit_statistical_fields() -> None:
@@ -89,6 +96,37 @@ def test_failed_molt_ok_stale_runtime_and_samples_are_ignored() -> None:
     )
 
     assert comparisons == []
+
+
+def test_incompatible_run_metadata_fails_closed() -> None:
+    current = _payload(value=1.2)
+    baseline = _payload(value=1.0)
+    baseline["timing_mode"] = "cold_first_run"
+    baseline["warmup"] = 0
+
+    with pytest.raises(ValueError, match="incompatible benchmark baseline"):
+        perf_regression.compare_benchmarks(
+            current,
+            baseline,
+            perf_regression.DEFAULT_THRESHOLDS,
+        )
+
+
+def test_check_perf_regression_reports_incompatible_metadata(tmp_path) -> None:
+    current_path = tmp_path / "current.json"
+    baseline_path = tmp_path / "baseline.json"
+    current_path.write_text(json.dumps(_payload(value=1.2)), encoding="utf-8")
+    baseline = _payload(value=1.0)
+    baseline["samples"] = 1
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    passed, report = perf_regression.check_perf_regression(
+        current_path=current_path,
+        baseline_path=baseline_path,
+    )
+
+    assert not passed
+    assert "incompatible benchmark baseline" in report.summary["error"]
 
 
 @pytest.mark.parametrize(

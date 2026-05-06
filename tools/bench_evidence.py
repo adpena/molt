@@ -22,6 +22,8 @@ METRIC_OK_GATES: dict[str, tuple[str, ...]] = {
     "pyodide_time_s": ("pyodide_ok",),
 }
 
+COMPARABLE_RUN_FIELDS: tuple[str, ...] = ("timing_mode", "warmup", "samples")
+
 
 def valid_positive_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -30,6 +32,27 @@ def valid_positive_number(value: Any) -> float | None:
     if not math.isfinite(normalized) or normalized <= 0:
         return None
     return normalized
+
+
+def comparable_run_metadata_errors(
+    current: dict[str, Any], baseline: dict[str, Any]
+) -> list[str]:
+    """Return fail-closed evidence-contract errors for benchmark comparisons."""
+    errors: list[str] = []
+    for field in COMPARABLE_RUN_FIELDS:
+        cur_value = current.get(field)
+        base_value = baseline.get(field)
+        if cur_value is None:
+            errors.append(f"current missing {field}")
+            continue
+        if base_value is None:
+            errors.append(f"baseline missing {field}")
+            continue
+        if cur_value != base_value:
+            errors.append(
+                f"{field} differs: current={cur_value!r}, baseline={base_value!r}"
+            )
+    return errors
 
 
 def metric_is_comparable(entry: dict[str, Any], metric: str) -> bool:
