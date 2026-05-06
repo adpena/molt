@@ -264,6 +264,20 @@ print(flat)
 """)
 
 
+# -- Importlib Package State Ownership ----------------------------------------
+
+
+class TestImportlibPackageStateOwnership:
+    def test_package_dunder_path_survives_repeated_import_state_stabilization(self):
+        _assert_match("""\
+import logging
+again = __import__("logging")
+print(logging.__name__)
+print(again.__name__)
+print(isinstance(logging.__path__[0], str))
+""")
+
+
 # -- math.sumprod (new in 3.12) -----------------------------------------------
 
 
