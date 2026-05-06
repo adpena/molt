@@ -17215,7 +17215,6 @@ extern long molt_chan_try_recv(void* chan);
 extern long molt_chan_send_blocking(void* chan, long val);
 extern long molt_chan_recv_blocking(void* chan);
 extern void molt_print_obj(unsigned long long val);
-extern void molt_profile_dump();
 /* MOLT_TRUSTED_SNIPPET */
 /* MOLT_CAPABILITIES_SNIPPET */
 
@@ -17232,10 +17231,6 @@ static int molt_finish() {
         molt_dec_ref_obj(exc);
         molt_runtime_exit(1);
         _Exit(1);
-    }
-    const char* profile = getenv("MOLT_PROFILE");
-    if (profile != NULL && profile[0] != '\\0' && strcmp(profile, "0") != 0) {
-        molt_profile_dump();
     }
     molt_runtime_exit(0);
     _Exit(0);

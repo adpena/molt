@@ -196,7 +196,6 @@ pub(crate) struct RuntimeState {
     pub(crate) sys_version_info: Mutex<Option<PythonVersionInfo>>,
     pub(crate) sys_version: Mutex<Option<String>>,
     pub(crate) hash_secret: OnceLock<HashSecret>,
-    pub(crate) profile_enabled: OnceLock<bool>,
     pub(crate) utf8_index_cache: Mutex<Utf8CacheStore>,
     pub(crate) utf8_count_cache: Vec<Mutex<Utf8CountCacheStore>>,
     pub(crate) string_count_cache_hit: AtomicU64,
@@ -271,7 +270,6 @@ impl RuntimeState {
             sys_version_info: Mutex::new(None),
             sys_version: Mutex::new(None),
             hash_secret: OnceLock::new(),
-            profile_enabled: OnceLock::new(),
             utf8_index_cache: Mutex::new(Utf8CacheStore::new()),
             utf8_count_cache: build_utf8_count_cache(),
             string_count_cache_hit: AtomicU64::new(0),
@@ -494,6 +492,7 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             if !ptr.is_null() {
                 let state = unsafe { &*ptr };
                 let py = gil.token();
+                crate::object::ops::profile_dump_with_gil(&py);
                 runtime_teardown_for_process_exit(&py, state);
             }
         }
@@ -512,6 +511,7 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     #[cfg(target_arch = "wasm32")]
     ensure_wasm_ctors();
     trace_runtime_init("enter");
+    super::metrics::init_profile_enabled_from_env();
     touch_tls_guard();
     #[cfg(not(target_arch = "wasm32"))]
     ensure_debug_sigtrap_handler();

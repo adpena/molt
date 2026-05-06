@@ -2,27 +2,42 @@
 // RSS sampling remains unavailable in the host-agnostic wasm runtime.
 #[cfg(target_arch = "wasm32")]
 mod wasm_stubs {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
 
-    use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT, runtime_state};
+    use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT};
 
-    static PROFILE_ENABLED_GIL_FREE: OnceLock<bool> = OnceLock::new();
+    const PROFILE_UNKNOWN: u8 = 2;
+    static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
+
+    fn profile_env_enabled() -> bool {
+        std::env::var("MOLT_PROFILE")
+            .map(|val| !val.is_empty() && val != "0")
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn init_profile_enabled_from_env() {
+        PROFILE_ENABLED.store(u8::from(profile_env_enabled()), AtomicOrdering::Relaxed);
+    }
 
     fn profile_enabled_unchecked() -> bool {
-        *PROFILE_ENABLED_GIL_FREE.get_or_init(|| {
-            std::env::var("MOLT_PROFILE")
-                .map(|val| !val.is_empty() && val != "0")
-                .unwrap_or(false)
-        })
+        match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
+            0 => false,
+            1 => true,
+            _ => {
+                let enabled = u8::from(profile_env_enabled());
+                let _ = PROFILE_ENABLED.compare_exchange(
+                    PROFILE_UNKNOWN,
+                    enabled,
+                    AtomicOrdering::Relaxed,
+                    AtomicOrdering::Relaxed,
+                );
+                enabled != 0
+            }
+        }
     }
 
     pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
-        *runtime_state(_py).profile_enabled.get_or_init(|| {
-            std::env::var("MOLT_PROFILE")
-                .map(|val| !val.is_empty() && val != "0")
-                .unwrap_or(false)
-        })
+        profile_enabled_unchecked()
     }
 
     #[unsafe(no_mangle)]
@@ -80,53 +95,56 @@ mod wasm_stubs {
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm_stubs::{
-    current_rss_bytes, molt_profile_enabled, molt_profile_handle_resolve, molt_profile_snapshot,
-    molt_profile_struct_field_store, profile_enabled, profile_hit, profile_hit_bytes,
+    current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
+    molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
+    profile_enabled, profile_hit, profile_hit_bytes,
     profile_hit_unchecked, sample_peak_rss,
 };
 
 // Full profiling implementation for non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
 
-    use crate::{
-        HANDLE_RESOLVE_COUNT, PEAK_RSS_BYTES, PyToken, STRUCT_FIELD_STORE_COUNT, runtime_state,
-    };
+    use crate::{HANDLE_RESOLVE_COUNT, PEAK_RSS_BYTES, PyToken, STRUCT_FIELD_STORE_COUNT};
 
-    static PROFILE_ENABLED_GIL_FREE: OnceLock<bool> = OnceLock::new();
+    const PROFILE_UNKNOWN: u8 = 2;
+    static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
+
+    fn profile_env_enabled() -> bool {
+        std::env::var("MOLT_PROFILE")
+            .map(|val| !val.is_empty() && val != "0")
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn init_profile_enabled_from_env() {
+        PROFILE_ENABLED.store(u8::from(profile_env_enabled()), AtomicOrdering::Relaxed);
+    }
 
     fn profile_enabled_unchecked() -> bool {
-        *PROFILE_ENABLED_GIL_FREE.get_or_init(|| {
-            std::env::var("MOLT_PROFILE")
-                .map(|val| !val.is_empty() && val != "0")
-                .unwrap_or(false)
-        })
+        match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
+            0 => false,
+            1 => true,
+            _ => {
+                let enabled = u8::from(profile_env_enabled());
+                let _ = PROFILE_ENABLED.compare_exchange(
+                    PROFILE_UNKNOWN,
+                    enabled,
+                    AtomicOrdering::Relaxed,
+                    AtomicOrdering::Relaxed,
+                );
+                enabled != 0
+            }
+        }
     }
 
     pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
-        *runtime_state(_py).profile_enabled.get_or_init(|| {
-            std::env::var("MOLT_PROFILE")
-                .map(|val| !val.is_empty() && val != "0")
-                .unwrap_or(false)
-        })
+        profile_enabled_unchecked()
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn molt_profile_enabled() -> u64 {
-        // Fast path: check the OnceLock without acquiring the GIL.
-        // profile_enabled is set once at startup and never changes.
-        if let Some(state) = crate::state::runtime_state::runtime_state_for_gil() {
-            let enabled = state.profile_enabled.get_or_init(|| {
-                std::env::var("MOLT_PROFILE")
-                    .map(|val| !val.is_empty() && val != "0")
-                    .unwrap_or(false)
-            });
-            if *enabled { 1 } else { 0 }
-        } else {
-            0
-        }
+        if profile_enabled_unchecked() { 1 } else { 0 }
     }
 
     pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {
@@ -261,8 +279,9 @@ mod native {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{
-    current_rss_bytes, molt_profile_enabled, molt_profile_handle_resolve, molt_profile_snapshot,
-    molt_profile_struct_field_store, profile_enabled, profile_hit, profile_hit_bytes,
+    current_rss_bytes, init_profile_enabled_from_env, molt_profile_enabled,
+    molt_profile_handle_resolve, molt_profile_snapshot, molt_profile_struct_field_store,
+    profile_enabled, profile_hit, profile_hit_bytes,
     profile_hit_unchecked, sample_peak_rss,
 };
 
