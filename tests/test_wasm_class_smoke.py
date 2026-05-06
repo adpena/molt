@@ -165,15 +165,7 @@ def test_wasm_linked_tuple_subclass_constructor_preserves_boxed_local_after_join
         encoding="utf-8",
     )
 
-    prior_tir_opt = os.environ.get("MOLT_TIR_OPT")
-    monkeypatch.setenv("MOLT_TIR_OPT", "0")
-    try:
-        output_wasm = build_wasm_linked(root, src, tmp_path)
-    finally:
-        if prior_tir_opt is None:
-            monkeypatch.delenv("MOLT_TIR_OPT", raising=False)
-        else:
-            monkeypatch.setenv("MOLT_TIR_OPT", prior_tir_opt)
+    output_wasm = build_wasm_linked(root, src, tmp_path)
     run = run_wasm_linked(root, output_wasm)
 
     assert run.returncode == 0, run.stderr

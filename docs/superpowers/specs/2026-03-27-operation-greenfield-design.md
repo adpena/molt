@@ -141,7 +141,7 @@ Verification:
 Strategy:
 1. Fix SSA roundtrip in `lower_to_simple.rs` — operand connections must survive
    the TIR→SSA lowering pass
-2. Re-enable TIR globally (remove `MOLT_TIR_OPT=0` default)
+2. Re-enable TIR globally and remove the backend opt-out path entirely
 3. Run full differential suite with TIR enabled
 
 Files:
@@ -150,7 +150,8 @@ Files:
 - `src/molt/frontend/__init__.py` (TIR toggle removal)
 
 Verification:
-- `MOLT_TIR_OPT=1` is the default (or env var removed entirely)
+- TIR is unconditional; there is no environment-variable bypass for backend
+  lowering
 - All 2,617 differential tests pass with TIR enabled
 - fib(30) benchmark shows measurable improvement over TIR-disabled baseline
 

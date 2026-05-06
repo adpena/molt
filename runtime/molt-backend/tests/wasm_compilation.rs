@@ -62,23 +62,6 @@ fn compile_ir_with_env(ir: SimpleIR, env: &[(&str, Option<&str>)]) -> Vec<u8> {
     wasm
 }
 
-fn compile_single_function_without_tir(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
-    compile_ir_with_env(
-        SimpleIR {
-            functions: vec![FunctionIR {
-                name: "molt_test_func".to_string(),
-                params: params.iter().map(|p| (*p).to_string()).collect(),
-                ops,
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-            }],
-            profile: None,
-        },
-        &[("MOLT_TIR_OPT", Some("0"))],
-    )
-}
-
 fn extract_exports(wasm: &[u8]) -> Vec<String> {
     let mut exports = Vec::new();
     for payload in Parser::new(0).parse_all(wasm) {
@@ -384,8 +367,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_str_concat() {
     inplace_add.out = Some("v1".to_string());
     inplace_add.type_hint = Some("str".to_string());
 
-    let wasm =
-        compile_single_function_without_tir(vec![add, inplace_add, ret_value("v1")], &["p0", "p1"]);
+    let wasm = compile_single_function(vec![add, inplace_add, ret_value("v1")], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert_eq!(
         count_import(&calls, "str_concat"),
@@ -406,10 +388,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_truthiness_fast_imports() {
     int_hint.out = Some("v1".to_string());
     int_hint.type_hint = Some("int".to_string());
 
-    let wasm = compile_single_function_without_tir(
-        vec![bool_hint, int_hint, ret_value("v1")],
-        &["p0", "p1"],
-    );
+    let wasm = compile_single_function(vec![bool_hint, int_hint, ret_value("v1")], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert_eq!(
         count_import(&calls, "is_truthy_bool"),
@@ -434,7 +413,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
     hinted_len.out = Some("v0".to_string());
     hinted_len.type_hint = Some("str".to_string());
 
-    let wasm = compile_single_function_without_tir(vec![hinted_len, ret_value("v0")], &["p0"]);
+    let wasm = compile_single_function(vec![hinted_len, ret_value("v0")], &["p0"]);
     let calls = import_call_counts(&wasm);
     assert_eq!(
         count_import(&calls, "len_str"),
@@ -451,7 +430,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
     container_len.out = Some("v0".to_string());
     container_len.container_type = Some("str".to_string());
 
-    let wasm = compile_single_function_without_tir(vec![container_len, ret_value("v0")], &["p0"]);
+    let wasm = compile_single_function(vec![container_len, ret_value("v0")], &["p0"]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "len_str") > 0,
@@ -856,7 +835,7 @@ fn build_list_compiles_using_builder_imports() {
     list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     list.out = Some("v0".to_string());
 
-    let wasm = compile_single_function_without_tir(vec![list, ret_value("v0")], &["p0", "p1"]);
+    let wasm = compile_single_function(vec![list, ret_value("v0")], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "list_builder_new") > 0,
