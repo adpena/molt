@@ -82,7 +82,7 @@ fn scan_loop_hoistable_lists(
                     ContainerStorageKind::FlatListInt,
                 ) {
                     list_int_accessed.insert(args[0].clone());
-                } else if op.container_type.as_deref() == Some("list") {
+                } else if representation_plan.op_has_container_kind(op, ContainerKind::List) {
                     list_generic_accessed.insert(args[0].clone());
                 }
             }
@@ -117,6 +117,42 @@ fn collect_pre_loop_defined_names(ops: &[OpIR], start_idx: usize) -> BTreeSet<St
         }
     }
     defined
+}
+
+#[cfg(feature = "native-backend")]
+fn generic_list_int_lane_eligible(
+    representation_plan: &ScalarRepresentationPlan,
+    op: &OpIR,
+    prefers_int_lane: bool,
+) -> bool {
+    prefers_int_lane && representation_plan.op_has_container_kind(op, ContainerKind::List)
+}
+
+#[cfg(feature = "native-backend")]
+fn index_fallback_import_name(
+    representation_plan: &ScalarRepresentationPlan,
+    op: &OpIR,
+    prefers_int_lane: bool,
+) -> &'static str {
+    match representation_plan.op_container_kind(op) {
+        Some(ContainerKind::Dict) => "molt_dict_getitem",
+        Some(ContainerKind::Tuple) => "molt_tuple_getitem",
+        _ if prefers_int_lane => "molt_list_getitem_int_fast",
+        _ => "molt_index",
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn store_index_fallback_import_name(
+    representation_plan: &ScalarRepresentationPlan,
+    op: &OpIR,
+    prefers_int_lane: bool,
+) -> &'static str {
+    match representation_plan.op_container_kind(op) {
+        Some(ContainerKind::Dict) => "molt_dict_setitem",
+        _ if prefers_int_lane => "molt_list_setitem_int_fast",
+        _ => "molt_store_index",
+    }
 }
 
 /// Describes a recognized integer sum-reduction loop eligible for 4x unrolling.
@@ -12492,9 +12528,11 @@ impl SimpleBackend {
                                     def_var_named(&mut builder, &vars, out__, res);
                                 }
                             }
-                        } else if op.container_type.as_deref() == Some("list")
-                            && op_prefers_int_lane(&op)
-                        {
+                        } else if generic_list_int_lane_eligible(
+                            &representation_plan,
+                            &op,
+                            op_prefers_int_lane(&op),
+                        ) {
                             // Inline list getitem — handles both TYPE_ID_LIST (Vec<u64>)
                             // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
                             //
@@ -12995,12 +13033,11 @@ impl SimpleBackend {
                             // - tuple: direct element access
                             // - fast_int: generic list but index is known int (no container_type proof)
                             // - default: full type dispatch
-                            let fn_name = match op.container_type.as_deref() {
-                                Some("dict") => "molt_dict_getitem",
-                                Some("tuple") => "molt_tuple_getitem",
-                                _ if op_prefers_int_lane(&op) => "molt_list_getitem_int_fast",
-                                _ => "molt_index",
-                            };
+                            let fn_name = index_fallback_import_name(
+                                &representation_plan,
+                                &op,
+                                op_prefers_int_lane(&op),
+                            );
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
                                 &mut self.import_ids,
@@ -13215,9 +13252,11 @@ impl SimpleBackend {
                                 def_var_named(&mut builder, &vars, out__, res);
                             }
                         }
-                    } else if op.container_type.as_deref() == Some("list")
-                        && op_prefers_int_lane(&op)
-                    {
+                    } else if generic_list_int_lane_eligible(
+                        &representation_plan,
+                        &op,
+                        op_prefers_int_lane(&op),
+                    ) {
                         // Inline list setitem — handles both TYPE_ID_LIST (Vec<u64>)
                         // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
                         let raw_idx_opt = if !loop_stack.is_empty() {
@@ -13574,11 +13613,11 @@ impl SimpleBackend {
                         // - dict: direct hash-table set
                         // - int fast: list with proven-int index (no container_type proof)
                         // - default: full type dispatch
-                        let fn_name = match op.container_type.as_deref() {
-                            Some("dict") => "molt_dict_setitem",
-                            _ if op_prefers_int_lane(&op) => "molt_list_setitem_int_fast",
-                            _ => "molt_store_index",
-                        };
+                        let fn_name = store_index_fallback_import_name(
+                            &representation_plan,
+                            &op,
+                            op_prefers_int_lane(&op),
+                        );
                         // Deferred overflow re-boxing at heap store (store_index).
                         let safe_val = ensure_boxed_primitive_safe(
                             &mut self.module,
@@ -34692,10 +34731,12 @@ impl SimpleBackend {
 mod tests {
     use super::{
         FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name, box_raw_bool_value,
-        cleanup_roots_for_names, collect_slot_backed_join_names, is_cold_module_chunk_function,
+        cleanup_roots_for_names, collect_slot_backed_join_names, generic_list_int_lane_eligible,
+        index_fallback_import_name, is_cold_module_chunk_function,
         live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
         preanalyze_function_ir, protect_cleanup_names, scan_loop_int_sum_reduction,
-        switch_to_block_materialized, switch_to_block_with_rebind,
+        store_index_fallback_import_name, switch_to_block_materialized,
+        switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
     use cranelift_codegen::isa::CallConv;
@@ -34726,12 +34767,146 @@ mod tests {
         })
     }
 
+    fn representation_plan_for_typed_ops(
+        params: &[&str],
+        param_types: Option<Vec<&str>>,
+        ops: &[OpIR],
+    ) -> ScalarRepresentationPlan {
+        ScalarRepresentationPlan::for_function_ir(&FunctionIR {
+            name: "container_dispatch_test".to_string(),
+            params: params.iter().map(|param| param.to_string()).collect(),
+            ops: ops.to_vec(),
+            param_types: param_types
+                .map(|types| types.into_iter().map(|ty| ty.to_string()).collect()),
+            source_file: None,
+            is_extern: false,
+        })
+    }
+
     fn list_int_new(out: &str) -> OpIR {
         OpIR {
             kind: "list_int_new".to_string(),
             out: Some(out.to_string()),
             ..OpIR::default()
         }
+    }
+
+    #[test]
+    fn native_container_dispatch_uses_tir_container_facts() {
+        let dict_index = OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["mapping".to_string(), "key".to_string()]),
+            out: Some("item".to_string()),
+            ..OpIR::default()
+        };
+        let dict_plan = representation_plan_for_typed_ops(
+            &["mapping", "key"],
+            Some(vec!["dict[str, int]", "str"]),
+            std::slice::from_ref(&dict_index),
+        );
+        assert_eq!(
+            index_fallback_import_name(&dict_plan, &dict_index, false),
+            "molt_dict_getitem"
+        );
+
+        let tuple_index = OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["items".to_string(), "idx".to_string()]),
+            out: Some("item".to_string()),
+            ..OpIR::default()
+        };
+        let tuple_plan = representation_plan_for_typed_ops(
+            &["items", "idx"],
+            Some(vec!["tuple[int, str]", "int"]),
+            std::slice::from_ref(&tuple_index),
+        );
+        assert_eq!(
+            index_fallback_import_name(&tuple_plan, &tuple_index, false),
+            "molt_tuple_getitem"
+        );
+
+        let dict_store = OpIR {
+            kind: "store_index".to_string(),
+            args: Some(vec![
+                "mapping".to_string(),
+                "key".to_string(),
+                "value".to_string(),
+            ]),
+            ..OpIR::default()
+        };
+        let dict_store_plan = representation_plan_for_typed_ops(
+            &["mapping", "key", "value"],
+            Some(vec!["dict[str, int]", "str", "int"]),
+            std::slice::from_ref(&dict_store),
+        );
+        assert_eq!(
+            store_index_fallback_import_name(&dict_store_plan, &dict_store, false),
+            "molt_dict_setitem"
+        );
+    }
+
+    #[test]
+    fn native_container_dispatch_ignores_transport_only_container_type() {
+        let mut transport_index = OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["items".to_string(), "idx".to_string()]),
+            out: Some("item".to_string()),
+            ..OpIR::default()
+        };
+        transport_index.container_type = Some("tuple".to_string());
+        let plan = representation_plan_for_typed_ops(
+            &["items", "idx"],
+            None,
+            std::slice::from_ref(&transport_index),
+        );
+
+        assert_eq!(
+            index_fallback_import_name(&plan, &transport_index, false),
+            "molt_index"
+        );
+        assert!(
+            !generic_list_int_lane_eligible(&plan, &transport_index, true),
+            "transport-only container_type must not enable native generic-list inlining"
+        );
+
+        let mut transport_store = OpIR {
+            kind: "store_index".to_string(),
+            args: Some(vec![
+                "mapping".to_string(),
+                "key".to_string(),
+                "value".to_string(),
+            ]),
+            ..OpIR::default()
+        };
+        transport_store.container_type = Some("dict".to_string());
+        let store_plan = representation_plan_for_typed_ops(
+            &["mapping", "key", "value"],
+            None,
+            std::slice::from_ref(&transport_store),
+        );
+
+        assert_eq!(
+            store_index_fallback_import_name(&store_plan, &transport_store, false),
+            "molt_store_index"
+        );
+    }
+
+    #[test]
+    fn native_generic_list_inlining_uses_tir_container_facts() {
+        let list_index = OpIR {
+            kind: "index".to_string(),
+            args: Some(vec!["items".to_string(), "idx".to_string()]),
+            out: Some("item".to_string()),
+            ..OpIR::default()
+        };
+        let plan = representation_plan_for_typed_ops(
+            &["items", "idx"],
+            Some(vec!["list[int]", "int"]),
+            std::slice::from_ref(&list_index),
+        );
+
+        assert!(generic_list_int_lane_eligible(&plan, &list_index, true));
+        assert!(!generic_list_int_lane_eligible(&plan, &list_index, false));
     }
 
     #[test]
