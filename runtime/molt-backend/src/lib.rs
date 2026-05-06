@@ -1859,7 +1859,12 @@ fn def_var_named(
     let var = *vars
         .get(name_ref)
         .unwrap_or_else(|| panic!("Var not found: {name_ref}"));
-    builder.def_var(var, val);
+    if let Err(error) = builder.try_def_var(var, val) {
+        let val_type = builder.func.dfg.value_type(val);
+        panic!(
+            "native variable representation mismatch for {name_ref}: value {val} has CLIF type {val_type}; {error}"
+        );
+    }
 }
 
 /// Seal a block only if it hasn't been sealed yet. Prevents the
