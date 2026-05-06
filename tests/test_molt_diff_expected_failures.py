@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import queue
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -285,7 +286,7 @@ def test_batch_compile_server_readline_timeout_is_hard_deadline() -> None:
 
     client = module._BatchCompileServerClient.__new__(module._BatchCompileServerClient)
     client._proc = _DummyProc()
-    client._response_queue = module.queue.Queue()
+    client._response_queue = queue.Queue()
 
     start = module.time.monotonic()
     with pytest.raises(TimeoutError):
