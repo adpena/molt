@@ -217,7 +217,53 @@ def _parse_molt_profile(log_text: str) -> dict[str, object] | None:
             parsed[key] = int(raw)
         except ValueError:
             parsed[key] = raw
-    return parsed or None
+    return _normalize_molt_profile(parsed)
+
+
+def _normalize_molt_profile(profile: dict[str, object]) -> dict[str, object] | None:
+    aliases = {
+        "alloc_string": "string_allocs",
+        "alloc_tuple": "tuple_allocs",
+        "alloc_dict": "dict_allocs",
+        "alloc_callargs": "callargs_allocs",
+        "alloc_object": "object_allocs",
+        "alloc_exception": "exception_allocs",
+        "alloc_bytes_string": "string_alloc_bytes",
+        "alloc_bytes_tuple": "tuple_alloc_bytes",
+        "alloc_bytes_dict": "dict_alloc_bytes",
+        "alloc_bytes_list": "list_alloc_bytes",
+    }
+    for source, alias in aliases.items():
+        if source in profile and alias not in profile:
+            profile[alias] = profile[source]
+    return profile or None
+
+
+def _parse_molt_profile_json(log_text: str) -> dict[str, object] | None:
+    last_line = None
+    for line in log_text.splitlines():
+        if line.startswith("molt_profile_json "):
+            last_line = line
+    if not last_line:
+        return None
+    payload = last_line[len("molt_profile_json ") :].strip()
+    if not payload:
+        return None
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    flat: dict[str, object] = {}
+    for section in ("profile", "hot_paths", "deopt_reasons", "memory"):
+        values = parsed.get(section)
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            if isinstance(key, str) and isinstance(value, (int, float, str)):
+                flat[key] = int(value) if isinstance(value, float) else value
+    return _normalize_molt_profile(flat)
 
 
 def _parse_molt_profile_cpu_features(log_text: str) -> dict[str, object] | None:
@@ -275,7 +321,7 @@ def _merge_profile_metrics(
     if not collect_profile:
         return metrics
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    profile = _parse_molt_profile(log_text)
+    profile = _parse_molt_profile_json(log_text) or _parse_molt_profile(log_text)
     if profile:
         metrics["molt_profile"] = profile
     cpu_features = _parse_molt_profile_cpu_features(log_text)
