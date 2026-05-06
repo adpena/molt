@@ -72,6 +72,11 @@ It is current-state only. For forward-looking priorities, use
   `int` claim: unbounded arithmetic and shifts stay boxed/runtime-backed until
   a range/shift-count proof can show that the operation cannot overflow i64,
   promote to BigInt, or raise for Python shift semantics.
+  Runtime integer shifts preserve the same contract directly: shift operands
+  are strict integer/bool/BigInt values rather than exact-float or arbitrary
+  `__index__` coercions, BigInt shift counts are not narrowed through fixed
+  machine widths, huge right shifts saturate by operand sign, and left shifts
+  validate allocation size before constructing wide BigInts.
   Native float-primary lowering likewise uses static `float_primary_vars` as
   the only authority for F64-primary Cranelift variables; the raw-f64 shadow
   lane has been removed, and non-primary float values are boxed immediately in
