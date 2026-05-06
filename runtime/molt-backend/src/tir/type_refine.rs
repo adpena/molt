@@ -57,16 +57,18 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            if let Some(inferred) =
-                infer_result_type_with_attrs(op.opcode, &operand_types, Some(&op.attrs))
-            {
-                for &result_id in &op.results {
-                    env.insert(result_id, inferred.clone());
-                }
-            } else {
-                // No inference possible — preserve any persisted fact first,
-                // otherwise record DynBox so the map is complete.
-                for &result_id in &op.results {
+            let inferred_types = infer_result_types_with_attrs(
+                op.opcode,
+                &operand_types,
+                Some(&op.attrs),
+                op.results.len(),
+            );
+            for (&result_id, inferred) in op.results.iter().zip(inferred_types.into_iter()) {
+                if let Some(inferred) = inferred {
+                    env.insert(result_id, inferred);
+                } else {
+                    // No inference possible — preserve any persisted fact first,
+                    // otherwise record DynBox so the map is complete.
                     env.entry(result_id).or_insert(TirType::DynBox);
                 }
             }
@@ -258,13 +260,19 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     .iter()
                     .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                     .collect();
-                let inferred = return_type_hint
-                    .clone()
-                    .or_else(|| infer_result_type(*opcode, &operand_types));
-                if results.len() == 1
-                    && let Some(new_ty) = inferred
-                {
-                    env.insert(results[0], new_ty);
+                let inferred_types = if results.len() == 1 {
+                    vec![
+                        return_type_hint
+                            .clone()
+                            .or_else(|| infer_result_type(*opcode, &operand_types)),
+                    ]
+                } else {
+                    infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
+                };
+                for (&result_id, inferred) in results.iter().zip(inferred_types.into_iter()) {
+                    if let Some(new_ty) = inferred {
+                        env.insert(result_id, new_ty);
+                    }
                 }
             }
         }
@@ -381,13 +389,17 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 // Frontend-provided return-type hint takes precedence for
                 // opaque call-like opcodes; falls back to operand-based
                 // inference for everything else.
-                let inferred = return_type_hint
-                    .clone()
-                    .or_else(|| infer_result_type(*opcode, &operand_types));
+                let inferred_types = if results.len() == 1 {
+                    vec![
+                        return_type_hint
+                            .clone()
+                            .or_else(|| infer_result_type(*opcode, &operand_types)),
+                    ]
+                } else {
+                    infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
+                };
 
-                // For ops with a single result (the common case).
-                if results.len() == 1 {
-                    let result_id = results[0];
+                for (&result_id, inferred) in results.iter().zip(inferred_types.into_iter()) {
                     // Skip frozen values — they have been fixed to DynBox.
                     if frozen.contains(&result_id) {
                         continue;
@@ -801,10 +813,14 @@ fn propagate_guard_types(
                         .unwrap_or_else(|| env.get(id).cloned().unwrap_or(TirType::DynBox))
                 })
                 .collect();
-            if let Some(result_ty) =
-                infer_result_type_with_attrs(op.opcode, &operand_types, Some(&op.attrs))
-            {
-                for &result_id in &op.results {
+            let result_types = infer_result_types_with_attrs(
+                op.opcode,
+                &operand_types,
+                Some(&op.attrs),
+                op.results.len(),
+            );
+            for (&result_id, result_ty) in op.results.iter().zip(result_types.into_iter()) {
+                if let Some(result_ty) = result_ty {
                     proven_types.insert(result_id, result_ty.clone());
                     let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
                     if current != result_ty {
@@ -901,10 +917,14 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| proven.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            if let Some(result_ty) =
-                infer_result_type_with_attrs(op.opcode, &operand_types, Some(&op.attrs))
-            {
-                for &result_id in &op.results {
+            let result_types = infer_result_types_with_attrs(
+                op.opcode,
+                &operand_types,
+                Some(&op.attrs),
+                op.results.len(),
+            );
+            for (&result_id, result_ty) in op.results.iter().zip(result_types.into_iter()) {
+                if let Some(result_ty) = result_ty {
                     proven.insert(result_id, result_ty.clone());
                 }
             }
@@ -986,6 +1006,39 @@ pub(super) fn infer_scalar_return_result_type(
 /// `AttrValue::Str` for opaque call-like opcodes that operand-only inference
 /// cannot resolve.
 fn infer_result_type_with_attrs(
+    opcode: OpCode,
+    operand_types: &[TirType],
+    attrs: Option<&super::ops::AttrDict>,
+) -> Option<TirType> {
+    infer_result_types_with_attrs(opcode, operand_types, attrs, 1)
+        .into_iter()
+        .next()
+        .flatten()
+}
+
+fn infer_result_types_with_attrs(
+    opcode: OpCode,
+    operand_types: &[TirType],
+    attrs: Option<&super::ops::AttrDict>,
+    result_count: usize,
+) -> Vec<Option<TirType>> {
+    if result_count == 0 {
+        return vec![];
+    }
+    if matches!(opcode, OpCode::IterNextUnboxed) && result_count == 2 {
+        return vec![None, Some(TirType::Bool)];
+    }
+    if result_count != 1 {
+        return vec![None; result_count];
+    }
+    vec![infer_single_result_type_with_attrs(
+        opcode,
+        operand_types,
+        attrs,
+    )]
+}
+
+fn infer_single_result_type_with_attrs(
     opcode: OpCode,
     operand_types: &[TirType],
     attrs: Option<&super::ops::AttrDict>,
@@ -2470,6 +2523,61 @@ mod tests {
         let type_map = extract_type_map(&func);
 
         assert_eq!(type_map.get(&result), Some(&TirType::DynBox));
+    }
+
+    #[test]
+    fn iter_next_unboxed_done_flag_refines_to_bool() {
+        let iter = ValueId(0);
+        let elem = ValueId(1);
+        let done = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::IterNextUnboxed,
+            vec![iter],
+            vec![elem, done],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types.insert(iter, TirType::DynBox);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(
+            type_map.get(&elem),
+            Some(&TirType::DynBox),
+            "iterator element stays conservative until iterator element provenance is represented"
+        );
+        assert_eq!(type_map.get(&done), Some(&TirType::Bool));
+        assert_eq!(
+            func.value_types.get(&done),
+            Some(&TirType::Bool),
+            "refine_types must persist multi-result done-flag facts"
+        );
+    }
+
+    #[test]
+    fn iter_next_unboxed_done_flag_not_proven_without_proven_iterator() {
+        let iter = ValueId(0);
+        let elem = ValueId(1);
+        let done = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::IterNextUnboxed,
+            vec![iter],
+            vec![elem, done],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types.insert(iter, TirType::DynBox);
+
+        refine_types(&mut func);
+        let proven = extract_proven_map(&func);
+
+        assert_eq!(proven.get(&elem), None);
+        assert_eq!(
+            proven.get(&done),
+            None,
+            "done flag type is inferred but not proven unless the iterator operand is proven"
+        );
     }
 
     // ---- Test: parse_guard_type handles various type strings ----
