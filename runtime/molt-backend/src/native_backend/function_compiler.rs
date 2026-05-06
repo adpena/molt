@@ -1,5 +1,7 @@
 use super::*;
-use crate::representation_plan::{ContainerKind, ScalarKind, ScalarRepresentationPlan};
+use crate::representation_plan::{
+    ContainerKind, ContainerStorageKind, ScalarKind, ScalarRepresentationPlan,
+};
 
 #[cfg(feature = "native-backend")]
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
@@ -47,6 +49,7 @@ fn scan_loop_hoistable_lists(
     ops: &[OpIR],
     start_idx: usize,
     pre_loop_defined: &BTreeSet<String>,
+    representation_plan: &ScalarRepresentationPlan,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut list_int_accessed: BTreeSet<String> = BTreeSet::new();
     let mut list_generic_accessed: BTreeSet<String> = BTreeSet::new();
@@ -72,15 +75,17 @@ fn scan_loop_hoistable_lists(
             _ => continue,
         };
         match op.kind.as_str() {
-            "index" | "store_index" => match op.container_type.as_deref() {
-                Some("list_int") => {
+            "index" | "store_index" => {
+                if representation_plan.op_has_container_storage(
+                    idx,
+                    op,
+                    ContainerStorageKind::FlatListInt,
+                ) {
                     list_int_accessed.insert(args[0].clone());
-                }
-                Some("list") => {
+                } else if op.container_type.as_deref() == Some("list") {
                     list_generic_accessed.insert(args[0].clone());
                 }
-                _ => {}
-            },
+            }
             "list_append" | "list_pop" | "list_extend" | "list_insert" | "list_remove"
             | "list_clear" => {
                 mutated.insert(args[0].clone());
@@ -120,7 +125,7 @@ fn collect_pre_loop_defined_names(ops: &[OpIR], start_idx: usize) -> BTreeSet<St
 /// ```text
 /// loop_index_start  (idx)
 ///   ...
-///   index  list_name[idx]  container_type="list_int"  bce_safe=true  -> elem
+///   index  list_name[idx]  FlatListInt storage proof  bce_safe=true  -> elem
 ///   add/inplace_add  [acc, elem] -> acc_next   (or [elem, acc])
 ///   store_var  acc_slot = acc_next
 ///   ...
@@ -155,8 +160,8 @@ struct SumReductionCandidate {
 /// and detect a simple integer sum-reduction pattern over a `list_int`.
 ///
 /// Returns `Some(candidate)` only when ALL of the following hold:
-///   1. The loop body contains exactly one `index` op with `container_type="list_int"`
-///      and `bce_safe=true`.
+///   1. The loop body contains exactly one `index` op with a shared
+///      `FlatListInt` storage proof and `bce_safe=true`.
 ///   2. The loop body contains exactly one `add` or `inplace_add` op whose operands
 ///      include the element from (1) and an accumulator, and whose output feeds
 ///      into a single `store_var`.
@@ -167,6 +172,7 @@ fn scan_loop_int_sum_reduction(
     ops: &[OpIR],
     loop_index_start_idx: usize,
     index_var_name: &str,
+    representation_plan: &ScalarRepresentationPlan,
 ) -> Option<SumReductionCandidate> {
     // Find the matching loop_end.
     let mut depth = 0i32;
@@ -199,8 +205,12 @@ fn scan_loop_int_sum_reduction(
                 break;
             }
             "index" => {
-                if op.container_type.as_deref() != Some("list_int") {
-                    return None; // non-list_int index disqualifies
+                if !representation_plan.op_has_container_storage(
+                    i,
+                    op,
+                    ContainerStorageKind::FlatListInt,
+                ) {
+                    return None; // non-flat-list-int storage disqualifies
                 }
                 if op.bce_safe != Some(true) {
                     return None; // bounds check needed — can't safely unroll
@@ -12293,7 +12303,11 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-                        if op.container_type.as_deref() == Some("list_int") {
+                        if representation_plan.op_has_container_storage(
+                            op_idx,
+                            &op,
+                            ContainerStorageKind::FlatListInt,
+                        ) {
                             // Inline list[int] getitem — direct memory access using
                             // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
                             //
@@ -13048,7 +13062,11 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Value not found in {} op {}", func_ir.name, op_idx));
-                    if op.container_type.as_deref() == Some("list_int") {
+                    if representation_plan.op_has_container_storage(
+                        op_idx,
+                        &op,
+                        ContainerStorageKind::FlatListInt,
+                    ) {
                         // Inline list[int] setitem with bounds check using
                         // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
                         // Inside loops, use Variable-only shadows (phi-correct).
@@ -13641,7 +13659,11 @@ impl SimpleBackend {
                     // - list_int: flat i64 storage (Codon-style)
                     // - fast_int: generic list but key is known int
                     // - default: full dict/generic dispatch
-                    if op.container_type.as_deref() == Some("list_int") {
+                    if representation_plan.op_has_container_storage(
+                        op_idx,
+                        &op,
+                        ContainerStorageKind::FlatListInt,
+                    ) {
                         // raw_int_shadow fast path for list_int dict_set.
                         // Inside loops, use Variable-only shadows (phi-correct).
                         let in_loop = !loop_stack.is_empty();
@@ -29071,8 +29093,12 @@ impl SimpleBackend {
                             for p in func_ir.params.iter().filter(|n| n.as_str() != "none") {
                                 pre_loop_defined.insert(p.clone());
                             }
-                            let (li_hoist, lg_hoist) =
-                                scan_loop_hoistable_lists(&func_ir.ops, op_idx, &pre_loop_defined);
+                            let (li_hoist, lg_hoist) = scan_loop_hoistable_lists(
+                                &func_ir.ops,
+                                op_idx,
+                                &pre_loop_defined,
+                                &representation_plan,
+                            );
                             for list_name in &li_hoist {
                                 if list_int_data_cache.contains_key(list_name) {
                                     continue; // already cached from an outer scope
@@ -29449,8 +29475,12 @@ impl SimpleBackend {
                             for p in func_ir.params.iter().filter(|n| n.as_str() != "none") {
                                 pre_loop_defined.insert(p.clone());
                             }
-                            let (li_hoist, lg_hoist) =
-                                scan_loop_hoistable_lists(&func_ir.ops, op_idx, &pre_loop_defined);
+                            let (li_hoist, lg_hoist) = scan_loop_hoistable_lists(
+                                &func_ir.ops,
+                                op_idx,
+                                &pre_loop_defined,
+                                &representation_plan,
+                            );
                             for list_name in &li_hoist {
                                 if list_int_data_cache.contains_key(list_name) {
                                     continue;
@@ -29573,11 +29603,14 @@ impl SimpleBackend {
                         // ── 4x Loop Unrolling for sum reductions ─────────
                         // Before emitting the standard structured loop, check
                         // if the loop body is a simple sum reduction over a
-                        // list_int.  If so, emit a 4x-unrolled main loop +
+                        // structurally proven flat int list.  If so, emit a 4x-unrolled main loop +
                         // scalar epilogue and skip all body ops.
-                        if let Some(reduction) =
-                            scan_loop_int_sum_reduction(&func_ir.ops, op_idx, &out_name)
-                        {
+                        if let Some(reduction) = scan_loop_int_sum_reduction(
+                            &func_ir.ops,
+                            op_idx,
+                            &out_name,
+                            &representation_plan,
+                        ) {
                             // We need:
                             //   - data_ptr from list_int_data_cache (hoisted above)
                             //   - len from list_int_len_cache (hoisted above)
@@ -34682,6 +34715,26 @@ mod tests {
         preanalyze_function_ir(func_ir, return_alias_summaries, &representation_plan)
     }
 
+    fn representation_plan_for_ops(ops: &[OpIR]) -> ScalarRepresentationPlan {
+        ScalarRepresentationPlan::for_function_ir(&FunctionIR {
+            name: "storage_test".to_string(),
+            params: vec![],
+            ops: ops.to_vec(),
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        })
+    }
+
+    fn list_int_new(out: &str) -> OpIR {
+        OpIR {
+            kind: "list_int_new".to_string(),
+            out: Some(out.to_string()),
+            container_type: Some("list_int".to_string()),
+            ..OpIR::default()
+        }
+    }
+
     #[test]
     fn raw_bool_boxing_accepts_i64_carrier() {
         let mut sig = Signature::new(CallConv::SystemV);
@@ -35878,6 +35931,7 @@ mod tests {
         //   for x in list_of_ints:
         //       total += x
         let ops = vec![
+            list_int_new("my_list"),
             // 0: loop_start
             OpIR {
                 kind: "loop_start".to_string(),
@@ -35932,20 +35986,22 @@ mod tests {
             },
         ];
 
-        let result = scan_loop_int_sum_reduction(&ops, 1, "idx");
+        let plan = representation_plan_for_ops(&ops);
+        let result = scan_loop_int_sum_reduction(&ops, 2, "idx", &plan);
         assert!(result.is_some(), "canonical sum reduction must be detected");
         let candidate = result.unwrap();
         assert_eq!(candidate.list_name, "my_list");
         assert_eq!(candidate.acc_store_slot, "total");
         assert_eq!(candidate.add_out_name, "sum_result");
         assert_eq!(candidate.acc_operand_name, "total");
-        assert_eq!(candidate.loop_end_idx, 7);
+        assert_eq!(candidate.loop_end_idx, 8);
     }
 
     #[test]
     fn sum_reduction_detects_reversed_add_operands() {
         // add [elem, total] instead of [total, elem]
         let ops = vec![
+            list_int_new("lst"),
             OpIR {
                 kind: "loop_index_start".to_string(),
                 out: Some("i".to_string()),
@@ -35978,7 +36034,8 @@ mod tests {
             },
         ];
 
-        let result = scan_loop_int_sum_reduction(&ops, 0, "i");
+        let plan = representation_plan_for_ops(&ops);
+        let result = scan_loop_int_sum_reduction(&ops, 1, "i", &plan);
         assert!(
             result.is_some(),
             "reversed operand sum reduction must be detected"
@@ -35991,6 +36048,7 @@ mod tests {
     #[test]
     fn sum_reduction_rejects_non_bce_safe() {
         let ops = vec![
+            list_int_new("lst"),
             OpIR {
                 kind: "loop_index_start".to_string(),
                 out: Some("i".to_string()),
@@ -36022,9 +36080,10 @@ mod tests {
                 ..OpIR::default()
             },
         ];
+        let plan = representation_plan_for_ops(&ops);
 
         assert!(
-            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
             "non-bce_safe index must disqualify sum reduction"
         );
     }
@@ -36032,6 +36091,7 @@ mod tests {
     #[test]
     fn sum_reduction_rejects_call_in_body() {
         let ops = vec![
+            list_int_new("lst"),
             OpIR {
                 kind: "loop_index_start".to_string(),
                 out: Some("i".to_string()),
@@ -36070,9 +36130,10 @@ mod tests {
                 ..OpIR::default()
             },
         ];
+        let plan = representation_plan_for_ops(&ops);
 
         assert!(
-            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
             "call in loop body must disqualify sum reduction"
         );
     }
@@ -36080,6 +36141,7 @@ mod tests {
     #[test]
     fn sum_reduction_rejects_nested_loop() {
         let ops = vec![
+            list_int_new("lst"),
             OpIR {
                 kind: "loop_index_start".to_string(),
                 out: Some("i".to_string()),
@@ -36120,9 +36182,10 @@ mod tests {
                 ..OpIR::default()
             },
         ];
+        let plan = representation_plan_for_ops(&ops);
 
         assert!(
-            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
             "nested loop must disqualify sum reduction"
         );
     }
@@ -36131,6 +36194,7 @@ mod tests {
     fn sum_reduction_rejects_wrong_index_var() {
         // Index uses a different variable than the loop induction variable
         let ops = vec![
+            list_int_new("lst"),
             OpIR {
                 kind: "loop_index_start".to_string(),
                 out: Some("i".to_string()),
@@ -36162,9 +36226,10 @@ mod tests {
                 ..OpIR::default()
             },
         ];
+        let plan = representation_plan_for_ops(&ops);
 
         assert!(
-            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
             "index with non-induction variable must disqualify"
         );
     }
@@ -36203,9 +36268,10 @@ mod tests {
                 ..OpIR::default()
             },
         ];
+        let plan = representation_plan_for_ops(&ops);
 
         assert!(
-            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            scan_loop_int_sum_reduction(&ops, 0, "i", &plan).is_none(),
             "non-list_int container must disqualify"
         );
     }
@@ -36213,6 +36279,7 @@ mod tests {
     #[test]
     fn sum_reduction_rejects_multiple_stores() {
         let ops = vec![
+            list_int_new("lst"),
             OpIR {
                 kind: "loop_index_start".to_string(),
                 out: Some("i".to_string()),
@@ -36250,9 +36317,10 @@ mod tests {
                 ..OpIR::default()
             },
         ];
+        let plan = representation_plan_for_ops(&ops);
 
         assert!(
-            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
             "multiple store_var ops must disqualify"
         );
     }
@@ -36261,6 +36329,7 @@ mod tests {
     fn sum_reduction_rejects_add_elem_mismatch() {
         // add operands don't include the index element
         let ops = vec![
+            list_int_new("lst"),
             OpIR {
                 kind: "loop_index_start".to_string(),
                 out: Some("i".to_string()),
@@ -36292,9 +36361,10 @@ mod tests {
                 ..OpIR::default()
             },
         ];
+        let plan = representation_plan_for_ops(&ops);
 
         assert!(
-            scan_loop_int_sum_reduction(&ops, 0, "i").is_none(),
+            scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
             "add operand mismatch must disqualify"
         );
     }
@@ -36641,6 +36711,7 @@ mod tests {
             name: "list_int_store_safe".to_string(),
             params: vec![],
             ops: vec![
+                list_int_new("lst"),
                 OpIR {
                     kind: "const".to_string(),
                     out: Some("idx".to_string()),

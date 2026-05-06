@@ -88,8 +88,9 @@ This file is forward-looking only.
   plan for Luau, WASM import selection/emission, native `len`/`contains`, and
   LLVM `len`; `container_type` / `type_hint` strings alone no longer select
   those specialized paths. Semantic `list[int]` is not treated as flat
-  `list_int` storage proof; direct storage optimizations require a separate
-  structural storage fact.
+  `list_int` storage proof; native direct storage optimizations now require a
+  shared `ContainerStorageKind::FlatListInt` fact seeded by structural
+  `list_int_new` producers and queried through the representation plan.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
