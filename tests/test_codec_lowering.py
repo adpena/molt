@@ -315,6 +315,56 @@ x = ["a" for _ in range(n)]
     assert "list_append" not in kinds
 
 
+def test_fully_positional_dataclass_constructor_skips_init_dispatch():
+    src = """
+from dataclasses import dataclass
+
+@dataclass
+class Order:
+    order_id: int
+    region: str
+    qty: int
+    price: int
+    status: str
+
+order = Order(1, "NA", 2, 3, "paid")
+print(order.qty)
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir)
+    assert "dataclass_new" in kinds
+    assert "dataclass_get" in kinds
+    assert "bound_method_new" not in kinds
+    assert "dataclass_set" not in kinds
+
+
+def test_annotated_dataclass_list_iteration_preserves_field_lowering():
+    src = """
+from dataclasses import dataclass
+
+@dataclass
+class Order:
+    qty: int
+    status: str
+
+def main() -> None:
+    orders: list[Order] = []
+    orders.append(Order(2, "paid"))
+    total = 0
+    for order in orders:
+        if order.status == "paid":
+            total += order.qty
+    print(total)
+
+if __name__ == "__main__":
+    main()
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir, "__main____molt_user_main")
+    assert kinds.count("dataclass_get") == 2
+    assert "get_attr_generic_obj" not in kinds
+
+
 def test_prod_reduction_over_flat_listcomp_skips_intarray_conversion():
     src = """
 def main():
