@@ -22416,151 +22416,122 @@ fn resolve_sqlite_symbol(symbol: &str) -> Option<u64> {
 #[cold]
 fn resolve_ssl_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_cert_none" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_cert_none",
             crate::molt_ssl_cert_none as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_cert_optional" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_cert_optional",
             crate::molt_ssl_cert_optional as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_cert_required" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_cert_required",
             crate::molt_ssl_cert_required as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_check_hostname_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_check_hostname_get",
             crate::molt_ssl_context_check_hostname_get as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_check_hostname_set" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_check_hostname_set",
             crate::molt_ssl_context_check_hostname_set as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_drop",
             crate::molt_ssl_context_drop as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_get_protocol" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_get_protocol",
             crate::molt_ssl_context_get_protocol as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_load_cert_chain" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_load_cert_chain",
             crate::molt_ssl_context_load_cert_chain as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_load_verify_locations" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_ssl_context_load_verify_locations",
                 crate::molt_ssl_context_load_verify_locations as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_new",
             crate::molt_ssl_context_new as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_set_ciphers" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_set_ciphers",
             crate::molt_ssl_context_set_ciphers as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_set_default_verify_paths" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_ssl_context_set_default_verify_paths",
                 crate::molt_ssl_context_set_default_verify_paths as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_verify_mode_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_verify_mode_get",
             crate::molt_ssl_context_verify_mode_get as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_context_verify_mode_set" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_context_verify_mode_set",
             crate::molt_ssl_context_verify_mode_set as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_create_default_context" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_create_default_context",
             crate::molt_ssl_create_default_context as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_has_sni" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_has_sni",
             crate::molt_ssl_has_sni as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_openssl_version" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_openssl_version",
             crate::molt_ssl_openssl_version as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_protocol_tls_client" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_protocol_tls_client",
             crate::molt_ssl_protocol_tls_client as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_protocol_tls_server" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_protocol_tls_server",
             crate::molt_ssl_protocol_tls_server as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_cipher" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_cipher",
             crate::molt_ssl_socket_cipher as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_close" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_close",
             crate::molt_ssl_socket_close as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_do_handshake" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_do_handshake",
             crate::molt_ssl_socket_do_handshake as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_drop",
             crate::molt_ssl_socket_drop as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_getpeercert" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_getpeercert",
             crate::molt_ssl_socket_getpeercert as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_read" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_read",
             crate::molt_ssl_socket_read as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_unwrap" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_unwrap",
             crate::molt_ssl_socket_unwrap as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_version" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_version",
             crate::molt_ssl_socket_version as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_socket_write" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_write",
             crate::molt_ssl_socket_write as *const (),
         )),
-        #[cfg(feature = "stdlib_net")]
         "molt_ssl_wrap_socket" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_wrap_socket",
             crate::molt_ssl_wrap_socket as *const (),

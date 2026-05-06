@@ -57,8 +57,9 @@ _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
     ("molt_zipfile_", "stdlib_archive"),
     # tk: tkinter GUI bindings
     ("molt_tk_", "stdlib_tk"),
-    # networking: ssl, http, urllib
-    ("molt_ssl_", "stdlib_net"),
+    # networking: http, urllib. SSL keeps an always-linkable ABI because
+    # asyncio imports ssl eagerly even in micro profiles; runtime operations
+    # without net support raise from the Rust intrinsic implementation.
     ("molt_http_", "stdlib_net"),
     ("molt_urllib_", "stdlib_net"),
     ("molt_ipaddress_", "stdlib_net"),
