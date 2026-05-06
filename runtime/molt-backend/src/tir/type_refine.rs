@@ -94,6 +94,15 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
+    if let Some(entry) = func.blocks.get_mut(&func.entry_block) {
+        for (arg, param_ty) in entry.args.iter_mut().zip(func.param_types.iter()) {
+            if *param_ty != TirType::DynBox {
+                arg.ty = param_ty.clone();
+                env.insert(arg.id, param_ty.clone());
+            }
+        }
+    }
+
     // Track which values started as DynBox so we can count refinements.
     let initially_dynbox: Vec<ValueId> = env
         .iter()
@@ -944,8 +953,25 @@ fn parse_return_type_str(name: &str) -> Option<TirType> {
 
 /// Infer the result type of an operation from its operand types.
 /// Returns `None` if the result type cannot be determined (stays as-is).
-fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirType> {
+pub(super) fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirType> {
     infer_result_type_with_attrs(opcode, operand_types, None)
+}
+
+pub(super) fn infer_scalar_return_result_type(
+    opcode: OpCode,
+    operand_types: &[TirType],
+) -> Option<TirType> {
+    infer_result_type(opcode, operand_types).filter(|ty| {
+        matches!(
+            ty,
+            TirType::I64
+                | TirType::F64
+                | TirType::Bool
+                | TirType::None
+                | TirType::Str
+                | TirType::Bytes
+        )
+    })
 }
 
 /// Variant of [`infer_result_type`] that consults a structural `return_type`
