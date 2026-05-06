@@ -10311,6 +10311,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._list_int_containers.add(res.name)
         return res
 
+    def _emit_list_filled(
+        self, count: MoltValue, fill: MoltValue, elem_hint: str | None
+    ) -> MoltValue:
+        res = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_FILL_NEW", args=[count, fill], result=res))
+        if elem_hint and elem_hint not in {"Any", "Unknown"}:
+            if self.current_func_name == "molt_main":
+                self.global_elem_hints[res.name] = elem_hint
+            else:
+                self.container_elem_hints[res.name] = elem_hint
+        return res
+
     def _match_simple_range_list_comp(
         self, node: ast.ListComp
     ) -> tuple[MoltValue, MoltValue, MoltValue] | None:
@@ -10350,6 +10362,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         return int(value)
 
+    def _match_const_range_list_comp(self, node: ast.ListComp) -> ast.Constant | None:
+        if len(node.generators) != 1:
+            return None
+        comp = node.generators[0]
+        if comp.is_async or comp.ifs:
+            return None
+        if not isinstance(comp.target, ast.Name):
+            return None
+        if not isinstance(node.elt, ast.Constant):
+            return None
+        value = node.elt.value
+        if isinstance(value, int) and not isinstance(value, bool):
+            return None
+        if not isinstance(comp.iter, ast.Call):
+            return None
+        if not isinstance(comp.iter.func, ast.Name) or comp.iter.func.id != "range":
+            return None
+        if len(comp.iter.args) > 3 or comp.iter.keywords:
+            return None
+        return node.elt
+
     def _emit_const_int_range_list_comp(
         self, node: ast.ListComp, fill_value: int
     ) -> MoltValue:
@@ -10364,6 +10397,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         fill = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[fill_value], result=fill))
         return self._emit_list_int_filled(count, fill)
+
+    def _emit_const_range_list_comp(
+        self, node: ast.ListComp, fill_node: ast.Constant
+    ) -> MoltValue:
+        comp = node.generators[0]
+        parsed = self._parse_range_call(comp.iter)
+        if parsed is None:
+            raise NotImplementedError("Unsupported range in list comprehension")
+        start, stop, step, _ = parsed
+        range_obj = self._emit_range_obj_from_args(start, stop, step)
+        count = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LEN", args=[range_obj], result=count))
+        fill = self.visit(fill_node)
+        if fill is None:
+            raise NotImplementedError("Unsupported list comprehension fill value")
+        elem_hint = fill.type_hint if isinstance(fill, MoltValue) else None
+        return self._emit_list_filled(count, fill, elem_hint)
 
     def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="list")
@@ -13075,6 +13125,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             fill_value = self._match_const_int_range_list_comp(node)
             if fill_value is not None:
                 return self._emit_const_int_range_list_comp(node, fill_value)
+            fill_node = self._match_const_range_list_comp(node)
+            if fill_node is not None:
+                return self._emit_const_range_list_comp(node, fill_node)
             if self._can_inline_list_comp(node):
                 return self._emit_inline_list_comp(node)
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
@@ -33207,6 +33260,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
                 json_list_int_containers.add(op.result.name)
+            elif op.kind == "LIST_FILL_NEW":
+                json_ops.append(
+                    {
+                        "kind": "list_fill_new",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "RANGE_NEW":
                 json_ops.append(
                     {

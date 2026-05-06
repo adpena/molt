@@ -7793,6 +7793,16 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["list_int_new"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
+                    "list_fill_new" => {
+                        let args = op.args.as_ref().unwrap();
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let count = locals[&args[0]];
+                        let fill = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(count));
+                        func.instruction(&Instruction::LocalGet(fill));
+                        emit_call(func, reloc_enabled, import_ids["list_fill_new"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
                     "range_new" => {
                         let args = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];

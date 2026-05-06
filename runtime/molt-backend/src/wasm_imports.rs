@@ -305,6 +305,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("list_int_getitem_truthy", 3),
     ("list_int_len", 2),
     ("list_int_new", 3),
+    ("list_fill_new", 3),
     ("list_int_setitem", 5),
     ("list_int_setitem_nogil", 5),
     ("list_int_setitem_raw", 5),
@@ -1352,6 +1353,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("list_int_new", &["list_int_new"]),
+    ("list_fill_new", &["list_fill_new"]),
     (
         "build_list",
         &[
