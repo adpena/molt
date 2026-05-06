@@ -1006,6 +1006,12 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Allocate a code object and retain all object-valued fields.
+///
+/// `filename_bits`, `name_bits`, `linetable_bits`, and `varnames_bits` are
+/// borrowed inputs.  The returned code object owns one reference to each
+/// non-zero field; callers that created temporary field objects must drop their
+/// creator reference after this constructor returns.
 pub(crate) fn alloc_code_obj(
     _py: &PyToken<'_>,
     filename_bits: u64,

@@ -1819,23 +1819,21 @@ pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
     if fn_ptr == 0 {
         return;
     }
-    let mut guard = fn_ptr_code_map(_py).lock().unwrap();
-    if code_bits == 0 {
-        if let Some(old_bits) = guard.remove(&fn_ptr)
-            && old_bits != 0
-        {
-            crate::dec_ref_bits(_py, old_bits);
+    let old_to_dec = {
+        let mut guard = fn_ptr_code_map(_py).lock().unwrap();
+        if code_bits == 0 {
+            guard.remove(&fn_ptr)
+        } else if guard.get(&fn_ptr).copied() == Some(code_bits) {
+            None
+        } else {
+            crate::inc_ref_bits(_py, code_bits);
+            guard.insert(fn_ptr, code_bits)
         }
-        return;
-    }
-    let old_bits = guard.insert(fn_ptr, code_bits);
-    if old_bits != Some(code_bits) {
-        crate::inc_ref_bits(_py, code_bits);
-        if let Some(old) = old_bits
-            && old != 0
-        {
-            crate::dec_ref_bits(_py, old);
-        }
+    };
+    if let Some(old_bits) = old_to_dec
+        && old_bits != 0
+    {
+        crate::dec_ref_bits(_py, old_bits);
     }
 }
 

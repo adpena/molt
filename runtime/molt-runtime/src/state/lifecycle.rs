@@ -252,8 +252,11 @@ fn clear_asyncgen_locals(_py: &PyToken<'_>, state: &RuntimeState) {
 
 fn clear_fn_ptr_code_map(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
-    let mut guard = state.fn_ptr_code.lock().unwrap();
-    for (_key, bits) in guard.drain() {
+    let drained: Vec<u64> = {
+        let mut guard = state.fn_ptr_code.lock().unwrap();
+        guard.drain().map(|(_key, bits)| bits).collect()
+    };
+    for bits in drained {
         if bits != 0 {
             dec_ref_bits(_py, bits);
         }
