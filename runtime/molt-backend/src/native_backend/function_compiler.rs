@@ -3620,23 +3620,16 @@ impl SimpleBackend {
                         // If result overflows 47-bit inline range, fall to slow path.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
                         // Phase 1b: inside loops, accept either a Variable-tier
                         // shadow (phi-correct across back-edges) OR a
                         // int_primary_vars main Variable (loop-invariant
                         // constants and non-phi raw values). This widens fast
                         // path eligibility for `i + 1` patterns where the
                         // const is in int_primary_vars but never shadowed.
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let lhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name);
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -3732,8 +3725,8 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            let merged_boxed = builder.block_params(merge_block)[0];
-                            merged_boxed
+
+                            builder.block_params(merge_block)[0]
                         }
                     } else if op_prefers_integer_runtime_lane(&op) {
                         let lhs = var_get_boxed_overflow_safe(
@@ -3980,17 +3973,10 @@ impl SimpleBackend {
                         // that when inside a loop and only Value-tier shadows exist
                         // (no Variable-tier), we fall through to the proven-int path
                         // instead of panicking on unwrap.
-                        let in_loop = !loop_stack.is_empty();
-                        let lhs_val = if in_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                        };
-                        let rhs_val = if in_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        };
+                        let lhs_val =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
+                        let rhs_val =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -4079,8 +4065,8 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        merge_res
+
+                        builder.block_params(merge_block)[0]
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -5448,11 +5434,8 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -5552,8 +5535,8 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            let merged_boxed = builder.block_params(merge_block)[0];
-                            merged_boxed
+
+                            builder.block_params(merge_block)[0]
                         }
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -5723,19 +5706,12 @@ impl SimpleBackend {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
                         // Inside loops, use Variable-only shadows (phi-correct).
-                        let in_loop = !loop_stack.is_empty();
-                        let lhs_val = if in_loop {
+                        let lhs_val =
                             int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                        }
-                        .unwrap();
-                        let rhs_val = if in_loop {
+                                .unwrap();
+                        let rhs_val =
                             int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        }
-                        .unwrap();
+                                .unwrap();
                         // Typed IR: raw i64 is PRIMARY.  Branchless isub
                         // with deferred overflow — no boxing emitted here.
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
@@ -5818,8 +5794,8 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        merge_res
+
+                        builder.block_params(merge_block)[0]
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -5991,11 +5967,8 @@ impl SimpleBackend {
                         } else {
                             int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
                         };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -6088,8 +6061,8 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            let merged_boxed = builder.block_params(merge_block)[0];
-                            merged_boxed
+
+                            builder.block_params(merge_block)[0]
                         }
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
@@ -6257,19 +6230,12 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Inside loops, use Variable-only shadows (phi-correct).
-                        let in_loop = !loop_stack.is_empty();
-                        let lhs_val = if in_loop {
+                        let lhs_val =
                             int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                        }
-                        .unwrap();
-                        let rhs_val = if in_loop {
+                                .unwrap();
+                        let rhs_val =
                             int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        }
-                        .unwrap();
+                                .unwrap();
                         // Typed IR: raw i64 is PRIMARY.  Branchless imul
                         // with deferred overflow — no boxing emitted here.
                         let raw_result = builder.ins().imul(lhs_val, rhs_val);
@@ -6345,8 +6311,8 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let merge_res = builder.block_params(merge_block)[0];
-                        merge_res
+
+                        builder.block_params(merge_block)[0]
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -6457,17 +6423,10 @@ impl SimpleBackend {
                     let res = if op_prefers_int_lane(&op) {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let lhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name);
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -6719,17 +6678,10 @@ impl SimpleBackend {
                     let res = if op_prefers_int_lane(&op) {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let lhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name);
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -6980,17 +6932,10 @@ impl SimpleBackend {
                     let res = if op_prefers_int_lane(&op) {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let lhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name);
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -7488,12 +7433,7 @@ impl SimpleBackend {
                         }
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        if out_is_float_primary {
-                            let merged_raw_f = builder.block_params(merge_block)[0];
-                            merged_raw_f
-                        } else {
-                            builder.block_params(merge_block)[0]
-                        }
+                        builder.block_params(merge_block)[0]
                     } else if op_prefers_int_lane(&op) {
                         // Python true division: int / int always returns float.
                         // Convert to f64 and do fdiv.
@@ -7583,12 +7523,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        if div_out_is_float_primary {
-                            let merged_raw_f = builder.block_params(merge_block)[0];
-                            merged_raw_f
-                        } else {
-                            builder.block_params(merge_block)[0]
-                        }
+                        builder.block_params(merge_block)[0]
                     } else {
                         let gen_div_out_fp = op
                             .out
@@ -7707,12 +7642,7 @@ impl SimpleBackend {
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        if gen_div_out_fp {
-                            let merged_raw_f = builder.block_params(merge_block)[0];
-                            merged_raw_f
-                        } else {
-                            builder.block_params(merge_block)[0]
-                        }
+                        builder.block_params(merge_block)[0]
                     };
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
@@ -7725,17 +7655,10 @@ impl SimpleBackend {
                         // i64 values directly, store raw as primary.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let lhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name);
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -8017,17 +7940,10 @@ impl SimpleBackend {
                         // Both-shadow raw-primary path.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let lhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name);
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
                         let out_is_int_primary = op
                             .out
                             .as_ref()
@@ -8406,17 +8322,10 @@ impl SimpleBackend {
                     let res = if op_prefers_int_lane(&op) {
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let lhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name)
-                        };
-                        let rhs_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name)
-                        };
+                        let lhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, lhs_name);
+                        let rhs_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, rhs_name);
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -12350,11 +12259,8 @@ impl SimpleBackend {
                             // Requires raw_int_shadow index for bounds-checked inline path.
                             // Falls back to the safe runtime function otherwise.
                             // Inside loops, use Variable-only shadows (phi-correct).
-                            let raw_idx_lookup = if !loop_stack.is_empty() {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                            } else {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                            };
+                            let raw_idx_lookup =
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                             if let Some(raw_idx) = raw_idx_lookup {
                                 // Extract storage_ptr, data_ptr, len (cached across loop iterations).
                                 let (data_ptr, len_val) = {
@@ -12541,11 +12447,8 @@ impl SimpleBackend {
                             // cached alongside data_ptr/len so the fast-block element access
                             // can branch between u64-load (regular list) and u8-load+NaN-box
                             // (list_bool) without re-loading the header.
-                            let raw_idx_lookup = if !loop_stack.is_empty() {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                            } else {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                            };
+                            let raw_idx_lookup =
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                             if let Some(raw_idx) = raw_idx_lookup {
                                 let vec_layout = vec_u64_layout();
                                 // Determine output element type for specialization.
@@ -13107,17 +13010,10 @@ impl SimpleBackend {
                         // Inline list[int] setitem with bounds check using
                         // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
                         // Inside loops, use Variable-only shadows (phi-correct).
-                        let in_loop = !loop_stack.is_empty();
-                        let raw_idx_opt = if in_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        };
-                        let raw_val_opt = if in_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
-                        };
+                        let raw_idx_opt =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
+                        let raw_val_opt =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2]);
                         if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
                             // Extract storage_ptr, data_ptr, len (cached).
                             let (data_ptr, len_val) = {
@@ -13259,11 +13155,8 @@ impl SimpleBackend {
                     ) {
                         // Inline list setitem — handles both TYPE_ID_LIST (Vec<u64>)
                         // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
-                        let raw_idx_opt = if !loop_stack.is_empty() {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        };
+                        let raw_idx_opt =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                         if let Some(raw_idx) = raw_idx_opt {
                             let vec_layout = vec_u64_layout();
                             let (data_ptr, len_val, is_bool_val) = {
@@ -13705,17 +13598,10 @@ impl SimpleBackend {
                     ) {
                         // raw_int_shadow fast path for list_int dict_set.
                         // Inside loops, use Variable-only shadows (phi-correct).
-                        let in_loop = !loop_stack.is_empty();
-                        let raw_key_opt = if in_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                        };
-                        let raw_val_opt = if in_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2])
-                        };
+                        let raw_key_opt =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
+                        let raw_val_opt =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2]);
                         if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
@@ -18033,11 +17919,7 @@ impl SimpleBackend {
                     } else {
                         int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
                     };
-                    let rr = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    };
+                    let rr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     // Helper: propagate raw bool result from a Cranelift icmp/fcmp
                     // result (i8) so downstream loop_break_if_true/false and `if`
                     // ops branch directly on the raw value, eliminating NaN-box
@@ -18259,17 +18141,8 @@ impl SimpleBackend {
                 }
                 "le" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let in_active_loop = !loop_stack.is_empty();
-                    let lr = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    };
-                    let rr = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    };
+                    let lr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
+                    let rr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut le_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
@@ -18492,17 +18365,10 @@ impl SimpleBackend {
                 }
                 "gt" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let in_active_loop = !loop_stack.is_empty();
-                    let lhs_shadow = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    };
-                    let rhs_shadow = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    };
+                    let lhs_shadow =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
+                    let rhs_shadow =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut gt_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
@@ -18724,17 +18590,10 @@ impl SimpleBackend {
                 }
                 "ge" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let in_active_loop = !loop_stack.is_empty();
-                    let lhs_shadow = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    };
-                    let rhs_shadow = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    };
+                    let lhs_shadow =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
+                    let rhs_shadow =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut ge_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
@@ -18960,17 +18819,8 @@ impl SimpleBackend {
                 }
                 "eq" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let in_active_loop = !loop_stack.is_empty();
-                    let eq_lr = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    };
-                    let eq_rr = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    };
+                    let eq_lr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
+                    let eq_rr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut eq_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (eq_lr, eq_rr) {
                         // Both operands have raw int shadows: direct icmp,
@@ -19173,17 +19023,8 @@ impl SimpleBackend {
                 }
                 "ne" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let in_active_loop = !loop_stack.is_empty();
-                    let ne_lr = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                    };
-                    let ne_rr = if in_active_loop {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    } else {
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1])
-                    };
+                    let ne_lr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
+                    let ne_rr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut ne_raw_bool: Option<Value> = None;
                     let res = if let (Some(lr), Some(rr)) = (ne_lr, ne_rr) {
                         // Both operands have raw int shadows: direct icmp.
@@ -19580,12 +19421,8 @@ impl SimpleBackend {
                     } else if op_prefers_int_lane(&op) {
                         // -x == 0 - x; overflow deferred to boxing escape.
                         let src_name = &args[0];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let src_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
-                        };
+                        let src_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name);
 
                         if let Some(src_raw) = src_raw {
                             // Raw i64 primary negation: branchless.
@@ -19688,12 +19525,8 @@ impl SimpleBackend {
                     let res = if op_prefers_int_lane(&op) {
                         // abs(x): select(x < 0, -x, x). Overflow deferred.
                         let src_name = &args[0];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let src_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
-                        };
+                        let src_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name);
 
                         if let Some(src_raw) = src_raw {
                             // Raw i64 primary abs: branchless select.
@@ -19800,12 +19633,8 @@ impl SimpleBackend {
                     let res = if op_prefers_int_lane(&op) {
                         // ~x == x ^ -1 for integers; magnitude changes by at most 1.
                         let src_name = &args[0];
-                        let in_active_loop = !loop_stack.is_empty();
-                        let src_raw = if in_active_loop {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
-                        } else {
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
-                        };
+                        let src_raw =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name);
 
                         if let Some(src_raw) = src_raw {
                             // Raw i64 primary invert: branchless, no overflow.
@@ -29981,28 +29810,25 @@ impl SimpleBackend {
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
                             // Inside loops, use Variable-only shadows (phi-correct).
-                            let raw_val = if !loop_stack.is_empty() {
+                            let raw_val =
                                 int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                            } else {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                            }
-                            .unwrap_or_else(|| {
-                                let cond = var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    &args[0],
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("Loop break cond not found");
-                                unbox_int(&mut builder, *cond, &nbc)
-                            });
+                                    .unwrap_or_else(|| {
+                                        let cond = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &vars,
+                                            &args[0],
+                                            &int_primary_vars,
+                                            &float_primary_vars,
+                                            box_int_mask_var,
+                                            box_int_tag_var,
+                                        )
+                                        .expect("Loop break cond not found");
+                                        unbox_int(&mut builder, *cond, &nbc)
+                                    });
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
                             let cond = var_get_boxed_overflow_safe(
@@ -30187,28 +30013,25 @@ impl SimpleBackend {
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
                             // Inside loops, use Variable-only shadows (phi-correct).
-                            let raw_val = if !loop_stack.is_empty() {
+                            let raw_val =
                                 int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                            } else {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                            }
-                            .unwrap_or_else(|| {
-                                let cond = var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    &args[0],
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("Loop break cond not found");
-                                unbox_int(&mut builder, *cond, &nbc)
-                            });
+                                    .unwrap_or_else(|| {
+                                        let cond = var_get_boxed_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            &vars,
+                                            &args[0],
+                                            &int_primary_vars,
+                                            &float_primary_vars,
+                                            box_int_mask_var,
+                                            box_int_tag_var,
+                                        )
+                                        .expect("Loop break cond not found");
+                                        unbox_int(&mut builder, *cond, &nbc)
+                                    });
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
                             let cond = var_get_boxed_overflow_safe(
@@ -33658,7 +33481,7 @@ impl SimpleBackend {
                         if builder.block_params(block).is_empty() && !is_function_exception_label {
                             return;
                         }
-                        for (_, var) in &label_live_join_vars {
+                        for var in label_live_join_vars.values() {
                             let value = builder.use_var(*var);
                             builder.def_var(*var, value);
                         }
@@ -33758,22 +33581,16 @@ impl SimpleBackend {
                             && !slot_backed_join_slots.contains_key(name)
                         {
                             // Read raw i64 from source Variable (no boxing).
-                            let raw_val = {
-                                let in_loop = !loop_stack.is_empty();
-                                if in_loop {
-                                    int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                                } else {
-                                    int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                                }
-                            }
-                            .unwrap_or_else(|| {
-                                // Source is raw-primary but has no shadow entry yet.
-                                // Read directly from the main Variable (which holds raw i64).
-                                let var = *vars
-                                    .get(&args[0])
-                                    .expect("store_var: raw src var not found");
-                                builder.use_var(var)
-                            });
+                            let raw_val =
+                                { int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]) }
+                                    .unwrap_or_else(|| {
+                                        // Source is raw-primary but has no shadow entry yet.
+                                        // Read directly from the main Variable (which holds raw i64).
+                                        let var = *vars
+                                            .get(&args[0])
+                                            .expect("store_var: raw src var not found");
+                                        builder.use_var(var)
+                                    });
                             // Phase 1c: int_primary_vars join slots write raw
                             // i64 directly to the main Variable. The
                             // loop_start demote is taught to skip them, so
@@ -33983,18 +33800,14 @@ impl SimpleBackend {
                             && scalar_fast_paths_enabled
                             && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
                         {
-                            let in_loop = !loop_stack.is_empty();
-                            let raw_val = if in_loop {
+                            let raw_val =
                                 int_raw_value(&mut builder, &vars, &int_primary_vars, var_name)
-                            } else {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, var_name)
-                            }
-                            .unwrap_or_else(|| {
-                                let var = *vars
-                                    .get(var_name.as_str())
-                                    .expect("load_var: raw src var not found");
-                                builder.use_var(var)
-                            });
+                                    .unwrap_or_else(|| {
+                                        let var = *vars
+                                            .get(var_name.as_str())
+                                            .expect("load_var: raw src var not found");
+                                        builder.use_var(var)
+                                    });
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_val);
                             continue;
@@ -34088,17 +33901,14 @@ impl SimpleBackend {
                             && scalar_fast_paths_enabled
                             && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
                         {
-                            let in_loop = !loop_stack.is_empty();
-                            let raw_val = if in_loop {
+                            let raw_val =
                                 int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                            } else {
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                            }
-                            .unwrap_or_else(|| {
-                                let var =
-                                    *vars.get(&args[0]).expect("copy_var: raw src var not found");
-                                builder.use_var(var)
-                            });
+                                    .unwrap_or_else(|| {
+                                        let var = *vars
+                                            .get(&args[0])
+                                            .expect("copy_var: raw src var not found");
+                                        builder.use_var(var)
+                                    });
                             let out_name = op.out.as_ref().unwrap();
                             def_var_named(&mut builder, &vars, out_name, raw_val);
                             continue;

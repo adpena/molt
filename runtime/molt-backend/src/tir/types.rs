@@ -288,7 +288,7 @@ fn parse_compound_type_hint(hint: &str) -> Option<TirType> {
                 return Some(TirType::DynBox);
             }
             let parts = split_top_level_commas(inner);
-            if parts.iter().any(|part| *part == "...") {
+            if parts.contains(&"...") {
                 return Some(TirType::DynBox);
             }
             let mut items = Vec::with_capacity(parts.len());
