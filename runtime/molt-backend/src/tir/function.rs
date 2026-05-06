@@ -28,6 +28,11 @@ pub struct TirFunction {
     pub next_block: u32,
     /// Function-level attributes (e.g. "fast_math", "closure_specialized").
     pub attrs: AttrDict,
+    /// Canonical refined type facts for SSA values that are not block
+    /// arguments. Block arguments still carry their type on `TirValue`; this
+    /// map mirrors those entries so passes have one function-owned query
+    /// surface for every `ValueId`.
+    pub value_types: HashMap<ValueId, TirType>,
     /// Set to `true` during lift when the function contains TryStart/TryEnd
     /// or StateBlockStart/StateBlockEnd ops.  When true, aggressive
     /// optimization passes (DCE, SCCP, type refinement, type guard hoist)
@@ -79,6 +84,11 @@ impl TirFunction {
             terminator: Terminator::Unreachable,
         };
 
+        let mut value_types = HashMap::new();
+        for arg in &entry.args {
+            value_types.insert(arg.id, arg.ty.clone());
+        }
+
         let mut blocks = HashMap::new();
         blocks.insert(entry_id, entry);
 
@@ -96,6 +106,7 @@ impl TirFunction {
             next_value,
             next_block: 1,
             attrs: AttrDict::new(),
+            value_types,
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),

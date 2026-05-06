@@ -372,6 +372,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
             }
             a
         },
+        value_types: types,
         has_exception_handling,
         label_id_map,
         loop_roles,
@@ -780,6 +781,7 @@ mod tests {
     use super::*;
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::blocks::Terminator;
+    use crate::tir::ops::OpCode;
     use crate::tir::types::TirType;
 
     /// Helper: build a FunctionIR with given name, params, and ops.
@@ -1080,6 +1082,29 @@ mod tests {
         assert_eq!(tir.param_types.len(), 2);
         assert_eq!(tir.param_types[0], TirType::I64);
         assert_eq!(tir.param_types[1], TirType::F64);
+        let entry = &tir.blocks[&tir.entry_block];
+        assert_eq!(
+            tir.value_types.get(&entry.args[0].id),
+            Some(&TirType::I64),
+            "entry param i64 fact must be present in the function-owned map"
+        );
+        assert_eq!(
+            tir.value_types.get(&entry.args[1].id),
+            Some(&TirType::F64),
+            "entry param f64 fact must be present in the function-owned map"
+        );
+        let add_result = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Add)
+            .and_then(|op| op.results.first())
+            .copied()
+            .expect("typed add result");
+        assert_eq!(
+            tir.value_types.get(&add_result),
+            Some(&TirType::F64),
+            "arithmetic propagation must persist op-result facts on TirFunction"
+        );
     }
 
     // =======================================================================

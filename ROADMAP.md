@@ -64,6 +64,12 @@ This file is forward-looking only.
   raw-int shadow transport in favor of `int_primary_vars`, and native
   float-primary codegen now treats
   `float_primary_vars` as the single static authority for F64-primary variables.
+  TIR functions now own a persistent `value_types` map, and type refinement
+  writes op-result facts back into that map instead of leaving them as a
+  transient extraction side table; range/list devirtualization also records the
+  I64/Bool facts it synthesizes for loop-carried values. The next native
+  cleanup must consume these typed facts through a LIR-derived representation
+  plan instead of recomputing scalar lanes from SimpleIR op strings.
   Native bool codegen has the same raw-closed `bool_primary_vars` contract for
   constants, alias/store propagation, comparisons, identity checks, and
   truthiness casts. Bool-primary escape points now box raw `0/1` carriers
