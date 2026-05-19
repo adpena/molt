@@ -178,6 +178,13 @@ artifact records hash-only `molt_output_parity` evidence rather than raw output,
 sets `molt_ok=false`, nulls Molt speedup/ratio fields on mismatch, writes the
 JSON evidence, and exits nonzero before any baseline update.
 
+Benchmarks that directly exercise Molt runtime intrinsics without an external
+reference implementation are explicitly Molt-only in `tools/bench_metadata.py`.
+Those rows must record `reference_runtime="molt"` and skip CPython/PyPy/Codon/
+Nuitka/Pyodide baseline lanes instead of relying on host-Python fallbacks.
+When an external reference script exists, update that metadata in the same
+change that adds the reference lane.
+
 ## Combined Native + WASM Report
 
 After writing the benchmark JSON artifacts, generate the canonical combined

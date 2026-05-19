@@ -604,17 +604,17 @@ use super::is_structural;
 ///   store_var(_cell_N, value)  // SSA-visible assignment
 ///   load_var(_cell_N) → v     // SSA-visible read
 ///
-/// The original store_index/index on the cell list are kept as-is (the
-/// runtime still needs them for the actual cell storage), but ADDITIONAL
-/// store_var/load_var ops are inserted so the SSA pass can track the
-/// variable flow. The load_var output replaces subsequent uses of the
-/// index output.
+/// For non-escaping cell lists, the store_index/index ops are replaced with
+/// store_var/load_var because no runtime observer can see the heap cell.
+/// Escaping cells (for example closure cells captured through a tuple_new
+/// environment) must remain heap-backed so later function calls see the
+/// mutated cell value.
 /// Returns true if any rewrites were applied.
 fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
     use crate::ir::OpIR;
     use std::collections::{HashMap, HashSet};
 
-    // Step 1: identify the cell list variable.
+    // Step 1: identify candidate cell list variables.
     // The pattern is: missing → X; list_new(X) → CELL_LIST
     // A cell list_new has exactly one argument that was produced by a `missing`
     // op.  User-created list literals (e.g. `out = []`) have zero arguments
@@ -636,7 +636,7 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
             missing_outputs.insert(out.clone());
         }
     }
-    let mut cell_list_var: Option<String> = None;
+    let mut cell_vars: HashSet<String> = HashSet::new();
     for op in ops.iter() {
         if op.kind == "list_new"
             && let Some(out) = &op.out
@@ -646,14 +646,42 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
                 && args.len() == 1
                 && missing_outputs.contains(&args[0])
             {
-                cell_list_var = Some(out.clone());
-                break;
+                cell_vars.insert(out.clone());
             }
         }
     }
-    let Some(cell_var) = cell_list_var else {
-        return false; // No cell list — nothing to rewrite.
-    };
+    if cell_vars.is_empty() {
+        return false; // No cell lists — nothing to rewrite.
+    }
+
+    // A cell escapes if it is used as anything other than the container operand
+    // of index/store_index. Closure environments are the critical case:
+    // tuple_new(cell) followed by func_new_closure must keep the physical cell
+    // live, otherwise the closure will keep seeing the initial missing value.
+    let mut escaped_cells: HashSet<String> = HashSet::new();
+    for op in ops.iter() {
+        let Some(args) = &op.args else {
+            continue;
+        };
+        for (arg_idx, arg) in args.iter().enumerate() {
+            if !cell_vars.contains(arg) {
+                continue;
+            }
+            let container_access = matches!(op.kind.as_str(), "index" | "store_index")
+                && arg_idx == 0
+                && args
+                    .iter()
+                    .enumerate()
+                    .all(|(idx, candidate)| candidate != arg || idx == 0);
+            if !container_access {
+                escaped_cells.insert(arg.clone());
+            }
+        }
+    }
+    cell_vars.retain(|cell| !escaped_cells.contains(cell));
+    if cell_vars.is_empty() {
+        return false;
+    }
 
     // Step 2: find all constant slots used with this cell list.
     // We need to map (cell_var, const_slot_value) → synthetic variable name.
@@ -671,10 +699,10 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
     }
 
     // Step 2b: identify which slots hold non-scalar values (lists, dicts, etc.)
-    // by checking what's initially stored at each slot. If a slot is initialized
-    // with the output of list_new, dict_new, etc., it holds a heap object and
-    // must NOT be converted to a scalar store_var/load_var.
-    let mut heap_slots: HashSet<i64> = HashSet::new();
+    // by checking what's stored at each slot. If a slot is assigned the output
+    // of list_new, dict_new, etc., it holds a heap object and must NOT be
+    // converted to a scalar store_var/load_var.
+    let mut heap_slots: HashSet<(String, i64)> = HashSet::new();
     {
         // Map: var_name → producing op kind
         let mut var_producers: HashMap<String, String> = HashMap::new();
@@ -704,14 +732,14 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
             if op.kind == "store_index"
                 && let Some(args) = &op.args
                 && args.len() == 3
-                && args[0] == cell_var
+                && cell_vars.contains(&args[0])
                 && let Some(&slot_val) = const_values.get(&args[1])
             {
                 let value_var = &args[2];
                 if let Some(producer) = var_producers.get(value_var)
                     && heap_ops.contains(producer.as_str())
                 {
-                    heap_slots.insert(slot_val);
+                    heap_slots.insert((args[0].clone(), slot_val));
                 }
             }
         }
@@ -723,13 +751,13 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
 
     for (i, op) in ops.iter().enumerate() {
         if let Some(args) = &op.args {
-            if op.kind == "store_index" && args.len() == 3 && args[0] == cell_var {
+            if op.kind == "store_index" && args.len() == 3 && cell_vars.contains(&args[0]) {
                 if let Some(&slot_val) = const_values.get(&args[1]) {
-                    if heap_slots.contains(&slot_val) {
+                    if heap_slots.contains(&(args[0].clone(), slot_val)) {
                         // Skip heap slots — lists, dicts, etc. must stay as cell ops.
                         continue;
                     }
-                    let var_name = format!("_cell_{}", slot_val);
+                    let var_name = format!("_cell_{}_{}", args[0], slot_val);
                     replacements.push((
                         i,
                         OpIR {
@@ -742,14 +770,14 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
                 }
             } else if op.kind == "index"
                 && args.len() == 2
-                && args[0] == cell_var
+                && cell_vars.contains(&args[0])
                 && let Some(&slot_val) = const_values.get(&args[1])
             {
-                if heap_slots.contains(&slot_val) {
+                if heap_slots.contains(&(args[0].clone(), slot_val)) {
                     continue; // Skip heap slots.
                 }
                 if let Some(out) = &op.out {
-                    let var_name = format!("_cell_{}", slot_val);
+                    let var_name = format!("_cell_{}_{}", args[0], slot_val);
                     replacements.push((
                         i,
                         OpIR {
@@ -845,6 +873,50 @@ mod tests {
             fast_int: Some(true),
             ..OpIR::default()
         }
+    }
+
+    #[test]
+    fn cell_rewrite_skips_cells_escaped_into_closure_tuple() {
+        let mut ops = vec![
+            op_args_out("missing", &[], "missing"),
+            op_args_out("list_new", &["missing"], "cell"),
+            op_val_out("const", 0, "zero"),
+            op_val_out("const", 7, "value"),
+            op_args("store_index", &["cell", "zero", "value"]),
+            op_args_out("tuple_new", &["cell"], "closure"),
+            op_args_out("index", &["cell", "zero"], "loaded"),
+        ];
+
+        assert!(!rewrite_cell_locals_to_store_load(&mut ops));
+        assert_eq!(ops[4].kind, "store_index");
+        assert_eq!(ops[6].kind, "index");
+    }
+
+    #[test]
+    fn cell_rewrite_handles_multiple_unescaped_cells_independently() {
+        let mut ops = vec![
+            op_args_out("missing", &[], "missing_a"),
+            op_args_out("list_new", &["missing_a"], "cell_a"),
+            op_args_out("missing", &[], "missing_b"),
+            op_args_out("list_new", &["missing_b"], "cell_b"),
+            op_val_out("const", 0, "zero"),
+            op_val_out("const", 1, "value_a"),
+            op_args("store_index", &["cell_a", "zero", "value_a"]),
+            op_args_out("index", &["cell_a", "zero"], "loaded_a"),
+            op_val_out("const", 2, "value_b"),
+            op_args("store_index", &["cell_b", "zero", "value_b"]),
+            op_args_out("index", &["cell_b", "zero"], "loaded_b"),
+        ];
+
+        assert!(rewrite_cell_locals_to_store_load(&mut ops));
+        assert_eq!(ops[6].kind, "store_var");
+        assert_eq!(ops[6].var.as_deref(), Some("_cell_cell_a_0"));
+        assert_eq!(ops[7].kind, "load_var");
+        assert_eq!(ops[7].var.as_deref(), Some("_cell_cell_a_0"));
+        assert_eq!(ops[9].kind, "store_var");
+        assert_eq!(ops[9].var.as_deref(), Some("_cell_cell_b_0"));
+        assert_eq!(ops[10].kind, "load_var");
+        assert_eq!(ops[10].var.as_deref(), Some("_cell_cell_b_0"));
     }
 
     // =======================================================================
