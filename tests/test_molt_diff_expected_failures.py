@@ -231,6 +231,29 @@ def test_diff_memory_guard_can_be_disabled(monkeypatch) -> None:
     assert module._diff_memory_guard_enabled() is False
 
 
+def test_diff_memory_guard_jsonl_rotation_bounds_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_diff_module()
+    path = tmp_path / "global_samples.jsonl"
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_MAX_SAMPLE_MB", "0.001")
+
+    for index in range(8):
+        module._append_memory_guard_jsonl(
+            path,
+            {
+                "event": "sample",
+                "index": index,
+                "payload": "x" * 600,
+            },
+        )
+
+    assert path.exists()
+    assert path.with_name("global_samples.jsonl.1").exists()
+    assert path.stat().st_size < 2048
+    assert path.with_name("global_samples.jsonl.1").stat().st_size < 2048
+
+
 def test_diff_memory_guard_kills_active_child_tree_limit(
     tmp_path: Path, monkeypatch
 ) -> None:
