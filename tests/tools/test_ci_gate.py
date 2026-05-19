@@ -50,6 +50,7 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
         memory_limits=module.MemoryGuardLimits(
             max_rss_gb=2.0,
             max_total_rss_gb=3.0,
+            max_global_rss_gb=9.0,
             poll_interval=0.5,
         ),
     )
@@ -66,6 +67,7 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
             "env": calls[0]["env"],
             "timeout": 7,
             "capture_output": True,
+            "child_rlimit_kb": 2 * 1024 * 1024,
         }
     ]
     assert calls[0]["env"]["PYTHONPATH"] == str(module.ROOT / "src")
@@ -143,6 +145,19 @@ def test_run_check_can_opt_out_of_memory_guard(monkeypatch) -> None:
     assert result.status == "pass"
     assert result.stdout == "direct\n"
     assert direct_calls[0]["command"] == ["python3", "-c", "print('ok')"]
+
+
+def test_parallel_workers_clamped_by_global_memory_budget() -> None:
+    module = _load_ci_gate()
+    limits = module.MemoryGuardLimits(
+        max_rss_gb=2.0,
+        max_total_rss_gb=8.0,
+        max_global_rss_gb=17.0,
+        poll_interval=0.5,
+    )
+
+    assert module._parallel_workers_for_memory_guard(4, memory_limits=limits) == 2
+    assert module._parallel_workers_for_memory_guard(4, memory_limits=None) == 4
 
 
 def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
@@ -253,4 +268,5 @@ def test_ci_gate_help_reports_memory_guard_hard_cap() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "must be <112" in result.stdout
+    assert "must be <58" in result.stdout
     assert "must be <30" not in result.stdout
