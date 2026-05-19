@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_PATH = REPO_ROOT / "tools" / "process_sentinel.py"
+
+
+def _load_process_sentinel():
+    spec = importlib.util.spec_from_file_location(
+        "molt_tools_process_sentinel", SCRIPT_PATH
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_process_groups_include_full_matched_group() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/bin/zsh -c cd /repo/molt && cargo build -p molt-backend",
+        ),
+        11: module.memory_guard.ProcessSample(
+            pid=11,
+            ppid=10,
+            pgid=10,
+            rss_kb=200,
+            command="/rustc --crate-name molt_backend runtime/molt-backend/src/lib.rs",
+        ),
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=1,
+            pgid=20,
+            rss_kb=999,
+            command="cargo build unrelated",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert len(groups) == 1
+    assert groups[0].pgid == 10
+    assert groups[0].pids == [10, 11]
+    assert groups[0].total_rss_kb == 300
+
+
+def test_process_groups_exclude_current_process_group() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+        )
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999, self_pgid=10)
+
+    assert groups == []
+
+
+def test_find_violations_can_kill_all_or_threshold() -> None:
+    module = _load_process_sentinel()
+    group = module.ProcessGroup(
+        pgid=10,
+        matched=True,
+        samples=(
+            module.memory_guard.ProcessSample(
+                pid=10,
+                ppid=1,
+                pgid=10,
+                rss_kb=100,
+                command="root",
+            ),
+            module.memory_guard.ProcessSample(
+                pid=11,
+                ppid=10,
+                pgid=10,
+                rss_kb=900,
+                command="child",
+            ),
+        ),
+    )
+
+    kill_all = module.find_violations(
+        [group],
+        max_process_kb=10_000,
+        max_total_kb=10_000,
+        kill_all=True,
+    )
+    process_rss = module.find_violations(
+        [group],
+        max_process_kb=800,
+        max_total_kb=10_000,
+    )
+    group_rss = module.find_violations(
+        [group],
+        max_process_kb=10_000,
+        max_total_kb=999,
+    )
+
+    assert kill_all[0].reason == "kill_all"
+    assert process_rss[0].reason == "process_rss"
+    assert group_rss[0].reason == "group_rss"
+
+
+def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> None:
+    module = _load_process_sentinel()
+    terminated: list[int] = []
+
+    monkeypatch.setattr(
+        module.memory_guard,
+        "sample_processes",
+        lambda: {
+            10: module.memory_guard.ProcessSample(
+                pid=10,
+                ppid=1,
+                pgid=10,
+                rss_kb=100,
+                command=f"{module.repo_root()}/target/release-fast/molt-backend",
+            )
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+
+    rc = module.main(["--once", "--dry-run", "--kill-all"])
+
+    assert rc == 1
+    assert "kill_all" in capsys.readouterr().err
+    assert terminated == []
+
+
+def test_main_rejects_global_cap_without_margin(capsys) -> None:
+    module = _load_process_sentinel()
+
+    rc = module.main(["--once", "--max-total-rss-gb", "58"])
+
+    assert rc == 2
+    assert "below 58" in capsys.readouterr().err
