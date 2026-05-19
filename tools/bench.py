@@ -33,6 +33,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from batch_compile_client import BatchCompileServerClient  # noqa: E402
 from bench_evidence import comparable_run_metadata_errors  # noqa: E402
+from bench_metadata import benchmark_reference_contract  # noqa: E402
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -780,6 +781,10 @@ def _stable_output(batch: SampleBatch) -> tuple[str, str] | None:
 def _output_parity_evidence(
     reference_batch: SampleBatch | None,
     molt_batch: SampleBatch,
+    *,
+    reference_runtime: str,
+    reference_required: bool,
+    reference_reason: str,
 ) -> dict[str, object]:
     empty_hashes = {
         "reference_stdout_sha256": None,
@@ -787,11 +792,22 @@ def _output_parity_evidence(
         "reference_stderr_sha256": None,
         "molt_stderr_sha256": None,
     }
+    if not reference_required:
+        return {
+            "checked": False,
+            "ok": None,
+            "reference_runtime": reference_runtime,
+            "reason": reference_reason,
+            "stdout_match": None,
+            "stderr_match": None,
+            **empty_hashes,
+        }
+
     if reference_batch is None or not reference_batch.ok:
         return {
             "checked": False,
             "ok": None,
-            "reference_runtime": "cpython",
+            "reference_runtime": reference_runtime,
             "reason": "reference_unavailable",
             "stdout_match": None,
             "stderr_match": None,
@@ -803,7 +819,7 @@ def _output_parity_evidence(
         return {
             "checked": True,
             "ok": False,
-            "reference_runtime": "cpython",
+            "reference_runtime": reference_runtime,
             "reason": "reference_unstable",
             "stdout_match": None,
             "stderr_match": None,
@@ -815,7 +831,7 @@ def _output_parity_evidence(
         return {
             "checked": True,
             "ok": False,
-            "reference_runtime": "cpython",
+            "reference_runtime": reference_runtime,
             "reason": "molt_unavailable",
             "stdout_match": None,
             "stderr_match": None,
@@ -831,7 +847,7 @@ def _output_parity_evidence(
         return {
             "checked": True,
             "ok": False,
-            "reference_runtime": "cpython",
+            "reference_runtime": reference_runtime,
             "reason": "molt_unstable",
             "stdout_match": None,
             "stderr_match": None,
@@ -855,7 +871,7 @@ def _output_parity_evidence(
     return {
         "checked": True,
         "ok": ok,
-        "reference_runtime": "cpython",
+        "reference_runtime": reference_runtime,
         "reason": reason,
         "stdout_match": stdout_match,
         "stderr_match": stderr_match,
@@ -1155,8 +1171,11 @@ def _bench_one(
     stats = {}
     data = {}
     name = os.path.basename(script)
+    reference_contract = benchmark_reference_contract(script)
     run_args = resolve_benchmark_run_args(script)
     for rt_name, cmd in runtimes.items():
+        if not reference_contract.external_baselines:
+            continue
         batch = collect_samples(
             lambda: measure_runtime(
                 cmd,
@@ -1181,7 +1200,7 @@ def _bench_one(
     codon_size: float | None = None
     codon_ok = False
     codon_batch: SampleBatch | None = None
-    if use_codon:
+    if use_codon and reference_contract.external_baselines:
         runner = _prepare_codon_runner(Path(script), codon_root, base_env, tty=tty)
         if runner is not None:
             codon_build = runner.build_s
@@ -1212,7 +1231,7 @@ def _bench_one(
     nuitka_size: float | None = None
     nuitka_ok = False
     nuitka_batch: SampleBatch | None = None
-    if use_nuitka:
+    if use_nuitka and reference_contract.external_baselines:
         runner = _prepare_nuitka_runner(
             Path(script),
             nuitka_root,
@@ -1249,7 +1268,7 @@ def _bench_one(
     pyodide_size: float | None = None
     pyodide_ok = False
     pyodide_batch: SampleBatch | None = None
-    if use_pyodide:
+    if use_pyodide and reference_contract.external_baselines:
         runner = _prepare_pyodide_runner(
             Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
         )
@@ -1318,6 +1337,9 @@ def _bench_one(
     output_parity = _output_parity_evidence(
         runtime_batches.get("cpython"),
         molt_batch,
+        reference_runtime=reference_contract.reference_runtime,
+        reference_required=reference_contract.external_baselines,
+        reference_reason=reference_contract.reason,
     )
     if output_parity["checked"] and not output_parity["ok"]:
         molt_ok = False
@@ -1435,6 +1457,8 @@ def _bench_one(
         "molt_pyodide_ratio": pyodide_ratio,
         "molt_ok": molt_ok,
         "molt_output_parity": output_parity,
+        "reference_runtime": reference_contract.reference_runtime,
+        "reference_reason": reference_contract.reason,
         "pypy_ok": runtime_ok.get("pypy", False),
         "molt_args": molt_args,
         "run_args": run_args,
