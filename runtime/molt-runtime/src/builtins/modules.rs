@@ -454,6 +454,113 @@ unsafe fn sys_populate_stdio(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), 
     }
 }
 
+unsafe fn sys_set_owned_attr(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    key: &str,
+    value_bits: u64,
+) -> Result<(), ()> {
+    if obj_from_bits(value_bits).is_none() {
+        return Err(());
+    }
+    let result = unsafe { dict_set_str_key_bits(_py, dict_ptr, key, value_bits) };
+    dec_ref_bits(_py, value_bits);
+    result.map_err(|_| ())
+}
+
+pub(crate) unsafe fn sys_populate_version_metadata(
+    _py: &PyToken<'_>,
+    sys_ptr: *mut u8,
+) -> Result<(), ()> {
+    unsafe {
+        let dict_bits = module_dict_bits(sys_ptr);
+        let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+            _ => return Err(()),
+        };
+
+        sys_set_owned_attr(_py, dict_ptr, "platform", crate::molt_sys_platform())?;
+        sys_set_owned_attr(_py, dict_ptr, "version", crate::molt_sys_version())?;
+        sys_set_owned_attr(
+            _py,
+            dict_ptr,
+            "version_info",
+            crate::molt_sys_version_info(),
+        )?;
+        sys_set_owned_attr(_py, dict_ptr, "hexversion", crate::molt_sys_hexversion())?;
+        sys_set_owned_attr(_py, dict_ptr, "api_version", crate::molt_sys_api_version())?;
+        sys_set_owned_attr(_py, dict_ptr, "abiflags", crate::molt_sys_abiflags())?;
+        sys_set_owned_attr(
+            _py,
+            dict_ptr,
+            "implementation",
+            crate::molt_sys_implementation_payload(),
+        )?;
+        Ok(())
+    }
+}
+
+unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), ()> {
+    unsafe {
+        sys_populate_version_metadata(_py, sys_ptr)?;
+        let dict_bits = module_dict_bits(sys_ptr);
+        let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+            _ => return Err(()),
+        };
+
+        sys_set_owned_attr(_py, dict_ptr, "maxsize", crate::molt_sys_maxsize())?;
+        sys_set_owned_attr(_py, dict_ptr, "maxunicode", crate::molt_sys_maxunicode())?;
+        sys_set_owned_attr(_py, dict_ptr, "byteorder", crate::molt_sys_byteorder())?;
+        sys_set_owned_attr(_py, dict_ptr, "prefix", crate::molt_sys_prefix())?;
+        sys_set_owned_attr(_py, dict_ptr, "exec_prefix", crate::molt_sys_exec_prefix())?;
+        sys_set_owned_attr(_py, dict_ptr, "base_prefix", crate::molt_sys_base_prefix())?;
+        sys_set_owned_attr(
+            _py,
+            dict_ptr,
+            "base_exec_prefix",
+            crate::molt_sys_base_exec_prefix(),
+        )?;
+        sys_set_owned_attr(_py, dict_ptr, "platlibdir", crate::molt_sys_platlibdir())?;
+        sys_set_owned_attr(_py, dict_ptr, "path", crate::molt_sys_path())?;
+
+        let meta_path_ptr = alloc_list(_py, &[]);
+        if meta_path_ptr.is_null() {
+            return Err(());
+        }
+        sys_set_owned_attr(
+            _py,
+            dict_ptr,
+            "meta_path",
+            MoltObject::from_ptr(meta_path_ptr).bits(),
+        )?;
+
+        let path_hooks_ptr = alloc_list(_py, &[]);
+        if path_hooks_ptr.is_null() {
+            return Err(());
+        }
+        sys_set_owned_attr(
+            _py,
+            dict_ptr,
+            "path_hooks",
+            MoltObject::from_ptr(path_hooks_ptr).bits(),
+        )?;
+
+        let path_importer_cache_ptr = alloc_dict_with_pairs(_py, &[]);
+        if path_importer_cache_ptr.is_null() {
+            return Err(());
+        }
+        sys_set_owned_attr(
+            _py,
+            dict_ptr,
+            "path_importer_cache",
+            MoltObject::from_ptr(path_importer_cache_ptr).bits(),
+        )?;
+
+        Ok(())
+    }
+}
+
 #[unsafe(no_mangle)]
 fn simple_edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
@@ -4150,6 +4257,9 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                     if sys_populate_stdio(_py, sys_ptr).is_err() {
                         return raise_exception::<_>(_py, "MemoryError", "out of memory");
                     }
+                    if sys_populate_bootstrap_metadata(_py, sys_ptr).is_err() {
+                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    }
                     if std::env::var("MOLT_TRACE_SYS_MODULE").as_deref() == Ok("1")
                         && exception_pending(_py)
                     {
@@ -5132,6 +5242,86 @@ mod tests {
 
             dec_ref_bits(_py, result_bits);
             dec_ref_bits(_py, module_bits);
+        });
+    }
+
+    #[test]
+    fn sys_module_cache_set_populates_bootstrap_metadata() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let name_ptr = alloc_string(_py, b"sys");
+                assert!(!name_ptr.is_null());
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                let cache_restore = ModuleCacheRestore::new(_py, name_bits);
+                let module_ptr = alloc_module_obj(_py, cache_restore.name_bits());
+                assert!(!module_ptr.is_null());
+                let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+                let result_bits = molt_module_cache_set(cache_restore.name_bits(), module_bits);
+                assert!(
+                    !exception_pending(_py),
+                    "sys module registration must not leave a pending exception"
+                );
+
+                let dict_bits = module_dict_bits(module_ptr);
+                let dict_ptr = obj_from_bits(dict_bits)
+                    .as_ptr()
+                    .expect("sys module dict pointer");
+                assert_eq!(object_type_id(dict_ptr), TYPE_ID_DICT);
+
+                for key in [
+                    "platform",
+                    "version",
+                    "version_info",
+                    "hexversion",
+                    "api_version",
+                    "abiflags",
+                    "implementation",
+                    "maxsize",
+                    "maxunicode",
+                    "byteorder",
+                    "prefix",
+                    "exec_prefix",
+                    "base_prefix",
+                    "base_exec_prefix",
+                    "platlibdir",
+                    "path",
+                    "meta_path",
+                    "path_hooks",
+                    "path_importer_cache",
+                ] {
+                    let key_ptr = alloc_string(_py, key.as_bytes());
+                    assert!(!key_ptr.is_null());
+                    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+                    let value_bits = dict_get_in_place(_py, dict_ptr, key_bits)
+                        .unwrap_or_else(|| panic!("missing sys.{key}"));
+                    assert!(
+                        !obj_from_bits(value_bits).is_none(),
+                        "sys.{key} must not be None"
+                    );
+                    dec_ref_bits(_py, key_bits);
+                }
+
+                let platform_key_ptr = alloc_string(_py, b"platform");
+                assert!(!platform_key_ptr.is_null());
+                let platform_key_bits = MoltObject::from_ptr(platform_key_ptr).bits();
+                let platform_bits =
+                    dict_get_in_place(_py, dict_ptr, platform_key_bits).expect("sys.platform");
+                let platform_text = string_obj_to_owned(obj_from_bits(platform_bits));
+                assert!(
+                    platform_text
+                        .as_ref()
+                        .is_some_and(|value| !value.is_empty()),
+                    "sys.platform must be a non-empty string"
+                );
+                dec_ref_bits(_py, platform_key_bits);
+
+                dec_ref_bits(_py, result_bits);
+                dec_ref_bits(_py, module_bits);
+            }
         });
     }
 }
