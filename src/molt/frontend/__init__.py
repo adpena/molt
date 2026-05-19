@@ -8876,6 +8876,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._invalidate_loop_guard(name)
         cell = self._load_boxed_cell(name)
         if cell is not None:
+            self.locals[name] = value
             idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=idx))
             self.emit(
@@ -8888,34 +8889,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if value.type_hint:
                 self.boxed_local_hints[name] = value.type_hint
             return
-        if self.is_async():
-            if name not in self.async_locals:
-                self._async_local_offset(name)
-            offset = self.async_locals[name]
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", offset, value],
-                    result=MoltValue("none"),
-                )
-            )
-            if value.type_hint:
-                self.async_local_hints[name] = value.type_hint
-            return
         self.locals[name] = value
-        if (
-            self.current_func_name != "molt_main"
-            and name in self.scope_assigned
-            and name not in self.boxed_locals
-        ):
-            self.emit(
-                MoltOp(
-                    kind="STORE_VAR",
-                    args=[value],
-                    result=MoltValue("none"),
-                    metadata={"var": name},
-                )
-            )
 
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool:
         if iterable is None:
@@ -13172,6 +13146,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
+        outer_comp_shadow_locals = set(self.comp_shadow_locals)
+        self.comp_shadow_locals.add(target_name)
+        if tuple_target_names is not None:
+            self.comp_shadow_locals.update(tuple_target_names)
         # If the iteration variable is boxed, save the current cell value so
         # we can restore it after the comprehension (CPython scoping: the comp
         # does not leak its iteration variable into the enclosing scope).
@@ -13328,6 +13306,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.boxed_locals[tname] = prior_boxed
                     if prior_hint is not None:
                         self.boxed_local_hints[tname] = prior_hint
+        self.comp_shadow_locals = outer_comp_shadow_locals
         return res
 
     def _emit_inline_list_comp(self, node: ast.ListComp) -> MoltValue:

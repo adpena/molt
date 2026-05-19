@@ -27,12 +27,28 @@ print(z)
 
 tuple_late_funcs = [lambda: a for (a, b) in [(1, 2), (3, 4)]]
 print([fn() for fn in tuple_late_funcs])
+tuple_direct_late = [
+    (a, fn()) for a, fn in [(a, lambda: a) for (a, b) in [(1, 2), (3, 4)]]
+]
+print(tuple_direct_late)
 
 set_late_funcs = list({lambda: s for s in range(3)})
 print(sorted(fn() for fn in set_late_funcs))
 
 dict_late_funcs = {d: (lambda: d) for d in range(3)}
 print([dict_late_funcs[key]() for key in sorted(dict_late_funcs)])
+
+
+def dict_tuple_target_shadow():
+    field_tuple = ("x", "y")
+    field_index = {name: idx for idx, name in enumerate(field_tuple)}
+    print("field_index", field_index)
+    for name, value in [("z", 3)]:
+        pass
+    print("after-field-index", name, value)
+
+
+dict_tuple_target_shadow()
 
 
 def explode():
