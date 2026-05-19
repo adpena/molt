@@ -459,7 +459,9 @@ def test_prepare_entry_module_graph_closes_added_package_parent_imports(
     (subpkg / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
     (subpkg / "helper.py").write_text("helper = 2\n", encoding="utf-8")
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("from molt import intrinsics as _intrinsics\n", encoding="utf-8")
+    entry_path.write_text(
+        "from molt import intrinsics as _intrinsics\n", encoding="utf-8"
+    )
     entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
     module_reasons: dict[str, set[str]] = {}
 
@@ -3083,10 +3085,7 @@ def test_runtime_lib_path_is_cached(
 
     info = cli._runtime_lib_path_cached.cache_info()
     expected = (
-        Path.cwd()
-        / "external-target"
-        / "dev-fast"
-        / "libmolt_runtime.stdlib_micro.a"
+        Path.cwd() / "external-target" / "dev-fast" / "libmolt_runtime.stdlib_micro.a"
     )
     assert first == second == expected
     assert info.hits >= 1
@@ -12455,10 +12454,7 @@ def test_backend_daemon_stale_check_tracks_target_specific_runtime_alias(
     (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     backend_bin = target_root / "dev-fast" / "molt-backend"
     runtime_lib = (
-        target_root
-        / target_triple
-        / "release-output"
-        / "libmolt_runtime.stdlib_full.a"
+        target_root / target_triple / "release-output" / "libmolt_runtime.stdlib_full.a"
     )
     pid_path = target_root / ".molt_state" / "backend_daemon" / "molt-backend.pid"
     for path in (backend_bin, runtime_lib, pid_path):

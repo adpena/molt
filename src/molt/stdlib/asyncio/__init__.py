@@ -14,7 +14,6 @@ import traceback as _traceback
 import contextlib as _contextlib
 import inspect as _inspect
 import errno as _errno
-import socket as _socket
 import io as _io
 import types as _types
 import threading as _threading
@@ -37,6 +36,33 @@ import contextvars as _contextvars
 import enum as _enum
 
 from _intrinsics import require_intrinsic as _intrinsic_require
+
+
+_SOCKET_MODULE: Any | None = None
+
+
+class _LazySocketModule(_types.ModuleType):
+    def __init__(self) -> None:
+        super().__init__("socket")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_socket_module(), name)
+
+    def __dir__(self) -> list[str]:
+        return dir(_socket_module())
+
+
+def _socket_module() -> Any:
+    global _SOCKET_MODULE
+    module = _SOCKET_MODULE
+    if module is None:
+        module = __import__("socket")
+        _SOCKET_MODULE = module
+    return module
+
+
+_SOCKET = _LazySocketModule()
+_socket = _SOCKET
 
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
@@ -994,22 +1020,26 @@ def _require_ssl_transport_support(
 
 def _socket_eai_codes() -> set[int]:
     codes: set[int] = set()
-    for name in dir(_socket):
+    socket_module = _socket_module()
+    for name in dir(socket_module):
         if not name.startswith("EAI_"):
             continue
-        value = getattr(_socket, name, None)
+        value = getattr(socket_module, name, None)
         if isinstance(value, int):
             codes.add(value)
     return codes
 
 
-_SOCKET_EAI_CODES = _socket_eai_codes()
+_SOCKET_EAI_CODES: set[int] | None = None
 
 
 def _map_socket_name_resolution_error(exc: OSError) -> OSError:
+    global _SOCKET_EAI_CODES
+    if _SOCKET_EAI_CODES is None:
+        _SOCKET_EAI_CODES = _socket_eai_codes()
     errno_value = getattr(exc, "errno", None)
     if isinstance(errno_value, int) and errno_value in _SOCKET_EAI_CODES:
-        gaierror_cls = getattr(_socket, "gaierror", None)
+        gaierror_cls = getattr(_socket_module(), "gaierror", None)
         if gaierror_cls is not None:
             return gaierror_cls(errno_value, str(exc))
     return exc
@@ -2833,7 +2863,7 @@ class StreamWriter:
 
     def write_eof(self) -> None:
         if not self._closed and hasattr(self._sock, "shutdown"):
-            self._sock.shutdown(_socket.SHUT_WR)
+            self._sock.shutdown(_socket_module().SHUT_WR)
 
     def can_write_eof(self) -> bool:
         return True
@@ -3968,15 +3998,18 @@ class _EventLoop(AbstractEventLoop):
         try:
             if isinstance(future, Future):
                 fut = future
-                if isinstance(fut, Task) and not getattr(fut, "_runner_spawned", True):
+                if isinstance(fut, Task):
+                    runner = getattr(fut, "_runner_task", None)
+                    needs_runner = not getattr(fut, "_runner_spawned", True)
                     prev_token_id = _swap_current_token(fut._token)
                     try:
-                        runner = fut._runner(fut.get_coro())
-                        fut._runner_task = runner
-                        if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
-                            molt_task_register_token_owned(  # type: ignore[name-defined]
-                                runner, fut._token.token_id()
-                            )
+                        if needs_runner or runner is None:
+                            runner = fut._runner(fut.get_coro())
+                            fut._runner_task = runner
+                            if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
+                                molt_task_register_token_owned(  # type: ignore[name-defined]
+                                    runner, fut._token.token_id()
+                                )
                         molt_block_on(runner)
                         _debug_exc_state("run_until_complete_after_block_on")
                         result = fut.result()
@@ -4240,13 +4273,16 @@ class _EventLoop(AbstractEventLoop):
             raise TypeError("unsupported create_datagram_endpoint options")
         if local_addr is None and remote_addr is None:
             raise ValueError("local_addr or remote_addr must be specified")
+        socket_module = _socket_module()
         if family == 0:
-            family = _socket.AF_INET
-        sock = _socket.socket(family, _socket.SOCK_DGRAM, proto)
+            family = socket_module.AF_INET
+        sock = socket_module.socket(family, socket_module.SOCK_DGRAM, proto)
         sock.setblocking(False)
-        if reuse_port and hasattr(_socket, "SO_REUSEPORT"):
+        if reuse_port and hasattr(socket_module, "SO_REUSEPORT"):
             sock.setsockopt(
-                _socket.SOL_SOCKET, int(getattr(_socket, "SO_REUSEPORT")), 1
+                socket_module.SOL_SOCKET,
+                int(getattr(socket_module, "SO_REUSEPORT")),
+                1,
             )
         if local_addr is not None:
             sock.bind(local_addr)
@@ -4402,10 +4438,10 @@ class _EventLoop(AbstractEventLoop):
         return await self.sock_sendfile(sock, file, offset=offset, count=count)
 
     async def getaddrinfo(self, host: Any, port: Any, **kwargs: Any) -> Any:
-        return _socket.getaddrinfo(host, port, **kwargs)
+        return _socket_module().getaddrinfo(host, port, **kwargs)
 
     async def getnameinfo(self, sockaddr: Any, flags: int) -> Any:
-        return _socket.getnameinfo(sockaddr, flags)
+        return _socket_module().getnameinfo(sockaddr, flags)
 
     async def sock_sendfile(self, sock: Any, file: Any, offset: int = 0, count=None):
         chunk_size = 256 * 1024
@@ -5227,7 +5263,8 @@ async def open_connection(
                 ProcessStreamReader(tls_handle),
                 ProcessStreamWriter(tls_handle),
             )
-    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    socket_module = _socket_module()
+    sock = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
     sock.setblocking(False)
@@ -5250,7 +5287,8 @@ async def open_unix_connection(
         use_tls = _require_ssl_transport_support(
             "open_unix_connection", ssl, server_side=False
         )
-    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    socket_module = _socket_module()
+    sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
     if local_addr is not None:
         sock.bind(local_addr)
     sock.setblocking(False)
@@ -5293,9 +5331,10 @@ async def start_server(
         if use_tls:
             certfile, keyfile = _tls_server_payload(ssl)
             tls_handles: dict[int, Any] = {}
+            socket_type = _socket_module().socket
 
             def _tls_reader_ctor(conn: Any) -> ProcessStreamReader:
-                if not isinstance(conn, _socket.socket):
+                if not isinstance(conn, socket_type):
                     raise TypeError(
                         "start_server ssl transport requires a stream socket connection"
                     )
@@ -5305,7 +5344,7 @@ async def start_server(
                 return ProcessStreamReader(handle)
 
             def _tls_writer_ctor(conn: Any) -> ProcessStreamWriter:
-                if not isinstance(conn, _socket.socket):
+                if not isinstance(conn, socket_type):
                     raise TypeError(
                         "start_server ssl transport requires a stream socket connection"
                     )
@@ -5320,10 +5359,15 @@ async def start_server(
             writer_ctor = _tls_writer_ctor
     bind_host = host if host is not None else "0.0.0.0"
     bind_port = 0 if port is None else port
-    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-    if reuse_port and hasattr(_socket, "SO_REUSEPORT"):
-        sock.setsockopt(_socket.SOL_SOCKET, int(getattr(_socket, "SO_REUSEPORT")), 1)
+    socket_module = _socket_module()
+    sock = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM)
+    sock.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
+    if reuse_port and hasattr(socket_module, "SO_REUSEPORT"):
+        sock.setsockopt(
+            socket_module.SOL_SOCKET,
+            int(getattr(socket_module, "SO_REUSEPORT")),
+            1,
+        )
     sock.setblocking(False)
     sock.bind((bind_host, bind_port))
     sock.listen(backlog)
@@ -5352,9 +5396,10 @@ async def start_unix_server(
         if use_tls:
             certfile, keyfile = _tls_server_payload(ssl)
             tls_handles: dict[int, Any] = {}
+            socket_type = _socket_module().socket
 
             def _tls_reader_ctor(conn: Any) -> ProcessStreamReader:
-                if not isinstance(conn, _socket.socket):
+                if not isinstance(conn, socket_type):
                     raise TypeError(
                         "start_unix_server ssl transport requires a stream socket connection"
                     )
@@ -5364,7 +5409,7 @@ async def start_unix_server(
                 return ProcessStreamReader(handle)
 
             def _tls_writer_ctor(conn: Any) -> ProcessStreamWriter:
-                if not isinstance(conn, _socket.socket):
+                if not isinstance(conn, socket_type):
                     raise TypeError(
                         "start_unix_server ssl transport requires a stream socket connection"
                     )
@@ -5377,7 +5422,8 @@ async def start_unix_server(
 
             reader_ctor = _tls_reader_ctor
             writer_ctor = _tls_writer_ctor
-    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    socket_module = _socket_module()
+    sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
     sock.setblocking(False)
     sock.bind(path)
     sock.listen(backlog)
@@ -6179,33 +6225,41 @@ def on_fork() -> None:
     _CHILD_WATCHER = None
 
 
-events = _module(
-    "asyncio.events",
-    {
-        "AbstractEventLoop": AbstractEventLoop,
-        "AbstractEventLoopPolicy": AbstractEventLoopPolicy,
-        "AbstractServer": AbstractServer,
-        "BaseDefaultEventLoopPolicy": DefaultEventLoopPolicy,
-        "Handle": Handle,
-        "TimerHandle": TimerHandle,
-        "contextvars": _contextvars,
-        "get_child_watcher": get_child_watcher,
-        "get_event_loop": get_event_loop,
-        "get_event_loop_policy": get_event_loop_policy,
-        "get_running_loop": get_running_loop,
-        "new_event_loop": new_event_loop,
-        "on_fork": on_fork,
-        "os": _os,
-        "set_child_watcher": set_child_watcher,
-        "set_event_loop": set_event_loop,
-        "set_event_loop_policy": set_event_loop_policy,
-        "signal": _signal,
-        "socket": _socket,
-        "subprocess": _subprocess,
-        "sys": _sys,
-        "threading": _threading,
-    },
-)
+_events_attrs: dict[str, Any] = {
+    "AbstractEventLoop": AbstractEventLoop,
+    "AbstractServer": AbstractServer,
+    "Handle": Handle,
+    "TimerHandle": TimerHandle,
+    "contextvars": _contextvars,
+    "get_event_loop": get_event_loop,
+    "get_event_loop_policy": get_event_loop_policy,
+    "get_running_loop": get_running_loop,
+    "new_event_loop": new_event_loop,
+    "on_fork": on_fork,
+    "os": _os,
+    "set_event_loop": set_event_loop,
+    "set_event_loop_policy": set_event_loop_policy,
+    "signal": _signal,
+    "socket": _SOCKET,
+    "subprocess": _subprocess,
+    "sys": _sys,
+    "threading": _threading,
+}
+if _VERSION_INFO < (3, 14):
+    _events_attrs.update(
+        {
+            "AbstractEventLoopPolicy": AbstractEventLoopPolicy,
+            "BaseDefaultEventLoopPolicy": DefaultEventLoopPolicy,
+        }
+    )
+if _EXPOSE_CHILD_WATCHERS:
+    _events_attrs.update(
+        {
+            "get_child_watcher": get_child_watcher,
+            "set_child_watcher": set_child_watcher,
+        }
+    )
+events = _module("asyncio.events", _events_attrs)
 
 base_events = _module(
     "asyncio.base_events",
@@ -6518,7 +6572,7 @@ selector_events = _module(
         "os": _os,
         "protocols": protocols,
         "selectors": _selectors,
-        "socket": _socket,
+        "socket": _SOCKET,
         "ssl": _ssl,
         "transports": transports,
         "warnings": _warnings,
@@ -6691,7 +6745,7 @@ streams = _module(
         "open_unix_connection": open_unix_connection,
         "protocols": protocols,
         "sleep": sleep,
-        "socket": _socket,
+        "socket": _SOCKET,
         "start_server": start_server,
         "start_unix_server": start_unix_server,
         "sys": _sys,
@@ -6710,14 +6764,13 @@ trsock = _module(
     "asyncio.trsock",
     {
         "TransportSocket": TransportSocket,
-        "socket": _socket,
+        "socket": _SOCKET,
     },
 )
 setattr(selector_events, "trsock", trsock)
 
 if not _IS_WINDOWS:
     _unix_events_attrs: dict[str, Any] = {
-        "DefaultEventLoopPolicy": _UnixDefaultEventLoopPolicy,
         "SelectorEventLoop": SelectorEventLoop,
         "base_events": base_events,
         "base_subprocess": base_subprocess,
@@ -6735,7 +6788,7 @@ if not _IS_WINDOWS:
         "selector_events": selector_events,
         "selectors": _selectors,
         "signal": _signal,
-        "socket": _socket,
+        "socket": _SOCKET,
         "stat": _stat,
         "subprocess": _subprocess,
         "sys": _sys,
@@ -6767,11 +6820,12 @@ if not _IS_WINDOWS:
                 "ThreadedChildWatcher": ThreadedChildWatcher,
             }
         )
+        _unix_events_attrs["DefaultEventLoopPolicy"] = _UnixDefaultEventLoopPolicy
     else:
-        _unix_events_attrs["__all__"] = (
-            "SelectorEventLoop",
-            "DefaultEventLoopPolicy",
-        )
+        _unix_all = ["SelectorEventLoop"]
+        if _EXPOSE_EVENT_LOOP:
+            _unix_all.append("EventLoop")
+        _unix_events_attrs["__all__"] = tuple(_unix_all)
     unix_events = _module("asyncio.unix_events", _unix_events_attrs)
     if _EXPOSE_EVENT_LOOP:
         setattr(unix_events, "EventLoop", SelectorEventLoop)
@@ -6979,7 +7033,7 @@ for _name, _value in {
     "logger": _logging.getLogger("asyncio"),
     "os": _os,
     "protocols": protocols,
-    "socket": _socket,
+    "socket": _SOCKET,
     "ssl": _ssl,
     "sslproto": sslproto,
     "staggered": staggered,
@@ -7021,6 +7075,21 @@ if _EXPOSE_GRAPH:
 if not _EXPOSE_EVENT_LOOP:
     if "EventLoop" in globals():
         del globals()["EventLoop"]
+
+if not _EXPOSE_CHILD_WATCHERS:
+    for _name in (
+        "AbstractChildWatcher",
+        "BaseChildWatcher",
+        "FastChildWatcher",
+        "MultiLoopChildWatcher",
+        "PidfdChildWatcher",
+        "SafeChildWatcher",
+        "ThreadedChildWatcher",
+        "get_child_watcher",
+        "set_child_watcher",
+    ):
+        if _name in globals():
+            del globals()[_name]
 
 if not _EXPOSE_GRAPH:
     for _name in (

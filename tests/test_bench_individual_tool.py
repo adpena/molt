@@ -235,7 +235,10 @@ def test_bench_individual_marks_intrinsic_benchmarks_molt_only(
     )
 
     assert result["reference_runtime"] == "molt"
-    assert result["reference_reason"] == "molt_runtime_intrinsics_without_external_reference"
+    assert (
+        result["reference_reason"]
+        == "molt_runtime_intrinsics_without_external_reference"
+    )
     assert result["molt_ok"] is True
     assert result["cpython_samples_s"] is None
     assert result["cpython_time_s"] is None

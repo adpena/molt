@@ -495,7 +495,10 @@ def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmar
     )[script.name]
 
     assert entry["reference_runtime"] == "molt"
-    assert entry["reference_reason"] == "molt_runtime_intrinsics_without_external_reference"
+    assert (
+        entry["reference_reason"]
+        == "molt_runtime_intrinsics_without_external_reference"
+    )
     assert entry["cpython_time_s"] is None
     assert entry["cpython_samples_s"] is None
     assert entry["molt_ok"] is True

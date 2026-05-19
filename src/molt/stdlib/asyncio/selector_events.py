@@ -8,10 +8,10 @@ import functools
 import itertools
 import os
 import selectors
-import socket
 import ssl
 import weakref
 import warnings
+from asyncio import socket as socket
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 

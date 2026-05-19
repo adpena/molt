@@ -33,9 +33,9 @@ stdlib_unicode_names = ["dep:unicode_names2", "molt-runtime-text?/stdlib_unicode
 # Strict superset chain: micro -> edge -> standard -> server -> full.
 # Each tier includes ALL features of the tier below it plus its own additions.
 
-# Micro — core only, no crypto/compression/network/ast/tk/email/etc.
+# Micro — core plus non-network async scheduling; no crypto/compression/network/ast/tk/email/etc.
 # Suitable for edge deployment where binary size matters most.
-stdlib_micro = []
+stdlib_micro = ["stdlib_asyncio"]
 
 # Edge — micro plus minimal stdlib for Cloudflare Workers / Lambda / serverless.
 # Targets <3MB WASM binary with essential stdlib support.

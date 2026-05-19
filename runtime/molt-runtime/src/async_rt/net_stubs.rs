@@ -3,19 +3,12 @@
 //! The cfg guard is on the `mod` declaration in `async_rt/mod.rs`.
 
 use crate::concurrency::PyToken;
-use crate::object::PtrSlot;
-use std::collections::HashMap;
-use std::sync::Mutex;
 
-pub(crate) struct IoPoller {
-    waiters: Mutex<HashMap<PtrSlot, ()>>,
-}
+pub(crate) struct IoPoller;
 
 impl IoPoller {
     pub(crate) fn new() -> Self {
-        Self {
-            waiters: Mutex::new(HashMap::new()),
-        }
+        Self
     }
     pub(crate) fn start_worker(self: &std::sync::Arc<Self>) {}
     pub(crate) fn wait_blocking(
@@ -187,7 +180,7 @@ pub extern "C" fn molt_asyncio_tls_client_connect_new(_: u64, _: u64, _: u64) ->
     net_error!()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_tls_client_from_fd_new(_: u64, _: u64, _: u64) -> u64 {
+pub extern "C" fn molt_asyncio_tls_client_from_fd_new(_: u64, _: u64) -> u64 {
     net_error!()
 }
 #[unsafe(no_mangle)]
@@ -327,5 +320,33 @@ pub extern "C" fn molt_socket_sethostname(_: u64) -> u64 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_sendmsg_afalg(_: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+    net_error!()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_reader_new(_: u64) -> u64 {
+    net_error!()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_reader_drop(_: u64) {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_reader_at_eof(_: u64) -> u64 {
+    crate::MoltObject::from_bool(true).bits()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_reader_read(_: u64, _: u64) -> u64 {
+    net_error!()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_reader_readline(_: u64) -> u64 {
+    net_error!()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_socket_reader_readline_limit(_: u64, _: u64) -> u64 {
     net_error!()
 }

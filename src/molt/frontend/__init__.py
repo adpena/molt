@@ -31603,13 +31603,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         class SplitCandidate:
             def __init__(self, op_index: int, hay: str, sep: str, region: int) -> None:
-                self.op_index = op_index
-                self.hay = hay
-                self.sep = sep
-                self.region = region
+                self.op_index: int = op_index
+                self.hay: str = hay
+                self.sep: str = sep
+                self.region: int = region
                 self.alias_op_indexes: set[int] = set()
                 self.index_values_by_op_index: dict[int, int] = {}
-                self.unsafe = False
+                self.unsafe: bool = False
 
         candidates: dict[str, SplitCandidate] = {}
         alias_to_split: dict[str, tuple[str, int]] = {}
@@ -31772,7 +31772,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return json_ops
 
         rewritten: list[dict[str, Any]] = []
-        materialized_fields: dict[tuple[str, int], str] = {}
+        materialized_fields: dict[tuple[int, int], str] = {}
         for op_index, op in enumerate(json_ops):
             candidate = replace_indexes.get(op_index)
             if candidate is not None:

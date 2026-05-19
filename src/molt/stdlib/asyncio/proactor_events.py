@@ -7,9 +7,9 @@ import io
 import logging as _logging
 import os
 import signal
-import socket
 import threading
 import warnings
+from asyncio import socket as socket
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 

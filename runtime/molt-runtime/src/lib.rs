@@ -301,6 +301,7 @@ pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::io_wait_release_socket;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub use crate::async_rt::sockets::*;
 // Socket utilities from sockets_net.rs: only available when networking is compiled in.
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
@@ -323,10 +324,11 @@ pub use crate::async_rt::net_stubs::{
     molt_socket_ntohs,
 };
 
+#[cfg(all(not(target_arch = "wasm32"), molt_has_net_io))]
+pub(crate) use crate::async_rt::sockets::require_net_capability;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::async_rt::sockets::{
-    argv_from_bits, env_from_bits, require_net_capability, require_process_capability,
-    require_time_wall_capability,
+    argv_from_bits, env_from_bits, require_process_capability, require_time_wall_capability,
 };
 pub use crate::async_rt::threads::*;
 pub(crate) use crate::async_rt::{
@@ -624,12 +626,13 @@ pub(crate) use crate::object::layout::{
     zip_set_strict_bits, zip_strict_bits,
 };
 pub(crate) use crate::object::memoryview::{
-    bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_bytes_slice_mut,
-    memoryview_collect_bytes, memoryview_format_from_bits, memoryview_format_from_str,
-    memoryview_is_c_contiguous_view, memoryview_nbytes, memoryview_nbytes_big,
-    memoryview_read_scalar, memoryview_shape_product, memoryview_write_bytes,
+    bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
+    memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
+    memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar, memoryview_shape_product,
     memoryview_write_scalar,
 };
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+pub(crate) use crate::object::memoryview::{memoryview_bytes_slice_mut, memoryview_write_bytes};
 pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
 #[allow(unused_imports)]

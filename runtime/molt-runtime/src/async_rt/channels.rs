@@ -1,22 +1,40 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+#[cfg(molt_has_net_io)]
+use std::collections::HashMap;
+use std::collections::HashSet;
+#[cfg(molt_has_net_io)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(molt_has_net_io)]
 use std::sync::{Arc, Mutex, OnceLock};
 
+use super::cancel_tokens;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use super::poll::ws_wait_poll_fn_addr;
-use super::sockets::{SendData, require_net_capability, send_data_from_bits};
-use super::{cancel_tokens, current_token_id, token_id_from_bits};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use super::sockets::require_net_capability;
+use super::sockets::{SendData, send_data_from_bits};
+#[cfg(any(target_arch = "wasm32", molt_has_net_io))]
+use super::{current_token_id, token_id_from_bits};
 use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+#[cfg(target_arch = "wasm32")]
+use crate::string_obj_to_owned;
 use crate::{
-    GilReleaseGuard, IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, MoltObject, PyToken,
-    alloc_bytes, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits, exception_pending,
-    header_from_obj_ptr, inc_ref_bits, intern_static_name, is_missing_bits, missing_bits,
-    molt_getattr_builtin, monotonic_now_secs, obj_from_bits, pending_bits_i64, ptr_from_bits,
-    raise_exception, raise_os_error, release_ptr, resolve_obj_ptr, runtime_state,
-    string_obj_to_owned, to_f64, to_i64, usize_from_bits,
+    GilReleaseGuard, MoltObject, PyToken, alloc_bytes, alloc_tuple, bits_from_ptr, dec_ref_bits,
+    inc_ref_bits, obj_from_bits, pending_bits_i64, ptr_from_bits, raise_exception, release_ptr,
+    runtime_state, to_i64, usize_from_bits,
+};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use crate::{
+    IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, header_from_obj_ptr, monotonic_now_secs,
+    resolve_obj_ptr, to_f64,
+};
+#[cfg(molt_has_net_io)]
+use crate::{
+    alloc_string, exception_pending, intern_static_name, is_missing_bits, missing_bits,
+    molt_getattr_builtin, raise_os_error, string_obj_to_owned,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{molt_db_exec_host, molt_db_query_host};
@@ -192,6 +210,7 @@ fn chan_send_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i
     }
 }
 
+#[cfg(molt_has_net_io)]
 fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
     match chan.receiver.try_recv() {
         Ok(val) => val,
@@ -959,13 +978,19 @@ pub extern "C" fn molt_ws_new_with_hooks(
     })
 }
 
+#[cfg(molt_has_net_io)]
 type WsConnectHook = extern "C" fn(*const u8, usize) -> *mut u8;
+#[cfg(molt_has_net_io)]
 type DbHostHook = extern "C" fn(*const u8, usize, *mut u64, u64) -> i32;
 
+#[cfg(molt_has_net_io)]
 static WS_CONNECT_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(molt_has_net_io)]
 static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(molt_has_net_io)]
 static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn ws_ref_inc(ws_ptr: *mut MoltWebSocket) {
     if ws_ptr.is_null() {
         return;
@@ -1872,6 +1897,7 @@ pub(crate) fn ws_wait_release(_py: &PyToken<'_>, future_ptr: *mut u8) {
     }
 }
 
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1879,6 +1905,7 @@ pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
     })
 }
 
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1886,6 +1913,7 @@ pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
     })
 }
 
+#[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_db_set_exec_hook(ptr: usize) {
     crate::with_gil_entry_nopanic!(_py, {
@@ -2450,6 +2478,7 @@ mod tests {
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
     match code {
         1 => raise_exception::<_>(_py, "ValueError", "websocket url payload is invalid"),
@@ -2902,11 +2931,14 @@ fn db_query_impl(
         return 6;
     }
     cancel_tokens(_py);
+    #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
     let token_id = match token_id_from_bits(token_bits) {
         Some(0) => current_token_id(),
         Some(id) => id,
         None => return 1,
     };
+    #[cfg(not(any(target_arch = "wasm32", molt_has_net_io)))]
+    let _ = token_bits;
     #[cfg(target_arch = "wasm32")]
     {
         unsafe { molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id) }
@@ -2951,11 +2983,14 @@ fn db_exec_impl(
         return 6;
     }
     cancel_tokens(_py);
+    #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
     let token_id = match token_id_from_bits(token_bits) {
         Some(0) => current_token_id(),
         Some(id) => id,
         None => return 1,
     };
+    #[cfg(not(any(target_arch = "wasm32", molt_has_net_io)))]
+    let _ = token_bits;
     #[cfg(target_arch = "wasm32")]
     {
         unsafe { molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id) }
