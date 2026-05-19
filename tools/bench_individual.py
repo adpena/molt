@@ -8,7 +8,7 @@ investigating daemon crash cascade failures.
 
 Usage:
     python tools/bench_individual.py
-    python tools/bench_individual.py --samples 5 --json-out results.json
+    python tools/bench_individual.py --samples 5 --warmup 1 --json-out results.json
     python tools/bench_individual.py --bench bench_fib.py --bench bench_sum.py
     python tools/bench_individual.py --skip bench_startup.py
 """
@@ -16,8 +16,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import os
+import platform
 import re
 import signal
 import statistics
@@ -92,6 +94,42 @@ MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
 }
 
+
+class RunSample:
+    __slots__ = ("elapsed_s", "output")
+
+    def __init__(self, elapsed_s: float, output: str) -> None:
+        self.elapsed_s = elapsed_s
+        self.output = output
+
+
+class SampleBatch:
+    __slots__ = ("failed_phase", "ok", "samples", "warmup_samples")
+
+    def __init__(
+        self,
+        samples: list[RunSample] | None = None,
+        warmup_samples: list[RunSample] | None = None,
+        ok: bool = False,
+        failed_phase: str | None = None,
+    ) -> None:
+        self.samples = samples if samples is not None else []
+        self.warmup_samples = warmup_samples if warmup_samples is not None else []
+        self.ok = ok
+        self.failed_phase = failed_phase
+
+    @property
+    def times_s(self) -> list[float]:
+        return [sample.elapsed_s for sample in self.samples]
+
+    @property
+    def warmup_times_s(self) -> list[float]:
+        return [sample.elapsed_s for sample in self.warmup_samples]
+
+    @property
+    def first_output(self) -> str:
+        return self.samples[0].output if self.samples else ""
+
 # ---------------------------------------------------------------------------
 # Daemon management
 # ---------------------------------------------------------------------------
@@ -137,6 +175,21 @@ def _ensure_clean_slate(quiet: bool = False) -> None:
     # Give the OS time to release sockets and clean up
     if killed:
         time.sleep(2)
+
+
+def _git_rev() -> str | None:
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() or None
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +312,43 @@ def run_cpython(script: str, timeout_s: float) -> tuple[bool, float, str]:
     return True, elapsed, (res.stdout or "").strip()
 
 
+def collect_samples(
+    measure_fn,
+    samples: int,
+    warmup: int,
+) -> SampleBatch:
+    """Collect warmup and measured samples, failing closed on any bad sample."""
+    warmup_samples: list[RunSample] = []
+    for idx in range(warmup):
+        ok, elapsed, output = measure_fn()
+        if not ok:
+            return SampleBatch(
+                samples=[],
+                warmup_samples=warmup_samples,
+                ok=False,
+                failed_phase=f"warmup {idx + 1}/{warmup}",
+            )
+        warmup_samples.append(RunSample(elapsed_s=elapsed, output=output))
+
+    measured: list[RunSample] = []
+    for idx in range(samples):
+        ok, elapsed, output = measure_fn()
+        if not ok:
+            return SampleBatch(
+                samples=measured,
+                warmup_samples=warmup_samples,
+                ok=False,
+                failed_phase=f"sample {idx + 1}/{samples}",
+            )
+        measured.append(RunSample(elapsed_s=elapsed, output=output))
+
+    return SampleBatch(
+        samples=measured,
+        warmup_samples=warmup_samples,
+        ok=bool(measured),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Single benchmark
 # ---------------------------------------------------------------------------
@@ -267,6 +357,7 @@ def run_cpython(script: str, timeout_s: float) -> tuple[bool, float, str]:
 def bench_one(
     script: str,
     samples: int,
+    warmup: int,
     timeout_build: float,
     timeout_run: float,
     *,
@@ -276,7 +367,6 @@ def bench_one(
 
     Returns a result dict for the JSON report.
     """
-    name = Path(script).name
     extra_args = MOLT_ARGS_BY_BENCH.get(script)
 
     result: dict = {
@@ -285,6 +375,14 @@ def bench_one(
         "run_ok": False,
         "molt_time_s": None,
         "cpython_time_s": None,
+        "molt_samples_s": [],
+        "molt_warmup_samples_s": [],
+        "cpython_samples_s": None,
+        "cpython_warmup_samples_s": None,
+        "molt_build_s": None,
+        "molt_speedup": None,
+        "molt_cpython_ratio": None,
+        "molt_ok": False,
         "speedup": None,
         "output_match": None,
         "molt_output": None,
@@ -310,58 +408,70 @@ def bench_one(
         result["error"] = build_err
         print(f"  BUILD FAIL: {build_err}", file=sys.stderr)
         # Still try CPython
-        cp_ok, cp_time, cp_out = run_cpython(script, timeout_run)
-        if cp_ok:
-            result["cpython_time_s"] = round(cp_time, 4)
-            result["cpython_output"] = cp_out
+        cp_batch = collect_samples(
+            lambda: run_cpython(script, timeout_run),
+            samples=samples,
+            warmup=warmup,
+        )
+        result["cpython_samples_s"] = cp_batch.times_s
+        result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+        if cp_batch.ok:
+            cp_time = statistics.median(cp_batch.times_s)
+            result["cpython_time_s"] = round(cp_time, 6)
+            result["cpython_output"] = cp_batch.first_output
         tmp.cleanup()
         return result
 
     result["build_ok"] = True
+    result["molt_build_s"] = round(build_s, 4)
 
     # --- Run Molt (multiple samples, take median) ---
-    molt_times: list[float] = []
-    molt_output = ""
-    for i in range(samples):
-        ok, elapsed, output = run_binary(binary, timeout_run)
-        if ok:
-            molt_times.append(elapsed)
-            if i == 0:
-                molt_output = output
-        else:
-            print(
-                f"  Molt run sample {i + 1}/{samples} failed for {name}",
-                file=sys.stderr,
-            )
-
-    if molt_times:
+    molt_batch = collect_samples(
+        lambda: run_binary(binary, timeout_run),
+        samples=samples,
+        warmup=warmup,
+    )
+    result["molt_samples_s"] = molt_batch.times_s
+    result["molt_warmup_samples_s"] = molt_batch.warmup_times_s
+    molt_output = molt_batch.first_output
+    if molt_batch.ok:
         result["run_ok"] = True
-        result["molt_time_s"] = round(statistics.median(molt_times), 6)
+        result["molt_time_s"] = round(statistics.median(molt_batch.times_s), 6)
         result["molt_output"] = molt_output
+    else:
+        result["error"] = f"Molt run failed during {molt_batch.failed_phase}"
 
     # --- Run CPython (multiple samples, take median) ---
-    cpython_times: list[float] = []
-    cpython_output = ""
-    for i in range(samples):
-        ok, elapsed, output = run_cpython(script, timeout_run)
-        if ok:
-            cpython_times.append(elapsed)
-            if i == 0:
-                cpython_output = output
-
-    if cpython_times:
-        result["cpython_time_s"] = round(statistics.median(cpython_times), 6)
+    cp_batch = collect_samples(
+        lambda: run_cpython(script, timeout_run),
+        samples=samples,
+        warmup=warmup,
+    )
+    result["cpython_samples_s"] = cp_batch.times_s
+    result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+    cpython_output = cp_batch.first_output
+    if cp_batch.ok:
+        result["cpython_time_s"] = round(statistics.median(cp_batch.times_s), 6)
         result["cpython_output"] = cpython_output
+    elif result["error"] is None:
+        result["error"] = f"CPython run failed during {cp_batch.failed_phase}"
 
     # --- Output match ---
-    if molt_output and cpython_output:
+    if molt_batch.ok and cp_batch.ok:
         result["output_match"] = molt_output == cpython_output
+        if result["output_match"]:
+            result["molt_ok"] = True
+        else:
+            result["error"] = "output mismatch"
     elif molt_output or cpython_output:
         result["output_match"] = False
 
     # --- Speedup ---
-    if result["molt_time_s"] and result["cpython_time_s"] and result["molt_time_s"] > 0:
-        result["speedup"] = round(result["cpython_time_s"] / result["molt_time_s"], 1)
+    if result["molt_ok"] and result["cpython_time_s"] and result["molt_time_s"] > 0:
+        speedup = result["cpython_time_s"] / result["molt_time_s"]
+        result["speedup"] = round(speedup, 1)
+        result["molt_speedup"] = speedup
+        result["molt_cpython_ratio"] = result["molt_time_s"] / result["cpython_time_s"]
 
     tmp.cleanup()
     return result
@@ -400,7 +510,7 @@ def print_summary(results: dict[str, dict]) -> None:
         else:
             match_str = "-"
 
-        if r["build_ok"] and r["run_ok"]:
+        if r["molt_ok"]:
             pass_count += 1
         else:
             fail_count += 1
@@ -429,6 +539,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=3,
         help="Number of run samples per benchmark; takes median (default: 3)",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=1,
+        help="Discarded warmup runs per runtime before measured samples (default: 1)",
     )
     parser.add_argument(
         "--json-out",
@@ -473,6 +589,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.samples <= 0:
+        raise SystemExit("--samples must be >= 1")
+    if args.warmup < 0:
+        raise SystemExit("--warmup must be >= 0")
 
     # Filter benchmarks
     benchmarks = list(BENCHMARKS)
@@ -500,6 +620,7 @@ def main() -> None:
 
     total = len(benchmarks)
     print(f"Running {total} benchmark(s) with {args.samples} sample(s) each")
+    print(f"Warmup: {args.warmup} discarded sample(s) per runtime")
     print(f"Build timeout: {args.timeout_build}s  |  Run timeout: {args.timeout_run}s")
     print(
         "Backend daemon: "
@@ -515,6 +636,7 @@ def main() -> None:
         result = bench_one(
             script,
             samples=args.samples,
+            warmup=args.warmup,
             timeout_build=args.timeout_build,
             timeout_run=args.timeout_run,
             isolate_daemon=args.isolate_daemon,
@@ -536,7 +658,27 @@ def main() -> None:
     print_summary(results)
 
     # JSON output
-    report = {"benchmarks": results}
+    try:
+        load_avg = os.getloadavg()
+    except OSError:
+        load_avg = None
+    report = {
+        "schema_version": 1,
+        "created_at": datetime.now(UTC).isoformat(),
+        "git_rev": _git_rev(),
+        "super_run": False,
+        "samples": args.samples,
+        "warmup": args.warmup,
+        "timing_mode": "warm_throughput" if args.warmup > 0 else "cold_first_run",
+        "system": {
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "machine": platform.machine(),
+            "cpu_count": os.cpu_count(),
+            "load_avg": load_avg,
+        },
+        "benchmarks": results,
+    }
     if args.json_out:
         out_path = Path(args.json_out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
