@@ -139,9 +139,13 @@ def test_find_rss_violation_catches_aggregate_process_tree_rss() -> None:
     )
 
 
-def test_max_rss_gb_must_leave_margin_below_thirty() -> None:
-    with pytest.raises(ValueError, match="below 30"):
-        memory_guard.max_rss_kb_from_gb(30)
+def test_max_rss_gb_accepts_high_workstation_limits() -> None:
+    assert memory_guard.max_rss_kb_from_gb(96) == 96 * 1024 * 1024
+
+
+def test_max_rss_gb_must_leave_margin_below_hard_cap() -> None:
+    with pytest.raises(ValueError, match="below 112"):
+        memory_guard.max_rss_kb_from_gb(112)
 
 
 def test_run_command_passes_through_success() -> None:
@@ -231,21 +235,21 @@ def test_main_enforces_timeout_and_writes_summary(
 
 
 def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> None:
-    rc = memory_guard.main(["--max-rss-gb", "30", "--", sys.executable, "-c", "pass"])
+    rc = memory_guard.main(["--max-rss-gb", "112", "--", sys.executable, "-c", "pass"])
 
     assert rc == 2
-    assert "below 30" in capsys.readouterr().err
+    assert "below 112" in capsys.readouterr().err
 
 
 def test_main_rejects_unsafe_total_threshold(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     rc = memory_guard.main(
-        ["--max-total-rss-gb", "30", "--", sys.executable, "-c", "pass"]
+        ["--max-total-rss-gb", "112", "--", sys.executable, "-c", "pass"]
     )
 
     assert rc == 2
-    assert "below 30" in capsys.readouterr().err
+    assert "below 112" in capsys.readouterr().err
 
 
 def test_main_reexec_hides_guarded_command_from_guard_argv() -> None:
@@ -351,3 +355,29 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["max_total_rss_gb"] == pytest.approx(
         memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
     )
+
+
+def test_main_writes_samples_jsonl(tmp_path) -> None:
+    samples_path = tmp_path / "samples.jsonl"
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--poll-interval",
+            "0.01",
+            "--samples-jsonl",
+            str(samples_path),
+            "--",
+            sys.executable,
+            "-c",
+            "print('ok')",
+        ]
+    )
+
+    assert rc == 0
+    lines = samples_path.read_text(encoding="utf-8").splitlines()
+    assert lines
+    payload = json.loads(lines[-1])
+    assert payload["root_pid"] > 0
+    assert "peak" in payload
+    assert "total" in payload
