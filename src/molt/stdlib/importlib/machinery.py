@@ -94,7 +94,22 @@ DEBUG_BYTECODE_SUFFIXES = [".pyc"]
 OPTIMIZED_BYTECODE_SUFFIXES = [".pyc"]
 import sys as _sys
 
-_platform = _sys.platform
+
+def _resolve_platform() -> str:
+    platform = getattr(_sys, "platform", None)
+    if isinstance(platform, str):
+        return platform
+
+    from _intrinsics import require_intrinsic as _require_intrinsic
+
+    platform_fn = _require_intrinsic("molt_sys_platform", globals())
+    platform = platform_fn()
+    if not isinstance(platform, str):
+        raise RuntimeError("molt_sys_platform returned invalid value")
+    return platform
+
+
+_platform = _resolve_platform()
 
 if _platform == "win32":
     EXTENSION_SUFFIXES: list[str] = [".pyd", ".dll"]

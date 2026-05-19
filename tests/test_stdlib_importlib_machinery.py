@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 
@@ -35,6 +36,7 @@ _MACHINERY_INTRINSICS = [
     "molt_importlib_stabilize_module_state",
     "molt_exception_clear",
     "molt_module_import",
+    "molt_sys_platform",
 ]
 
 
@@ -68,6 +70,7 @@ def _load_machinery_module():
     for name in _MACHINERY_INTRINSICS:
         registry.setdefault(name, _noop)
     registry["molt_importlib_coerce_module_name"] = _coerce_stub
+    registry["molt_sys_platform"] = lambda: sys.platform
 
     def _lookup(intrinsic_name):
         return registry.get(intrinsic_name)
@@ -134,3 +137,27 @@ def test_coerce_module_name_raises_without_any_string_source() -> None:
         assert str(exc) == "module name must be str"
     else:
         raise AssertionError("expected TypeError")
+
+
+def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
+    registry = getattr(builtins, "_molt_intrinsics", None)
+    if not isinstance(registry, dict):
+        registry = {}
+        builtins._molt_intrinsics = registry
+    registry["molt_sys_platform"] = lambda: "darwin"
+
+    spec = importlib.util.spec_from_file_location(
+        "molt_stdlib_importlib_machinery_partial_sys", SCRIPT_PATH
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    partial_sys = types.ModuleType("sys")
+    original_sys_module = sys.modules["sys"]
+    sys.modules["sys"] = partial_sys
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules["sys"] = original_sys_module
+
+    assert module.EXTENSION_SUFFIXES == [".so", ".dylib"]

@@ -68,6 +68,7 @@ def _build_and_run_with_env(
     source_relpath: str | None = None,
     extra_files: dict[str, str] | None = None,
     extra_env: dict[str, str] | None = None,
+    extra_build_args: list[str] | None = None,
     run_timeout_secs: int = 60,
 ) -> subprocess.CompletedProcess[str]:
     src_path = (
@@ -101,22 +102,26 @@ def _build_and_run_with_env(
     if extra_env:
         env.update(extra_env)
 
+    build_cmd = [
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "build",
+        str(src_path),
+        "--target",
+        "native",
+        "--build-profile",
+        "dev",
+        "--backend",
+        backend,
+        "--output",
+        str(out_path),
+    ]
+    if extra_build_args:
+        build_cmd.extend(extra_build_args)
+
     build = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            str(src_path),
-            "--target",
-            "native",
-            "--build-profile",
-            "dev",
-            "--backend",
-            backend,
-            "--output",
-            str(out_path),
-        ],
+        build_cmd,
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -227,6 +232,29 @@ def test_native_import_sys_is_clean(tmp_path: Path) -> None:
     run = _build_and_run(tmp_path, "import sys\nprint('ok')\n", "import_sys")
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
+
+
+def test_native_full_profile_importlib_machinery_sees_bootstrapped_sys_platform(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import sys\n"
+            "import importlib.machinery\n"
+            "print(type(sys.platform).__name__)\n"
+            "print(len(sys.platform) > 0)\n"
+            "print(importlib.machinery.EXTENSION_SUFFIXES[0])\n"
+        ),
+        "full_profile_importlib_machinery_sys_platform",
+        session_id="pytest-native-bootstrap-full-importlib-machinery",
+        cache_dir=ROOT / ".molt_cache",
+        backend="cranelift",
+        extra_build_args=["--stdlib-profile", "full"],
+        run_timeout_secs=30,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["str", "True", ".so"]
 
 
 def test_native_globals_builtin_is_callable(tmp_path: Path) -> None:
