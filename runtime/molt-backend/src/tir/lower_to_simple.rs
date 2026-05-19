@@ -1014,8 +1014,12 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
 
         // Phase 2: walk ops, detecting dead labels.
         // `is_filled` tracks whether the current block has been terminated
-        // (by jump/ret/raise/loop_continue) without a subsequent label
-        // starting a new live block.
+        // (by jump/ret/loop_continue) without a subsequent label starting a
+        // new live block. `raise` is intentionally not a SimpleIR terminator:
+        // host-call EH models it as "set pending exception", then an explicit
+        // check/jump edge carries block arguments into the handler/cleanup
+        // block. Treating `raise` as filled deletes that edge and drops the
+        // carrier state.
         let mut filled_state = FilledState::Open;
         let mut current_block_started_at_live_label = false;
         let mut keep = vec![true; ops.len()];
@@ -1023,7 +1027,7 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         for i in 0..ops.len() {
             let kind = ops[i].kind.as_str();
             match kind {
-                "jump" | "ret" | "raise" | "loop_break" => {
+                "jump" | "ret" | "loop_break" => {
                     if filled_state != FilledState::Open {
                         keep[i] = false;
                     } else {
@@ -4226,6 +4230,48 @@ mod tests {
         assert!(
             ops.iter().any(|op| op.kind == "loop_end"),
             "loop_end must survive after a live labeled terminal block because it still closes the structured loop break path: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn eliminate_dead_labels_preserves_explicit_post_raise_exception_transfer() {
+        let mut ops = vec![
+            OpIR {
+                kind: "raise".into(),
+                args: Some(vec!["exc".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("_bb7_arg0".into()),
+                args: Some(vec!["total".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(5),
+                args: Some(vec![]),
+                ..OpIR::default()
+            },
+        ];
+
+        eliminate_dead_labels(&mut ops);
+
+        let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["raise", "store_var", "check_exception", "jump", "label"],
+            "raise must not delete the explicit exception transfer edge: {ops:?}"
         );
     }
 
