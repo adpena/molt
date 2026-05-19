@@ -308,6 +308,25 @@ main()
     assert field_ops[0]["args"][:2] == field_ops[1]["args"][:2]
 
 
+def test_string_split_result_element_hint_enables_nested_split_scalarization():
+    src = """
+def main() -> None:
+    data = "header,value\\nalpha,beta"
+    lines = data.split("\\n")
+    line = lines[1]
+    fields = line.split(",")
+    print(fields[0], fields[1])
+main()
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    kinds = [op["kind"] for op in ops]
+    assert "call_indirect" not in kinds
+    assert "string_split" not in kinds
+    assert kinds.count("string_split_validate") == 2
+    assert kinds.count("string_split_field") == 3
+
+
 def test_string_split_duplicate_fixed_index_reuses_materialized_field():
     src = """
 def main() -> None:
@@ -386,6 +405,14 @@ def main() -> None:
     while False:
         print("never")
     print(parts[0])
+""",
+        """
+def main() -> None:
+    parts = "1|NA|2".split("|")
+    print(parts[0])
+    if parts[1] == "NA":
+        print("hit")
+    print(len(parts))
 """,
     ]
     for src in cases:
