@@ -211,6 +211,72 @@ def test_rss_display_status_normalizes_raw_ok_without_lookup() -> None:
     assert resolved == "pass"
 
 
+def test_diff_memory_guard_config_clamps_workstation_global_limit(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", "96")
+    monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", "80")
+    monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", "70")
+
+    config = module._diff_memory_guard_config()
+
+    assert config.global_gb == pytest.approx(module._DIFF_MEMORY_GUARD_HARD_GLOBAL_GB)
+    assert config.max_tree_gb == pytest.approx(config.global_gb)
+    assert config.max_process_gb == pytest.approx(config.max_tree_gb)
+
+
+def test_diff_memory_guard_can_be_disabled(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "off")
+
+    assert module._diff_memory_guard_enabled() is False
+
+
+def test_diff_memory_guard_kills_active_child_tree_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_diff_module()
+    config = module._DiffMemoryGuardConfig(
+        max_process_kb=30_000,
+        max_tree_kb=20_000,
+        global_kb=100_000,
+        poll_interval=0.01,
+    )
+    active_dir = tmp_path / "active"
+    active_dir.mkdir()
+    (active_dir / "worker-200.json").write_text(
+        '{"pid": 200, "worker_pid": 100, "command": ["build"]}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_ACTIVE_DIR_ENV, str(active_dir))
+    monkeypatch.setenv(
+        module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(tmp_path / "tripped.json")
+    )
+    monkeypatch.setenv(
+        module._DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV, str(tmp_path / "events.jsonl")
+    )
+    monkeypatch.setenv(
+        module._DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV,
+        str(tmp_path / "samples.jsonl"),
+    )
+    samples = {
+        os.getpid(): module.memory_guard.ProcessSample(os.getpid(), 1, 1_000, "root"),
+        200: module.memory_guard.ProcessSample(200, os.getpid(), 9_000, "build"),
+        201: module.memory_guard.ProcessSample(201, 200, 12_000, "rustc"),
+    }
+    killed: list[int] = []
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(
+        module, "_terminate_pid_tree", lambda pid, grace=1.0: killed.append(pid)
+    )
+
+    module._DiffGlobalMemoryMonitor(config)._sample_once()
+
+    assert killed == [200]
+    trip = (tmp_path / "tripped.json").read_text(encoding="utf-8")
+    assert "per-tree memory guard tripped" in trip
+    assert "process tree aggregate" in trip
+
+
 def test_stderr_traceback_mode_tolerates_frame_path_differences() -> None:
     module = _load_diff_module()
     cp_err = (
