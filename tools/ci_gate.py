@@ -248,7 +248,7 @@ def _build_checks() -> list[Check]:
             cmd=_uv_pytest(
                 str(TESTS / "property"),
                 "-x",
-                "--max-examples=10",
+                "--molt-max-examples=10",
                 "-q",
             ),
             timeout=60,
@@ -315,7 +315,7 @@ def _build_checks() -> list[Check]:
             tier=2,
             cmd=_uv_pytest(
                 str(TESTS / "property"),
-                "--max-examples=200",
+                "--molt-max-examples=200",
                 "-q",
             ),
             timeout=300,
