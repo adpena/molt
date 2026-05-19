@@ -5,8 +5,9 @@ use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
 use crate::*;
 use molt_obj_model::MoltObject;
+use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{Signed, Zero};
+use num_traits::{Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io::Write;
@@ -67,6 +68,187 @@ fn trace_call_dispatch_args_enabled() -> bool {
             Some("1")
         )
     })
+}
+
+enum SumExactInt {
+    Small(i128),
+    Big(BigInt),
+}
+
+impl SumExactInt {
+    fn from_obj(obj: MoltObject) -> Option<Self> {
+        if obj.is_int() {
+            return Some(Self::Small(obj.as_int_unchecked() as i128));
+        }
+        if obj.is_bool() {
+            return Some(Self::Small(if (obj.bits() & 0x1) == 1 { 1 } else { 0 }));
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
+            return Some(Self::Big(unsafe { bigint_ref(ptr).clone() }));
+        }
+        if let Some(bits) = int_subclass_value_bits_raw(obj.bits()) {
+            let value = obj_from_bits(bits);
+            if value.is_int() {
+                return Some(Self::Small(value.as_int_unchecked() as i128));
+            }
+            if value.is_bool() {
+                return Some(Self::Small(if (value.bits() & 0x1) == 1 { 1 } else { 0 }));
+            }
+            if let Some(ptr) = bigint_ptr_from_bits(bits) {
+                return Some(Self::Big(unsafe { bigint_ref(ptr).clone() }));
+            }
+        }
+        None
+    }
+
+    fn add_i128(&mut self, value: i128) {
+        match self {
+            Self::Small(acc) => {
+                if let Some(next) = acc.checked_add(value) {
+                    *acc = next;
+                } else {
+                    *self = Self::Big(BigInt::from(*acc) + BigInt::from(value));
+                }
+            }
+            Self::Big(acc) => *acc += BigInt::from(value),
+        }
+    }
+
+    fn add_exact(&mut self, value: Self) {
+        match value {
+            Self::Small(value) => self.add_i128(value),
+            Self::Big(value) => match self {
+                Self::Small(acc) => *self = Self::Big(BigInt::from(*acc) + value),
+                Self::Big(acc) => *acc += value,
+            },
+        }
+    }
+
+    fn to_f64(&self) -> Option<f64> {
+        match self {
+            Self::Small(value) => value.to_f64(),
+            Self::Big(value) => value.to_f64(),
+        }
+    }
+
+    fn into_bits(self, _py: &PyToken<'_>) -> u64 {
+        match self {
+            Self::Small(value) => int_bits_from_i128(_py, value),
+            Self::Big(value) => int_bits_from_bigint(_py, value),
+        }
+    }
+}
+
+#[inline]
+fn sum_float_accumulate(fsum: &mut f64, comp: &mut f64, x: f64) {
+    let t = *fsum + x;
+    if fsum.abs() >= x.abs() {
+        *comp += (*fsum - t) + x;
+    } else {
+        *comp += (x - t) + *fsum;
+    }
+    *fsum = t;
+}
+
+#[inline]
+fn sum_next_iterator_value(_py: &PyToken<'_>, iter_obj: u64) -> Result<Option<u64>, u64> {
+    let pair_bits = molt_iter_next(iter_obj);
+    let pair_obj = obj_from_bits(pair_bits);
+    let Some(pair_ptr) = pair_obj.as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "object is not an iterator",
+        ));
+    };
+    unsafe {
+        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "object is not an iterator",
+            ));
+        }
+        let elems = seq_vec_ref(pair_ptr);
+        if elems.len() < 2 {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "object is not an iterator",
+            ));
+        }
+        let val_bits = elems[0];
+        let done_bits = elems[1];
+        if is_truthy(_py, obj_from_bits(done_bits)) {
+            Ok(None)
+        } else {
+            Ok(Some(val_bits))
+        }
+    }
+}
+
+fn sum_generic_from(
+    _py: &PyToken<'_>,
+    iter_obj: u64,
+    mut total_bits: u64,
+    mut total_owned: bool,
+) -> u64 {
+    loop {
+        let val_bits = match sum_next_iterator_value(_py, iter_obj) {
+            Ok(Some(val_bits)) => val_bits,
+            Ok(None) => {
+                if !total_owned {
+                    inc_ref_bits(_py, total_bits);
+                }
+                return total_bits;
+            }
+            Err(error_bits) => return error_bits,
+        };
+        let next_bits = molt_add(total_bits, val_bits);
+        if obj_from_bits(next_bits).is_none() {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return binary_type_error(_py, obj_from_bits(total_bits), obj_from_bits(val_bits), "+");
+        }
+        total_bits = next_bits;
+        total_owned = true;
+    }
+}
+
+fn sum_float_from(_py: &PyToken<'_>, iter_obj: u64, mut fsum: f64, mut comp: f64) -> u64 {
+    loop {
+        let val_bits = match sum_next_iterator_value(_py, iter_obj) {
+            Ok(Some(val_bits)) => val_bits,
+            Ok(None) => return float_result_bits(_py, fsum + comp),
+            Err(error_bits) => return error_bits,
+        };
+        let val_obj = obj_from_bits(val_bits);
+        if let Some(x) = as_float_extended(val_obj) {
+            sum_float_accumulate(&mut fsum, &mut comp, x);
+            continue;
+        }
+        if let Some(value) = SumExactInt::from_obj(val_obj) {
+            let Some(x) = value.to_f64() else {
+                return raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "int too large to convert to float",
+                );
+            };
+            sum_float_accumulate(&mut fsum, &mut comp, x);
+            continue;
+        }
+        let total_bits = float_result_bits(_py, fsum + comp);
+        let next_bits = molt_add(total_bits, val_bits);
+        if obj_from_bits(next_bits).is_none() {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return binary_type_error(_py, obj_from_bits(total_bits), obj_from_bits(val_bits), "+");
+        }
+        return sum_generic_from(_py, iter_obj, next_bits, true);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1991,48 +2173,41 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 let type_id = unsafe { object_type_id(ptr) };
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                     let elems = unsafe { seq_vec_ref(ptr) };
-                    if let Some(start_int) = to_i64(start_obj) {
-                        let mut acc128 = start_int as i128;
+                    if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
                         let mut all_int = true;
                         for &bits in elems.iter() {
                             let elem = obj_from_bits(bits);
-                            if let Some(i) = to_i64(elem) {
-                                acc128 += i as i128;
+                            if let Some(i) = SumExactInt::from_obj(elem) {
+                                acc.add_exact(i);
                             } else {
                                 all_int = false;
                                 break;
                             }
                         }
                         if all_int {
-                            use crate::builtins::numbers::int_bits_from_i128;
-                            return int_bits_from_i128(_py, acc128);
+                            return acc.into_bits(_py);
                         }
                     }
                 }
                 // Specialized list[int] — elements are raw i64, no NaN-boxing.
                 if type_id == TYPE_ID_LIST_INT {
                     let elems = unsafe { crate::object::layout::list_int_vec_ref(ptr) };
-                    let start_int = to_i64(start_obj);
-                    if let Some(s) = start_int {
-                        let mut acc128 = s as i128;
+                    if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
                         for &raw in elems.iter() {
-                            acc128 += raw as i128;
+                            acc.add_i128(raw as i128);
                         }
-                        use crate::builtins::numbers::int_bits_from_i128;
-                        return int_bits_from_i128(_py, acc128);
+                        return acc.into_bits(_py);
                     }
                 }
                 // Specialized list[bool] — elements are raw u8 (0/1).
                 // sum([True, False, True]) == 2
                 if type_id == TYPE_ID_LIST_BOOL {
                     let elems = unsafe { crate::object::layout::list_bool_vec_ref(ptr) };
-                    let start_int = to_i64(start_obj);
-                    if let Some(s) = start_int {
-                        let mut acc: i64 = s;
+                    if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
                         for &raw in elems.iter() {
-                            acc += raw as i64;
+                            acc.add_i128(raw as i128);
                         }
-                        return MoltObject::from_int(acc).bits();
+                        return acc.into_bits(_py);
                     }
                 }
             }
@@ -2041,119 +2216,31 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
         if obj_from_bits(iter_obj).is_none() {
             return raise_not_iterable(_py, iter_bits);
         }
-        // CPython >= 3.12 uses Neumaier compensated summation for float sums.
-        // Detect float accumulation and switch to compensated mode.
-        let mut total_bits = start_bits;
-        let mut total_owned = false;
-        let start_f = to_f64(start_obj);
-        // If start is a number, try Neumaier compensated path.
-        if let Some(start_val) = start_f {
-            let mut fsum = start_val;
-            let mut comp = 0.0_f64; // Neumaier compensation term
-            let mut all_numeric = true;
-            let mut has_float = as_float_extended(start_obj).is_some();
+        if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
             loop {
-                let pair_bits = molt_iter_next(iter_obj);
-                let pair_obj = obj_from_bits(pair_bits);
-                let Some(pair_ptr) = pair_obj.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                let val_bits = match sum_next_iterator_value(_py, iter_obj) {
+                    Ok(Some(val_bits)) => val_bits,
+                    Ok(None) => return acc.into_bits(_py),
+                    Err(error_bits) => return error_bits,
                 };
-                unsafe {
-                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                        return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                    }
-                    let elems = seq_vec_ref(pair_ptr);
-                    if elems.len() < 2 {
-                        return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                    }
-                    let val_bits = elems[0];
-                    let done_bits = elems[1];
-                    if is_truthy(_py, obj_from_bits(done_bits)) {
-                        if all_numeric {
-                            let result = fsum + comp;
-                            if has_float {
-                                return float_result_bits(_py, result);
-                            } else {
-                                return MoltObject::from_int(result as i64).bits();
-                            }
-                        }
-                        if !total_owned {
-                            inc_ref_bits(_py, total_bits);
-                        }
-                        return total_bits;
-                    }
-                    let val_obj = obj_from_bits(val_bits);
-                    if all_numeric {
-                        // Check if value is float-coercible and stay in compensated mode
-                        let item_f = if let Some(f) = as_float_extended(val_obj) {
-                            has_float = true;
-                            Some(f)
-                        } else {
-                            to_i64(val_obj).map(|i| i as f64)
-                        };
-                        if let Some(x) = item_f {
-                            // Neumaier compensated summation step
-                            let t = fsum + x;
-                            if fsum.abs() >= x.abs() {
-                                comp += (fsum - t) + x;
-                            } else {
-                                comp += (x - t) + fsum;
-                            }
-                            fsum = t;
-                            total_bits = float_result_bits(_py, fsum);
-                            total_owned = true;
-                            continue;
-                        }
-                        // Non-numeric value: fall back to generic sum.
-                        // total_owned must be set here because the done-check
-                        // at the top of the next iteration reads it.
-                        all_numeric = false;
-                        total_bits = float_result_bits(_py, fsum + comp);
-                        #[allow(unused_assignments)]
-                        {
-                            total_owned = true;
-                        }
-                    }
-                    let next_bits = molt_add(total_bits, val_bits);
-                    if obj_from_bits(next_bits).is_none() {
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        return binary_type_error(
+                let val_obj = obj_from_bits(val_bits);
+                if let Some(value) = SumExactInt::from_obj(val_obj) {
+                    acc.add_exact(value);
+                    continue;
+                }
+                if let Some(x) = as_float_extended(val_obj) {
+                    let Some(mut fsum) = acc.to_f64() else {
+                        return raise_exception::<u64>(
                             _py,
-                            obj_from_bits(total_bits),
-                            obj_from_bits(val_bits),
-                            "+",
+                            "OverflowError",
+                            "int too large to convert to float",
                         );
-                    }
-                    total_bits = next_bits;
-                    total_owned = true;
+                    };
+                    let mut comp = 0.0_f64;
+                    sum_float_accumulate(&mut fsum, &mut comp, x);
+                    return sum_float_from(_py, iter_obj, fsum, comp);
                 }
-            }
-        }
-        // Non-numeric start: generic path
-        loop {
-            let pair_bits = molt_iter_next(iter_obj);
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-            };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let elems = seq_vec_ref(pair_ptr);
-                if elems.len() < 2 {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let val_bits = elems[0];
-                let done_bits = elems[1];
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    if !total_owned {
-                        inc_ref_bits(_py, total_bits);
-                    }
-                    return total_bits;
-                }
+                let total_bits = acc.into_bits(_py);
                 let next_bits = molt_add(total_bits, val_bits);
                 if obj_from_bits(next_bits).is_none() {
                     if exception_pending(_py) {
@@ -2166,10 +2253,13 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                         "+",
                     );
                 }
-                total_bits = next_bits;
-                total_owned = true;
+                return sum_generic_from(_py, iter_obj, next_bits, true);
             }
         }
+        if let Some(start_val) = as_float_extended(start_obj) {
+            return sum_float_from(_py, iter_obj, start_val, 0.0_f64);
+        }
+        sum_generic_from(_py, iter_obj, start_bits, false)
     })
 }
 

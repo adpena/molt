@@ -4417,8 +4417,8 @@ mod tests {
                     "normal chunk fallthrough must skip the cloned exception tail"
                 );
                 assert_ne!(guard.value, Some(32));
-                observed_cloned_suffix_stop_return |= chunk.ops[handler_idx..].windows(2).any(
-                    |window| {
+                observed_cloned_suffix_stop_return |=
+                    chunk.ops[handler_idx..].windows(2).any(|window| {
                         window[0].kind == "const_bool"
                             && window[0].value == Some(0)
                             && window[0]
@@ -4426,8 +4426,7 @@ mod tests {
                                 .as_ref()
                                 .is_some_and(|out| window[1].var.as_ref() == Some(out))
                             && window[1].kind == "ret"
-                    },
-                );
+                    });
                 for (idx, op) in chunk.ops.iter().enumerate() {
                     if op.kind == "store_index"
                         && op
