@@ -55,6 +55,7 @@ def test_bench_individual_reuses_backend_daemon_by_default(
     result = bench.bench_one(
         "tests/benchmarks/bench_bytes_find.py",
         samples=1,
+        warmup=1,
         timeout_build=1.0,
         timeout_run=1.0,
     )
@@ -62,6 +63,11 @@ def test_bench_individual_reuses_backend_daemon_by_default(
     assert cleanups == 0
     assert result["build_ok"] is True
     assert result["run_ok"] is True
+    assert result["molt_ok"] is True
+    assert result["molt_warmup_samples_s"] == [0.02]
+    assert result["molt_samples_s"] == [0.02]
+    assert result["cpython_warmup_samples_s"] == [0.04]
+    assert result["cpython_samples_s"] == [0.04]
 
 
 def test_bench_individual_can_opt_into_cold_daemon_isolation(
@@ -99,9 +105,55 @@ def test_bench_individual_can_opt_into_cold_daemon_isolation(
     bench.bench_one(
         "tests/benchmarks/bench_bytes_find.py",
         samples=1,
+        warmup=1,
         timeout_build=1.0,
         timeout_run=1.0,
         isolate_daemon=True,
     )
 
     assert cleanups == 1
+
+
+def test_bench_individual_rejects_partial_sample_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bench = _load_bench_individual()
+    calls = 0
+
+    monkeypatch.setattr(
+        bench,
+        "molt_build",
+        lambda script, out_dir, timeout_s, extra_args=None: (
+            tmp_path / "bench_molt",
+            0.01,
+            "",
+        ),
+    )
+
+    def fake_run_binary(binary: Path, timeout_s: float) -> tuple[bool, float, str]:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            return False, 0.03, ""
+        return True, 0.02, "1"
+
+    monkeypatch.setattr(bench, "run_binary", fake_run_binary)
+    monkeypatch.setattr(
+        bench,
+        "run_cpython",
+        lambda script, timeout_s: (True, 0.04, "1"),
+    )
+
+    result = bench.bench_one(
+        "tests/benchmarks/bench_bytes_find.py",
+        samples=2,
+        warmup=1,
+        timeout_build=1.0,
+        timeout_run=1.0,
+    )
+
+    assert result["run_ok"] is False
+    assert result["molt_ok"] is False
+    assert result["molt_warmup_samples_s"] == [0.02]
+    assert result["molt_samples_s"] == [0.02]
+    assert result["error"] == "Molt run failed during sample 2/2"
