@@ -21,7 +21,8 @@ from tools import memory_guard  # noqa: E402
 
 
 DEFAULT_MAX_PROCESS_RSS_GB = memory_guard.DEFAULT_MAX_RSS_GB
-DEFAULT_MAX_TOTAL_RSS_GB = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
+DEFAULT_MAX_GROUP_RSS_GB = memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
+DEFAULT_MAX_GLOBAL_RSS_GB = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
 DEFAULT_POLL_INTERVAL_SEC = 0.2
 DEFAULT_GRACE_SEC = 0.5
 DEFAULT_MAX_RUNTIME_SEC = 120.0
@@ -161,18 +162,23 @@ def find_violations(
     groups: Sequence[ProcessGroup],
     *,
     max_process_kb: int,
-    max_total_kb: int,
+    max_group_kb: int,
+    max_global_kb: int,
     kill_all: bool = False,
 ) -> list[SentinelViolation]:
     violations: list[SentinelViolation] = []
+    global_total_kb = sum(group.total_rss_kb for group in groups)
+    global_tripped = bool(groups) and global_total_kb > max_global_kb
     for group in groups:
         peak = group.peak
         if kill_all:
             reason = "kill_all"
         elif peak is not None and peak.rss_kb > max_process_kb:
             reason = "process_rss"
-        elif group.total_rss_kb > max_total_kb:
+        elif group.total_rss_kb > max_group_kb:
             reason = "group_rss"
+        elif global_tripped:
+            reason = "global_rss"
         else:
             continue
         violations.append(
@@ -266,10 +272,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-total-rss-gb",
         type=float,
-        default=DEFAULT_MAX_TOTAL_RSS_GB,
+        default=DEFAULT_MAX_GROUP_RSS_GB,
         help=(
             "Per-process-group RSS ceiling for matched Molt groups "
-            f"(default: {DEFAULT_MAX_TOTAL_RSS_GB})."
+            f"(default: {DEFAULT_MAX_GROUP_RSS_GB})."
+        ),
+    )
+    parser.add_argument(
+        "--max-global-rss-gb",
+        type=float,
+        default=DEFAULT_MAX_GLOBAL_RSS_GB,
+        help=(
+            "Cumulative RSS ceiling across all matched Molt process groups "
+            f"(default: {DEFAULT_MAX_GLOBAL_RSS_GB})."
         ),
     )
     parser.add_argument(
@@ -330,7 +345,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         max_process_kb = memory_guard.max_rss_kb_from_gb(args.max_process_rss_gb)
-        max_total_kb = memory_guard.max_global_rss_kb_from_gb(args.max_total_rss_gb)
+        max_group_kb = memory_guard.max_rss_kb_from_gb(args.max_total_rss_gb)
+        max_global_kb = memory_guard.max_global_rss_kb_from_gb(args.max_global_rss_gb)
         if args.poll_interval <= 0:
             raise ValueError("poll interval must be greater than 0")
         if args.grace_sec < 0:
@@ -359,7 +375,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         violations = find_violations(
             groups,
             max_process_kb=max_process_kb,
-            max_total_kb=max_total_kb,
+            max_group_kb=max_group_kb,
+            max_global_kb=max_global_kb,
             kill_all=args.kill_all,
         )
         emit_violations(violations, json_mode=args.json, stream=stream)

@@ -125,23 +125,71 @@ def test_find_violations_can_kill_all_or_threshold() -> None:
     kill_all = module.find_violations(
         [group],
         max_process_kb=10_000,
-        max_total_kb=10_000,
+        max_group_kb=10_000,
+        max_global_kb=10_000,
         kill_all=True,
     )
     process_rss = module.find_violations(
         [group],
         max_process_kb=800,
-        max_total_kb=10_000,
+        max_group_kb=10_000,
+        max_global_kb=10_000,
     )
     group_rss = module.find_violations(
         [group],
         max_process_kb=10_000,
-        max_total_kb=999,
+        max_group_kb=999,
+        max_global_kb=10_000,
     )
 
     assert kill_all[0].reason == "kill_all"
     assert process_rss[0].reason == "process_rss"
     assert group_rss[0].reason == "group_rss"
+
+
+def test_find_violations_catches_aggregate_global_rss() -> None:
+    module = _load_process_sentinel()
+    groups = [
+        module.ProcessGroup(
+            pgid=10,
+            matched=True,
+            samples=(
+                module.memory_guard.ProcessSample(
+                    pid=10,
+                    ppid=1,
+                    pgid=10,
+                    rss_kb=600,
+                    command="first",
+                ),
+            ),
+        ),
+        module.ProcessGroup(
+            pgid=20,
+            matched=True,
+            samples=(
+                module.memory_guard.ProcessSample(
+                    pid=20,
+                    ppid=1,
+                    pgid=20,
+                    rss_kb=600,
+                    command="second",
+                ),
+            ),
+        ),
+    ]
+
+    violations = module.find_violations(
+        groups,
+        max_process_kb=10_000,
+        max_group_kb=10_000,
+        max_global_kb=1_000,
+    )
+
+    assert [violation.reason for violation in violations] == [
+        "global_rss",
+        "global_rss",
+    ]
+    assert [violation.pgid for violation in violations] == [10, 20]
 
 
 def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> None:
@@ -229,7 +277,7 @@ def test_main_rejects_once_with_until_clean(capsys) -> None:
 def test_main_rejects_global_cap_without_margin(capsys) -> None:
     module = _load_process_sentinel()
 
-    rc = module.main(["--once", "--max-total-rss-gb", "58"])
+    rc = module.main(["--once", "--max-global-rss-gb", "58"])
 
     assert rc == 2
     assert "below 58" in capsys.readouterr().err
