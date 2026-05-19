@@ -8274,7 +8274,7 @@ def _runtime_fingerprint(
 ) -> dict[str, str | None] | None:
     feature_list = tuple(_dedupe_preserve_order(sorted(runtime_features)))
     meta = f"profile:{cargo_profile}\ntarget:{target_triple or 'native'}\n"
-    meta += "build-schema:wasm-runtime-rustflags-v2\n"
+    meta += "build-schema:runtime-feature-profile-v3\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
     meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
@@ -8840,6 +8840,11 @@ def _artifact_needs_rebuild(
         return True
     if stored_fingerprint.get("hash") != fingerprint.get("hash"):
         return True
+    meta_digest = fingerprint.get("meta_digest")
+    if meta_digest:
+        stored_meta_digest = stored_fingerprint.get("meta_digest")
+        if stored_meta_digest is None or stored_meta_digest != meta_digest:
+            return True
     rustc = fingerprint.get("rustc")
     if rustc:
         stored_rustc = stored_fingerprint.get("rustc")
@@ -19207,6 +19212,7 @@ def _prepare_backend_setup(
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
+    stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     runtime_state = _initialize_runtime_artifact_state(
@@ -19246,6 +19252,7 @@ def _prepare_backend_setup(
             cargo_timeout=cargo_timeout,
             diagnostics_enabled=False,
             phase_starts=None,
+            stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
         )
     return _PreparedBackendSetup(
@@ -20436,6 +20443,7 @@ def _run_backend_pipeline(
         entry_module=resolved_build_entry.entry_module,
         module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
         target_python=prepared_build_config.target_python,
+        stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
     )
     if prepared_backend_setup_error is not None:
@@ -24311,9 +24319,15 @@ def _ensure_runtime_lib(
         stdlib_profile,
         target_triple=target_triple,
     )
-    # When stdlib_profile is micro, include the marker in the fingerprint
-    # so full and micro builds are kept distinct in the cache.
-    fingerprint_features: tuple[str, ...] = runtime_features
+    # The native runtime archive path is shared across stdlib profiles, so the
+    # requested Cargo feature profile must be an explicit fingerprint input.
+    # Otherwise an old default/full fingerprint can be indistinguishable from a
+    # differently featured artifact after the shared archive is overwritten.
+    fingerprint_features: tuple[str, ...] = tuple(
+        _dedupe_preserve_order(
+            list(runtime_features) + ["stdlib_full", "default-features"]
+        )
+    )
     if stdlib_profile == "micro":
         fingerprint_features = tuple(
             _dedupe_preserve_order(
@@ -24359,17 +24373,6 @@ def _ensure_runtime_lib(
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
-            _RUNTIME_LIB_VERIFIED.add(session_key)
-            return True
-        # Fast path: if the .a/.lib exists and is newer than every source
-        # file that contributes to the fingerprint, skip the expensive cargo
-        # build and just update the stored fingerprint.  This handles the
-        # common case of running `cargo build` manually before `molt build`.
-        if stored_fingerprint is None and _artifact_newer_than_sources(
-            runtime_lib, _runtime_source_paths(project_root)
-        ):
-            assert fingerprint is not None
-            _write_runtime_fingerprint(fingerprint_path, fingerprint)
             _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
         canonical_target_root = _canonical_target_root(project_root)
@@ -24439,8 +24442,11 @@ def _ensure_runtime_lib(
                     "builtin_fcntl",
                 ]
                 cmd.extend(["--features", ",".join(wasm_features)])
-            elif runtime_features:
-                cmd.extend(["--features", ",".join(runtime_features)])
+            else:
+                full_features = _dedupe_preserve_order(
+                    list(runtime_features) + ["stdlib_full"]
+                )
+                cmd.extend(["--features", ",".join(full_features)])
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
@@ -28594,6 +28600,17 @@ def _temporary_env_overrides(overrides: dict[str, str]):
             os.environ[key] = value
 
 
+def _normalize_internal_batch_stdlib_profile(
+    params: Mapping[str, Any],
+) -> tuple[str | None, str | None]:
+    raw = params.get("stdlib_profile", "micro")
+    if not isinstance(raw, str):
+        return None, "stdlib_profile must be a string"
+    if raw not in {"micro", "full"}:
+        return None, "stdlib_profile must be 'micro' or 'full'"
+    return raw, None
+
+
 def _internal_batch_build_server(
     *, json_output: bool = False, verbose: bool = False
 ) -> int:
@@ -28656,6 +28673,20 @@ def _internal_batch_build_server(
             )
             continue
         env_overrides: dict[str, str] = dict(env_overrides_raw)
+        stdlib_profile, stdlib_profile_error = _normalize_internal_batch_stdlib_profile(
+            params
+        )
+        if stdlib_profile_error is not None:
+            _emit_response(
+                {
+                    "id": req_id,
+                    "ok": False,
+                    "error": stdlib_profile_error,
+                }
+            )
+            continue
+        assert stdlib_profile is not None
+        env_overrides["MOLT_STDLIB_PROFILE"] = stdlib_profile
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         try:
@@ -28700,6 +28731,7 @@ def _internal_batch_build_server(
                         module=params.get("module"),
                         diagnostics_verbosity=params.get("diagnostics_verbosity"),
                         python_version=params.get("python_version"),
+                        stdlib_profile=stdlib_profile,
                     )
         except Exception as exc:  # pragma: no cover - defensive server hardening
             _emit_response(

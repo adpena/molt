@@ -238,6 +238,345 @@ def test_artifact_needs_rebuild_stats_artifact_once(
     assert calls == 1
 
 
+def test_artifact_needs_rebuild_on_runtime_meta_digest_mismatch(tmp_path: Path) -> None:
+    artifact = tmp_path / "libmolt_runtime.a"
+    artifact.write_bytes(b"!<arch>\nfake-staticlib")
+
+    assert cli._artifact_needs_rebuild(
+        artifact,
+        {"hash": "same", "rustc": "rustc-test", "meta_digest": "full-profile"},
+        {"hash": "same", "rustc": "rustc-test", "meta_digest": "micro-profile"},
+    )
+
+
+def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+    runtime_lib.write_bytes(b"!<arch>\nfull")
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    captured_features: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda project_root, **kwargs: captured_features.append(
+            tuple(kwargs["runtime_features"])
+        )
+        or {"hash": "ok", "rustc": "rustc-test"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "runtime.fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_read_runtime_fingerprint", lambda path: {"hash": "ok"}, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+
+    try:
+        assert cli._ensure_runtime_lib(
+            runtime_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="full",
+        )
+    finally:
+        cli._RUNTIME_LIB_VERIFIED.clear()
+
+    assert captured_features
+    assert "stdlib_full" in captured_features[0]
+    assert "default-features" in captured_features[0]
+    assert "no-default-features" not in captured_features[0]
+
+
+def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    fingerprint_path = tmp_path / "runtime.fingerprint.json"
+    seen_cmds: list[list[str]] = []
+
+    monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: fingerprint_path,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_read_runtime_fingerprint",
+        lambda path: {"hash": "stale", "rustc": "rustc-test"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_artifact_needs_rebuild",
+        lambda *args, **kwargs: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_maybe_hydrate_artifact_from_canonical_target",
+        lambda *args, **kwargs: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(
+        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+
+    def fake_run_cargo(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        json_output: bool,
+        label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout, json_output, label
+        seen_cmds.append(list(cmd))
+        runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+        runtime_lib.write_bytes(b"!<arch>\nfull")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+    )
+
+    try:
+        assert cli._ensure_runtime_lib(
+            runtime_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="full",
+        )
+    finally:
+        cli._RUNTIME_LIB_VERIFIED.clear()
+
+    assert seen_cmds
+    assert "--no-default-features" not in seen_cmds[0]
+    feature_index = seen_cmds[0].index("--features")
+    features = set(seen_cmds[0][feature_index + 1].split(","))
+    assert {"molt_tk_native", "stdlib_full"} <= features
+    assert "stdlib_micro" not in features
+
+
+def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(runtime_lib=tmp_path / "libmolt_runtime.a")
+    cache_setup = cli._BackendCacheSetup(
+        cache_enabled=True,
+        cache_key=None,
+        function_cache_key=None,
+        cache_path=None,
+        function_cache_path=None,
+        stdlib_object_path=None,
+        stdlib_object_cache_key=None,
+        stdlib_object_manifest=None,
+        cache_candidates=(),
+        cache_hit=False,
+        cache_hit_tier=None,
+    )
+    warmed_profiles: list[str | None] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_initialize_runtime_artifact_state",
+        lambda *args, **kwargs: runtime_state,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_prepare_backend_cache_setup",
+        lambda *args, **kwargs: cache_setup,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_maybe_start_native_runtime_lib_ready_async",
+        lambda *args, **kwargs: warmed_profiles.append(kwargs["stdlib_profile"]),
+        raising=True,
+    )
+
+    prepared, err = cli._prepare_backend_setup(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        emit_mode="bin",
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        json_output=True,
+        cargo_timeout=1.0,
+        target="native",
+        profile="release",
+        backend_cargo_profile="dev-fast",
+        linked=False,
+        project_root=tmp_path,
+        cache_dir=None,
+        output_artifact=tmp_path / "out",
+        warnings=[],
+        cache=True,
+        ir={"functions": []},
+        entry_module="__main__",
+        module_graph_metadata=object(),  # type: ignore[arg-type]
+        target_python="py312",
+        stdlib_profile="full",
+        resolved_modules={"molt_msgpack"},
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert warmed_profiles == ["full"]
+
+
+def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+    runtime_lib.write_bytes(b"!<arch>\nstale-profile")
+    source = tmp_path / "runtime" / "molt-runtime" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("pub fn marker() {}\n", encoding="utf-8")
+    os.utime(source, ns=(1, 1))
+    os.utime(runtime_lib, ns=(2_000_000_000, 2_000_000_000))
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    seen_cmds: list[list[str]] = []
+
+    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [source])
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {"hash": "new", "rustc": "rustc-test"},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "runtime.fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_artifact_newer_than_sources",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("native runtime must not relabel an unfingerprinted archive")
+        ),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_maybe_hydrate_artifact_from_canonical_target",
+        lambda *args, **kwargs: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(
+        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+
+    def fake_run_cargo(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        json_output: bool,
+        label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout, json_output, label
+        seen_cmds.append(list(cmd))
+        runtime_lib.write_bytes(b"!<arch>\nrebuilt")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+    )
+
+    try:
+        assert cli._ensure_runtime_lib(
+            runtime_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="full",
+        )
+    finally:
+        cli._RUNTIME_LIB_VERIFIED.clear()
+
+    assert seen_cmds
+
+
+def test_internal_batch_build_stdlib_profile_is_explicit_and_validated() -> None:
+    assert cli._normalize_internal_batch_stdlib_profile({}) == ("micro", None)
+    assert cli._normalize_internal_batch_stdlib_profile(
+        {"stdlib_profile": "full"}
+    ) == ("full", None)
+
+    missing_value, type_error = cli._normalize_internal_batch_stdlib_profile(
+        {"stdlib_profile": 1}
+    )
+    assert missing_value is None
+    assert type_error == "stdlib_profile must be a string"
+
+    invalid_value, choice_error = cli._normalize_internal_batch_stdlib_profile(
+        {"stdlib_profile": "standard"}
+    )
+    assert invalid_value is None
+    assert choice_error == "stdlib_profile must be 'micro' or 'full'"
+
+
 def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     tmp_path: Path, monkeypatch
 ) -> None:
