@@ -4509,6 +4509,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for key in keys:
             elem_map[key] = elem_hint
 
+    def _record_container_elem_hint(
+        self, target: MoltValue, elem_hint: str | None
+    ) -> None:
+        elem_map = (
+            self.global_elem_hints
+            if self.current_func_name == "molt_main"
+            else self.container_elem_hints
+        )
+        if elem_hint and elem_hint not in {"Any", "Unknown", "missing"}:
+            elem_map[target.name] = elem_hint
+        else:
+            elem_map.pop(target.name, None)
+
     def _remember_bytearray_len_hint(
         self, value: MoltValue, length: int | None
     ) -> None:
@@ -19172,6 +19185,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 kind="STRING_SPLIT", args=[receiver, needle], result=res
                             )
                         )
+                    self._record_container_elem_hint(res, "str")
                     return res
                 if receiver.type_hint == "bytes":
                     if maxsplit is not None:
@@ -19188,6 +19202,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 kind="BYTES_SPLIT", args=[receiver, needle], result=res
                             )
                         )
+                    self._record_container_elem_hint(res, "bytes")
                     return res
                 if receiver.type_hint == "bytearray":
                     if maxsplit is not None:
@@ -19206,6 +19221,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 result=res,
                             )
                         )
+                    self._record_container_elem_hint(res, "bytearray")
                     return res
             if method == "lower" and receiver.type_hint == "str":
                 if node.args:
@@ -31598,6 +31614,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         candidates: dict[str, SplitCandidate] = {}
         alias_to_split: dict[str, tuple[str, int]] = {}
         local_to_split: dict[str, tuple[str, int]] = {}
+        split_locals_crossing_region: dict[str, str] = {}
         local_to_const_string: dict[str, str] = {}
         current_region = 0
         control_boundary_kinds = {
@@ -31631,6 +31648,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for op_index, op in enumerate(json_ops):
             kind = op.get("kind")
             if kind in control_boundary_kinds:
+                for var, (root, region) in local_to_split.items():
+                    if region == current_region:
+                        split_locals_crossing_region[var] = root
                 current_region += 1
                 alias_to_split.clear()
                 local_to_split.clear()
@@ -31683,9 +31703,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 if root is not None and isinstance(var, str):
                     local_to_split[var] = (root, current_region)
+                    split_locals_crossing_region.pop(var, None)
                     candidates[root].alias_op_indexes.add(op_index)
                 elif isinstance(var, str):
                     local_to_split.pop(var, None)
+                    split_locals_crossing_region.pop(var, None)
                 if (
                     isinstance(var, str)
                     and isinstance(args, list)
@@ -31700,6 +31722,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if kind == "load_var":
                 var = op.get("var")
                 if isinstance(var, str) and isinstance(out, str):
+                    escaped_root = split_locals_crossing_region.get(var)
+                    if escaped_root is not None and escaped_root in candidates:
+                        candidates[escaped_root].unsafe = True
                     split_alias = local_to_split.get(var)
                     if split_alias is not None:
                         root, region = split_alias
