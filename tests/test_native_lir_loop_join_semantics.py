@@ -348,6 +348,41 @@ def test_native_exception_loop_with_prints_matches_cpython(profile: str) -> None
     assert _compile_and_run(source, profile) == expected
 
 
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_exception_loop_raise_accumulator_preserves_int_carrier(
+    profile: str,
+) -> None:
+    source = textwrap.dedent(
+        """
+        def f():
+            total = 0
+            i = 0
+            while i < 4:
+                try:
+                    if i % 3 == 0:
+                        raise ValueError(i)
+                    total += i
+                except ValueError as e:
+                    parsed = int(str(e))
+                    print("parsed", parsed, type(parsed).__name__)
+                    total += parsed
+                    print("total", total, type(total).__name__)
+                i += 1
+
+        f()
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile) == expected
+
+
 @pytest.mark.skipif(
     not _llvm_backend_available(),
     reason="LLVM backend toolchain is unavailable",
