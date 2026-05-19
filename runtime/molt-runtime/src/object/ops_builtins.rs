@@ -151,6 +151,12 @@ fn sum_float_accumulate(fsum: &mut f64, comp: &mut f64, x: f64) {
 }
 
 #[inline]
+fn sum_return_original_start(_py: &PyToken<'_>, start_bits: u64) -> u64 {
+    inc_ref_bits(_py, start_bits);
+    start_bits
+}
+
+#[inline]
 fn sum_next_iterator_value(_py: &PyToken<'_>, iter_obj: u64) -> Result<Option<u64>, u64> {
     let pair_bits = molt_iter_next(iter_obj);
     let pair_obj = obj_from_bits(pair_bits);
@@ -2173,6 +2179,9 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 let type_id = unsafe { object_type_id(ptr) };
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                     let elems = unsafe { seq_vec_ref(ptr) };
+                    if elems.len() == 0 && SumExactInt::from_obj(start_obj).is_some() {
+                        return sum_return_original_start(_py, start_bits);
+                    }
                     if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
                         let mut all_int = true;
                         for &bits in elems.iter() {
@@ -2192,6 +2201,9 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 // Specialized list[int] — elements are raw i64, no NaN-boxing.
                 if type_id == TYPE_ID_LIST_INT {
                     let elems = unsafe { crate::object::layout::list_int_vec_ref(ptr) };
+                    if elems.len() == 0 && SumExactInt::from_obj(start_obj).is_some() {
+                        return sum_return_original_start(_py, start_bits);
+                    }
                     if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
                         for &raw in elems.iter() {
                             acc.add_i128(raw as i128);
@@ -2203,6 +2215,9 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 // sum([True, False, True]) == 2
                 if type_id == TYPE_ID_LIST_BOOL {
                     let elems = unsafe { crate::object::layout::list_bool_vec_ref(ptr) };
+                    if elems.len() == 0 && SumExactInt::from_obj(start_obj).is_some() {
+                        return sum_return_original_start(_py, start_bits);
+                    }
                     if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
                         for &raw in elems.iter() {
                             acc.add_i128(raw as i128);
@@ -2217,12 +2232,19 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
             return raise_not_iterable(_py, iter_bits);
         }
         if let Some(mut acc) = SumExactInt::from_obj(start_obj) {
+            let mut consumed_any = false;
             loop {
                 let val_bits = match sum_next_iterator_value(_py, iter_obj) {
                     Ok(Some(val_bits)) => val_bits,
-                    Ok(None) => return acc.into_bits(_py),
+                    Ok(None) => {
+                        if !consumed_any {
+                            return sum_return_original_start(_py, start_bits);
+                        }
+                        return acc.into_bits(_py);
+                    }
                     Err(error_bits) => return error_bits,
                 };
+                consumed_any = true;
                 let val_obj = obj_from_bits(val_bits);
                 if let Some(value) = SumExactInt::from_obj(val_obj) {
                     acc.add_exact(value);
