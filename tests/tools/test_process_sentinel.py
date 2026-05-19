@@ -92,11 +92,69 @@ def test_process_groups_ignore_process_inspection_commands() -> None:
             rss_kb=100,
             command="git diff -- runtime/molt-backend/src/lib.rs",
         ),
+        12: module.memory_guard.ProcessSample(
+            pid=12,
+            ppid=1,
+            pgid=12,
+            rss_kb=100,
+            command="find . -path '*bench_exception_heavy.ir.json' -print",
+        ),
+        13: module.memory_guard.ProcessSample(
+            pid=13,
+            ppid=1,
+            pgid=13,
+            rss_kb=100,
+            command="tail -80 tmp/exception-repro/cargo_release_build.stderr",
+        ),
     }
 
     groups = module.process_groups(samples, root=root, self_pid=9999)
 
     assert groups == []
+
+
+def test_process_groups_does_not_match_repo_root_alone() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/bin/zsh -c cd /repo/molt && echo ok",
+        ),
+        11: module.memory_guard.ProcessSample(
+            pid=11,
+            ppid=1,
+            pgid=11,
+            rss_kb=100,
+            command="/usr/bin/python /repo/molt/tests/tools/test_process_sentinel.py",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert groups == []
+
+
+def test_process_groups_match_repo_scoped_cached_binary() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/repo/molt/.molt_cache/home/bin/bench_exception_heavy_molt",
+        )
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert len(groups) == 1
+    assert groups[0].pgid == 10
 
 
 def test_find_violations_can_kill_all_or_threshold() -> None:
@@ -263,6 +321,52 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
 
     assert rc == 0
     assert terminated == [11, 13]
+
+
+def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    calls = 0
+    clock = 0.0
+
+    def fake_sample_processes():
+        nonlocal calls
+        calls += 1
+        if calls <= 4:
+            return {
+                10: module.memory_guard.ProcessSample(
+                    pid=10,
+                    ppid=1,
+                    pgid=10,
+                    rss_kb=100,
+                    command=f"{module.repo_root()}/target/release-fast/molt-backend",
+                )
+            }
+        return {}
+
+    def fake_monotonic():
+        return clock
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    monkeypatch.setattr(module.memory_guard, "sample_processes", fake_sample_processes)
+    monkeypatch.setattr(module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(module.time, "sleep", fake_sleep)
+
+    rc = module.main(
+        [
+            "--until-clean-sec",
+            "0.003",
+            "--max-runtime-sec",
+            "1",
+            "--poll-interval",
+            "0.001",
+        ]
+    )
+
+    assert rc == 0
+    assert calls > 4
 
 
 def test_main_rejects_once_with_until_clean(capsys) -> None:

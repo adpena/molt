@@ -28,7 +28,6 @@ DEFAULT_GRACE_SEC = 0.5
 DEFAULT_MAX_RUNTIME_SEC = 120.0
 
 MOLT_PROCESS_TOKENS = (
-    "/molt/target/",
     "/tools/memory_guard.py",
     "/tests/molt_diff.py",
     "/tools/bench.py",
@@ -47,6 +46,17 @@ MOLT_PROCESS_TOKENS = (
     "runtime/molt-backend/src/",
 )
 
+REPO_SCOPED_PROCESS_TOKENS = (
+    "/.molt_cache/home/bin/",
+    "/target/debug/",
+    "/target/dev-fast/",
+    "/target/release-fast/",
+    "/src/molt/cli.py",
+    "/tests/molt_diff.py",
+    "/tools/bench.py",
+    "/tools/cpython_regrtest.py",
+)
+
 INSPECTION_COMMAND_TOKENS = (
     "tools/process_sentinel.py",
     "process_sentinel.py",
@@ -60,6 +70,17 @@ INSPECTION_COMMAND_TOKENS = (
     'grep "',
     "git diff",
     "git status",
+    "find ",
+    " find ",
+    "head ",
+    " head ",
+    "tail ",
+    " tail ",
+    "cat ",
+    " cat ",
+    "nl -ba",
+    "wc ",
+    " wc ",
     "sed -n",
 )
 
@@ -125,7 +146,10 @@ def is_molt_process(
     command = sample.command
     if any(token in command for token in INSPECTION_COMMAND_TOKENS):
         return False
-    if _normalized_repo_token(root) in command:
+    repo_token = _normalized_repo_token(root)
+    if repo_token in command and any(
+        f"{repo_token}{token}" in command for token in REPO_SCOPED_PROCESS_TOKENS
+    ):
         return True
     return any(token in command for token in MOLT_PROCESS_TOKENS)
 
@@ -387,7 +411,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.once:
             return 1 if violations else 0
         if args.until_clean_sec is not None:
-            if violations:
+            if groups:
                 clean_since = None
             else:
                 if clean_since is None:
