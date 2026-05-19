@@ -37,12 +37,16 @@ try:
     measure_molt_run = _bench.measure_molt_run
     BENCHMARKS = _bench.BENCHMARKS
     MOLT_ARGS_BY_BENCH = _bench.MOLT_ARGS_BY_BENCH
+    molt_args_for_benchmark = _bench.molt_args_for_benchmark
 except ImportError as _err:
     print(f"Warning: could not import bench.py helpers: {_err}", file=sys.stderr)
     prepare_molt_binary = None  # type: ignore[assignment]
     measure_molt_run = None  # type: ignore[assignment]
     BENCHMARKS = []
     MOLT_ARGS_BY_BENCH = {}
+
+    def molt_args_for_benchmark(_script):  # type: ignore[no-untyped-def]
+        return []
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -249,7 +253,7 @@ def audit_benchmarks(
             str(REPO_ROOT / bench_path) if not os.path.isabs(bench_path) else bench_path
         )
         name = Path(script).stem
-        extra_args = MOLT_ARGS_BY_BENCH.get(bench_path)
+        extra_args = molt_args_for_benchmark(bench_path)
 
         print(f"[{i:2d}/{len(benchmarks)}] {name} ...", flush=True)
 

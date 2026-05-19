@@ -19,82 +19,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from molt._wasm_runtime_exports import wasm_runtime_export_link_args
+TOOLS_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+import bench_suites  # noqa: E402
+from molt._wasm_runtime_exports import wasm_runtime_export_link_args  # noqa: E402
 
 SUPER_SAMPLES = 10
 
-BENCHMARKS = [
-    "tests/benchmarks/bench_fib.py",
-    "tests/benchmarks/bench_sum.py",
-    "tests/benchmarks/bench_sum_list.py",
-    "tests/benchmarks/bench_sum_list_hints.py",
-    "tests/benchmarks/bench_min_list.py",
-    "tests/benchmarks/bench_max_list.py",
-    "tests/benchmarks/bench_prod_list.py",
-    "tests/benchmarks/bench_struct.py",
-    "tests/benchmarks/bench_attr_access.py",
-    "tests/benchmarks/bench_descriptor_property.py",
-    "tests/benchmarks/bench_dict_ops.py",
-    "tests/benchmarks/bench_dict_views.py",
-    "tests/benchmarks/bench_counter_words.py",
-    "tests/benchmarks/bench_etl_orders.py",
-    "tests/benchmarks/bench_list_ops.py",
-    "tests/benchmarks/bench_list_slice.py",
-    "tests/benchmarks/bench_tuple_index.py",
-    "tests/benchmarks/bench_tuple_slice.py",
-    "tests/benchmarks/bench_tuple_pack.py",
-    "tests/benchmarks/bench_range_iter.py",
-    "tests/benchmarks/bench_try_except.py",
-    "tests/benchmarks/bench_generator_iter.py",
-    "tests/benchmarks/bench_async_await.py",
-    "tests/benchmarks/bench_channel_throughput.py",
-    "tests/benchmarks/bench_ptr_registry.py",
-    "tests/benchmarks/bench_deeply_nested_loop.py",
-    "tests/benchmarks/bench_csv_parse.py",
-    "tests/benchmarks/bench_csv_parse_wide.py",
-    "tests/benchmarks/bench_matrix_math.py",
-    "tests/benchmarks/bench_bytes_find.py",
-    "tests/benchmarks/bench_bytes_find_only.py",
-    "tests/benchmarks/bench_bytes_replace.py",
-    "tests/benchmarks/bench_bytearray_find.py",
-    "tests/benchmarks/bench_bytearray_replace.py",
-    "tests/benchmarks/bench_str_find.py",
-    "tests/benchmarks/bench_str_find_unicode.py",
-    "tests/benchmarks/bench_str_find_unicode_warm.py",
-    "tests/benchmarks/bench_str_split.py",
-    "tests/benchmarks/bench_str_replace.py",
-    "tests/benchmarks/bench_str_count.py",
-    "tests/benchmarks/bench_str_count_unicode.py",
-    "tests/benchmarks/bench_str_count_unicode_warm.py",
-    "tests/benchmarks/bench_str_join.py",
-    "tests/benchmarks/bench_str_startswith.py",
-    "tests/benchmarks/bench_str_endswith.py",
-    "tests/benchmarks/bench_memoryview_tobytes.py",
-    "tests/benchmarks/bench_parse_msgpack.py",
-    "tests/benchmarks/bench_json_roundtrip.py",
-    "tests/benchmarks/bench_startup.py",
-    "tests/benchmarks/bench_gc_pressure.py",
-    "tests/benchmarks/bench_class_hierarchy.py",
-    "tests/benchmarks/bench_set_ops.py",
-    "tests/benchmarks/bench_exception_heavy.py",
-    "tests/benchmarks/bench_dict_comprehension.py",
-    "tests/benchmarks/bench_procedural_gen.py",
-    "tests/benchmarks/bench_import_time.py",
-]
-
-SMOKE_BENCHMARKS = [
-    "tests/benchmarks/bench_sum.py",
-    "tests/benchmarks/bench_bytes_find.py",
-]
-
-WS_BENCHMARKS = [
-    "tests/benchmarks/bench_ws_wait.py",
-]
-
-MOLT_ARGS_BY_BENCH = {
-    "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
-}
+BENCHMARKS = bench_suites.BENCHMARKS
+SMOKE_BENCHMARKS = bench_suites.SMOKE_BENCHMARKS
+WS_BENCHMARKS = bench_suites.WS_BENCHMARKS
+MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH
+molt_args_for_benchmark = bench_suites.molt_args_for_benchmark
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1151,7 +1092,7 @@ def _build_wasm_output(
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
     build_timeout_s = _parse_env_float("MOLT_WASM_BUILD_TIMEOUT_SEC", default=90.0)
-    extra_args = MOLT_ARGS_BY_BENCH.get(script, [])
+    extra_args = molt_args_for_benchmark(script)
     build_cmd = [
         *python_cmd,
         "-m",
