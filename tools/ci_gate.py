@@ -124,6 +124,7 @@ class CheckResult:
 class MemoryGuardLimits:
     max_rss_gb: float = memory_guard.DEFAULT_MAX_RSS_GB
     max_total_rss_gb: float = memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
+    max_global_rss_gb: float = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
     poll_interval: float = memory_guard.DEFAULT_POLL_INTERVAL_SEC
 
     @property
@@ -133,6 +134,10 @@ class MemoryGuardLimits:
     @property
     def max_total_rss_kb(self) -> int:
         return memory_guard.max_rss_kb_from_gb(self.max_total_rss_gb)
+
+    @property
+    def max_global_rss_kb(self) -> int:
+        return memory_guard.max_global_rss_kb_from_gb(self.max_global_rss_gb)
 
 
 @dataclass(frozen=True, slots=True)
@@ -560,6 +565,7 @@ def _run_check(
                     env=env,
                     timeout=check.timeout,
                     capture_output=True,
+                    child_rlimit_kb=memory_limits.max_rss_kb,
                 )
                 returncode = guarded.returncode
                 stdout = guarded.stdout
@@ -627,6 +633,21 @@ def _print_result(result: CheckResult, verbose: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _parallel_workers_for_memory_guard(
+    requested_workers: int,
+    *,
+    memory_limits: MemoryGuardLimits | None,
+) -> int:
+    requested = max(1, requested_workers)
+    if memory_limits is None:
+        return requested
+    safe_workers = max(
+        1,
+        memory_limits.max_global_rss_kb // max(1, memory_limits.max_total_rss_kb),
+    )
+    return min(requested, safe_workers)
+
+
 def run_gate(
     tiers: list[int],
     fail_fast: bool = False,
@@ -657,7 +678,24 @@ def run_gate(
 
         if parallel and len(tier_checks) > 1:
             # Run checks within a tier concurrently
-            with ThreadPoolExecutor(max_workers=min(4, len(tier_checks))) as pool:
+            requested_workers = min(4, len(tier_checks))
+            max_workers = _parallel_workers_for_memory_guard(
+                requested_workers,
+                memory_limits=memory_limits,
+            )
+            if (
+                max_workers < requested_workers
+                and not json_out
+                and memory_limits is not None
+            ):
+                print(
+                    "[MEMORY-GUARD] "
+                    f"Clamping ci_gate workers from {requested_workers} to "
+                    f"{max_workers} "
+                    f"(global={memory_limits.max_global_rss_gb:.2f}GB "
+                    f"tree={memory_limits.max_total_rss_gb:.2f}GB)."
+                )
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
                     pool.submit(
                         _run_check,
@@ -864,6 +902,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--max-global-rss-gb",
+        type=float,
+        default=memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB,
+        help=(
+            "Clamp parallel check workers so their process-tree RSS budgets fit "
+            f"below this cumulative ceiling; must be "
+            f"<{memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB:g} "
+            f"(default: {memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB})."
+        ),
+    )
+    parser.add_argument(
         "--memory-poll-interval",
         type=float,
         default=memory_guard.DEFAULT_POLL_INTERVAL_SEC,
@@ -906,12 +955,14 @@ def main() -> None:
             else MemoryGuardLimits(
                 max_rss_gb=args.max_rss_gb,
                 max_total_rss_gb=args.max_total_rss_gb,
+                max_global_rss_gb=args.max_global_rss_gb,
                 poll_interval=args.memory_poll_interval,
             )
         )
         if memory_limits is not None:
             memory_limits.max_rss_kb
             memory_limits.max_total_rss_kb
+            memory_limits.max_global_rss_kb
             if memory_limits.poll_interval <= 0:
                 raise ValueError("memory poll interval must be greater than 0")
     except ValueError as exc:

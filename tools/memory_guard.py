@@ -16,13 +16,25 @@ import time
 
 DEFAULT_MAX_RSS_GB = 25.0
 DEFAULT_MAX_TOTAL_RSS_GB = 28.0
+DEFAULT_MAX_GLOBAL_RSS_GB = 54.0
 DEFAULT_HARD_MAX_RSS_GB = 112.0
+DEFAULT_HARD_MAX_GLOBAL_RSS_GB = 58.0
 DEFAULT_POLL_INTERVAL_SEC = 1.0
 DEFAULT_SAMPLES_MAX_MB = 2.0
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
 INTERNAL_WORKER_ENV = "MOLT_MEMORY_GUARD_INTERNAL"
+INTERNAL_CHILD_RUNNER_ENV = "MOLT_MEMORY_GUARD_CHILD_RUNNER"
+INTERNAL_CHILD_COMMAND_ENV = "MOLT_MEMORY_GUARD_CHILD_COMMAND_JSON"
+INTERNAL_CHILD_RLIMIT_KB_ENV = "MOLT_MEMORY_GUARD_CHILD_RLIMIT_KB"
+_INTERNAL_ENV_KEYS = (
+    INTERNAL_COMMAND_ENV,
+    INTERNAL_WORKER_ENV,
+    INTERNAL_CHILD_RUNNER_ENV,
+    INTERNAL_CHILD_COMMAND_ENV,
+    INTERNAL_CHILD_RLIMIT_KB_ENV,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +226,16 @@ def max_rss_kb_from_gb(value: float) -> int:
     return int(value * 1024 * 1024)
 
 
+def max_global_rss_kb_from_gb(value: float) -> int:
+    if value <= 0:
+        raise ValueError("global RSS must be greater than 0 GB")
+    if value >= DEFAULT_HARD_MAX_GLOBAL_RSS_GB:
+        raise ValueError(
+            f"global RSS must stay below {DEFAULT_HARD_MAX_GLOBAL_RSS_GB:g} GB"
+        )
+    return int(value * 1024 * 1024)
+
+
 def _samples_max_bytes_from_mb(value: float | None) -> int | None:
     if value is None:
         value = DEFAULT_SAMPLES_MAX_MB
@@ -356,6 +378,101 @@ def _terminate_process_group(pid: int) -> None:
         pass
 
 
+def _load_json_string_list(environ: Mapping[str, str], name: str) -> list[str]:
+    raw = environ.get(name)
+    if not raw:
+        raise ValueError(f"{name} is required")
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} is invalid JSON") from exc
+    if not isinstance(decoded, list) or not all(
+        isinstance(item, str) for item in decoded
+    ):
+        raise ValueError(f"{name} must be a JSON string list")
+    if not decoded:
+        raise ValueError(f"{name} command must not be empty")
+    return decoded
+
+
+def _apply_child_resource_limit(limit_kb: int) -> None:
+    if limit_kb <= 0:
+        return
+    try:
+        import resource  # type: ignore
+    except Exception:
+        return
+    limit_bytes = int(limit_kb * 1024)
+    for name in ("RLIMIT_AS", "RLIMIT_DATA", "RLIMIT_RSS"):
+        res = getattr(resource, name, None)
+        if res is None:
+            continue
+        try:
+            soft, hard = resource.getrlimit(res)
+            bounded_hard = (
+                limit_bytes
+                if hard == resource.RLIM_INFINITY
+                else min(int(hard), limit_bytes)
+            )
+            bounded_soft = (
+                limit_bytes
+                if soft == resource.RLIM_INFINITY
+                else min(int(soft), limit_bytes)
+            )
+            resource.setrlimit(res, (min(bounded_soft, bounded_hard), bounded_hard))
+        except Exception:
+            continue
+
+
+def _run_child_runner(environ: Mapping[str, str]) -> int:
+    try:
+        command = _load_json_string_list(environ, INTERNAL_CHILD_COMMAND_ENV)
+        raw_limit = environ.get(INTERNAL_CHILD_RLIMIT_KB_ENV, "0")
+        try:
+            limit_kb = int(raw_limit)
+        except ValueError as exc:
+            raise ValueError(f"{INTERNAL_CHILD_RLIMIT_KB_ENV} must be an int") from exc
+    except ValueError as exc:
+        print(f"memory_guard child_runner: {exc}", file=sys.stderr)
+        return 2
+    _apply_child_resource_limit(limit_kb)
+    child_env = _child_env_without_internal_keys(environ)
+    try:
+        os.execvpe(command[0], command, child_env)
+    except OSError as exc:
+        print(f"memory_guard child_runner: exec failed: {exc}", file=sys.stderr)
+        return 127
+    return 127
+
+
+def _child_runner_env(
+    environ: Mapping[str, str],
+    command: Sequence[str],
+    *,
+    child_rlimit_kb: int,
+) -> dict[str, str]:
+    runner_env = dict(environ)
+    runner_env[INTERNAL_CHILD_RUNNER_ENV] = "1"
+    runner_env[INTERNAL_CHILD_COMMAND_ENV] = json.dumps(list(command))
+    runner_env[INTERNAL_CHILD_RLIMIT_KB_ENV] = str(child_rlimit_kb)
+    return runner_env
+
+
+def _guarded_launch(
+    command: Sequence[str],
+    env: Mapping[str, str] | None,
+    *,
+    child_rlimit_kb: int | None,
+) -> tuple[list[str], Mapping[str, str] | None]:
+    if child_rlimit_kb is None or child_rlimit_kb <= 0:
+        return list(command), env
+    base_env = os.environ if env is None else env
+    return (
+        [sys.executable, str(Path(__file__).resolve())],
+        _child_runner_env(base_env, command, child_rlimit_kb=child_rlimit_kb),
+    )
+
+
 def run_guarded(
     command: Sequence[str],
     *,
@@ -370,6 +487,7 @@ def run_guarded(
     samples_jsonl: str | None = None,
     samples_jsonl_max_bytes: int | None = None,
     stream: str = "",
+    child_rlimit_kb: int | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -378,10 +496,15 @@ def run_guarded(
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout must be greater than 0")
     start = time.monotonic()
+    launch_command, launch_env = _guarded_launch(
+        command,
+        dict(env) if env is not None else None,
+        child_rlimit_kb=child_rlimit_kb,
+    )
     proc = subprocess.Popen(
-        list(command),
+        launch_command,
         cwd=cwd,
-        env=dict(env) if env is not None else None,
+        env=dict(launch_env) if launch_env is not None else None,
         stdout=subprocess.PIPE if capture_output else None,
         stderr=subprocess.PIPE if capture_output else None,
         text=True,
@@ -498,6 +621,7 @@ def _write_summary_json(
     command: Sequence[str],
     max_rss_kb: int,
     max_total_rss_kb: int | None,
+    child_rlimit_kb: int | None,
     result: GuardResult,
 ) -> None:
     summary_path = Path(path)
@@ -511,6 +635,10 @@ def _write_summary_json(
         "max_total_rss_kb": max_total_rss_kb,
         "max_total_rss_gb": (
             None if max_total_rss_kb is None else max_total_rss_kb / (1024 * 1024)
+        ),
+        "child_rlimit_kb": child_rlimit_kb,
+        "child_rlimit_gb": (
+            None if child_rlimit_kb is None else child_rlimit_kb / (1024 * 1024)
         ),
         "violation": _rss_record_payload(result.violation),
         "peak": _rss_record_payload(result.peak),
@@ -585,6 +713,15 @@ def _parser() -> argparse.ArgumentParser:
         help="Emit per-poll guard samples to this stream without writing artifacts.",
     )
     parser.add_argument(
+        "--child-rlimit-gb",
+        type=float,
+        default=None,
+        help=(
+            "Apply an OS resource limit to the direct guarded child before exec; "
+            "defaults to --max-rss-gb. Set <=0 to disable this layer."
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         help="Abort the command if wall-clock runtime exceeds this many seconds.",
@@ -596,26 +733,13 @@ def _parser() -> argparse.ArgumentParser:
 def _load_internal_command(environ: Mapping[str, str]) -> list[str] | None:
     if environ.get(INTERNAL_WORKER_ENV) != "1":
         return None
-    raw = environ.get(INTERNAL_COMMAND_ENV)
-    if not raw:
-        raise ValueError(f"{INTERNAL_COMMAND_ENV} is required for internal worker")
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{INTERNAL_COMMAND_ENV} is invalid JSON") from exc
-    if not isinstance(decoded, list) or not all(
-        isinstance(item, str) for item in decoded
-    ):
-        raise ValueError(f"{INTERNAL_COMMAND_ENV} must be a JSON string list")
-    if not decoded:
-        raise ValueError(f"{INTERNAL_COMMAND_ENV} command must not be empty")
-    return decoded
+    return _load_json_string_list(environ, INTERNAL_COMMAND_ENV)
 
 
 def _child_env_without_internal_keys(environ: Mapping[str, str]) -> dict[str, str]:
     child_env = dict(environ)
-    child_env.pop(INTERNAL_COMMAND_ENV, None)
-    child_env.pop(INTERNAL_WORKER_ENV, None)
+    for key in _INTERNAL_ENV_KEYS:
+        child_env.pop(key, None)
     return child_env
 
 
@@ -644,6 +768,8 @@ def _worker_argv(args: argparse.Namespace) -> list[str]:
         worker_args.extend(["--samples-max-mb", str(args.samples_max_mb)])
     if args.stream:
         worker_args.extend(["--stream", args.stream])
+    if args.child_rlimit_gb is not None:
+        worker_args.extend(["--child-rlimit-gb", str(args.child_rlimit_gb)])
     if args.timeout is not None:
         worker_args.extend(["--timeout", str(args.timeout)])
     return worker_args
@@ -656,8 +782,10 @@ def main(
     execve: Callable[[str, Sequence[str], Mapping[str, str]], object] = os.execve,
     environ: Mapping[str, str] | None = None,
 ) -> int:
-    args = _parser().parse_args(argv)
     current_env = os.environ if environ is None else environ
+    if current_env.get(INTERNAL_CHILD_RUNNER_ENV) == "1":
+        return _run_child_runner(current_env)
+    args = _parser().parse_args(argv)
     command = list(args.command)
     if command and command[0] == "--":
         command = command[1:]
@@ -680,6 +808,14 @@ def main(
         if args.timeout is not None and args.timeout <= 0:
             raise ValueError("timeout must be greater than 0")
         samples_jsonl_max_bytes = _samples_max_bytes_from_mb(args.samples_max_mb)
+        child_rlimit_gb = (
+            args.max_rss_gb
+            if args.child_rlimit_gb is None
+            else float(args.child_rlimit_gb)
+        )
+        child_rlimit_kb = (
+            None if child_rlimit_gb <= 0 else max_rss_kb_from_gb(child_rlimit_gb)
+        )
     except ValueError as exc:
         print(f"memory_guard: {exc}", file=sys.stderr)
         return 2
@@ -703,6 +839,7 @@ def main(
         samples_jsonl=args.samples_jsonl,
         samples_jsonl_max_bytes=samples_jsonl_max_bytes,
         stream=args.stream,
+        child_rlimit_kb=child_rlimit_kb,
     )
     if args.summary_json:
         try:
@@ -711,6 +848,7 @@ def main(
                 command=command,
                 max_rss_kb=max_rss_kb,
                 max_total_rss_kb=max_total_rss_kb,
+                child_rlimit_kb=child_rlimit_kb,
                 result=result,
             )
         except OSError as exc:
