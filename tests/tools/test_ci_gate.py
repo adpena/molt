@@ -236,3 +236,21 @@ def test_ci_gate_script_runs_directly_without_pythonpath() -> None:
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["summary"]["success"] is True
+
+
+def test_ci_gate_help_reports_memory_guard_hard_cap() -> None:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        ["python3", "tools/ci_gate.py", "--help"],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "must be <112" in result.stdout
+    assert "must be <30" not in result.stdout
