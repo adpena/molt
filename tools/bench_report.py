@@ -195,6 +195,17 @@ def _baseline_summary(native_bench: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def _molt_failure_summary(native_bench: dict[str, Any]) -> str:
+    failed = sorted(
+        _display_name(name)
+        for name, entry in native_bench.items()
+        if entry.get("molt_ok") is False
+    )
+    if not failed:
+        return "none"
+    return _format_name_list(failed, limit=8)
+
+
 def _status_summary(
     native: dict[str, Any],
     wasm: dict[str, Any],
@@ -251,7 +262,8 @@ def _status_summary(
         f"Top speedups: {_format_speedup_list(speedups, 5)}.",
         f"Regressions: {_format_speedup_list(regressions, len(regressions))}.",
         f"Slowest: {_format_speedup_list(slowest, 3)}.",
-        f"Build/run failures: {_baseline_summary(native_bench)}.",
+        f"Molt build/run failures: {_molt_failure_summary(native_bench)}.",
+        f"Comparator baseline coverage: {_baseline_summary(native_bench)}.",
         (
             f"WASM run: {wasm_date} ({wasm_system}). "
             f"Slowest: {_format_time_list(wasm_times, 3)}; "
