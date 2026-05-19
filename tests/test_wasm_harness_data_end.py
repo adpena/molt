@@ -144,3 +144,10 @@ def test_wasm_harness_exposes_class_merge_layout_import() -> None:
         "class_merge_layout: (classBits, offsetsBits, sizeBits) => {"
         in source.read_text()
     )
+
+
+def test_wasm_harness_exposes_string_split_field_imports() -> None:
+    source = Path(__file__).resolve().parent / "wasm_harness.py"
+    text = source.read_text()
+    assert "string_split_validate: (hayBits, needleBits) => {" in text
+    assert "string_split_field: (hayBits, needleBits, indexBits) => {" in text

@@ -26,6 +26,8 @@ def test_wasm_string_ops_parity(tmp_path: Path) -> None:
             parts = s.split(',')
             print(len(parts))
             print(parts[1])
+            print('red|green|blue'.split('|')[0])
+            print('red|green|blue'.split('|')[2])
             print(','.join(parts))
             print('ha'.replace('a', 'o'))
             print('mississippi'.count('iss'))
@@ -39,5 +41,5 @@ def test_wasm_string_ops_parity(tmp_path: Path) -> None:
     assert run.returncode == 0, run.stderr
     assert (
         run.stdout.strip()
-        == "6\n6\nTrue\nTrue\nTrue\nTrue\n3\nbeta\nalpha,beta,gamma\nho\n2\n1"
+        == "6\n6\nTrue\nTrue\nTrue\nTrue\n3\nbeta\nred\nblue\nalpha,beta,gamma\nho\n2\n1"
     )

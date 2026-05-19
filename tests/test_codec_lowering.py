@@ -273,6 +273,115 @@ with open("sample.bin", "rb") as f:
     assert "bytes_split" in kinds
 
 
+def test_string_split_fixed_indexes_scalarize_non_escaping_local():
+    src = """
+def main() -> None:
+    line = "1|NA|2"
+    parts = line.split("|")
+    first = parts[0]
+    second = parts[1]
+    print(first, second)
+main()
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    kinds = [op["kind"] for op in ops]
+    assert "string_split" not in kinds
+    assert kinds.count("string_split_validate") == 1
+    assert kinds.count("string_split_field") == 2
+    field_ops = [op for op in ops if op["kind"] == "string_split_field"]
+    assert field_ops[0]["args"][:2] == field_ops[1]["args"][:2]
+
+
+def test_string_split_duplicate_fixed_index_reuses_materialized_field():
+    src = """
+def main() -> None:
+    parts = "a-b|c-d".split("|")
+    print(parts[0] is parts[0])
+main()
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    kinds = [op["kind"] for op in ops]
+    assert kinds.count("string_split_validate") == 1
+    assert kinds.count("string_split_field") == 1
+    assert "copy_var" in kinds
+
+
+def test_string_split_scalarization_keeps_escaping_and_dynamic_uses_on_list_path():
+    cases = [
+        """
+def main(i: int) -> None:
+    parts = "1|NA|2".split("|")
+    print(parts[i])
+""",
+        """
+def main() -> None:
+    parts = "1|NA|2".split("|")
+    print(parts[-1])
+""",
+        """
+def main() -> None:
+    parts = "1|NA|2".split("|")
+    print(len(parts))
+""",
+        """
+def sink(x: list[str]) -> None:
+    print(x)
+def main() -> None:
+    parts = "1|NA|2".split("|")
+    sink(parts)
+""",
+        """
+def main() -> list[str]:
+    parts = "1|NA|2".split("|")
+    return parts
+""",
+        """
+def main() -> None:
+    parts = "1|NA|2".split("|", 1)
+    print(parts[0])
+""",
+        """
+def main() -> None:
+    parts = "1 NA 2".split()
+    print(parts[0])
+""",
+        """
+def main() -> None:
+    sep = None
+    parts = "1 NA 2".split(sep)
+    print(parts[0])
+""",
+        """
+def main(sep: str | None) -> None:
+    parts = "1 NA 2".split(sep)
+    print(parts[0])
+""",
+        """
+def main(flag: bool) -> None:
+    parts = ["fallback"]
+    if flag:
+        parts = "1|NA|2".split("|")
+    print(parts[0])
+""",
+        """
+def main() -> None:
+    parts = "1|NA|2".split("|")
+    while False:
+        print("never")
+    print(parts[0])
+""",
+    ]
+    for src in cases:
+        ir = compile_to_tir(src)
+        ops = _ops_by_func_suffix(ir, "molt_user_main")
+        kinds = [op["kind"] for op in ops]
+        assert "string_split_field" not in kinds
+        assert "string_split_validate" not in kinds
+        assert "string_split" in kinds or "string_split_max" in kinds
+
+
 def test_simple_range_listcomp_lowering():
     src = "x = [i for i in range(5)]"
     ir = compile_to_tir(src)

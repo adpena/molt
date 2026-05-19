@@ -692,7 +692,18 @@ impl LuauBackend {
                 "\t\t\t\t\tn += 1; result[n] = string.sub(s, pos)\n\t\t\t\t\tbreak\n",
                 "\t\t\t\tend\n\t\t\tend\n\t\telse\n",
                 "\t\t\tfor w in string.gmatch(s, \"%S+\") do\n\t\t\t\tn += 1; result[n] = w\n",
-                "\t\t\tend\n\t\tend\n\t\treturn result\n\tend,\n}\n\n",
+                "\t\t\tend\n\t\tend\n\t\treturn result\n\tend,\n",
+                "\tsplit_validate = function(s: string, sep: string): nil\n",
+                "\t\tif type(s) ~= \"string\" then error({__type=\"TypeError\", __msg=\"descriptor 'split' for 'str' objects doesn't apply to a '\" .. type(s) .. \"' object\"}) end\n",
+                "\t\tif type(sep) ~= \"string\" then error({__type=\"TypeError\", __msg=\"must be str or None, not \" .. type(sep)}) end\n",
+                "\t\tif sep == \"\" then error({__type=\"ValueError\", __msg=\"empty separator\"}) end\n\t\treturn nil\n\tend,\n",
+                "\tsplit_field = function(s: string, sep: string, idx: number): string\n",
+                "\t\tmolt_string.split_validate(s, sep)\n",
+                "\t\tif idx < 0 then error({__type=\"IndexError\", __msg=\"list index out of range\"}) end\n",
+                "\t\tlocal pos = 1\n\t\tlocal field = 0\n\t\twhile true do\n",
+                "\t\t\tlocal i, j = string.find(s, sep, pos, true)\n",
+                "\t\t\tif i then\n\t\t\t\tif field == idx then return string.sub(s, pos, i - 1) end\n\t\t\t\tpos = j + 1\n\t\t\t\tfield += 1\n\t\t\telse\n\t\t\t\tif field == idx then return string.sub(s, pos) end\n\t\t\t\tbreak\n\t\t\tend\n\t\tend\n",
+                "\t\terror({__type=\"IndexError\", __msg=\"list index out of range\"})\n\tend,\n}\n\n",
             ));
         }
     }
@@ -4167,6 +4178,29 @@ impl LuauBackend {
                         // using %s+ pattern matching.
                         self.emit_line(&format!("local {out} = molt_string.split({s})"));
                     }
+                }
+            }
+            "string_split_validate" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let s = sanitize_ident(&args[0]);
+                    let sep = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_string.split_validate({s}, {sep})"
+                    ));
+                }
+            }
+            "string_split_field" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let s = sanitize_ident(&args[0]);
+                    let sep = sanitize_ident(&args[1]);
+                    let idx = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_string.split_field({s}, {sep}, {idx})"
+                    ));
                 }
             }
             "string_concat" => {
