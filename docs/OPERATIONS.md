@@ -23,6 +23,7 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `MOLT_DIFF_FAILURES` or `--failures-output`).
 - **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
 - **Memory caps**: default 10 GB per-process; override with `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` or disable with `MOLT_DIFF_RLIMIT_GB=0`.
+- **In-harness memory guard**: enabled by default (`MOLT_DIFF_MEMORY_GUARD=0` disables) and layered on top of OS rlimits. It enforces per-process, per-test-tree, and global active diff RSS ceilings with `MOLT_DIFF_MAX_PROCESS_RSS_GB`, `MOLT_DIFF_MAX_TREE_RSS_GB`, `MOLT_DIFF_GLOBAL_RSS_LIMIT_GB`, and `MOLT_DIFF_MEMORY_GUARD_POLL_SEC`; default global cap is 54 GB and hard-clamped below 58 GB for the 60 GB workstation safety budget. Guard trips terminate active child process trees, write `MOLT_DIFF_ROOT/memory_guard/tripped.json`, append event/sample telemetry under `MOLT_DIFF_ROOT/memory_guard/`, and force a nonzero summary with `<memory_guard>` in `failed_files`.
 - **Wrapper policy**: diff runs disable `RUSTC_WRAPPER`/`sccache` by default for portability. Opt in with `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1` on hosts where wrapper caches are known-good.
 - **Pass-log pruning**: when `--log-dir` is enabled, per-test logs for passing tests are pruned by default to reduce clutter. Set `MOLT_DIFF_LOG_PASSES=1` to keep pass logs.
 - **Backend daemon policy**: diff runs use `MOLT_DIFF_BACKEND_DAEMON` when set; otherwise defaults to platform-safe auto (`0` on macOS, `1` elsewhere).
@@ -505,6 +506,7 @@ Rules:
 
 Expected behavior in this lane:
 - Runtime/backend Cargo crates rebuild once per fingerprint and profile, with parallel agents waiting on shared build locks.
+- Differential jobs are clamped by the in-harness memory guard before launch and are killed with telemetry instead of allowing global RSS to run past the configured safety budget.
 - Backend codegen uses the persistent daemon for native builds when available (fewer cold starts across repeated builds).
 - Per-script object artifacts are reused via `MOLT_CACHE` keying when IR+fingerprint inputs are unchanged.
 

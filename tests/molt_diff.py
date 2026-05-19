@@ -15,10 +15,12 @@ import tempfile
 import threading
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from tools.batch_compile_client import BatchCompileServerClient
+from tools import memory_guard
 
 _ACTIVE_CHILD_PIDS: set[int] = set()
 _SIGNAL_HANDLERS_INSTALLED = False
@@ -30,6 +32,18 @@ _BATCH_COMPILE_SERVER_CLIENT_PID = 0
 _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
 _BATCH_COMPILE_SERVER_DISABLE_REASON = ""
 _BATCH_COMPILE_SERVER_FAILURE_COUNT = 0
+_DIFF_MEMORY_GUARD_ACTIVE_DIR_ENV = "MOLT_DIFF_MEMORY_GUARD_ACTIVE_DIR"
+_DIFF_MEMORY_GUARD_TRIP_FILE_ENV = "MOLT_DIFF_MEMORY_GUARD_TRIP_FILE"
+_DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV = "MOLT_DIFF_MEMORY_GUARD_EVENTS_JSONL"
+_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV = (
+    "MOLT_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL"
+)
+_DIFF_MEMORY_GUARD_HARD_GLOBAL_GB = 58.0
+_DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB = 54.0
+_DIFF_MEMORY_GUARD_DEFAULT_TREE_GB = 24.0
+_DIFF_MEMORY_GUARD_DEFAULT_PROCESS_GB = 20.0
+_DIFF_MEMORY_GUARD_DEFAULT_POLL_SEC = 0.10
+_DIFF_MEMORY_GUARD_RETURN_CODE = memory_guard.GUARD_RETURN_CODE
 
 try:
     import fcntl  # type: ignore
@@ -1480,6 +1494,106 @@ def _parse_float_env(name: str) -> float | None:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class _DiffMemoryGuardConfig:
+    max_process_kb: int
+    max_tree_kb: int
+    global_kb: int
+    poll_interval: float
+
+    @property
+    def max_process_gb(self) -> float:
+        return self.max_process_kb / (1024 * 1024)
+
+    @property
+    def max_tree_gb(self) -> float:
+        return self.max_tree_kb / (1024 * 1024)
+
+    @property
+    def global_gb(self) -> float:
+        return self.global_kb / (1024 * 1024)
+
+
+def _gb_to_kb(value: float) -> int:
+    return max(1, int(value * 1024 * 1024))
+
+
+def _bounded_positive_float_env(
+    name: str, *, default: float, upper: float | None = None
+) -> float:
+    value = _parse_float_env(name)
+    if value is None or value <= 0:
+        value = default
+    if upper is not None:
+        value = min(value, upper)
+    return max(0.001, value)
+
+
+def _default_global_memory_guard_gb() -> float:
+    available = _available_memory_bytes()
+    if available is None:
+        return min(
+            _DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB,
+            _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB,
+        )
+    available_gb = available / (1024 * 1024 * 1024)
+    return min(
+        _DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB,
+        _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB,
+        max(2.0, available_gb * 0.70),
+    )
+
+
+def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
+    global_gb = _bounded_positive_float_env(
+        "MOLT_DIFF_GLOBAL_RSS_LIMIT_GB",
+        default=_default_global_memory_guard_gb(),
+        upper=_DIFF_MEMORY_GUARD_HARD_GLOBAL_GB,
+    )
+    legacy_global = _parse_float_env("MOLT_DIFF_MAX_GLOBAL_RSS_GB")
+    if legacy_global is not None and legacy_global > 0:
+        global_gb = min(global_gb, legacy_global, _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB)
+
+    default_tree_gb = min(
+        _DIFF_MEMORY_GUARD_DEFAULT_TREE_GB,
+        max(0.5, global_gb * 0.60),
+    )
+    tree_gb = _bounded_positive_float_env(
+        "MOLT_DIFF_MAX_TREE_RSS_GB",
+        default=default_tree_gb,
+        upper=global_gb,
+    )
+    legacy_tree_gb = _parse_float_env("MOLT_DIFF_MAX_TOTAL_RSS_GB")
+    if legacy_tree_gb is not None and 0 < legacy_tree_gb < tree_gb:
+        tree_gb = legacy_tree_gb
+
+    default_process_gb = min(
+        _DIFF_MEMORY_GUARD_DEFAULT_PROCESS_GB,
+        max(0.25, tree_gb * 0.85),
+    )
+    process_gb = _bounded_positive_float_env(
+        "MOLT_DIFF_MAX_PROCESS_RSS_GB",
+        default=default_process_gb,
+        upper=tree_gb,
+    )
+    poll_interval = _bounded_positive_float_env(
+        "MOLT_DIFF_MEMORY_GUARD_POLL_SEC",
+        default=_DIFF_MEMORY_GUARD_DEFAULT_POLL_SEC,
+        upper=2.0,
+    )
+    return _DiffMemoryGuardConfig(
+        max_process_kb=_gb_to_kb(process_gb),
+        max_tree_kb=_gb_to_kb(tree_gb),
+        global_kb=_gb_to_kb(global_gb),
+        poll_interval=max(0.01, poll_interval),
+    )
+
+
+def _diff_memory_guard_enabled() -> bool:
+    raw = os.environ.get("MOLT_DIFF_MEMORY_GUARD", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _memory_limit_bytes() -> int | None:
     gb = _parse_float_env("MOLT_DIFF_RLIMIT_GB")
     mb = _parse_float_env("MOLT_DIFF_RLIMIT_MB")
@@ -1609,7 +1723,8 @@ def _available_memory_bytes() -> int | None:
 
 def _default_jobs() -> int:
     count = os.cpu_count() or 1
-    per_job_gb = _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or 2.0
+    guard = _diff_memory_guard_config()
+    per_job_gb = _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or guard.max_tree_gb
     available = _available_memory_bytes()
     if available is not None:
         mem_jobs = int(available / (per_job_gb * 1024 * 1024 * 1024))
@@ -1618,6 +1733,25 @@ def _default_jobs() -> int:
     if max_jobs.isdigit():
         count = min(count, max(1, int(max_jobs)))
     return max(1, count)
+
+
+def _memory_guard_max_jobs(config: _DiffMemoryGuardConfig) -> int:
+    return max(1, config.global_kb // max(1, config.max_tree_kb))
+
+
+def _constrain_jobs_for_memory_guard(
+    jobs: int, *, config: _DiffMemoryGuardConfig, log: bool = True
+) -> int:
+    safe_jobs = _memory_guard_max_jobs(config)
+    if jobs <= safe_jobs:
+        return max(1, jobs)
+    if log:
+        print(
+            "[MEMORY-GUARD] "
+            f"Clamping molt_diff jobs from {jobs} to {safe_jobs} "
+            f"(global={config.global_gb:.2f}GB tree={config.max_tree_gb:.2f}GB)."
+        )
+    return safe_jobs
 
 
 def _collect_test_files(target: Path) -> list[Path]:
@@ -1929,6 +2063,330 @@ def _reap_lingering_process_group(pgid: int, *, grace: float = 0.25) -> None:
         os.killpg(pgid, signal.SIGKILL)
 
 
+def _diff_memory_guard_root() -> Path:
+    root = _diff_root() / "memory_guard"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _diff_memory_guard_active_dir() -> Path:
+    raw = os.environ.get(_DIFF_MEMORY_GUARD_ACTIVE_DIR_ENV, "").strip()
+    path = Path(raw).expanduser() if raw else _diff_memory_guard_root() / "active"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _diff_memory_guard_trip_file() -> Path:
+    raw = os.environ.get(_DIFF_MEMORY_GUARD_TRIP_FILE_ENV, "").strip()
+    path = Path(raw).expanduser() if raw else _diff_memory_guard_root() / "tripped.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _diff_memory_guard_events_jsonl() -> Path:
+    raw = os.environ.get(_DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV, "").strip()
+    path = Path(raw).expanduser() if raw else _diff_memory_guard_root() / "events.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _diff_memory_guard_global_samples_jsonl() -> Path:
+    raw = os.environ.get(_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV, "").strip()
+    path = (
+        Path(raw).expanduser()
+        if raw
+        else _diff_memory_guard_root() / "global_samples.jsonl"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _append_memory_guard_jsonl(path: Path, payload: dict[str, object]) -> None:
+    payload = {"ts": time.time(), **payload}
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except OSError:
+        return
+
+
+def _memory_guard_record(
+    record: memory_guard.RssViolation | None,
+) -> dict[str, object] | None:
+    if record is None:
+        return None
+    return {
+        "pid": record.pid,
+        "rss_kb": record.rss_kb,
+        "rss_gb": record.rss_gb,
+        "command": record.command,
+        "scope": record.scope,
+    }
+
+
+def _memory_guard_message(
+    violation: memory_guard.RssViolation,
+    *,
+    limit_gb: float,
+    phase: str,
+) -> str:
+    return (
+        "molt_diff memory guard: RSS limit exceeded "
+        f"phase={phase} scope={violation.scope} pid={violation.pid} "
+        f"rss={violation.rss_gb:.2f}GB limit={limit_gb:.2f}GB "
+        f"command={violation.command}"
+    )
+
+
+def _mark_memory_guard_tripped(payload: dict[str, object]) -> None:
+    trip_file = _diff_memory_guard_trip_file()
+    data = {"ts": time.time(), **payload}
+    tmp_path = trip_file.with_name(f"{trip_file.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp_path.replace(trip_file)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+    _append_memory_guard_jsonl(_diff_memory_guard_events_jsonl(), data)
+
+
+def _memory_guard_trip_message() -> str | None:
+    trip_file = _diff_memory_guard_trip_file()
+    if not trip_file.exists():
+        return None
+    try:
+        payload = json.loads(trip_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "molt_diff memory guard: global guard tripped"
+    message = payload.get("message")
+    if isinstance(message, str) and message:
+        return message
+    reason = payload.get("reason")
+    if isinstance(reason, str) and reason:
+        return f"molt_diff memory guard: {reason}"
+    return "molt_diff memory guard: global guard tripped"
+
+
+def _register_memory_guard_child(
+    proc: subprocess.Popen[str], cmd: Sequence[str]
+) -> Path | None:
+    active_dir = _diff_memory_guard_active_dir()
+    path = active_dir / f"{os.getpid()}-{proc.pid}.json"
+    tmp_path = path.with_suffix(".json.tmp")
+    payload = {
+        "pid": proc.pid,
+        "worker_pid": os.getpid(),
+        "started_at": time.time(),
+        "command": list(cmd),
+    }
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        tmp_path.replace(path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        return None
+    return path
+
+
+def _unregister_memory_guard_child(path: Path | None) -> None:
+    if path is None:
+        return
+    with contextlib.suppress(OSError):
+        path.unlink()
+
+
+def _registered_memory_guard_children(active_dir: Path) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    if not active_dir.exists():
+        return entries
+    for path in active_dir.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            pid = int(payload.get("pid", 0))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            with contextlib.suppress(OSError):
+                path.unlink()
+            continue
+        if pid <= 0:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            continue
+        payload["_path"] = str(path)
+        payload["pid"] = pid
+        entries.append(payload)
+    return entries
+
+
+def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
+    guard_root = _diff_memory_guard_root()
+    active_dir = guard_root / "active"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    os.environ[_DIFF_MEMORY_GUARD_ACTIVE_DIR_ENV] = str(active_dir)
+    os.environ[_DIFF_MEMORY_GUARD_TRIP_FILE_ENV] = str(guard_root / "tripped.json")
+    os.environ[_DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV] = str(guard_root / "events.jsonl")
+    os.environ[_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV] = str(
+        guard_root / "global_samples.jsonl"
+    )
+    with contextlib.suppress(OSError):
+        Path(os.environ[_DIFF_MEMORY_GUARD_TRIP_FILE_ENV]).unlink()
+    for path in active_dir.glob("*.json"):
+        with contextlib.suppress(OSError):
+            path.unlink()
+    _append_memory_guard_jsonl(
+        Path(os.environ[_DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV]),
+        {
+            "event": "run_started",
+            "max_process_gb": config.max_process_gb,
+            "max_tree_gb": config.max_tree_gb,
+            "global_gb": config.global_gb,
+            "poll_interval": config.poll_interval,
+        },
+    )
+
+
+class _DiffGlobalMemoryMonitor:
+    def __init__(self, config: _DiffMemoryGuardConfig) -> None:
+        self._config = config
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_sample_write = 0.0
+
+    def __enter__(self) -> "_DiffGlobalMemoryMonitor":
+        if not _diff_memory_guard_enabled():
+            return self
+        self._thread = threading.Thread(
+            target=self._run,
+            name="molt-diff-global-memory-guard",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(0.2, self._config.poll_interval * 4.0))
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._config.poll_interval):
+            try:
+                self._sample_once()
+            except Exception as exc:  # pragma: no cover - defensive monitor boundary
+                _append_memory_guard_jsonl(
+                    _diff_memory_guard_events_jsonl(),
+                    {"event": "monitor_error", "error": repr(exc)},
+                )
+
+    def _sample_once(self) -> None:
+        entries = _registered_memory_guard_children(_diff_memory_guard_active_dir())
+        if not entries:
+            return
+        samples = memory_guard.sample_processes()
+        active_roots: list[int] = []
+        unique_watched: set[int] = set()
+        tree_records: list[dict[str, object]] = []
+        tree_violation: tuple[int, memory_guard.RssViolation, float] | None = None
+        for entry in entries:
+            root_pid = int(entry["pid"])
+            watched = memory_guard.watched_pids(samples, root_pid)
+            if not watched and not _pid_alive(root_pid):
+                path = entry.get("_path")
+                if isinstance(path, str):
+                    with contextlib.suppress(OSError):
+                        Path(path).unlink()
+                continue
+            active_roots.append(root_pid)
+            unique_watched.update(watched)
+            peak = memory_guard.peak_rss(samples, root_pid=root_pid)
+            total = memory_guard.total_rss(samples, root_pid=root_pid)
+            tree_records.append(
+                {
+                    "root_pid": root_pid,
+                    "peak": _memory_guard_record(peak),
+                    "total": _memory_guard_record(total),
+                }
+            )
+            if peak is not None and peak.rss_kb > self._config.max_process_kb:
+                tree_violation = (root_pid, peak, self._config.max_process_gb)
+            if total is not None and total.rss_kb > self._config.max_tree_kb:
+                tree_violation = (root_pid, total, self._config.max_tree_gb)
+        if not active_roots:
+            return
+        total_kb = sum(
+            sample.rss_kb for pid, sample in samples.items() if pid in unique_watched
+        )
+        now = time.monotonic()
+        if now - self._last_sample_write >= 1.0 or tree_violation is not None:
+            self._last_sample_write = now
+            _append_memory_guard_jsonl(
+                _diff_memory_guard_global_samples_jsonl(),
+                {
+                    "event": "sample",
+                    "active_roots": active_roots,
+                    "total_kb": total_kb,
+                    "total_gb": total_kb / (1024 * 1024),
+                    "trees": tree_records,
+                },
+            )
+        if tree_violation is not None:
+            root_pid, violation, limit_gb = tree_violation
+            self._trip_and_kill(
+                active_roots,
+                reason="per-tree memory guard tripped",
+                message=_memory_guard_message(
+                    violation, limit_gb=limit_gb, phase=f"root_pid={root_pid}"
+                ),
+                violation=violation,
+                total_kb=total_kb,
+            )
+            return
+        if total_kb > self._config.global_kb:
+            violation = memory_guard.RssViolation(
+                pid=0,
+                rss_kb=total_kb,
+                command="all active molt_diff process trees",
+                scope="diff_global_process_trees",
+            )
+            self._trip_and_kill(
+                active_roots,
+                reason="global memory guard tripped",
+                message=_memory_guard_message(
+                    violation,
+                    limit_gb=self._config.global_gb,
+                    phase="global",
+                ),
+                violation=violation,
+                total_kb=total_kb,
+            )
+
+    def _trip_and_kill(
+        self,
+        active_roots: Sequence[int],
+        *,
+        reason: str,
+        message: str,
+        violation: memory_guard.RssViolation,
+        total_kb: int,
+    ) -> None:
+        _mark_memory_guard_tripped(
+            {
+                "event": "guard_tripped",
+                "reason": reason,
+                "message": message,
+                "violation": _memory_guard_record(violation),
+                "global_total_kb": total_kb,
+                "global_total_gb": total_kb / (1024 * 1024),
+                "active_roots": list(active_roots),
+            }
+        )
+        for root_pid in active_roots:
+            _terminate_pid_tree(root_pid, grace=0.20)
+
+
 def _terminate_active_children() -> None:
     for pid in sorted(_ACTIVE_CHILD_PIDS):
         _terminate_pid_tree(pid, grace=0.35)
@@ -1938,6 +2396,8 @@ def _terminate_active_children() -> None:
 def _install_signal_cleanup_handlers() -> None:
     global _SIGNAL_HANDLERS_INSTALLED
     if _SIGNAL_HANDLERS_INSTALLED:
+        return
+    if threading.current_thread() is not threading.main_thread():
         return
     if os.name != "posix":
         _SIGNAL_HANDLERS_INSTALLED = True
@@ -1991,30 +2451,154 @@ def _run_subprocess(
     cmd: list[str], *, env: dict[str, str], timeout: float | None
 ) -> subprocess.CompletedProcess[str]:
     _install_signal_cleanup_handlers()
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    if not _diff_memory_guard_enabled():
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="surrogateescape",
+            **_popen_group_kwargs(),
+        )
+        _ACTIVE_CHILD_PIDS.add(proc.pid)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _terminate_process_tree(proc)
+            raise subprocess.TimeoutExpired(
+                cmd=cmd,
+                timeout=timeout,
+                output=exc.output,
+                stderr=exc.stderr,
+            ) from exc
+        finally:
+            _ACTIVE_CHILD_PIDS.discard(proc.pid)
+            _reap_lingering_process_group(proc.pid)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    trip_message = _memory_guard_trip_message()
+    if trip_message is not None:
+        return subprocess.CompletedProcess(
+            cmd,
+            _DIFF_MEMORY_GUARD_RETURN_CODE,
+            "",
+            trip_message + "\n",
+        )
+    config = _diff_memory_guard_config()
+    started = time.monotonic()
+    violation: memory_guard.RssViolation | None = None
+    peak: memory_guard.RssViolation | None = None
+    peak_total: memory_guard.RssViolation | None = None
+    timed_out = False
+    guard_message = ""
+    stdout = ""
+    stderr = ""
+    proc: subprocess.Popen[str] | None = None
+    active_path: Path | None = None
+    with tempfile.TemporaryFile(
+        mode="w+",
+        encoding="utf-8",
         errors="surrogateescape",
-        **_popen_group_kwargs(),
-    )
-    _ACTIVE_CHILD_PIDS.add(proc.pid)
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        _terminate_process_tree(proc)
+    ) as stdout_file:
+        with tempfile.TemporaryFile(
+            mode="w+",
+            encoding="utf-8",
+            errors="surrogateescape",
+        ) as stderr_file:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                errors="surrogateescape",
+                **_popen_group_kwargs(),
+            )
+            active_path = _register_memory_guard_child(proc, cmd)
+            _ACTIVE_CHILD_PIDS.add(proc.pid)
+            try:
+                while True:
+                    elapsed = time.monotonic() - started
+                    if timeout is not None and elapsed >= timeout:
+                        timed_out = True
+                        _terminate_process_tree(proc)
+                        break
+                    trip_message = _memory_guard_trip_message()
+                    if trip_message is not None:
+                        guard_message = trip_message
+                        _terminate_process_tree(proc, grace=0.20)
+                        break
+                    samples = memory_guard.sample_processes()
+                    observed_peak = memory_guard.peak_rss(samples, root_pid=proc.pid)
+                    if observed_peak is not None and (
+                        peak is None or observed_peak.rss_kb > peak.rss_kb
+                    ):
+                        peak = observed_peak
+                    observed_total = memory_guard.total_rss(samples, root_pid=proc.pid)
+                    if observed_total is not None and (
+                        peak_total is None or observed_total.rss_kb > peak_total.rss_kb
+                    ):
+                        peak_total = observed_total
+                    violation = memory_guard.find_rss_violation(
+                        samples,
+                        root_pid=proc.pid,
+                        max_rss_kb=config.max_process_kb,
+                        max_total_rss_kb=config.max_tree_kb,
+                    )
+                    if violation is not None:
+                        limit_gb = (
+                            config.max_tree_gb
+                            if violation.scope == "process_tree"
+                            else config.max_process_gb
+                        )
+                        guard_message = _memory_guard_message(
+                            violation, limit_gb=limit_gb, phase="subprocess"
+                        )
+                        _append_memory_guard_jsonl(
+                            _diff_memory_guard_events_jsonl(),
+                            {
+                                "event": "subprocess_guard_tripped",
+                                "message": guard_message,
+                                "pid": proc.pid,
+                                "command": cmd,
+                                "violation": _memory_guard_record(violation),
+                                "peak": _memory_guard_record(peak),
+                                "peak_total": _memory_guard_record(peak_total),
+                            },
+                        )
+                        _terminate_process_tree(proc, grace=0.20)
+                        break
+                    if proc.poll() is not None:
+                        break
+                    sleep_for = config.poll_interval
+                    if timeout is not None:
+                        remaining = timeout - elapsed
+                        sleep_for = min(sleep_for, max(0.01, remaining))
+                    time.sleep(sleep_for)
+            finally:
+                _ACTIVE_CHILD_PIDS.discard(proc.pid)
+                _unregister_memory_guard_child(active_path)
+                _reap_lingering_process_group(proc.pid)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=0.50)
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read()
+            stderr = stderr_file.read()
+    if proc is None:
+        return subprocess.CompletedProcess(cmd, 1, stdout, stderr)
+    if timed_out:
         raise subprocess.TimeoutExpired(
             cmd=cmd,
             timeout=timeout,
-            output=exc.output,
-            stderr=exc.stderr,
-        ) from exc
-    finally:
-        _ACTIVE_CHILD_PIDS.discard(proc.pid)
-        _reap_lingering_process_group(proc.pid)
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+            output=stdout,
+            stderr=stderr,
+        )
+    returncode = proc.returncode
+    if guard_message:
+        returncode = _DIFF_MEMORY_GUARD_RETURN_CODE
+        stderr = f"{stderr}{guard_message}\n"
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
 def _run_with_optional_time(
@@ -3284,6 +3868,15 @@ def run_diff(
         jobs = _default_jobs() if len(test_files) > 1 else 1
     run_id = _diff_run_id()
     os.environ["MOLT_DIFF_RUN_ID"] = run_id
+    guard_config = _diff_memory_guard_config()
+    guard_enabled = _diff_memory_guard_enabled()
+    guard_context: _DiffGlobalMemoryMonitor | None = None
+    if guard_enabled:
+        _prepare_memory_guard_run(guard_config)
+        jobs = _constrain_jobs_for_memory_guard(jobs, config=guard_config)
+        guard_context = _DiffGlobalMemoryMonitor(guard_config)
+        guard_context.__enter__()
+        atexit.register(lambda: guard_context.__exit__(None, None, None))
     if _should_preemptive_dyld_quarantine() and _diff_disable_daemon_on_dyld():
         remaining = _consume_dyld_guard_run()
         remaining_suffix = (
@@ -3350,6 +3943,8 @@ def run_diff(
                             payload["stderr"],
                         )
                     if fail_fast and status == "fail":
+                        break
+                    if _memory_guard_trip_message() is not None:
                         break
     else:
         if log_dir is not None:
@@ -3434,6 +4029,11 @@ def run_diff(
                                 if pending is not future:
                                     pending.cancel()
                             break
+                        if _memory_guard_trip_message() is not None:
+                            for pending in futures:
+                                if pending is not future:
+                                    pending.cancel()
+                            break
                         if prune_every > 0 and completed % prune_every == 0:
                             _prune_orphan_diff_workers()
                             _prune_orphan_build_helpers()
@@ -3450,8 +4050,11 @@ def run_diff(
     _prune_orphan_diff_workers()
     _prune_orphan_build_helpers()
     _prune_backend_daemons()
+    if guard_context is not None:
+        guard_context.__exit__(None, None, None)
+    guard_trip_message = _memory_guard_trip_message()
     status_by_path = {path: status for path, status in results}
-    if jobs > 1 and retry_oom:
+    if jobs > 1 and retry_oom and guard_trip_message is None:
         oom_paths = [p for p, s in status_by_path.items() if s == "oom"]
         if oom_paths:
             _emit_line(
@@ -3474,6 +4077,10 @@ def run_diff(
     passed = len([None for status in status_by_path.values() if status == "pass"])
     skipped = len(skipped_files)
     oom = len([None for status in status_by_path.values() if status == "oom"])
+    if guard_trip_message is not None:
+        failed_files.append("<memory_guard>")
+        failed += 1
+        oom += 1
     total = passed + failed
     try:
         limit = int(os.environ.get("MOLT_DIFF_RSS_TOP", "5"))
@@ -3524,7 +4131,8 @@ def run_diff(
         "config": {
             "measure_rss": _diff_measure_rss(),
             "mem_limit_bytes": _memory_limit_bytes(),
-            "mem_per_job_gb": _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or 2.0,
+            "mem_per_job_gb": _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB")
+            or guard_config.max_tree_gb,
             "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
             "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
             "build_profile": build_profile,
@@ -3532,6 +4140,16 @@ def run_diff(
             "retry_oom": retry_oom,
             "batch_compile_server": _diff_batch_compile_server_enabled(),
             "batch_compile_server_strict": _diff_batch_compile_server_strict(),
+            "memory_guard": {
+                "enabled": guard_enabled,
+                "max_process_gb": guard_config.max_process_gb,
+                "max_tree_gb": guard_config.max_tree_gb,
+                "global_gb": guard_config.global_gb,
+                "poll_interval": guard_config.poll_interval,
+                "tripped": guard_trip_message is not None,
+                "trip_message": guard_trip_message,
+                "trip_file": str(_diff_memory_guard_trip_file()),
+            },
         },
         "rss": {
             **_aggregate_rss_metrics(run_id),
