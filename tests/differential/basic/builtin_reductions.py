@@ -5,6 +5,10 @@ print(sum((1, 2), 10))
 print(sum(range(4), 1))
 print(sum([1, 2], start=10))
 print(sum([], 5))
+print(sum(i * i for i in range(100000) if (i * i) % 2 == 0))
+print(sum(v for v in {str(i): i * i for i in range(100000)}.values() if v % 2 == 0))
+print(type(sum([1.0, 2.0])).__name__, sum([1.0, 2.0]))
+print(sum([0.1] * 10) == 1.0)
 
 try:
     sum([], "")
