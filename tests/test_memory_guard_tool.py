@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -148,6 +149,12 @@ def test_max_rss_gb_must_leave_margin_below_hard_cap() -> None:
         memory_guard.max_rss_kb_from_gb(112)
 
 
+def test_max_global_rss_gb_must_leave_workstation_margin() -> None:
+    assert memory_guard.max_global_rss_kb_from_gb(54) == 54 * 1024 * 1024
+    with pytest.raises(ValueError, match="below 58"):
+        memory_guard.max_global_rss_kb_from_gb(58)
+
+
 def test_run_command_passes_through_success() -> None:
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "print('ok')"],
@@ -231,6 +238,8 @@ def test_main_enforces_timeout_and_writes_summary(
             "1",
             "--poll-interval",
             "0.01",
+            "--child-rlimit-gb",
+            "0",
             "--timeout",
             "0.01",
             "--summary-json",
@@ -287,6 +296,7 @@ def test_main_reports_signal_status_without_guard_violation(
     assert "SIGTERM status" in capsys.readouterr().err
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["returncode"] == 143
+    assert payload["child_rlimit_gb"] == pytest.approx(1.0)
     assert payload["timed_out"] is False
     assert payload["violation"] is None
     assert payload["exit_signal"] == {
@@ -374,6 +384,8 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> N
                 "0.5",
                 "--stream",
                 "json-stderr",
+                "--child-rlimit-gb",
+                "0.75",
                 "--",
                 sys.executable,
                 "-c",
@@ -392,6 +404,8 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> N
     assert "0.5" in worker_argv
     assert "--stream" in worker_argv
     assert "json-stderr" in worker_argv
+    assert "--child-rlimit-gb" in worker_argv
+    assert "0.75" in worker_argv
 
 
 def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> None:
@@ -430,6 +444,45 @@ def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> N
     assert isinstance(child_env, dict)
     assert memory_guard.INTERNAL_COMMAND_ENV not in child_env
     assert memory_guard.INTERNAL_WORKER_ENV not in child_env
+    assert memory_guard.INTERNAL_CHILD_RUNNER_ENV not in child_env
+    assert memory_guard.INTERNAL_CHILD_COMMAND_ENV not in child_env
+    assert memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV not in child_env
+
+
+def test_child_runner_env_wraps_command_without_leaking_guard_keys() -> None:
+    command = [sys.executable, "-c", "print('child')"]
+    env = memory_guard._child_runner_env(
+        {
+            "KEEP": "1",
+            memory_guard.INTERNAL_WORKER_ENV: "1",
+            memory_guard.INTERNAL_COMMAND_ENV: json.dumps(["hidden"]),
+        },
+        command,
+        child_rlimit_kb=12345,
+    )
+
+    assert env[memory_guard.INTERNAL_CHILD_RUNNER_ENV] == "1"
+    assert json.loads(env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
+    assert env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
+    child_env = memory_guard._child_env_without_internal_keys(env)
+    assert child_env == {"KEEP": "1"}
+
+
+def test_guarded_launch_uses_child_runner_when_resource_limit_enabled() -> None:
+    command = [sys.executable, "-c", "print('child')"]
+    launch_command, launch_env = memory_guard._guarded_launch(
+        command,
+        {"KEEP": "1"},
+        child_rlimit_kb=12345,
+    )
+
+    assert launch_command == [
+        sys.executable,
+        str(Path(memory_guard.__file__).resolve()),
+    ]
+    assert launch_env is not None
+    assert json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
+    assert launch_env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
 
 
 def test_main_writes_summary_json(tmp_path) -> None:
@@ -440,6 +493,8 @@ def test_main_writes_summary_json(tmp_path) -> None:
             "1",
             "--poll-interval",
             "0.01",
+            "--child-rlimit-gb",
+            "0",
             "--summary-json",
             str(summary_path),
             "--",
@@ -460,6 +515,7 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["max_total_rss_gb"] == pytest.approx(
         memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
     )
+    assert payload["child_rlimit_gb"] is None
 
 
 def test_main_writes_samples_jsonl(tmp_path) -> None:
@@ -470,6 +526,8 @@ def test_main_writes_samples_jsonl(tmp_path) -> None:
             "1",
             "--poll-interval",
             "0.01",
+            "--child-rlimit-gb",
+            "0",
             "--samples-jsonl",
             str(samples_path),
             "--",
@@ -519,6 +577,8 @@ def test_main_streams_samples_without_sample_artifact(
             "1",
             "--poll-interval",
             "0.01",
+            "--child-rlimit-gb",
+            "0",
             "--stream",
             "stderr",
             "--",
