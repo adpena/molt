@@ -43,6 +43,9 @@ _DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB = 54.0
 _DIFF_MEMORY_GUARD_DEFAULT_TREE_GB = 24.0
 _DIFF_MEMORY_GUARD_DEFAULT_PROCESS_GB = 20.0
 _DIFF_MEMORY_GUARD_DEFAULT_POLL_SEC = 0.10
+_DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_INTERVAL_SEC = 1.0
+_DIFF_MEMORY_GUARD_DEFAULT_EVENT_MAX_MB = 1.0
+_DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_MAX_MB = 2.0
 _DIFF_MEMORY_GUARD_RETURN_CODE = memory_guard.GUARD_RETURN_CODE
 
 try:
@@ -1594,6 +1597,14 @@ def _diff_memory_guard_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _diff_memory_guard_sample_interval_sec() -> float:
+    return _bounded_positive_float_env(
+        "MOLT_DIFF_MEMORY_GUARD_SAMPLE_INTERVAL_SEC",
+        default=_DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_INTERVAL_SEC,
+        upper=60.0,
+    )
+
+
 def _memory_limit_bytes() -> int | None:
     gb = _parse_float_env("MOLT_DIFF_RLIMIT_GB")
     mb = _parse_float_env("MOLT_DIFF_RLIMIT_MB")
@@ -2101,11 +2112,47 @@ def _diff_memory_guard_global_samples_jsonl() -> Path:
     return path
 
 
+def _memory_guard_jsonl_max_bytes(path: Path) -> int | None:
+    if path.name.startswith("global_samples"):
+        env_name = "MOLT_DIFF_MEMORY_GUARD_MAX_SAMPLE_MB"
+        default_mb = _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_MAX_MB
+    else:
+        env_name = "MOLT_DIFF_MEMORY_GUARD_MAX_EVENT_MB"
+        default_mb = _DIFF_MEMORY_GUARD_DEFAULT_EVENT_MAX_MB
+    value = _parse_float_env(env_name)
+    if value is None:
+        value = default_mb
+    if value <= 0:
+        return None
+    return max(1024, int(value * 1024 * 1024))
+
+
+def _rotate_memory_guard_jsonl(path: Path, incoming_bytes: int) -> None:
+    max_bytes = _memory_guard_jsonl_max_bytes(path)
+    if max_bytes is None:
+        return
+    try:
+        current_size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if current_size + incoming_bytes <= max_bytes:
+        return
+    rotated = path.with_name(f"{path.name}.1")
+    with contextlib.suppress(OSError):
+        rotated.unlink()
+    with contextlib.suppress(OSError):
+        path.replace(rotated)
+
+
 def _append_memory_guard_jsonl(path: Path, payload: dict[str, object]) -> None:
     payload = {"ts": time.time(), **payload}
     try:
+        line = json.dumps(payload, sort_keys=True) + "\n"
+        _rotate_memory_guard_jsonl(path, len(line.encode("utf-8")))
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+            handle.write(line)
     except OSError:
         return
 
@@ -2244,6 +2291,13 @@ def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
             "max_tree_gb": config.max_tree_gb,
             "global_gb": config.global_gb,
             "poll_interval": config.poll_interval,
+            "sample_interval": _diff_memory_guard_sample_interval_sec(),
+            "event_max_bytes": _memory_guard_jsonl_max_bytes(
+                Path(os.environ[_DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV])
+            ),
+            "sample_max_bytes": _memory_guard_jsonl_max_bytes(
+                Path(os.environ[_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV])
+            ),
         },
     )
 
@@ -2320,7 +2374,10 @@ class _DiffGlobalMemoryMonitor:
             sample.rss_kb for pid, sample in samples.items() if pid in unique_watched
         )
         now = time.monotonic()
-        if now - self._last_sample_write >= 1.0 or tree_violation is not None:
+        if (
+            now - self._last_sample_write >= _diff_memory_guard_sample_interval_sec()
+            or tree_violation is not None
+        ):
             self._last_sample_write = now
             _append_memory_guard_jsonl(
                 _diff_memory_guard_global_samples_jsonl(),
@@ -4146,6 +4203,13 @@ def run_diff(
                 "max_tree_gb": guard_config.max_tree_gb,
                 "global_gb": guard_config.global_gb,
                 "poll_interval": guard_config.poll_interval,
+                "sample_interval": _diff_memory_guard_sample_interval_sec(),
+                "event_max_bytes": _memory_guard_jsonl_max_bytes(
+                    _diff_memory_guard_events_jsonl()
+                ),
+                "sample_max_bytes": _memory_guard_jsonl_max_bytes(
+                    _diff_memory_guard_global_samples_jsonl()
+                ),
                 "tripped": guard_trip_message is not None,
                 "trip_message": guard_trip_message,
                 "trip_file": str(_diff_memory_guard_trip_file()),

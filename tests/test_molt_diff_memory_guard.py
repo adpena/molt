@@ -164,3 +164,26 @@ def test_memory_guard_clamps_parallel_jobs(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert module._constrain_jobs_for_memory_guard(16, config=config, log=False) == 2
+
+
+def test_memory_guard_jsonl_rotation_preserves_recent_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_diff_module()
+    path = tmp_path / "global_samples.jsonl"
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_MAX_SAMPLE_MB", "0.001")
+    path.write_text("x" * 1024, encoding="utf-8")
+
+    module._append_memory_guard_jsonl(path, {"event": "sample", "total_gb": 1.0})
+
+    assert path.with_name("global_samples.jsonl.1").exists()
+    payload = path.read_text(encoding="utf-8")
+    assert '"event": "sample"' in payload
+    assert '"total_gb": 1.0' in payload
+
+
+def test_memory_guard_sample_interval_env_is_bounded(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_SAMPLE_INTERVAL_SEC", "120")
+
+    assert module._diff_memory_guard_sample_interval_sec() == 60.0
