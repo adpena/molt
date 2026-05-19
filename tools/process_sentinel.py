@@ -24,6 +24,7 @@ DEFAULT_MAX_PROCESS_RSS_GB = memory_guard.DEFAULT_MAX_RSS_GB
 DEFAULT_MAX_TOTAL_RSS_GB = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
 DEFAULT_POLL_INTERVAL_SEC = 0.2
 DEFAULT_GRACE_SEC = 0.5
+DEFAULT_MAX_RUNTIME_SEC = 120.0
 
 MOLT_PROCESS_TOKENS = (
     "/molt/target/",
@@ -281,6 +282,24 @@ def _parser() -> argparse.ArgumentParser:
         help="Run one scan and exit.",
     )
     parser.add_argument(
+        "--until-clean-sec",
+        type=float,
+        default=None,
+        help=(
+            "Keep scanning until no matching process group is seen for this many "
+            "seconds, then exit. Useful for draining delayed stale launches."
+        ),
+    )
+    parser.add_argument(
+        "--max-runtime-sec",
+        type=float,
+        default=DEFAULT_MAX_RUNTIME_SEC,
+        help=(
+            "Maximum runtime for --until-clean-sec mode "
+            f"(default: {DEFAULT_MAX_RUNTIME_SEC})."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit JSON lines instead of compact text.",
@@ -298,12 +317,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("poll interval must be greater than 0")
         if args.grace_sec < 0:
             raise ValueError("grace period must be non-negative")
+        if args.until_clean_sec is not None and args.until_clean_sec <= 0:
+            raise ValueError("until-clean seconds must be greater than 0")
+        if args.max_runtime_sec is not None and args.max_runtime_sec <= 0:
+            raise ValueError("max runtime seconds must be greater than 0")
+        if args.once and args.until_clean_sec is not None:
+            raise ValueError("--once and --until-clean-sec are mutually exclusive")
     except ValueError as exc:
         print(f"process_sentinel: {exc}", file=sys.stderr)
         return 2
 
     root = Path(args.repo_root).expanduser()
     stream = sys.stdout if args.json else sys.stderr
+    started = time.monotonic()
+    clean_since: float | None = None
     while True:
         groups = process_groups(
             memory_guard.sample_processes(),
@@ -318,11 +345,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             kill_all=args.kill_all,
         )
         emit_violations(violations, json_mode=args.json, stream=stream)
+        now = time.monotonic()
         if not args.dry_run:
             for violation in violations:
                 terminate_group(violation.pgid, grace=args.grace_sec)
         if args.once:
             return 1 if violations else 0
+        if args.until_clean_sec is not None:
+            if violations:
+                clean_since = None
+            else:
+                if clean_since is None:
+                    clean_since = now
+                if now - clean_since >= args.until_clean_sec:
+                    return 0
+            if (
+                args.max_runtime_sec is not None
+                and now - started >= args.max_runtime_sec
+            ):
+                return 1
         time.sleep(args.poll_interval)
 
 

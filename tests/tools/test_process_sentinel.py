@@ -149,6 +149,58 @@ def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> N
     assert terminated == []
 
 
+def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    calls = 0
+    terminated: list[int] = []
+
+    def fake_sample_processes():
+        nonlocal calls
+        calls += 1
+        if calls in {1, 3}:
+            return {
+                10 + calls: module.memory_guard.ProcessSample(
+                    pid=10 + calls,
+                    ppid=1,
+                    pgid=10 + calls,
+                    rss_kb=100,
+                    command=f"{module.repo_root()}/target/release-fast/molt-backend",
+                )
+            }
+        return {}
+
+    monkeypatch.setattr(module.memory_guard, "sample_processes", fake_sample_processes)
+    monkeypatch.setattr(
+        module,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+
+    rc = module.main(
+        [
+            "--kill-all",
+            "--until-clean-sec",
+            "0.003",
+            "--max-runtime-sec",
+            "1",
+            "--poll-interval",
+            "0.001",
+        ]
+    )
+
+    assert rc == 0
+    assert terminated == [11, 13]
+
+
+def test_main_rejects_once_with_until_clean(capsys) -> None:
+    module = _load_process_sentinel()
+
+    rc = module.main(["--once", "--until-clean-sec", "1"])
+
+    assert rc == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
 def test_main_rejects_global_cap_without_margin(capsys) -> None:
     module = _load_process_sentinel()
 
