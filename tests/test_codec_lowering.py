@@ -48,6 +48,21 @@ def _assert_control_values_are_ints(ir: dict) -> None:
             )
 
 
+def test_stored_bound_method_call_without_method_info_compiles():
+    src = """
+def show(label: str, value: int) -> None:
+    print(label, value)
+
+s = "banana"
+s_find = s.find
+show("str_find", s_find("na"))
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_main")
+    assert any(op["kind"] == "call_func" for op in ops)
+    assert any(op.get("s_value") == "__main____show" for op in ops)
+
+
 def test_default_codec_is_msgpack():
     src = """
 import molt_json
