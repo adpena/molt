@@ -530,24 +530,6 @@ pub(crate) fn alloc_sys_version_info_tuple(
     Some(MoltObject::from_ptr(tuple_ptr).bits())
 }
 
-pub(crate) fn dict_set_bytes_key(
-    _py: &PyToken<'_>,
-    dict_ptr: *mut u8,
-    key: &[u8],
-    value_bits: u64,
-) -> bool {
-    let key_ptr = alloc_string(_py, key);
-    if key_ptr.is_null() {
-        return false;
-    }
-    let key_bits = MoltObject::from_ptr(key_ptr).bits();
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, key_bits, value_bits);
-    }
-    dec_ref_bits(_py, key_bits);
-    true
-}
-
 // molt_set_argv, molt_set_argv_utf16 live in ops.rs
 
 #[cfg(all(not(target_arch = "wasm32"), unix))]

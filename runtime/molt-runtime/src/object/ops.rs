@@ -1851,10 +1851,10 @@ pub extern "C" fn molt_getargv() -> u64 {
 // Re-export sys/time helpers from ops_sys (authoritative copy).
 use super::ops_sys::{
     DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS, alloc_sys_version_info_tuple, current_sys_version_info,
-    default_sys_version_info, dict_set_bytes_key, env_flag_bool, env_flag_level,
-    env_non_negative_i64, env_target_python_info, format_sys_version, runtime_target_minor,
-    sys_abiflags, sys_api_version, sys_cache_tag, sys_flags_hash_randomization,
-    sys_hexversion_from_info, sys_implementation_name, trace_sys_version,
+    default_sys_version_info, env_flag_bool, env_flag_level, env_non_negative_i64,
+    env_target_python_info, format_sys_version, runtime_target_minor, sys_abiflags,
+    sys_api_version, sys_cache_tag, sys_flags_hash_randomization, sys_hexversion_from_info,
+    sys_implementation_name, trace_sys_version,
 };
 
 #[unsafe(no_mangle)]
@@ -2013,52 +2013,11 @@ pub extern "C" fn molt_sys_set_version_info(
             && let Some(sys_ptr) = obj_from_bits(bits).as_ptr()
         {
             unsafe {
-                let dict_bits = module_dict_bits(sys_ptr);
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                    let version_info_bits = molt_sys_version_info();
-                    let version_bits = molt_sys_version();
-                    let hexversion_bits = molt_sys_hexversion();
-                    let api_version_bits = molt_sys_api_version();
-                    let abiflags_bits = molt_sys_abiflags();
-                    let implementation_bits = molt_sys_implementation_payload();
-                    let version_info_key = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.sys_version_info,
-                        b"version_info",
-                    );
-                    let version_key = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.sys_version,
-                        b"version",
-                    );
-                    dict_set_in_place(_py, dict_ptr, version_info_key, version_info_bits);
-                    dict_set_in_place(_py, dict_ptr, version_key, version_bits);
-                    let wrote_hexversion =
-                        dict_set_bytes_key(_py, dict_ptr, b"hexversion", hexversion_bits);
-                    let wrote_api_version =
-                        dict_set_bytes_key(_py, dict_ptr, b"api_version", api_version_bits);
-                    let wrote_abiflags =
-                        dict_set_bytes_key(_py, dict_ptr, b"abiflags", abiflags_bits);
-                    let wrote_implementation =
-                        dict_set_bytes_key(_py, dict_ptr, b"implementation", implementation_bits);
-                    dec_ref_bits(_py, version_info_key);
-                    dec_ref_bits(_py, version_key);
-                    dec_ref_bits(_py, version_info_bits);
-                    dec_ref_bits(_py, version_bits);
-                    dec_ref_bits(_py, hexversion_bits);
-                    dec_ref_bits(_py, api_version_bits);
-                    dec_ref_bits(_py, abiflags_bits);
-                    dec_ref_bits(_py, implementation_bits);
-                    if !(wrote_hexversion
-                        && wrote_api_version
-                        && wrote_abiflags
-                        && wrote_implementation)
-                    {
-                        return MoltObject::none().bits();
-                    }
-                    if trace_sys_version() {
-                        eprintln!("molt sys version: sys dict updated");
-                    }
+                if crate::builtins::modules::sys_populate_version_metadata(_py, sys_ptr).is_err() {
+                    return MoltObject::none().bits();
+                }
+                if trace_sys_version() {
+                    eprintln!("molt sys version: sys dict updated");
                 }
             }
         }
