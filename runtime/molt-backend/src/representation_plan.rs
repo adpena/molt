@@ -1761,6 +1761,49 @@ mod tests {
     }
 
     #[test]
+    fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
+        let mut done_index = const_int("done_index", 1);
+        done_index.fast_int = Some(true);
+        let mut done = op("index", Some("done_flag"), None, &["pair", "done_index"]);
+        done.fast_int = Some(true);
+        let mut value_index = const_int("value_index", 0);
+        value_index.fast_int = Some(true);
+        let mut value = op("index", Some("next_value"), None, &["pair", "value_index"]);
+        value.fast_int = Some(true);
+        let func = function(
+            "iter_next_done_flag",
+            &["items"],
+            None,
+            vec![
+                op("iter", Some("iter_obj"), None, &["items"]),
+                op("iter_next", Some("pair"), None, &["iter_obj"]),
+                done_index,
+                done.clone(),
+                value_index,
+                value,
+                op("loop_break_if_true", None, None, &["done_flag"]),
+            ],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, bool_like, _, _, _) = plan.scalar_name_sets();
+        let primary = plan.primary_name_sets();
+
+        assert!(
+            bool_like.contains("done_flag"),
+            "fused iter_next done flag must retain its bool fact under the original SimpleIR name"
+        );
+        assert!(
+            !int_like.contains("done_flag"),
+            "index fast_int metadata cannot override the fused done flag's bool type"
+        );
+        assert_eq!(plan.op_scalar_lane(&done), Some(ScalarKind::Bool));
+        assert!(
+            !primary.int.contains("done_flag"),
+            "done flag must never be routed through raw-int primary storage"
+        );
+    }
+
+    #[test]
     fn conflicting_facts_do_not_pick_order_dependent_scalar_lane() {
         let mut plan = ScalarRepresentationPlan::default();
         plan.insert_fact(

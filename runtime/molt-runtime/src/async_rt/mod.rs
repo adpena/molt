@@ -3,6 +3,7 @@ pub(crate) mod channels;
 pub(crate) mod event_loop;
 pub(crate) mod generators;
 pub(crate) mod generators_async;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) mod io_poller;
 #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 pub(crate) mod net_stubs;
@@ -10,7 +11,6 @@ pub(crate) mod poll;
 pub(crate) mod process;
 pub(crate) mod scheduler;
 pub(crate) mod sockets;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[cfg(molt_has_net_io)]
 pub(crate) mod sockets_net;
 pub(crate) use generators_async::*;
@@ -67,7 +67,8 @@ pub(crate) use scheduler::{
     molt_asyncio_task_registry_values, molt_asyncio_unregister_task, molt_block_on, molt_spawn,
     monotonic_now_nanos, monotonic_now_secs, record_async_poll, task_exception_depths,
     task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, task_mark_done,
-    task_waiting_on, task_waiting_on_future, wake_task_ptr,
+    task_result_drop, task_result_get, task_result_store, task_waiting_on, task_waiting_on_future,
+    wake_task_ptr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

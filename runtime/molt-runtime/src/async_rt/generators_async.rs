@@ -12,8 +12,8 @@ use molt_obj_model::MoltObject;
 use crate::concurrency::GilGuard;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
-use crate::object::HEADER_FLAG_COROUTINE;
 use crate::object::accessors::resolve_obj_ptr;
+use crate::object::{HEADER_FLAG_COROUTINE, HEADER_FLAG_TASK_DONE};
 use crate::*;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -201,6 +201,23 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 raise_exception::<i64>(_py, "TypeError", "object is not awaitable");
                 return 0;
             }
+            if ((*header).flags & HEADER_FLAG_TASK_DONE) != 0 {
+                if let Some(result_bits) = task_result_get(_py, ptr) {
+                    return result_bits as i64;
+                }
+                let cached_exception = {
+                    let guard = task_last_exceptions(_py).lock().unwrap();
+                    guard.get(&PtrSlot(ptr)).copied()
+                };
+                if let Some(exc_ptr) = cached_exception {
+                    let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
+                    inc_ref_bits(_py, exc_bits);
+                    let raised = molt_raise(exc_bits);
+                    dec_ref_bits(_py, exc_bits);
+                    return raised as i64;
+                }
+                return MoltObject::none().bits() as i64;
+            }
             if ((*header).flags & HEADER_FLAG_COROUTINE) != 0
                 && crate::object::object_state(ptr) == 0
                 && task_cancel_pending(ptr)
@@ -247,6 +264,9 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
             if res != pending_bits_i64() {
                 if !poll_pending {
                     crate::task_last_exception_drop(_py, ptr);
+                    task_result_store(_py, ptr, res as u64);
+                } else {
+                    task_result_drop(_py, ptr);
                 }
                 task_mark_done(_py, ptr);
             }
@@ -487,6 +507,11 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         }
         let task_header = unsafe { header_from_obj_ptr(task_ptr) };
         if unsafe { ((*task_header).flags & HEADER_FLAG_BLOCK_ON) != 0 } {
+            let deadline =
+                Instant::now() + Duration::from_secs_f64(ASYNC_SLEEP_YIELD_SECS.max(0.0));
+            runtime_state(_py)
+                .sleep_queue()
+                .register_blocking(_py, task_ptr, deadline);
             return true;
         }
         runtime_state(_py).scheduler().defer_task_ptr(task_ptr);

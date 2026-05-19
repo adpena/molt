@@ -3296,6 +3296,45 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     }
 }
 
+pub(crate) fn task_result_get(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u64> {
+    if task_ptr.is_null() {
+        return None;
+    }
+    let result = {
+        let guard = runtime_state(_py).task_results.lock().unwrap();
+        guard.get(&PtrSlot(task_ptr)).copied()
+    }?;
+    inc_ref_bits(_py, result);
+    Some(result)
+}
+
+pub(crate) fn task_result_store(_py: &PyToken<'_>, task_ptr: *mut u8, result_bits: u64) {
+    if task_ptr.is_null() {
+        return;
+    }
+    inc_ref_bits(_py, result_bits);
+    let old = {
+        let mut guard = runtime_state(_py).task_results.lock().unwrap();
+        guard.insert(PtrSlot(task_ptr), result_bits)
+    };
+    if let Some(old_bits) = old {
+        dec_ref_bits(_py, old_bits);
+    }
+}
+
+pub(crate) fn task_result_drop(_py: &PyToken<'_>, task_ptr: *mut u8) {
+    if task_ptr.is_null() {
+        return;
+    }
+    let old = {
+        let mut guard = runtime_state(_py).task_results.lock().unwrap();
+        guard.remove(&PtrSlot(task_ptr))
+    };
+    if let Some(old_bits) = old {
+        dec_ref_bits(_py, old_bits);
+    }
+}
+
 fn enqueue_task_ptr(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;

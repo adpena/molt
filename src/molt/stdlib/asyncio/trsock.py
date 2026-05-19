@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import socket
+from asyncio import socket as socket
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 

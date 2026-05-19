@@ -5,36 +5,41 @@ from __future__ import annotations
 import contextvars
 import os
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import asyncio as _asyncio
+from asyncio import socket as socket
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
+_VERSION_INFO = getattr(sys, "version_info", (3, 12, 0, "final", 0))
+_EXPOSE_CHILD_WATCHERS = _VERSION_INFO < (3, 14)
 
 from asyncio import (
     AbstractEventLoop,
-    AbstractEventLoopPolicy,
     AbstractServer,
     Handle,
     TimerHandle,
-    get_child_watcher,
     get_event_loop,
     get_event_loop_policy,
     get_running_loop,
     new_event_loop,
-    set_child_watcher,
     set_event_loop,
     set_event_loop_policy,
 )
 from asyncio import format_helpers
 
-BaseDefaultEventLoopPolicy = getattr(
-    _asyncio, "BaseDefaultEventLoopPolicy", _asyncio.DefaultEventLoopPolicy
-)
+if _VERSION_INFO < (3, 14):
+    AbstractEventLoopPolicy = _asyncio.AbstractEventLoopPolicy
+    BaseDefaultEventLoopPolicy = getattr(
+        _asyncio, "BaseDefaultEventLoopPolicy", _asyncio.DefaultEventLoopPolicy
+    )
+
+if _EXPOSE_CHILD_WATCHERS:
+    get_child_watcher = _asyncio.get_child_watcher
+    set_child_watcher = _asyncio.set_child_watcher
 
 
 def on_fork() -> None:
@@ -43,14 +48,11 @@ def on_fork() -> None:
 
 __all__ = [
     "AbstractEventLoop",
-    "AbstractEventLoopPolicy",
     "AbstractServer",
-    "BaseDefaultEventLoopPolicy",
     "Handle",
     "TimerHandle",
     "contextvars",
     "format_helpers",
-    "get_child_watcher",
     "get_event_loop",
     "get_event_loop_policy",
     "get_running_loop",
@@ -66,5 +68,9 @@ __all__ = [
     "sys",
     "threading",
 ]
+if _VERSION_INFO < (3, 14):
+    __all__.extend(["AbstractEventLoopPolicy", "BaseDefaultEventLoopPolicy"])
+if _EXPOSE_CHILD_WATCHERS:
+    __all__.extend(["get_child_watcher", "set_child_watcher"])
 
 globals().pop("_require_intrinsic", None)

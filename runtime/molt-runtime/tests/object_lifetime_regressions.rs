@@ -18,8 +18,7 @@ pub extern "C" fn molt_isolate_import(_: u64) -> u64 {
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
     fn molt_exception_clear() -> u64;
-    fn molt_itertools_alloc_class(name_ptr: *const u8, name_len: usize, layout_size: i64) -> u64;
-    fn molt_itertools_object_class_bits(ptr: *mut u8) -> u64;
+    fn molt_string_from(data: *const u8, len: u64) -> u64;
 }
 
 static INIT: Once = Once::new();
@@ -47,26 +46,25 @@ fn refcount(bits: u64) -> u32 {
     header_ref(bits).ref_count.load(Ordering::Acquire)
 }
 
+fn class_from_name(name: &[u8]) -> u64 {
+    let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
+    assert_ne!(name_bits, none());
+    let class_bits = molt_runtime::molt_class_new(name_bits);
+    assert_ne!(class_bits, none());
+    molt_runtime::molt_dec_ref_obj(name_bits);
+    class_bits
+}
+
 #[test]
 fn alloc_class_balances_heap_class_refcount() {
     init();
 
-    let class_bits = unsafe { molt_itertools_alloc_class(b"HeapClassRef".as_ptr(), 12, 0) };
-    assert_ne!(class_bits, none());
+    let class_bits = class_from_name(b"HeapClassRef");
     let class_before = refcount(class_bits);
 
     let obj_bits = molt_runtime::molt_alloc_class(0, class_bits);
     assert_ne!(obj_bits, none());
-    assert_eq!(
-        unsafe {
-            molt_itertools_object_class_bits(
-                MoltObject::from_bits(obj_bits)
-                    .as_ptr()
-                    .expect("expected instance pointer"),
-            )
-        },
-        class_bits
-    );
+    assert_eq!(molt_runtime::molt_type_of_borrowed(obj_bits), class_bits);
     assert_eq!(
         header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF,
         0
@@ -83,22 +81,12 @@ fn alloc_class_balances_heap_class_refcount() {
 fn alloc_class_static_marks_skip_class_decref_and_preserves_class_refcount() {
     init();
 
-    let class_bits = unsafe { molt_itertools_alloc_class(b"HeapClassStatic".as_ptr(), 15, 0) };
-    assert_ne!(class_bits, none());
+    let class_bits = class_from_name(b"HeapClassStatic");
     let class_before = refcount(class_bits);
 
     let obj_bits = molt_runtime::molt_alloc_class_static(0, class_bits);
     assert_ne!(obj_bits, none());
-    assert_eq!(
-        unsafe {
-            molt_itertools_object_class_bits(
-                MoltObject::from_bits(obj_bits)
-                    .as_ptr()
-                    .expect("expected instance pointer"),
-            )
-        },
-        class_bits
-    );
+    assert_eq!(molt_runtime::molt_type_of_borrowed(obj_bits), class_bits);
     assert_ne!(
         header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF,
         0

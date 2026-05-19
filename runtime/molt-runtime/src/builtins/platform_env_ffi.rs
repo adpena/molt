@@ -356,7 +356,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
     {
         #[cfg(target_os = "macos")]
         {
-            vec![
+            let mut out = vec![
                 ("AF_APPLETALK", 16_i64),
                 ("AF_DECnet", 12_i64),
                 ("AF_INET", 2_i64),
@@ -549,7 +549,14 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
                 ("TCP_MAXSEG", 2_i64),
                 ("TCP_NODELAY", 1_i64),
                 ("TCP_NOTSENT_LOWAT", 513_i64),
-            ]
+            ];
+            if SOCK_NONBLOCK_FLAG != 0 {
+                out.push(("SOCK_NONBLOCK", SOCK_NONBLOCK_FLAG as i64));
+            }
+            if SOCK_CLOEXEC_FLAG != 0 {
+                out.push(("SOCK_CLOEXEC", SOCK_CLOEXEC_FLAG as i64));
+            }
+            out
         }
         #[cfg(not(target_os = "macos"))]
         {

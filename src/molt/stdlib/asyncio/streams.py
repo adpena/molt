@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import collections
-import socket
 import sys
 import warnings
 import weakref
+from asyncio import socket as socket
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 

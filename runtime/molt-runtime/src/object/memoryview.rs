@@ -2,11 +2,13 @@
 use crate::libc_compat as libc;
 use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
-    TYPE_ID_MEMORYVIEW, alloc_bytes, bigint_bits, bytearray_vec, bytes_data, bytes_len,
-    index_bigint_from_obj, is_truthy, memoryview_itemsize, memoryview_len, memoryview_offset,
-    memoryview_owner_bits, memoryview_readonly, memoryview_shape, memoryview_stride,
-    memoryview_strides, obj_from_bits, object_type_id, string_obj_to_owned, to_f64,
+    TYPE_ID_MEMORYVIEW, alloc_bytes, bigint_bits, bytes_data, bytes_len, index_bigint_from_obj,
+    is_truthy, memoryview_itemsize, memoryview_len, memoryview_offset, memoryview_owner_bits,
+    memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_type_id,
+    string_obj_to_owned, to_f64,
 };
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use crate::{bytearray_vec, memoryview_readonly};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -127,6 +129,7 @@ pub(crate) unsafe fn bytes_like_slice_raw(ptr: *mut u8) -> Option<&'static [u8]>
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 unsafe fn bytes_like_slice_raw_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
     unsafe {
         let type_id = object_type_id(ptr);
@@ -160,6 +163,7 @@ pub(crate) unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
     unsafe {
         if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
@@ -182,6 +186,7 @@ pub(crate) unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) unsafe fn memoryview_write_bytes(ptr: *mut u8, data: &[u8]) -> Result<usize, String> {
     unsafe {
         if memoryview_readonly(ptr) {

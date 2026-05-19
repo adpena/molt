@@ -1571,7 +1571,6 @@ pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val_bits);
         let Some(value) = coerce_real_named(_py, val_bits, "isnan") else {
             return MoltObject::none().bits();
         };

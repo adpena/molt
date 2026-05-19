@@ -485,11 +485,11 @@ fn read_signed(bytes: &[u8], endian: StructEndian, size: usize) -> Result<i64, S
                 StructEndian::Little => buf.copy_from_slice(&bytes[..8]),
                 StructEndian::Big => buf.copy_from_slice(&bytes[..8]),
             }
-            (match endian {
+            match endian {
                 StructEndian::Native => i64::from_ne_bytes(buf),
                 StructEndian::Little => i64::from_le_bytes(buf),
                 StructEndian::Big => i64::from_be_bytes(buf),
-            })
+            }
         }
         _ => return Err("unsupported integer size".to_string()),
     };
@@ -532,11 +532,11 @@ fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u64,
                 StructEndian::Little => buf.copy_from_slice(&bytes[..8]),
                 StructEndian::Big => buf.copy_from_slice(&bytes[..8]),
             }
-            (match endian {
+            match endian {
                 StructEndian::Native => u64::from_ne_bytes(buf),
                 StructEndian::Little => u64::from_le_bytes(buf),
                 StructEndian::Big => u64::from_be_bytes(buf),
-            })
+            }
         }
         _ => return Err("unsupported integer size".to_string()),
     };

@@ -2,6 +2,7 @@ use crate::arena::TempArena;
 use crate::*;
 use std::collections::HashSet;
 use std::fmt::Write as _;
+#[cfg(feature = "stdlib_serialization")]
 use std::io::Cursor;
 
 // --- JSON ---

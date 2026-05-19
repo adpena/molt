@@ -1077,15 +1077,7 @@ fn zip_archive_has_prefix(_path: &str, _prefix: &str) -> bool {
 
 #[cfg(not(feature = "stdlib_archive"))]
 #[derive(Default)]
-struct ZipArchiveIndex {
-    entries: HashSet<String>,
-    prefixes: HashSet<String>,
-}
-
-#[cfg(not(feature = "stdlib_archive"))]
-fn zip_archive_build_index(_path: &str) -> Option<ZipArchiveIndex> {
-    None
-}
+struct ZipArchiveIndex;
 
 #[cfg(not(feature = "stdlib_archive"))]
 fn zip_archive_index_cached<'a>(
