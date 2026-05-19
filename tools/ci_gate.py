@@ -848,7 +848,8 @@ def main() -> None:
         type=float,
         default=memory_guard.DEFAULT_MAX_RSS_GB,
         help=(
-            "Abort a check if any process exceeds this RSS; must be <30 "
+            "Abort a check if any process exceeds this RSS; must be "
+            f"<{memory_guard.DEFAULT_HARD_MAX_RSS_GB:g} "
             f"(default: {memory_guard.DEFAULT_MAX_RSS_GB})."
         ),
     )
@@ -857,7 +858,8 @@ def main() -> None:
         type=float,
         default=memory_guard.DEFAULT_MAX_TOTAL_RSS_GB,
         help=(
-            "Abort a check if its process tree exceeds this aggregate RSS; must be <30 "
+            "Abort a check if its process tree exceeds this aggregate RSS; must be "
+            f"<{memory_guard.DEFAULT_HARD_MAX_RSS_GB:g} "
             f"(default: {memory_guard.DEFAULT_MAX_TOTAL_RSS_GB})."
         ),
     )
