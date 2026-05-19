@@ -2140,6 +2140,299 @@ fn simple_ir_defined_names(op: &OpIR) -> Vec<&str> {
     defined
 }
 
+fn push_split_name(out: &mut Vec<String>, seen: &mut BTreeSet<String>, name: &str) {
+    if name != "none" && seen.insert(name.to_string()) {
+        out.push(name.to_string());
+    }
+}
+
+fn split_ir_read_names(op: &OpIR) -> Vec<String> {
+    let mut read = Vec::new();
+    let mut seen = BTreeSet::new();
+    match op.kind.as_str() {
+        "unpack_sequence" => {
+            if let Some(args) = op.args.as_ref()
+                && let Some(seq) = args.first()
+            {
+                push_split_name(&mut read, &mut seen, seq);
+            }
+        }
+        _ => {
+            if let Some(args) = op.args.as_ref() {
+                for arg in args {
+                    push_split_name(&mut read, &mut seen, arg);
+                }
+            }
+        }
+    }
+    if simple_ir_var_field_is_read(op)
+        && let Some(var) = op.var.as_deref()
+    {
+        push_split_name(&mut read, &mut seen, var);
+    }
+    read
+}
+
+fn split_ir_defined_names(op: &OpIR) -> Vec<String> {
+    let mut defined = Vec::new();
+    let mut seen = BTreeSet::new();
+    for name in simple_ir_defined_names(op) {
+        push_split_name(&mut defined, &mut seen, name);
+    }
+    match op.kind.as_str() {
+        "store_var" | "store_fast" => {
+            if let Some(var) = op.var.as_deref().or(op.out.as_deref()) {
+                push_split_name(&mut defined, &mut seen, var);
+            }
+        }
+        "unpack_sequence" => {
+            if let Some(args) = op.args.as_ref() {
+                for arg in args.iter().skip(1) {
+                    push_split_name(&mut defined, &mut seen, arg);
+                }
+            }
+        }
+        _ => {}
+    }
+    defined
+}
+
+fn split_live_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
+    let mut live = BTreeSet::new();
+    let mut live_before = vec![BTreeSet::new(); ops.len() + 1];
+    live_before[ops.len()] = live.clone();
+    for idx in (0..ops.len()).rev() {
+        for name in split_ir_defined_names(&ops[idx]) {
+            live.remove(&name);
+        }
+        for name in split_ir_read_names(&ops[idx]) {
+            live.insert(name);
+        }
+        live_before[idx] = live.clone();
+    }
+    live_before
+}
+
+fn split_param_types_for_names(
+    original_params: &[String],
+    original_param_types: Option<&Vec<String>>,
+    params: &[String],
+) -> Option<Vec<String>> {
+    let original_param_types = original_param_types?;
+    if original_param_types.len() != original_params.len() {
+        return None;
+    }
+    Some(
+        params
+            .iter()
+            .map(|name| {
+                original_params
+                    .iter()
+                    .position(|param| param == name)
+                    .map(|idx| original_param_types[idx].clone())
+                    .unwrap_or_else(|| "dyn".to_string())
+            })
+            .collect(),
+    )
+}
+
+fn split_frame_name(base: &str, occupied: &mut BTreeSet<String>) -> String {
+    if occupied.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let mut idx = 0usize;
+    loop {
+        let candidate = format!("{base}_{idx}");
+        if occupied.insert(candidate.clone()) {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
+fn split_defined_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
+    let mut defined = BTreeSet::new();
+    let mut defined_before = vec![BTreeSet::new(); ops.len() + 1];
+    defined_before[0] = defined.clone();
+    for (idx, op) in ops.iter().enumerate() {
+        for name in split_ir_defined_names(op) {
+            defined.insert(name);
+        }
+        defined_before[idx + 1] = defined.clone();
+    }
+    defined_before
+}
+
+fn split_collect_names(ops: &[OpIR], params: &[String]) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = params
+        .iter()
+        .filter(|name| name.as_str() != "none")
+        .cloned()
+        .collect();
+    for op in ops {
+        for name in split_ir_read_names(op) {
+            names.insert(name);
+        }
+        for name in split_ir_defined_names(op) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+fn split_frame_load_ops(
+    frame_name: &str,
+    frame_slot_for: &BTreeMap<String, usize>,
+    live_names: &BTreeSet<String>,
+    occupied: &mut BTreeSet<String>,
+) -> Vec<OpIR> {
+    let mut ops = Vec::new();
+    for name in live_names {
+        let Some(slot) = frame_slot_for.get(name) else {
+            continue;
+        };
+        let slot_name = split_frame_name("__molt_split_frame_index", occupied);
+        ops.push(OpIR {
+            kind: "const".to_string(),
+            value: Some(*slot as i64),
+            out: Some(slot_name.clone()),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "index".to_string(),
+            args: Some(vec![frame_name.to_string(), slot_name]),
+            out: Some(name.clone()),
+            ..OpIR::default()
+        });
+    }
+    ops
+}
+
+fn split_frame_store_ops(
+    frame_name: &str,
+    frame_slot_for: &BTreeMap<String, usize>,
+    live_names: &BTreeSet<String>,
+    occupied: &mut BTreeSet<String>,
+) -> Vec<OpIR> {
+    let mut ops = Vec::new();
+    for name in live_names {
+        let Some(slot) = frame_slot_for.get(name) else {
+            continue;
+        };
+        let slot_name = split_frame_name("__molt_split_frame_store_index", occupied);
+        ops.push(OpIR {
+            kind: "const".to_string(),
+            value: Some(*slot as i64),
+            out: Some(slot_name.clone()),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "store_index".to_string(),
+            args: Some(vec![frame_name.to_string(), slot_name, name.clone()]),
+            ..OpIR::default()
+        });
+    }
+    ops
+}
+
+fn split_status_return_ops(occupied: &mut BTreeSet<String>, should_continue: bool) -> Vec<OpIR> {
+    let name = split_frame_name(
+        if should_continue {
+            "__molt_split_continue_true"
+        } else {
+            "__molt_split_continue_false"
+        },
+        occupied,
+    );
+    vec![
+        OpIR {
+            kind: "const_bool".to_string(),
+            value: Some(i64::from(should_continue)),
+            out: Some(name.clone()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret".to_string(),
+            var: Some(name),
+            ..OpIR::default()
+        },
+    ]
+}
+
+fn split_rewrite_void_terminals_to_status(
+    ops: Vec<OpIR>,
+    occupied: &mut BTreeSet<String>,
+    should_continue: bool,
+) -> Vec<OpIR> {
+    let mut rewritten = Vec::with_capacity(ops.len());
+    for op in ops {
+        if op.kind == "ret_void" {
+            rewritten.extend(split_status_return_ops(occupied, should_continue));
+        } else {
+            rewritten.push(op);
+        }
+    }
+    rewritten
+}
+
+fn verify_split_function_def_use(func: &FunctionIR) -> Result<(), String> {
+    let mut defined: BTreeSet<String> = func.params.iter().cloned().collect();
+    for (idx, op) in func.ops.iter().enumerate() {
+        for name in split_ir_read_names(op) {
+            if !defined.contains(&name) {
+                return Err(format!(
+                    "function `{}` op {} `{}` reads `{}` before definition",
+                    func.name, idx, op.kind, name
+                ));
+            }
+        }
+        for name in split_ir_defined_names(op) {
+            defined.insert(name);
+        }
+    }
+    Ok(())
+}
+
+fn verify_split_generated_ops(func: &FunctionIR) -> Result<(), String> {
+    for (idx, op) in func.ops.iter().enumerate() {
+        if op.kind == "load_index" {
+            return Err(format!(
+                "function `{}` op {} uses non-canonical generated op `load_index`; use `index`",
+                func.name, idx
+            ));
+        }
+    }
+    for (idx, op) in func.ops.iter().enumerate() {
+        if op.out.as_deref().is_some_and(|out| {
+            out.starts_with("__molt_split_frame_load_index")
+                || out.starts_with("__molt_split_frame_store_index")
+        }) {
+            let next = func.ops.get(idx + 1).ok_or_else(|| {
+                format!(
+                    "function `{}` op {} split-frame slot const is missing consumer",
+                    func.name, idx
+                )
+            })?;
+            let expected_consumer = if op
+                .out
+                .as_deref()
+                .is_some_and(|out| out.starts_with("__molt_split_frame_load_index"))
+            {
+                "index"
+            } else {
+                "store_index"
+            };
+            if next.kind != expected_consumer {
+                return Err(format!(
+                    "function `{}` op {} split-frame slot const is consumed by `{}` not `{}`",
+                    func.name, idx, next.kind, expected_consumer
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Eliminate dead ops within each function of the SimpleIR.
 ///
 /// An op is dead when:
@@ -2518,19 +2811,67 @@ pub fn split_large_function(
         .name
         .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
 
-    let mut chunks: Vec<FunctionIR> = Vec::new();
+    let original_for_split_failure = func.clone();
     let all_ops = &func.ops;
+    let live_before = split_live_before_sets(all_ops);
+    let defined_before = split_defined_before_sets(all_ops);
+    let func_returns_value = func.ops.iter().any(|op| op.kind == "ret");
+    for (idx, op) in func.ops.iter().enumerate() {
+        if matches!(op.kind.as_str(), "ret" | "ret_void") && idx + 1 != func.ops.len() {
+            return Err(Box::new(original_for_split_failure.clone()));
+        }
+    }
+    let mut occupied_names = split_collect_names(all_ops, &func.params);
+    let frame_name = split_frame_name("__molt_split_frame", &mut occupied_names);
+    let mut frame_names = BTreeSet::new();
+    for &boundary in boundaries
+        .iter()
+        .skip(1)
+        .take(boundaries.len().saturating_sub(2))
+    {
+        for name in &live_before[boundary] {
+            if defined_before[boundary].contains(name) {
+                frame_names.insert(name.clone());
+            }
+        }
+    }
+    let frame_slot_for: BTreeMap<String, usize> = frame_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect();
+    let uses_split_frame = !frame_slot_for.is_empty();
     let mut next_synthetic_label = label_positions
         .keys()
         .max()
         .copied()
         .unwrap_or(0)
         .saturating_add(1);
+    let exception_return_label = next_synthetic_label;
+    next_synthetic_label = next_synthetic_label.saturating_add(1);
 
+    struct ChunkPlan {
+        name: String,
+        returns_value: bool,
+        returns_control_status: bool,
+    }
+
+    let mut chunks: Vec<FunctionIR> = Vec::new();
+    let mut plans: Vec<ChunkPlan> = Vec::new();
     for i in 0..boundaries.len() - 1 {
         let start = boundaries[i];
         let end = boundaries[i + 1];
         let mut chunk_ops: Vec<OpIR> = all_ops[start..end].to_vec();
+        let live_in: BTreeSet<String> = live_before[start]
+            .iter()
+            .filter(|name| frame_slot_for.contains_key(*name))
+            .cloned()
+            .collect();
+        let live_out: BTreeSet<String> = live_before[end]
+            .iter()
+            .filter(|name| frame_slot_for.contains_key(*name))
+            .cloned()
+            .collect();
 
         // Collect label IDs defined in THIS chunk.
         let mut chunk_labels: std::collections::BTreeSet<i64> = chunk_ops
@@ -2542,6 +2883,7 @@ pub fn split_large_function(
         // If the chunk references a shared exception/cleanup tail that starts
         // later in the original function, clone that suffix into the chunk so
         // local check_exception/jump/br_if targets stay valid after splitting.
+        let mut normal_skip_label_for_cloned_suffix = None;
         let suffix_clone_start = chunk_ops
             .iter()
             .filter_map(|op| {
@@ -2559,6 +2901,7 @@ pub fn split_large_function(
         if let Some(suffix_start) = suffix_clone_start {
             let skip_label = next_synthetic_label;
             next_synthetic_label = next_synthetic_label.saturating_add(1);
+            normal_skip_label_for_cloned_suffix = Some(skip_label);
             chunk_ops.push(OpIR {
                 kind: "jump".to_string(),
                 value: Some(skip_label),
@@ -2576,7 +2919,7 @@ pub fn split_large_function(
                 .filter_map(|op| op.value)
                 .collect();
             if chunk_ops.len() > max_ops * 2 {
-                return Err(Box::new(func));
+                return Err(Box::new(original_for_split_failure.clone()));
             }
         }
 
@@ -2591,60 +2934,211 @@ pub fn split_large_function(
             true
         });
 
-        // Ensure the chunk has a terminator — without a ret/ret_void at
-        // the end, Cranelift emits trap padding (UDF) which causes SIGILL
-        // at runtime when the chunk falls through.
-        let needs_terminator = chunk_ops
-            .last()
-            .map(|op| !matches!(op.kind.as_str(), "ret" | "ret_void"))
-            .unwrap_or(true);
-        if needs_terminator {
-            chunk_ops.push(OpIR {
+        let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
+        let (returns_value, returns_control_status) = if func_returns_value {
+            let terminal = if chunk_ops
+                .last()
+                .is_some_and(|op| matches!(op.kind.as_str(), "ret" | "ret_void"))
+            {
+                chunk_ops.pop()
+            } else {
+                None
+            };
+            let returns_value = terminal.as_ref().is_some_and(|op| op.kind == "ret");
+            if uses_split_frame {
+                let stores = split_frame_store_ops(
+                    &frame_name,
+                    &frame_slot_for,
+                    &live_out,
+                    &mut occupied_names,
+                );
+                if let Some(skip_label) = normal_skip_label_for_cloned_suffix {
+                    let Some(insert_idx) = chunk_ops
+                        .iter()
+                        .position(|op| op.kind == "jump" && op.value == Some(skip_label))
+                    else {
+                        return Err(Box::new(original_for_split_failure.clone()));
+                    };
+                    chunk_ops.splice(insert_idx..insert_idx, stores);
+                } else {
+                    chunk_ops.extend(stores);
+                }
+                let mut prefixed = split_frame_load_ops(
+                    &frame_name,
+                    &frame_slot_for,
+                    &live_in,
+                    &mut occupied_names,
+                );
+                prefixed.extend(chunk_ops);
+                chunk_ops = prefixed;
+            }
+            chunk_ops.push(terminal.unwrap_or_else(|| OpIR {
                 kind: "ret_void".to_string(),
                 ..OpIR::default()
-            });
+            }));
+            (returns_value, false)
+        } else {
+            chunk_ops =
+                split_rewrite_void_terminals_to_status(chunk_ops, &mut occupied_names, false);
+            if uses_split_frame {
+                let stores = split_frame_store_ops(
+                    &frame_name,
+                    &frame_slot_for,
+                    &live_out,
+                    &mut occupied_names,
+                );
+                if let Some(skip_label) = normal_skip_label_for_cloned_suffix {
+                    let Some(insert_idx) = chunk_ops
+                        .iter()
+                        .position(|op| op.kind == "jump" && op.value == Some(skip_label))
+                    else {
+                        return Err(Box::new(original_for_split_failure.clone()));
+                    };
+                    chunk_ops.splice(insert_idx..insert_idx, stores);
+                } else {
+                    chunk_ops.extend(stores);
+                }
+                let mut prefixed = split_frame_load_ops(
+                    &frame_name,
+                    &frame_slot_for,
+                    &live_in,
+                    &mut occupied_names,
+                );
+                prefixed.extend(chunk_ops);
+                chunk_ops = prefixed;
+            }
+            chunk_ops.extend(split_status_return_ops(&mut occupied_names, true));
+            (false, true)
+        };
+        let mut chunk_params = func.params.clone();
+        if uses_split_frame {
+            chunk_params.push(frame_name.clone());
         }
-
-        let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
+        let chunk_param_types =
+            split_param_types_for_names(&func.params, func.param_types.as_ref(), &chunk_params);
         chunks.push(FunctionIR {
-            name: chunk_name,
-            params: func.params.clone(),
+            name: chunk_name.clone(),
+            params: chunk_params,
             ops: chunk_ops,
-            param_types: func.param_types.clone(),
+            param_types: chunk_param_types,
             source_file: None,
             is_extern: false,
         });
+        plans.push(ChunkPlan {
+            name: chunk_name,
+            returns_value,
+            returns_control_status,
+        });
     }
 
     // ---------------------------------------------------------------
-    // 4. Build the stub parent function that calls each chunk.
-    //    If any chunk contains a `ret` op, the stub must propagate
-    //    the return value. The last chunk with a `ret` is the one
-    //    whose result is returned.
+    // 4. Build the stub parent function. Values defined in one chunk and read
+    //    by later chunks travel through one explicit heap frame instead of
+    //    relying on per-function entry defaults.
     // ---------------------------------------------------------------
-    let has_returning_chunk = chunks
-        .iter()
-        .any(|c| c.ops.iter().any(|op| op.kind == "ret"));
-    let mut stub_ops: Vec<OpIR> = Vec::with_capacity(chunks.len() + 1);
-    for (ci, chunk) in chunks.iter().enumerate() {
-        let chunk_has_ret = chunk.ops.iter().any(|op| op.kind == "ret");
-        let out_name = if chunk_has_ret {
-            "__chunk_ret".to_string()
-        } else {
-            format!("__chunk_discard_{ci}")
-        };
+    let mut stub_ops: Vec<OpIR> = Vec::new();
+    if uses_split_frame {
+        let mut frame_init_args = Vec::with_capacity(frame_slot_for.len());
+        for _ in 0..frame_slot_for.len() {
+            let slot_init = split_frame_name("__molt_split_frame_init", &mut occupied_names);
+            stub_ops.push(OpIR {
+                kind: "const_none".to_string(),
+                out: Some(slot_init.clone()),
+                ..OpIR::default()
+            });
+            frame_init_args.push(slot_init);
+        }
         stub_ops.push(OpIR {
-            kind: "call_internal".to_string(),
-            s_value: Some(chunk.name.clone()),
-            args: Some(func.params.clone()),
-            out: Some(out_name),
+            kind: "list_new".to_string(),
+            args: Some(frame_init_args),
+            out: Some(frame_name.clone()),
             ..OpIR::default()
         });
     }
-    if has_returning_chunk {
+    for (ci, plan) in plans.iter().enumerate() {
+        let mut call_args = func.params.clone();
+        if uses_split_frame {
+            call_args.push(frame_name.clone());
+        }
+        let chunk_continue_name = format!("__chunk_continue_{ci}");
+        stub_ops.push(OpIR {
+            kind: "call_internal".to_string(),
+            s_value: Some(plan.name.clone()),
+            args: Some(call_args),
+            out: Some(if plan.returns_control_status {
+                chunk_continue_name.clone()
+            } else if plan.returns_value {
+                "__chunk_ret".to_string()
+            } else {
+                format!("__chunk_discard_{ci}")
+            }),
+            ..OpIR::default()
+        });
+        stub_ops.push(OpIR {
+            kind: "check_exception".to_string(),
+            value: Some(exception_return_label),
+            ..OpIR::default()
+        });
+        if plan.returns_control_status {
+            let continue_label = next_synthetic_label;
+            next_synthetic_label = next_synthetic_label.saturating_add(1);
+            stub_ops.push(OpIR {
+                kind: "br_if".to_string(),
+                args: Some(vec![chunk_continue_name]),
+                value: Some(continue_label),
+                ..OpIR::default()
+            });
+            stub_ops.push(OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            });
+            stub_ops.push(OpIR {
+                kind: "label".to_string(),
+                value: Some(continue_label),
+                ..OpIR::default()
+            });
+            continue;
+        }
+        if plan.returns_value {
+            stub_ops.push(OpIR {
+                kind: "ret".to_string(),
+                var: Some("__chunk_ret".to_string()),
+                ..OpIR::default()
+            });
+            continue;
+        }
+    }
+    if func_returns_value {
+        stub_ops.push(OpIR {
+            kind: "const_none".to_string(),
+            out: Some("__chunk_missing_ret".to_string()),
+            ..OpIR::default()
+        });
         stub_ops.push(OpIR {
             kind: "ret".to_string(),
-            var: Some("__chunk_ret".to_string()),
+            var: Some("__chunk_missing_ret".to_string()),
+            ..OpIR::default()
+        });
+    } else {
+        stub_ops.push(OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        });
+    }
+    stub_ops.push(OpIR {
+        kind: "label".to_string(),
+        value: Some(exception_return_label),
+        ..OpIR::default()
+    });
+    if func_returns_value {
+        stub_ops.push(OpIR {
+            kind: "const_none".to_string(),
+            out: Some("__chunk_exception_ret".to_string()),
+            ..OpIR::default()
+        });
+        stub_ops.push(OpIR {
+            kind: "ret".to_string(),
+            var: Some("__chunk_exception_ret".to_string()),
             ..OpIR::default()
         });
     } else {
@@ -2662,6 +3156,21 @@ pub fn split_large_function(
         source_file: None,
         is_extern: false,
     };
+
+    for chunk in &chunks {
+        if let Err(detail) = verify_split_function_def_use(chunk) {
+            panic!("megafunction split produced invalid chunk IR: {detail}");
+        }
+        if let Err(detail) = verify_split_generated_ops(chunk) {
+            panic!("megafunction split produced non-canonical chunk IR: {detail}");
+        }
+    }
+    if let Err(detail) = verify_split_function_def_use(&stub) {
+        panic!("megafunction split produced invalid stub IR: {detail}");
+    }
+    if let Err(detail) = verify_split_generated_ops(&stub) {
+        panic!("megafunction split produced non-canonical stub IR: {detail}");
+    }
 
     Ok((stub, chunks))
 }
@@ -3562,20 +4071,46 @@ mod tests {
             .filter(|op| op.kind == "call_internal")
             .collect();
         assert_eq!(stub_chunk_calls.len(), chunks.len());
+        for (call, chunk) in stub_chunk_calls.iter().zip(chunks.iter()) {
+            assert_eq!(
+                call.s_value.as_deref(),
+                Some(chunk.name.as_str()),
+                "stub call must target the matching private chunk",
+            );
+            assert_eq!(
+                call.args.as_ref(),
+                Some(&chunk.params),
+                "stub call must forward the live-in chunk ABI, not just original params",
+            );
+        }
         assert!(
-            stub_chunk_calls
+            chunks.iter().skip(1).any(|chunk| chunk
+                .ops
                 .iter()
-                .all(|op| op.args.as_ref() == Some(&vec!["p0".to_string()])),
-            "split stub must forward original params into each chunk call"
+                .any(|op| op.kind == "index" && op.out.as_deref() == Some("v0"))),
+            "later chunks must load values defined by earlier chunks from the split frame"
         );
-        assert_eq!(
-            stub.ops.last().map(|op| op.kind.as_str()),
-            Some("ret"),
-            "split stub must return the propagated chunk result",
+        assert!(
+            chunks
+                .iter()
+                .flat_map(|chunk| chunk.ops.iter())
+                .all(|op| op.kind != "load_index"),
+            "split frame reads must use the backend-canonical index op"
         );
-        assert_eq!(
-            stub.ops.last().and_then(|op| op.var.as_deref()),
-            Some("__chunk_ret"),
+        assert!(
+            stub.ops.iter().any(|op| {
+                op.kind == "list_new"
+                    && op
+                        .out
+                        .as_deref()
+                        .is_some_and(|out| out.starts_with("__molt_split_frame"))
+            }),
+            "stub must allocate the split frame used for cross-chunk live values"
+        );
+        assert!(
+            stub.ops
+                .iter()
+                .any(|op| op.kind == "ret" && op.var.as_deref() == Some("__chunk_ret")),
             "split stub must return the named propagated chunk result",
         );
         assert!(
@@ -3584,11 +4119,126 @@ mod tests {
                 .all(|chunk| chunk.name.starts_with("__molt_chunk_user_large_"))
         );
         assert!(
+            chunks.iter().any(|chunk| chunk.ops.iter().any(|op| {
+                op.kind == "store_index"
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.iter().any(|arg| arg == "v0"))
+            })),
+            "split chunks must store cross-chunk live values into the split frame"
+        );
+    }
+
+    #[test]
+    fn split_large_function_threads_cross_chunk_builtin_type_tag() {
+        let func = FunctionIR {
+            name: "threading__molt_module_chunk_3".to_string(),
+            params: vec!["__molt_module_obj__".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                make_const_int("object_type_tag", 100),
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "builtin_type".to_string(),
+                    args: Some(vec!["object_type_tag".to_string()]),
+                    out: Some("object_type".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+        };
+
+        let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+
+        assert!(
             chunks
                 .iter()
-                .all(|chunk| chunk.params == vec!["p0".to_string()]),
-            "split chunks must preserve original params"
+                .skip(1)
+                .any(|chunk| chunk.ops.iter().any(|op| {
+                    op.kind == "index" && op.out.as_deref() == Some("object_type_tag")
+                })),
+            "the builtin_type chunk must load the tag value from the split frame"
         );
+        assert!(
+            chunks
+                .iter()
+                .flat_map(|chunk| chunk.ops.iter())
+                .all(|op| op.kind != "load_index"),
+            "split frame reads must not introduce non-canonical IR ops"
+        );
+        assert!(
+            chunks.iter().any(|chunk| {
+                chunk.ops.iter().any(|op| {
+                    op.kind == "store_index"
+                        && op
+                            .args
+                            .as_ref()
+                            .is_some_and(|args| args.iter().any(|arg| arg == "object_type_tag"))
+                })
+            }),
+            "the defining chunk must store the tag into the split frame"
+        );
+        assert!(
+            stub.ops.iter().any(|op| {
+                op.kind == "list_new"
+                    && op
+                        .out
+                        .as_deref()
+                        .is_some_and(|out| out.starts_with("__molt_split_frame"))
+            }),
+            "the stub must allocate frame storage for the transported tag"
+        );
+        for chunk in &chunks {
+            verify_split_function_def_use(chunk).expect("generated chunk def-use must verify");
+        }
+        verify_split_function_def_use(&stub).expect("generated stub def-use must verify");
+    }
+
+    #[test]
+    fn split_generated_op_verifier_rejects_noncanonical_frame_load() {
+        let func = FunctionIR {
+            name: "__molt_chunk_bad_0".to_string(),
+            params: vec!["__molt_split_frame".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(0),
+                    out: Some("__molt_split_frame_load_index".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_index".to_string(),
+                    args: Some(vec![
+                        "__molt_split_frame".to_string(),
+                        "__molt_split_frame_load_index".to_string(),
+                    ]),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                make_op("ret_void"),
+            ],
+        };
+
+        let err = verify_split_generated_ops(&func).expect_err("load_index must reject");
+        assert!(err.contains("non-canonical generated op `load_index`"));
     }
 
     #[test]
@@ -3607,6 +4257,17 @@ mod tests {
                 ..OpIR::default()
             });
         }
+        ops.push(OpIR {
+            kind: "line".to_string(),
+            value: Some(99),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "module_get_attr".to_string(),
+            args: Some(vec!["__molt_module_obj__".to_string(), "v0".to_string()]),
+            out: Some("loaded_v0".to_string()),
+            ..OpIR::default()
+        });
         ops.push(OpIR {
             kind: "jump".to_string(),
             value: Some(32),
@@ -3702,6 +4363,32 @@ mod tests {
 
         assert_eq!(stub.name, "builtins__molt_module_chunk_2");
         assert!(chunks.len() >= 2);
+        let control_outs: std::collections::BTreeSet<String> = stub
+            .ops
+            .iter()
+            .filter(|op| op.kind == "call_internal")
+            .filter_map(|op| op.out.clone())
+            .filter(|out| out.starts_with("__chunk_continue_"))
+            .collect();
+        assert_eq!(
+            control_outs.len(),
+            chunks.len(),
+            "void split chunks must return an explicit continuation status"
+        );
+        for out in &control_outs {
+            assert!(
+                stub.ops.iter().any(|op| {
+                    op.kind == "br_if"
+                        && op
+                            .args
+                            .as_ref()
+                            .is_some_and(|args| args.iter().any(|arg| arg == out))
+                }),
+                "stub must branch on chunk continuation status `{out}`"
+            );
+        }
+        let mut observed_live_out_store_before_cloned_suffix = false;
+        let mut observed_cloned_suffix_stop_return = false;
         for chunk in &chunks {
             assert!(
                 chunk.ops.len() <= 80,
@@ -3730,6 +4417,31 @@ mod tests {
                     "normal chunk fallthrough must skip the cloned exception tail"
                 );
                 assert_ne!(guard.value, Some(32));
+                observed_cloned_suffix_stop_return |= chunk.ops[handler_idx..].windows(2).any(
+                    |window| {
+                        window[0].kind == "const_bool"
+                            && window[0].value == Some(0)
+                            && window[0]
+                                .out
+                                .as_ref()
+                                .is_some_and(|out| window[1].var.as_ref() == Some(out))
+                            && window[1].kind == "ret"
+                    },
+                );
+                for (idx, op) in chunk.ops.iter().enumerate() {
+                    if op.kind == "store_index"
+                        && op
+                            .args
+                            .as_ref()
+                            .is_some_and(|args| args.iter().any(|arg| arg == "v0"))
+                    {
+                        assert!(
+                            idx < handler_idx - 1,
+                            "split-frame live-out stores must execute before skipping cloned tails"
+                        );
+                        observed_live_out_store_before_cloned_suffix = true;
+                    }
+                }
             }
             for op in &chunk.ops {
                 if matches!(op.kind.as_str(), "check_exception" | "jump" | "br_if")
@@ -3744,6 +4456,14 @@ mod tests {
                 }
             }
         }
+        assert!(
+            observed_live_out_store_before_cloned_suffix,
+            "test must cover a live-out split-frame store in a suffix-cloned chunk"
+        );
+        assert!(
+            observed_cloned_suffix_stop_return,
+            "cloned terminal suffixes must tell the stub not to run later chunks"
+        );
     }
 
     #[test]

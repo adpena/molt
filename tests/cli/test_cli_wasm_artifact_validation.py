@@ -303,6 +303,107 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00rebuilt"
 
 
+def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    target_root = tmp_path / "target"
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    captured_fingerprint_features: list[tuple[str, ...]] = []
+    build_cmds: list[list[str]] = []
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+
+    def fake_runtime_fingerprint(
+        project_root: Path,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        del project_root
+        captured_fingerprint_features.append(
+            tuple(kwargs["runtime_features"])  # type: ignore[arg-type]
+        )
+        return {"hash": "full-profile"}
+
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_read_runtime_fingerprint", lambda path: None, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_newer_than_sources", lambda *args, **kwargs: False, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+
+    def fake_run_runtime_wasm_cargo_build(
+        *,
+        cmd: list[str],
+        root: Path,
+        env: dict[str, str],
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del env, cargo_timeout, json_output, artifact_kind
+        build_cmds.append(list(cmd))
+        src_root = target_root_override or cli._cargo_target_root(root)
+        src = src_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"\x00asm\x01\x00\x00\x00full")
+        return subprocess.CompletedProcess(cmd, 0), src
+
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+        stdlib_profile="full",
+        resolved_modules={"ssl"},
+    )
+
+    assert build_cmds
+    cmd = build_cmds[0]
+    assert "--no-default-features" in cmd
+    cmd_features = set(cmd[cmd.index("--features") + 1].split(","))
+    fingerprint_features = set(captured_fingerprint_features[0])
+    assert cmd_features <= fingerprint_features
+    assert "no-default-features" in fingerprint_features
+    assert {
+        "molt_gpu_primitives",
+        "stdlib_crypto",
+        "stdlib_compression",
+        "builtin_contextvars",
+    } <= cmd_features
+    assert "stdlib_micro" not in cmd_features
+
+
 def test_ensure_runtime_wasm_skip_rebuild_still_requires_requested_exports(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -431,6 +431,13 @@ MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_RLIMIT_GB=10 uv run --python 3.12 python3 -u t
 - **sccache auto-enable**: the CLI enables `sccache` automatically when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable. Cargo builds now auto-retry once without `RUSTC_WRAPPER` when a wrapper-level `sccache` failure is detected.
 - **Dev profile routing**: `molt ... --profile dev` maps to Cargo profile `dev-fast` by default. Override with `MOLT_DEV_CARGO_PROFILE`; use `MOLT_RELEASE_CARGO_PROFILE` for release lane overrides.
 - **Runtime artifact stability**: runtime Cargo feature sets are stable for the selected stdlib profile and target. User import graphs and required WASM exports must not mutate the runtime Cargo command or fingerprint; they only affect user-code lowering, linking/export validation, and cache keys for user artifacts.
+- **Native runtime archive aliases**: Cargo still produces scratch
+  `libmolt_runtime.a`, but Molt publishes and links profile-qualified aliases
+  under the selected target/profile directory:
+  `libmolt_runtime.stdlib_micro.a` and `libmolt_runtime.stdlib_full.a`. Cache
+  freshness, daemon staleness checks, and native link inputs must use these
+  aliases, including target-triple-specific aliases, so `micro` and `full`
+  builds cannot overwrite or stale-check each other through the scratch name.
 - **Backend daemon**: native backend compiles use a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift cold-start. Tune startup with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and in-daemon object cache size with `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - **Daemon warm-hit probe path**: when cache keys are present, the build pipeline now lets the daemon send a probe-only request first and only encodes full IR after a daemon-declared miss. This preserves warm daemon hits without paying full IR encode/send cost on every run.
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.

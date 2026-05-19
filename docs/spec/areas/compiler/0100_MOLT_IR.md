@@ -85,6 +85,16 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - **Explicit effects**: calls and memory ops must declare their effect class.
 - **No implicit exceptions**: operations that can fail must either be guarded or emit `Throw`.
 - **Tier separation**: Tier 0 disallows `Any` and speculative guards; Tier 1 allows guards with deopt exits.
+- **Backend megafunction splitting**: when the native/WASM backend splits an
+  oversized `SimpleIR` function, generated chunk functions must preserve the
+  original SSA def-use contract explicitly. Values defined before a split
+  boundary and read after it travel through one synthetic split frame; loads use
+  the canonical `Index`/`index` op, stores use `StoreIndex`/`store_index`, and
+  generated `load_index`-style aliases are invalid. Void functions split into
+  chunks return an explicit continuation status so a terminal cloned
+  exception/cleanup suffix can stop the stub from running later chunks. Live-out
+  frame stores belong on the normal path before the synthetic jump that skips a
+  cloned suffix, never after terminal cleanup code.
 
 ## Implementation Status Snapshot (2026-02-11)
 - Implemented in this repo today:
