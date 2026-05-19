@@ -118,6 +118,7 @@ DYNAMIC_BUILTIN_SLICES = [
 
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
+    "tests/benchmarks/bench_parse_msgpack.py": ["--stdlib-profile", "full"],
 }
 
 CODON_BENCH_RUNTIME_ARGS_BY_NAME = {
@@ -553,6 +554,14 @@ def _molt_build_params(
             continue
         if arg.startswith("--type-hints="):
             params["type_hints"] = arg.split("=", maxsplit=1)[1]
+            continue
+        if arg == "--stdlib-profile":
+            if not remaining:
+                raise ValueError("--stdlib-profile requires a value")
+            params["stdlib_profile"] = remaining.pop(0)
+            continue
+        if arg.startswith("--stdlib-profile="):
+            params["stdlib_profile"] = arg.split("=", maxsplit=1)[1]
             continue
         raise ValueError(f"unsupported benchmark Molt build arg: {arg}")
     return params

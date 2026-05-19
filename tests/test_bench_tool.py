@@ -335,7 +335,7 @@ def test_prepare_molt_binary_uses_batch_build_server(
 
     binary = bench_tool.prepare_molt_binary(
         str(script),
-        ["--type-hints", "trust"],
+        ["--type-hints", "trust", "--stdlib-profile", "full"],
         env={},
         build_profile="release",
         batch_server=_FakeBatchServer(),
@@ -351,6 +351,7 @@ def test_prepare_molt_binary_uses_batch_build_server(
         assert params["file_path"] == str(script)
         assert params["profile"] == "release"
         assert params["type_hints"] == "trust"
+        assert params["stdlib_profile"] == "full"
         assert params["trusted"] is True
         assert params["json_output"] is True
         assert params["env_overrides"] == {"BASE": "1"}

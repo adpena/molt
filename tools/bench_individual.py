@@ -92,6 +92,7 @@ BENCHMARKS = [
 
 MOLT_ARGS_BY_BENCH = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
+    "tests/benchmarks/bench_parse_msgpack.py": ["--stdlib-profile", "full"],
 }
 
 
