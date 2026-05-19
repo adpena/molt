@@ -2477,6 +2477,138 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
+unsafe fn validate_explicit_string_split_args(
+    _py: &PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> Option<(*mut u8, *mut u8)> {
+    unsafe {
+        let hay = obj_from_bits(hay_bits);
+        let needle = obj_from_bits(needle_bits);
+        let Some(hay_ptr) = hay.as_ptr() else {
+            let msg = format!(
+                "descriptor 'split' for 'str' objects doesn't apply to a '{}' object",
+                type_name(_py, hay)
+            );
+            raise_exception::<()>(_py, "TypeError", &msg);
+            return None;
+        };
+        if object_type_id(hay_ptr) != TYPE_ID_STRING {
+            let msg = format!(
+                "descriptor 'split' for 'str' objects doesn't apply to a '{}' object",
+                type_name(_py, hay)
+            );
+            raise_exception::<()>(_py, "TypeError", &msg);
+            return None;
+        }
+        let Some(needle_ptr) = needle.as_ptr() else {
+            let msg = format!("must be str or None, not {}", type_name(_py, needle));
+            raise_exception::<()>(_py, "TypeError", &msg);
+            return None;
+        };
+        if object_type_id(needle_ptr) != TYPE_ID_STRING {
+            let msg = format!("must be str or None, not {}", type_name(_py, needle));
+            raise_exception::<()>(_py, "TypeError", &msg);
+            return None;
+        }
+        if string_len(needle_ptr) == 0 {
+            raise_exception::<()>(_py, "ValueError", "empty separator");
+            return None;
+        }
+        Some((hay_ptr, needle_ptr))
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_split_validate(hay_bits: u64, needle_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            if validate_explicit_string_split_args(_py, hay_bits, needle_bits).is_none() {
+                return MoltObject::none().bits();
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+fn split_field_index_error(_py: &PyToken<'_>) -> u64 {
+    raise_exception::<_>(_py, "IndexError", "list index out of range")
+}
+
+fn alloc_split_field_at_index(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    needle: &[u8],
+    target_index: usize,
+) -> u64 {
+    let mut field_index = 0usize;
+    let mut start = 0usize;
+    if needle.len() == 1 {
+        for idx in memchr::memchr_iter(needle[0], hay) {
+            if field_index == target_index {
+                let ptr = alloc_string(_py, &hay[start..idx]);
+                return if ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                };
+            }
+            start = idx + 1;
+            field_index += 1;
+        }
+    } else {
+        let finder = memmem::Finder::new(needle);
+        for idx in finder.find_iter(hay) {
+            if field_index == target_index {
+                let ptr = alloc_string(_py, &hay[start..idx]);
+                return if ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                };
+            }
+            start = idx + needle.len();
+            field_index += 1;
+        }
+    }
+    if field_index == target_index {
+        let ptr = alloc_string(_py, &hay[start..]);
+        return if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        };
+    }
+    split_field_index_error(_py)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_split_field(hay_bits: u64, needle_bits: u64, index_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let Some((hay_ptr, needle_ptr)) =
+                validate_explicit_string_split_args(_py, hay_bits, needle_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+                let msg = format!(
+                    "list indices must be integers or slices, not {}",
+                    type_name(_py, obj_from_bits(index_bits))
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            };
+            let Ok(target_index) = usize::try_from(index) else {
+                return split_field_index_error(_py);
+            };
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let needle_bytes =
+                std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+            alloc_split_field_at_index(_py, hay_bytes, needle_bytes, target_index)
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_split_max(
     hay_bits: u64,

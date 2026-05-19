@@ -1481,6 +1481,7 @@ fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
             | "socket_new"
             | "staticmethod_new"
             | "stream_new"
+            | "string_split_field"
             | "super_new"
             | "task_new"
             | "tuple_from_list"

@@ -31414,6 +31414,223 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=result))
         return result
 
+    @staticmethod
+    def _scalarize_string_split_fields_json(
+        json_ops: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        const_ints: dict[str, int] = {}
+        const_nones: set[str] = set()
+        const_strings: dict[str, str] = {}
+
+        class SplitCandidate:
+            def __init__(self, op_index: int, hay: str, sep: str, region: int) -> None:
+                self.op_index = op_index
+                self.hay = hay
+                self.sep = sep
+                self.region = region
+                self.alias_op_indexes: set[int] = set()
+                self.index_values_by_op_index: dict[int, int] = {}
+                self.unsafe = False
+
+        candidates: dict[str, SplitCandidate] = {}
+        alias_to_split: dict[str, tuple[str, int]] = {}
+        local_to_split: dict[str, tuple[str, int]] = {}
+        local_to_const_string: dict[str, str] = {}
+        current_region = 0
+        control_boundary_kinds = {
+            "if",
+            "else",
+            "end_if",
+            "jump",
+            "label",
+            "loop_start",
+            "loop_index_start",
+            "loop_index_next",
+            "loop_break_if_true",
+            "loop_break_if_false",
+            "loop_break",
+            "loop_continue",
+            "loop_end",
+        }
+
+        def split_root(name: Any) -> str | None:
+            if not isinstance(name, str):
+                return None
+            if name in candidates:
+                candidate = candidates[name]
+                return name if candidate.region == current_region else None
+            alias = alias_to_split.get(name)
+            if alias is None:
+                return None
+            root, region = alias
+            return root if region == current_region else None
+
+        for op_index, op in enumerate(json_ops):
+            kind = op.get("kind")
+            if kind in control_boundary_kinds:
+                current_region += 1
+                alias_to_split.clear()
+                local_to_split.clear()
+                local_to_const_string.clear()
+            out = op.get("out")
+            if kind == "const" and isinstance(out, str):
+                value = op.get("value")
+                if isinstance(value, int) and not isinstance(value, bool):
+                    const_ints[out] = value
+                if isinstance(value, str):
+                    const_strings[out] = value
+                args = op.get("args")
+                if (
+                    value is None
+                    and isinstance(args, list)
+                    and args
+                    and isinstance(args[0], int)
+                    and not isinstance(args[0], bool)
+                ):
+                    const_ints[out] = args[0]
+                continue
+            if kind == "const_str" and isinstance(out, str):
+                s_value = op.get("s_value")
+                if isinstance(s_value, str):
+                    const_strings[out] = s_value
+                continue
+            if kind == "const_none" and isinstance(out, str):
+                const_nones.add(out)
+                continue
+            if kind == "string_split" and isinstance(out, str):
+                args = op.get("args")
+                if (
+                    isinstance(args, list)
+                    and len(args) == 2
+                    and isinstance(args[1], str)
+                    and args[1] in const_strings
+                    and args[1] not in const_nones
+                ):
+                    candidates[out] = SplitCandidate(
+                        op_index, args[0], args[1], current_region
+                    )
+                continue
+            if kind == "store_var":
+                args = op.get("args")
+                var = op.get("var")
+                root = (
+                    split_root(args[0])
+                    if isinstance(args, list) and len(args) == 1
+                    else None
+                )
+                if root is not None and isinstance(var, str):
+                    local_to_split[var] = (root, current_region)
+                    candidates[root].alias_op_indexes.add(op_index)
+                elif isinstance(var, str):
+                    local_to_split.pop(var, None)
+                if (
+                    isinstance(var, str)
+                    and isinstance(args, list)
+                    and len(args) == 1
+                    and isinstance(args[0], str)
+                    and args[0] in const_strings
+                ):
+                    local_to_const_string[var] = const_strings[args[0]]
+                elif isinstance(var, str):
+                    local_to_const_string.pop(var, None)
+                continue
+            if kind == "load_var":
+                var = op.get("var")
+                if isinstance(var, str) and isinstance(out, str):
+                    split_alias = local_to_split.get(var)
+                    if split_alias is not None:
+                        root, region = split_alias
+                        if region == current_region:
+                            alias_to_split[out] = (root, current_region)
+                            candidates[root].alias_op_indexes.add(op_index)
+                    const_string = local_to_const_string.get(var)
+                    if const_string is not None:
+                        const_strings[out] = const_string
+                continue
+
+            args = op.get("args")
+            if not isinstance(args, list):
+                continue
+            arg_roots = [split_root(arg) for arg in args]
+            used_roots = {root for root in arg_roots if root is not None}
+            if not used_roots:
+                continue
+            if kind == "index" and len(args) >= 2 and arg_roots[0] is not None:
+                root = arg_roots[0]
+                index_value = const_ints.get(args[1])
+                if index_value is not None and index_value >= 0:
+                    candidates[root].index_values_by_op_index[op_index] = index_value
+                    for other_root in used_roots - {root}:
+                        candidates[other_root].unsafe = True
+                else:
+                    candidates[root].unsafe = True
+                    for other_root in used_roots - {root}:
+                        candidates[other_root].unsafe = True
+            else:
+                for root in used_roots:
+                    candidates[root].unsafe = True
+
+        replace_indexes: dict[int, SplitCandidate] = {}
+        remove_indexes: set[int] = set()
+        for root, candidate in candidates.items():
+            if candidate.unsafe or not candidate.index_values_by_op_index:
+                continue
+            remove_indexes.add(candidate.op_index)
+            remove_indexes.update(candidate.alias_op_indexes)
+            for op_index in candidate.index_values_by_op_index:
+                replace_indexes[op_index] = candidate
+
+        if not remove_indexes and not replace_indexes:
+            return json_ops
+
+        rewritten: list[dict[str, Any]] = []
+        materialized_fields: dict[tuple[str, int], str] = {}
+        for op_index, op in enumerate(json_ops):
+            candidate = replace_indexes.get(op_index)
+            if candidate is not None:
+                args = op.get("args", [])
+                output = op.get("out")
+                field_key = (
+                    candidate.op_index,
+                    candidate.index_values_by_op_index[op_index],
+                )
+                existing_output = materialized_fields.get(field_key)
+                if existing_output is None:
+                    rewritten_op = {
+                        "kind": "string_split_field",
+                        "args": [candidate.hay, candidate.sep, args[1]],
+                        "out": output,
+                    }
+                    if isinstance(output, str):
+                        materialized_fields[field_key] = output
+                else:
+                    rewritten_op = {
+                        "kind": "copy_var",
+                        "args": [existing_output],
+                        "out": output,
+                    }
+                if "col_offset" in op:
+                    rewritten_op["col_offset"] = op["col_offset"]
+                if "end_col_offset" in op:
+                    rewritten_op["end_col_offset"] = op["end_col_offset"]
+                rewritten.append(rewritten_op)
+                continue
+            if op_index in remove_indexes:
+                if op.get("kind") == "string_split":
+                    validate_op = {
+                        "kind": "string_split_validate",
+                        "args": op.get("args", []),
+                        "out": op.get("out"),
+                    }
+                    if "col_offset" in op:
+                        validate_op["col_offset"] = op["col_offset"]
+                    if "end_col_offset" in op:
+                        validate_op["end_col_offset"] = op["end_col_offset"]
+                    rewritten.append(validate_op)
+                continue
+            rewritten.append(op)
+        return rewritten
+
     def map_ops_to_json(
         self, ops: list[MoltOp], *, function_name: str | None = None
     ) -> list[dict[str, Any]]:
@@ -35120,6 +35337,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if mop.end_col_offset is not None:
                         last_entry["end_col_offset"] = mop.end_col_offset
 
+        json_ops = self._scalarize_string_split_fields_json(json_ops)
         return json_ops
 
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
