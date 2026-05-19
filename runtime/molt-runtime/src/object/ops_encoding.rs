@@ -4985,7 +4985,9 @@ fn decode_unicode_escape_with_errors(bytes: &[u8], errors: &str) -> Result<Vec<u
                         handle_unicode_escape_failure(errors, &mut out, bytes, idx, end, failure)?;
                     continue;
                 };
+                #[cfg(feature = "stdlib_unicode_names")]
                 let name_bytes = &bytes[idx + 3..close_idx];
+                #[cfg(feature = "stdlib_unicode_names")]
                 let name = std::str::from_utf8(name_bytes).unwrap_or("");
                 #[cfg(feature = "stdlib_unicode_names")]
                 let resolved = unicode_names2::character(name);

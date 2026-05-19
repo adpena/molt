@@ -67,6 +67,20 @@ impl SimpleValueNames {
                     .block_arg_slots
                     .insert((*bid, index), Self::canonical_block_arg_slot(*bid, index));
             }
+            for op in &block.ops {
+                for (index, result) in op.results.iter().enumerate() {
+                    let key = format!("_simple_result_{index}");
+                    if let Some(AttrValue::Str(name)) = op.attrs.get(&key) {
+                        names.value_overrides.insert(*result, name.clone());
+                    }
+                }
+                if op.results.len() == 1
+                    && let Some(result) = op.results.first()
+                    && let Some(AttrValue::Str(name)) = op.attrs.get("_simple_out")
+                {
+                    names.value_overrides.insert(*result, name.clone());
+                }
+            }
         }
         names
     }
@@ -4736,6 +4750,87 @@ mod tests {
             load_op.out.is_some(),
             "guarded_field_get must preserve an output"
         );
+    }
+
+    #[test]
+    fn tir_round_trip_preserves_fused_iter_next_output_names() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+
+        let func_ir = FunctionIR {
+            name: "iter_next_names".into(),
+            params: vec!["items".into()],
+            ops: vec![
+                OpIR {
+                    kind: "iter".into(),
+                    args: Some(vec!["items".into()]),
+                    out: Some("iter_obj".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "iter_next".into(),
+                    args: Some(vec!["iter_obj".into()]),
+                    out: Some("pair".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("done_index".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "index".into(),
+                    args: Some(vec!["pair".into(), "done_index".into()]),
+                    out: Some("done_flag".into()),
+                    fast_int: Some(true),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("value_index".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "index".into(),
+                    args: Some(vec!["pair".into(), "value_index".into()]),
+                    out: Some("next_value".into()),
+                    fast_int: Some(true),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let round_tripped = lower_to_simple_ir(&tir_func);
+        let fused = round_tripped
+            .iter()
+            .find(|op| op.kind == "iter_next_unboxed")
+            .expect("expected iter_next pattern to fuse");
+
+        assert_eq!(fused.var.as_deref(), Some("next_value"));
+        assert_eq!(fused.out.as_deref(), Some("done_flag"));
+
+        let relowered = lower_to_tir(&FunctionIR {
+            name: "roundtrip_iter_next_relower".into(),
+            params: func_ir.params,
+            ops: round_tripped,
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+        let relowered_op = relowered
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == OpCode::IterNextUnboxed)
+            .expect("round-tripped iter_next_unboxed must relower canonically");
+        assert_eq!(relowered_op.operands.len(), 1);
+        assert_eq!(relowered_op.results.len(), 2);
     }
 
     #[test]

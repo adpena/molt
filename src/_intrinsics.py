@@ -82,32 +82,87 @@ def runtime_active():
     if _is_intrinsic_value(helper):
         return True
     return bool(
-        getattr(builtins_obj, "_molt_runtime", False)
-        or getattr(builtins_obj, "_molt_intrinsics_strict", False)
+        _lookup_builtin_obj(builtins_obj, "_molt_runtime")
+        or _lookup_builtin_obj(builtins_obj, "_molt_intrinsics_strict")
     )
 
 
 def require_intrinsic(name, namespace=None):
+    # Keep this path self-contained. During early import bootstrap this function
+    # is often called from modules that are still being initialized, and the
+    # resolver must not depend on cross-module global rebinding correctness.
+    registry_name = "_molt_intrinsics"
+    helper_name = "_molt_intrinsic_lookup"
+
+    def is_intrinsic_value(value):
+        return callable(value)
+
+    def lookup_obj(obj, key):
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    def runtime_builtins_obj():
+        try:
+            return __import__("builtins")
+        except Exception:
+            return globals().get("_bootstrap_builtins")
+
+    def lookup_name_and_alias(builtins_obj):
+        value = lookup_obj(builtins_obj, name)
+        if is_intrinsic_value(value):
+            return value
+        if name.startswith("molt_"):
+            value = lookup_obj(builtins_obj, f"_molt_{name[5:]}")
+            if is_intrinsic_value(value):
+                return value
+        return None
+
+    def lookup_registry(builtins_obj):
+        reg = lookup_obj(builtins_obj, registry_name)
+        if isinstance(reg, dict):
+            value = reg.get(name)
+            if is_intrinsic_value(value):
+                return value
+            resolver = reg.get("_molt_lazy_resolve")
+            if callable(resolver):
+                resolved = resolver(name)
+                if is_intrinsic_value(resolved):
+                    return resolved
+        return None
+
     # 1. Check module-level lookup helper first (injected by runtime).
-    helper = globals().get(_LOOKUP_HELPER_NAME)
+    helper = globals().get(helper_name)
     if callable(helper):
         value = helper(name)
         if value is not None:
             return value
 
     # 2. Check the current runtime builtins registry and direct aliases.
-    value = _lookup_runtime_builtins(name)
+    builtins_obj = runtime_builtins_obj()
+    value = lookup_registry(builtins_obj)
+    if value is not None:
+        return value
+    value = lookup_name_and_alias(builtins_obj)
     if value is not None:
         return value
 
     # 3. Check the current runtime builtins module for the lookup helper.
-    builtins_helper = getattr(_runtime_builtins_obj(), _LOOKUP_HELPER_NAME, None)
+    builtins_helper = lookup_obj(builtins_obj, helper_name)
     if callable(builtins_helper):
         value = builtins_helper(name)
         if value is not None:
             return value
 
-    if not runtime_active():
+    active = (
+        callable(helper)
+        or bool(globals().get("_molt_runtime", False))
+        or bool(globals().get("_molt_intrinsics_strict", False))
+        or callable(builtins_helper)
+        or bool(lookup_obj(builtins_obj, "_molt_runtime"))
+        or bool(lookup_obj(builtins_obj, "_molt_intrinsics_strict"))
+    )
+    if not active:
         raise RuntimeError("runtime inactive")
 
     raise RuntimeError(f"intrinsic unavailable: {name}")

@@ -383,6 +383,14 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
         let bits = MoltObject::from_ptr(ptr).bits();
         dec_ref_bits(_py, bits);
     }
+    let result_bits = {
+        let mut guard = state.task_results.lock().unwrap();
+        let old = std::mem::take(&mut *guard);
+        old.into_values().collect::<Vec<_>>()
+    };
+    for bits in result_bits {
+        dec_ref_bits(_py, bits);
+    }
     let cancel_bits = {
         let mut guard = state.task_cancel_messages.lock().unwrap();
         let old = std::mem::take(&mut *guard);

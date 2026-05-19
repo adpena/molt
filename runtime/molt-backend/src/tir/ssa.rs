@@ -644,6 +644,8 @@ impl<'a> SsaContext<'a> {
                     let done_vid = self.fresh_value_typed();
                     let mut attrs = AttrDict::new();
                     attrs.insert("_original_kind".into(), AttrValue::Str("iter_next".into()));
+                    attrs.insert("_simple_result_0".into(), AttrValue::Str(val_var.clone()));
+                    attrs.insert("_simple_result_1".into(), AttrValue::Str(done_var.clone()));
                     let tir_op = TirOp {
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNextUnboxed,
@@ -1048,6 +1050,7 @@ impl<'a> SsaContext<'a> {
         }
         // If `var` is an input (not store_var), resolve it too.
         if op.kind != "store_var"
+            && op.kind != "iter_next_unboxed"
             && let Some(v) = &op.var
             && is_variable(v)
             && let Some(vid) = self.resolve_known_var(v, var_stacks)
@@ -1124,6 +1127,14 @@ impl<'a> SsaContext<'a> {
         }
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
+        }
+        if op.kind == "iter_next_unboxed" {
+            if let Some(ref value_out) = op.var {
+                attrs.insert("_simple_result_0".into(), AttrValue::Str(value_out.clone()));
+            }
+            if let Some(ref done_out) = op.out {
+                attrs.insert("_simple_result_1".into(), AttrValue::Str(done_out.clone()));
+            }
         }
         // Preserve fast_int / fast_float / type_hint so that the round-trip does
         // not lose type annotations even without the type-refine pass running.
@@ -1740,6 +1751,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "build_slice" => OpCode::BuildSlice,
         "get_iter" => OpCode::GetIter,
         "iter_next" => OpCode::IterNext,
+        "iter_next_unboxed" => OpCode::IterNextUnboxed,
         "for_iter" => OpCode::ForIter,
         "state_switch" => OpCode::StateSwitch,
         "state_transition" => OpCode::StateTransition,

@@ -323,10 +323,10 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
     monkeypatch.setattr(
         cli,
         "_runtime_fingerprint",
-        lambda project_root, **kwargs: captured_features.append(
-            tuple(kwargs["runtime_features"])
-        )
-        or {"hash": "ok", "rustc": "rustc-test"},
+        lambda project_root, **kwargs: (
+            captured_features.append(tuple(kwargs["runtime_features"]))
+            or {"hash": "ok", "rustc": "rustc-test"}
+        ),
         raising=True,
     )
     monkeypatch.setattr(
@@ -655,7 +655,9 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
 def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profile(
     tmp_path: Path, monkeypatch
 ) -> None:
-    runtime_state = cli._RuntimeArtifactState(runtime_lib=tmp_path / "libmolt_runtime.a")
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_lib=tmp_path / "libmolt_runtime.a"
+    )
     cache_setup = cli._BackendCacheSetup(
         cache_enabled=True,
         cache_key=None,
@@ -815,9 +817,10 @@ def test_ensure_runtime_lib_rebuilds_unfingerprinted_prebuilt_archive(
 
 def test_internal_batch_build_stdlib_profile_is_explicit_and_validated() -> None:
     assert cli._normalize_internal_batch_stdlib_profile({}) == ("micro", None)
-    assert cli._normalize_internal_batch_stdlib_profile(
-        {"stdlib_profile": "full"}
-    ) == ("full", None)
+    assert cli._normalize_internal_batch_stdlib_profile({"stdlib_profile": "full"}) == (
+        "full",
+        None,
+    )
 
     missing_value, type_error = cli._normalize_internal_batch_stdlib_profile(
         {"stdlib_profile": 1}

@@ -608,10 +608,7 @@ def test_invalidate_stale_stdlib_cache_tracks_target_runtime_alias(
     )
 
     runtime_lib = (
-        target_root
-        / target_triple
-        / "release-output"
-        / "libmolt_runtime.stdlib_full.a"
+        target_root / target_triple / "release-output" / "libmolt_runtime.stdlib_full.a"
     )
     runtime_lib.parent.mkdir(parents=True, exist_ok=True)
     runtime_lib.write_bytes(b"artifact")

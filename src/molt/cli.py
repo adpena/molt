@@ -160,7 +160,9 @@ _PERSISTED_JSON_OBJECT_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]]
 # Session-level cache: once we have verified (and possibly built) the release
 # runtime for a given (path, profile, triple) key, skip the check for the rest
 # of this process lifetime.
-_RUNTIME_LIB_VERIFIED: set[tuple[str, str, str | None, str, tuple[str, ...]]] = set()
+_RUNTIME_LIB_VERIFIED: set[
+    tuple[str, str, str, str, str | None, str, tuple[str, ...]]
+] = set()
 _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"

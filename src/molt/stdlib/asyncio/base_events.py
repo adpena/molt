@@ -8,7 +8,6 @@ import errno
 import heapq
 import itertools
 import os
-import socket
 import ssl
 import stat
 import subprocess
@@ -19,6 +18,7 @@ import traceback
 import warnings
 import weakref
 import logging as _logging
+from asyncio import socket as socket
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 

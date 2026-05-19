@@ -4,8 +4,13 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 
 // Re-export network utilities so that `sockets::*` includes them
+#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
 #[allow(unused_imports)]
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+pub use super::net_stubs::{
+    molt_socket_reader_at_eof, molt_socket_reader_drop, molt_socket_reader_new,
+    molt_socket_reader_read, molt_socket_reader_readline, molt_socket_reader_readline_limit,
+};
+#[allow(unused_imports)]
 #[cfg(molt_has_net_io)]
 pub use super::sockets_net::*;
 
@@ -13,23 +18,32 @@ pub use super::sockets_net::*;
 use crate::libc_compat as libc;
 #[cfg(molt_has_net_io)]
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use std::collections::HashMap;
 #[cfg(all(molt_has_net_io, not(unix)))]
 use std::collections::VecDeque;
 use std::ffi::OsString;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use std::io::ErrorKind;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(molt_has_net_io)]
 use std::net::{SocketAddr, ToSocketAddrs};
-#[cfg(unix)]
+#[cfg(all(molt_has_net_io, unix))]
 use std::os::fd::BorrowedFd;
-use std::os::raw::{c_int, c_void};
-#[cfg(unix)]
+#[cfg(all(molt_has_net_io, unix))]
+use std::os::raw::c_int;
+#[cfg(molt_has_net_io)]
+use std::os::raw::c_void;
+#[cfg(all(molt_has_net_io, unix))]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
-#[cfg(windows)]
+#[cfg(all(molt_has_net_io, windows))]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
+#[cfg(molt_has_net_io)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use std::sync::{Mutex, OnceLock};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use std::time::Duration;
 
 // --- Sockets ---
@@ -68,6 +82,7 @@ struct MoltSocket {
     refs: AtomicUsize,
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 struct MoltSocketReader {
     socket_bits: u64,
     buffer: Vec<u8>,
@@ -486,6 +501,7 @@ pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     Err("send expects bytes-like object".to_string())
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) fn iter_values_from_bits(
     _py: &PyToken<'_>,
     iterable_bits: u64,
@@ -525,6 +541,7 @@ pub(crate) fn iter_values_from_bits(
     Ok(out)
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn collect_sendmsg_payload(_py: &PyToken<'_>, buffers_bits: u64) -> Result<Vec<Vec<u8>>, u64> {
     let values = iter_values_from_bits(_py, buffers_bits)?;
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(values.len());
@@ -544,6 +561,7 @@ fn collect_sendmsg_payload(_py: &PyToken<'_>, buffers_bits: u64) -> Result<Vec<V
     Ok(out)
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 type AncillaryItem = (i32, i32, Vec<u8>);
 
 #[cfg(all(molt_has_net_io, not(unix)))]
@@ -686,6 +704,7 @@ fn socket_clip_ancillary_for_bufsize(
     (out, truncated)
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn parse_sendmsg_ancillary_items(
     _py: &PyToken<'_>,
     ancdata_bits: u64,
@@ -751,7 +770,7 @@ fn parse_sendmsg_ancillary_items(
     Ok(out)
 }
 
-#[cfg(unix)]
+#[cfg(all(molt_has_net_io, unix))]
 fn encode_sendmsg_ancillary_buffer(items: &[AncillaryItem]) -> Result<Vec<u8>, String> {
     if items.is_empty() {
         return Ok(Vec::new());
@@ -867,7 +886,7 @@ fn decode_host_recvmsg_ancillary_buffer(buf: &[u8]) -> Result<Vec<AncillaryItem>
     Ok(out)
 }
 
-#[cfg(unix)]
+#[cfg(all(molt_has_net_io, unix))]
 fn parse_recvmsg_ancillary_items(msg: &libc::msghdr) -> Vec<AncillaryItem> {
     let mut out: Vec<AncillaryItem> = Vec::new();
     let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(msg as *const _) };
@@ -887,6 +906,7 @@ fn parse_recvmsg_ancillary_items(msg: &libc::msghdr) -> Vec<AncillaryItem> {
     out
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn build_ancillary_list_bits(_py: &PyToken<'_>, items: &[(i32, i32, Vec<u8>)]) -> Result<u64, u64> {
     let mut item_bits: Vec<u64> = Vec::with_capacity(items.len());
     for (level, kind, data) in items {
@@ -920,6 +940,7 @@ fn build_ancillary_list_bits(_py: &PyToken<'_>, items: &[(i32, i32, Vec<u8>)]) -
     Ok(MoltObject::from_ptr(list_ptr).bits())
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn build_recvmsg_result_with_anc(
     _py: &PyToken<'_>,
     data: &[u8],
@@ -945,12 +966,14 @@ fn build_recvmsg_result_with_anc(
     MoltObject::from_ptr(tuple_ptr).bits()
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 struct RecvmsgIntoTarget {
     ptr: *mut u8,
     len: usize,
     is_memoryview: bool,
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn collect_recvmsg_into_targets(
     _py: &PyToken<'_>,
     buffers_bits: u64,
@@ -1007,6 +1030,7 @@ fn collect_recvmsg_into_targets(
     Ok(out)
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn write_recvmsg_into_targets(
     _py: &PyToken<'_>,
     targets: &[RecvmsgIntoTarget],
@@ -1094,6 +1118,9 @@ pub(crate) fn require_time_wall_capability<T: ExceptionSentinel>(
     require_capability(_py, &["time.wall", "time"], "time.wall")
 }
 
+// Native no-net keeps this symbol for the existing crate-root helper surface;
+// net/wasm feature lanes call it directly from socket/channel operations.
+#[allow(dead_code)]
 pub(crate) fn require_net_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     caps: &[&str],
@@ -1108,13 +1135,16 @@ pub(crate) fn require_process_capability<T: ExceptionSentinel>(
     require_capability(_py, caps, "process")
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 enum SocketReaderPull {
     Eof,
     Data,
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 const SOCKET_READER_COMPACT_PREFIX_MIN: usize = 4096;
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 unsafe fn socket_reader_pull(
     _py: &PyToken<'_>,
     reader: &mut MoltSocketReader,
@@ -1160,21 +1190,25 @@ unsafe fn socket_reader_pull(
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[inline]
 fn socket_reader_unread_len(reader: &MoltSocketReader) -> usize {
     reader.buffer.len().saturating_sub(reader.buffer_start)
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[inline]
 fn socket_reader_unread_is_empty(reader: &MoltSocketReader) -> bool {
     socket_reader_unread_len(reader) == 0
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[inline]
 fn socket_reader_unread_slice(reader: &MoltSocketReader) -> &[u8] {
     &reader.buffer[reader.buffer_start..]
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn socket_reader_maybe_compact(reader: &mut MoltSocketReader) {
     let consumed = reader.buffer_start;
     if consumed == 0 {
@@ -1198,6 +1232,7 @@ fn socket_reader_maybe_compact(reader: &mut MoltSocketReader) {
     reader.scan_cursor = reader.scan_cursor.saturating_sub(consumed);
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn socket_reader_find_newline_up_to(
     reader: &mut MoltSocketReader,
     max_bytes: Option<usize>,
@@ -1229,6 +1264,7 @@ fn socket_reader_find_newline_up_to(
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: usize) -> u64 {
     let n = count.min(socket_reader_unread_len(reader));
     let unread = socket_reader_unread_slice(reader);
@@ -1243,28 +1279,28 @@ fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: u
     MoltObject::from_ptr(ptr).bits()
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket handle from `molt_socket_new`/`molt_socket_clone`.
 pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let clone_bits = molt_socket_clone(sock_bits);
-            if obj_from_bits(clone_bits).is_none() {
-                return MoltObject::none().bits();
-            }
-            let reader = Box::new(MoltSocketReader {
-                socket_bits: clone_bits,
-                buffer: Vec::new(),
-                buffer_start: 0,
-                scan_cursor: 0,
-                eof: false,
-            });
-            bits_from_ptr(Box::into_raw(reader) as *mut u8)
-        })
-    }
+    crate::with_gil_entry_nopanic!(_py, {
+        let clone_bits = unsafe { molt_socket_clone(sock_bits) };
+        if obj_from_bits(clone_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        let reader = Box::new(MoltSocketReader {
+            socket_bits: clone_bits,
+            buffer: Vec::new(),
+            buffer_start: 0,
+            scan_cursor: 0,
+            eof: false,
+        });
+        bits_from_ptr(Box::into_raw(reader) as *mut u8)
+    })
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -1281,6 +1317,7 @@ pub unsafe extern "C" fn molt_socket_reader_drop(reader_bits: u64) {
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -1297,6 +1334,7 @@ pub unsafe extern "C" fn molt_socket_reader_at_eof(reader_bits: u64) -> u64 {
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -1361,6 +1399,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) 
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -1388,6 +1427,7 @@ pub unsafe extern "C" fn molt_socket_reader_readline(reader_bits: u64) -> u64 {
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -1450,6 +1490,7 @@ pub unsafe extern "C" fn molt_socket_reader_readline_limit(
     }
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) fn host_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -1473,6 +1514,7 @@ pub(crate) fn host_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<Stri
     Err(format!("host must be str, bytes, or None, not {obj_type}"))
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) fn port_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<u16, String> {
     let obj = obj_from_bits(bits);
     if let Some(port) = to_i64(obj) {
@@ -1491,6 +1533,7 @@ pub(crate) fn port_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<u16, String
     Err(format!("port must be int or str, not {obj_type}"))
 }
 
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) fn service_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -1520,7 +1563,7 @@ pub(crate) fn service_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<S
     Err(format!("service must be int or str, not {obj_type}"))
 }
 
-#[cfg(unix)]
+#[cfg(all(molt_has_net_io, unix))]
 fn unix_path_from_bits(_py: &PyToken<'_>, addr_bits: u64) -> Result<std::path::PathBuf, String> {
     let obj = obj_from_bits(addr_bits);
     if let Some(text) = string_obj_to_owned(obj) {
@@ -1832,7 +1875,7 @@ pub(crate) fn socket_wait_ready(
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(molt_has_net_io, unix))]
 pub(crate) fn socket_wait_ready_poll(
     fd: RawFd,
     events: u32,
@@ -2023,7 +2066,7 @@ fn socket_is_acceptor(_socket: &Socket) -> bool {
     false
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, molt_has_net_io))]
 fn socket_relisten(fd: RawFd, backlog: i32) -> std::io::Result<()> {
     let rc = unsafe { libc::listen(fd, backlog) };
     if rc == 0 {

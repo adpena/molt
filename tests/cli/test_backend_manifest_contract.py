@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import tomllib
 
 
@@ -179,6 +180,47 @@ def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
         runtime_manifest = tomllib.load(handle)
 
     assert "vfs_bundle_tar" in runtime_manifest["features"]
+
+
+def test_runtime_micro_profile_includes_non_network_asyncio_only() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+
+    micro_features = runtime_manifest["features"]["stdlib_micro"]
+
+    assert micro_features == ["stdlib_asyncio"]
+    assert "stdlib_net" not in micro_features
+
+
+def test_runtime_micro_tls_from_fd_stub_matches_intrinsic_arity() -> None:
+    manifest_source = (
+        ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
+    ).read_text()
+    generated_source = (
+        ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "generated.rs"
+    ).read_text()
+    stub_source = (
+        ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "net_stubs.rs"
+    ).read_text()
+
+    assert (
+        "def molt_asyncio_tls_client_from_fd_new(\n"
+        "    fd: int, server_hostname: str | None = ...\n"
+        ") -> Any: ..."
+    ) in manifest_source
+    assert (
+        'name: "molt_asyncio_tls_client_from_fd_new",\n'
+        '        symbol: "molt_asyncio_tls_client_from_fd_new",\n'
+        "        arity: 2,"
+    ) in generated_source
+    stub_signature = re.search(
+        r"fn molt_asyncio_tls_client_from_fd_new\(([^)]*)\) -> u64",
+        stub_source,
+        re.MULTILINE,
+    )
+    assert stub_signature is not None
+    assert stub_signature.group(1).count(": u64") == 2
 
 
 def test_runtime_manifest_crate_types_include_all_link_targets() -> None:
