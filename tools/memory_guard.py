@@ -16,6 +16,7 @@ import time
 
 DEFAULT_MAX_RSS_GB = 25.0
 DEFAULT_MAX_TOTAL_RSS_GB = 28.0
+DEFAULT_HARD_MAX_RSS_GB = 112.0
 DEFAULT_POLL_INTERVAL_SEC = 1.0
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
@@ -207,9 +208,33 @@ def find_rss_violation(
 def max_rss_kb_from_gb(value: float) -> int:
     if value <= 0:
         raise ValueError("max RSS must be greater than 0 GB")
-    if value >= 30:
-        raise ValueError("max RSS must stay below 30 GB")
+    if value >= DEFAULT_HARD_MAX_RSS_GB:
+        raise ValueError(
+            f"max RSS must stay below {DEFAULT_HARD_MAX_RSS_GB:g} GB"
+        )
     return int(value * 1024 * 1024)
+
+
+def _append_sample_jsonl(
+    path: str,
+    *,
+    root_pid: int,
+    peak: RssViolation | None,
+    total: RssViolation | None,
+    violation: RssViolation | None,
+) -> None:
+    sample_path = Path(path)
+    if sample_path.parent:
+        sample_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ts": time.time(),
+        "root_pid": root_pid,
+        "peak": _rss_record_payload(peak),
+        "total": _rss_record_payload(total),
+        "violation": _rss_record_payload(violation),
+    }
+    with sample_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _terminate_process_group(pid: int) -> None:
@@ -247,6 +272,7 @@ def run_guarded(
     cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
+    samples_jsonl: str | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -291,8 +317,24 @@ def run_guarded(
             max_total_rss_kb=max_total_rss_kb,
         )
         if violation is not None:
+            if samples_jsonl is not None:
+                _append_sample_jsonl(
+                    samples_jsonl,
+                    root_pid=proc.pid,
+                    peak=observed_peak,
+                    total=observed_total,
+                    violation=violation,
+                )
             _terminate_process_group(proc.pid)
             break
+        if samples_jsonl is not None:
+            _append_sample_jsonl(
+                samples_jsonl,
+                root_pid=proc.pid,
+                peak=observed_peak,
+                total=observed_total,
+                violation=None,
+            )
         if proc.poll() is not None:
             break
         time.sleep(poll_interval)
@@ -367,7 +409,8 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_MAX_RSS_GB,
         help=(
-            "Abort if any child process exceeds this RSS; must be <30 "
+            "Abort if any child process exceeds this RSS; must be "
+            f"<{DEFAULT_HARD_MAX_RSS_GB:g}GB "
             f"(default: {DEFAULT_MAX_RSS_GB})."
         ),
     )
@@ -377,7 +420,7 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_TOTAL_RSS_GB,
         help=(
             "Abort if the watched process tree exceeds this aggregate RSS; "
-            "must be <30 "
+            f"must be <{DEFAULT_HARD_MAX_RSS_GB:g}GB "
             f"(default: {DEFAULT_MAX_TOTAL_RSS_GB})."
         ),
     )
@@ -393,6 +436,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--summary-json",
         help="Write command result, violation, and peak RSS details as JSON.",
+    )
+    parser.add_argument(
+        "--samples-jsonl",
+        help="Append per-poll peak and process-tree RSS samples as JSONL.",
     )
     parser.add_argument(
         "--timeout",
@@ -449,6 +496,8 @@ def _worker_argv(args: argparse.Namespace) -> list[str]:
     ]
     if args.summary_json:
         worker_args.extend(["--summary-json", args.summary_json])
+    if args.samples_jsonl:
+        worker_args.extend(["--samples-jsonl", args.samples_jsonl])
     if args.timeout is not None:
         worker_args.extend(["--timeout", str(args.timeout)])
     return worker_args
@@ -504,6 +553,7 @@ def main(
         capture_output=False,
         timeout=args.timeout,
         env=_child_env_without_internal_keys(current_env),
+        samples_jsonl=args.samples_jsonl,
     )
     if args.summary_json:
         try:
