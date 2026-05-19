@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = Path(__file__).resolve().parent
 BENCH_DIR = ROOT / "tests" / "benchmarks"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+from bench_suites import molt_args_for_benchmark  # noqa: E402
 
 TOP_BENCHES = [
     "bench_deeply_nested_loop.py",
@@ -35,9 +40,6 @@ SMOKE_BENCHES = [
     "bench_bytes_find.py",
 ]
 
-MOLT_ARGS_BY_BENCH = {
-    "bench_sum_list_hints.py": ["--type-hints", "trust"],
-}
 DEFAULT_PERF_STAT_EVENTS = "cycles,instructions,cache-misses,branches,branch-misses"
 
 
@@ -681,7 +683,7 @@ def _profile_bench(
     bench_name = bench.stem
     bench_dir = out_dir / bench_name
     bench_dir.mkdir(parents=True, exist_ok=True)
-    extra = extra_args + MOLT_ARGS_BY_BENCH.get(bench.name, [])
+    extra = extra_args + molt_args_for_benchmark(bench)
     env = _base_env()
     _apply_env_overrides(env, env_overrides)
     if collect_profile or collect_alloc_sites:
@@ -751,7 +753,7 @@ def _profile_compiler(
     bench_name = bench.stem
     bench_dir = out_dir / bench_name
     bench_dir.mkdir(parents=True, exist_ok=True)
-    extra = extra_args + MOLT_ARGS_BY_BENCH.get(bench.name, [])
+    extra = extra_args + molt_args_for_benchmark(bench)
     env = _base_env()
     _apply_env_overrides(env, env_overrides)
     results: list[ToolRunResult] = []

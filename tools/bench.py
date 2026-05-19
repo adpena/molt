@@ -34,6 +34,7 @@ if str(SRC_ROOT) not in sys.path:
 from batch_compile_client import BatchCompileServerClient  # noqa: E402
 from bench_evidence import comparable_run_metadata_errors  # noqa: E402
 from bench_metadata import benchmark_reference_contract  # noqa: E402
+import bench_suites  # noqa: E402
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -42,85 +43,12 @@ from molt.harness_conformance import (  # noqa: E402
 
 SUPER_SAMPLES = 10
 
-BENCHMARKS = [
-    "tests/benchmarks/bench_fib.py",
-    "tests/benchmarks/bench_sum.py",
-    "tests/benchmarks/bench_sum_list.py",
-    "tests/benchmarks/bench_sum_list_hints.py",
-    "tests/benchmarks/bench_min_list.py",
-    "tests/benchmarks/bench_max_list.py",
-    "tests/benchmarks/bench_prod_list.py",
-    "tests/benchmarks/bench_struct.py",
-    "tests/benchmarks/bench_attr_access.py",
-    "tests/benchmarks/bench_descriptor_property.py",
-    "tests/benchmarks/bench_dict_ops.py",
-    "tests/benchmarks/bench_dict_views.py",
-    "tests/benchmarks/bench_counter_words.py",
-    "tests/benchmarks/bench_etl_orders.py",
-    "tests/benchmarks/bench_list_ops.py",
-    "tests/benchmarks/bench_list_slice.py",
-    "tests/benchmarks/bench_tuple_index.py",
-    "tests/benchmarks/bench_tuple_slice.py",
-    "tests/benchmarks/bench_tuple_pack.py",
-    "tests/benchmarks/bench_range_iter.py",
-    "tests/benchmarks/bench_try_except.py",
-    "tests/benchmarks/bench_generator_iter.py",
-    "tests/benchmarks/bench_async_await.py",
-    "tests/benchmarks/bench_channel_throughput.py",
-    "tests/benchmarks/bench_ptr_registry.py",
-    "tests/benchmarks/bench_deeply_nested_loop.py",
-    "tests/benchmarks/bench_csv_parse.py",
-    "tests/benchmarks/bench_csv_parse_wide.py",
-    "tests/benchmarks/bench_matrix_math.py",
-    "tests/benchmarks/bench_bytes_find.py",
-    "tests/benchmarks/bench_bytes_find_only.py",
-    "tests/benchmarks/bench_bytes_replace.py",
-    "tests/benchmarks/bench_bytearray_find.py",
-    "tests/benchmarks/bench_bytearray_replace.py",
-    "tests/benchmarks/bench_str_find.py",
-    "tests/benchmarks/bench_str_find_unicode.py",
-    "tests/benchmarks/bench_str_find_unicode_warm.py",
-    "tests/benchmarks/bench_str_split.py",
-    "tests/benchmarks/bench_str_replace.py",
-    "tests/benchmarks/bench_str_count.py",
-    "tests/benchmarks/bench_str_count_unicode.py",
-    "tests/benchmarks/bench_str_count_unicode_warm.py",
-    "tests/benchmarks/bench_str_join.py",
-    "tests/benchmarks/bench_str_startswith.py",
-    "tests/benchmarks/bench_str_endswith.py",
-    "tests/benchmarks/bench_memoryview_tobytes.py",
-    "tests/benchmarks/bench_parse_msgpack.py",
-    "tests/benchmarks/bench_json_roundtrip.py",
-    "tests/benchmarks/bench_startup.py",
-    "tests/benchmarks/bench_gc_pressure.py",
-    "tests/benchmarks/bench_class_hierarchy.py",
-    "tests/benchmarks/bench_set_ops.py",
-    "tests/benchmarks/bench_exception_heavy.py",
-    "tests/benchmarks/bench_dict_comprehension.py",
-    "tests/benchmarks/bench_procedural_gen.py",
-    "tests/benchmarks/bench_import_time.py",
-]
-
-SMOKE_BENCHMARKS = [
-    "tests/benchmarks/bench_sum.py",
-    "tests/benchmarks/bench_bytes_find.py",
-]
-
-WS_BENCHMARKS = [
-    "tests/benchmarks/bench_ws_wait.py",
-]
-
-DYNAMIC_BUILTIN_SLICES = [
-    "tests/benchmarks/bench_builtin_locals_slice.py",
-    "tests/benchmarks/bench_builtin_dir_slice.py",
-    "tests/benchmarks/bench_builtin_import_slice.py",
-    "tests/benchmarks/bench_builtin_delattr_slice.py",
-]
-
-MOLT_ARGS_BY_BENCH = {
-    "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],
-    "tests/benchmarks/bench_parse_msgpack.py": ["--stdlib-profile", "full"],
-}
+BENCHMARKS = bench_suites.BENCHMARKS
+SMOKE_BENCHMARKS = bench_suites.SMOKE_BENCHMARKS
+WS_BENCHMARKS = bench_suites.WS_BENCHMARKS
+DYNAMIC_BUILTIN_SLICES = bench_suites.DYNAMIC_BUILTIN_SLICES
+MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH
+molt_args_for_benchmark = bench_suites.molt_args_for_benchmark
 
 CODON_BENCH_RUNTIME_ARGS_BY_NAME = {
     "binary_trees.py": ["20"],
@@ -1297,7 +1225,7 @@ def _bench_one(
     molt_time: float | None = None
     molt_size: float | None = None
     molt_build: float | None = None
-    molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
+    molt_args = molt_args_for_benchmark(script)
     molt_ok = False
     molt_batch = SampleBatch([], False)
     molt_runner = prepare_molt_binary(
