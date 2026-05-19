@@ -74,6 +74,31 @@ def test_process_groups_exclude_current_process_group() -> None:
     assert groups == []
 
 
+def test_process_groups_ignore_process_inspection_commands() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="ps -axo pid,command | rg 'molt-backend|/rustc'",
+        ),
+        11: module.memory_guard.ProcessSample(
+            pid=11,
+            ppid=1,
+            pgid=11,
+            rss_kb=100,
+            command="git diff -- runtime/molt-backend/src/lib.rs",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert groups == []
+
+
 def test_find_violations_can_kill_all_or_threshold() -> None:
     module = _load_process_sentinel()
     group = module.ProcessGroup(

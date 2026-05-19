@@ -46,6 +46,22 @@ MOLT_PROCESS_TOKENS = (
     "runtime/molt-backend/src/",
 )
 
+INSPECTION_COMMAND_TOKENS = (
+    "tools/process_sentinel.py",
+    "process_sentinel.py",
+    " ps -",
+    "ps -",
+    " rg ",
+    "rg '",
+    'rg "',
+    " grep ",
+    "grep '",
+    'grep "',
+    "git diff",
+    "git status",
+    "sed -n",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ProcessGroup:
@@ -106,6 +122,8 @@ def is_molt_process(
     if self_pid is not None and sample.pid == self_pid:
         return False
     command = sample.command
+    if any(token in command for token in INSPECTION_COMMAND_TOKENS):
+        return False
     if _normalized_repo_token(root) in command:
         return True
     return any(token in command for token in MOLT_PROCESS_TOKENS)
