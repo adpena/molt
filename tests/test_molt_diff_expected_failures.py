@@ -254,6 +254,47 @@ def test_diff_memory_guard_jsonl_rotation_bounds_artifacts(
     assert path.with_name("global_samples.jsonl.1").stat().st_size < 2048
 
 
+def test_diff_memory_guard_streams_without_sample_artifact(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_WRITE_SAMPLES", "0")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_STREAM", "stderr")
+    config = module._DiffMemoryGuardConfig(
+        max_process_kb=30_000,
+        max_tree_kb=40_000,
+        global_kb=100_000,
+        poll_interval=0.01,
+    )
+
+    module._prepare_memory_guard_run(config)
+    capsys.readouterr()
+    module._record_memory_guard_sample(
+        {
+            "event": "sample",
+            "active_roots": [200],
+            "total_kb": 20_000,
+            "total_gb": 20_000 / (1024 * 1024),
+            "trees": [
+                {
+                    "root_pid": 200,
+                    "total": {
+                        "rss_gb": 20_000 / (1024 * 1024),
+                        "rss_kb": 20_000,
+                    },
+                }
+            ],
+        }
+    )
+
+    captured = capsys.readouterr()
+    assert "[MEMORY-GUARD] sample" in captured.err
+    assert "roots=1" in captured.err
+    assert not (tmp_path / "diff" / "memory_guard" / "global_samples.jsonl").exists()
+    assert (tmp_path / "diff" / "memory_guard" / "events.jsonl").exists()
+
+
 def test_diff_memory_guard_kills_active_child_tree_limit(
     tmp_path: Path, monkeypatch
 ) -> None:

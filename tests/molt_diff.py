@@ -1605,6 +1605,28 @@ def _diff_memory_guard_sample_interval_sec() -> float:
     )
 
 
+def _diff_memory_guard_write_samples() -> bool:
+    explicit = _bool_env("MOLT_DIFF_MEMORY_GUARD_WRITE_SAMPLES")
+    return True if explicit is None else explicit
+
+
+def _diff_memory_guard_stream_mode() -> str:
+    raw = os.environ.get("MOLT_DIFF_MEMORY_GUARD_STREAM", "").strip().lower()
+    if raw in {"", "0", "false", "no", "off", "none"}:
+        return ""
+    if raw in {"1", "true", "yes", "on", "stderr"}:
+        return "stderr"
+    if raw in {"stdout", "json", "json-stdout", "stderr-json", "json-stderr"}:
+        return raw
+    return ""
+
+
+def _diff_memory_guard_stream_target(mode: str) -> io.TextIOBase | None:
+    if not mode:
+        return None
+    return sys.stdout if "stdout" in mode else sys.stderr
+
+
 def _memory_limit_bytes() -> int | None:
     gb = _parse_float_env("MOLT_DIFF_RLIMIT_GB")
     mb = _parse_float_env("MOLT_DIFF_RLIMIT_MB")
@@ -2157,6 +2179,96 @@ def _append_memory_guard_jsonl(path: Path, payload: dict[str, object]) -> None:
         return
 
 
+def _memory_guard_payload_gb(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if isinstance(value, (int, float)):
+        return f"{value:.2f}GB"
+    return "-"
+
+
+def _memory_guard_record_gb(record: object) -> str:
+    if not isinstance(record, dict):
+        return "-"
+    return _memory_guard_payload_gb(record, "rss_gb")
+
+
+def _memory_guard_peak_tree_gb(payload: dict[str, object]) -> str:
+    trees = payload.get("trees")
+    if not isinstance(trees, list):
+        return "-"
+    values: list[float] = []
+    for tree in trees:
+        if not isinstance(tree, dict):
+            continue
+        total = tree.get("total")
+        if not isinstance(total, dict):
+            continue
+        rss_gb = total.get("rss_gb")
+        if isinstance(rss_gb, (int, float)):
+            values.append(float(rss_gb))
+    if not values:
+        return "-"
+    return f"{max(values):.2f}GB"
+
+
+def _format_memory_guard_stream(payload: dict[str, object]) -> str:
+    event = str(payload.get("event", "sample"))
+    if event == "sample":
+        roots = payload.get("active_roots")
+        root_count = len(roots) if isinstance(roots, list) else 0
+        return (
+            "[MEMORY-GUARD] "
+            f"sample total={_memory_guard_payload_gb(payload, 'total_gb')} "
+            f"roots={root_count} peak_tree={_memory_guard_peak_tree_gb(payload)}"
+        )
+    if event in {"guard_tripped", "subprocess_guard_tripped", "memory_guard_trip"}:
+        message = payload.get("message")
+        if isinstance(message, str) and message:
+            return f"[MEMORY-GUARD] TRIP {message}"
+        return (
+            "[MEMORY-GUARD] TRIP "
+            f"violation={_memory_guard_record_gb(payload.get('violation'))}"
+        )
+    if event == "run_started":
+        return (
+            "[MEMORY-GUARD] "
+            f"run_started global={_memory_guard_payload_gb(payload, 'global_gb')} "
+            f"tree={_memory_guard_payload_gb(payload, 'max_tree_gb')} "
+            f"process={_memory_guard_payload_gb(payload, 'max_process_gb')} "
+            f"poll={payload.get('poll_interval')}s "
+            f"samples={'on' if _diff_memory_guard_write_samples() else 'off'}"
+        )
+    if event == "monitor_error":
+        return f"[MEMORY-GUARD] monitor_error {payload.get('error', '')}"
+    return f"[MEMORY-GUARD] {event}"
+
+
+def _stream_memory_guard_payload(payload: dict[str, object]) -> None:
+    mode = _diff_memory_guard_stream_mode()
+    target = _diff_memory_guard_stream_target(mode)
+    if target is None:
+        return
+    try:
+        if "json" in mode:
+            line = json.dumps({"ts": time.time(), **payload}, sort_keys=True)
+        else:
+            line = _format_memory_guard_stream(payload)
+        print(line, file=target, flush=True)
+    except Exception:
+        return
+
+
+def _record_memory_guard_event(payload: dict[str, object]) -> None:
+    _append_memory_guard_jsonl(_diff_memory_guard_events_jsonl(), payload)
+    _stream_memory_guard_payload(payload)
+
+
+def _record_memory_guard_sample(payload: dict[str, object]) -> None:
+    if _diff_memory_guard_write_samples():
+        _append_memory_guard_jsonl(_diff_memory_guard_global_samples_jsonl(), payload)
+    _stream_memory_guard_payload(payload)
+
+
 def _memory_guard_record(
     record: memory_guard.RssViolation | None,
 ) -> dict[str, object] | None:
@@ -2195,7 +2307,7 @@ def _mark_memory_guard_tripped(payload: dict[str, object]) -> None:
     except OSError:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
-    _append_memory_guard_jsonl(_diff_memory_guard_events_jsonl(), data)
+    _record_memory_guard_event(data)
 
 
 def _memory_guard_trip_message() -> str | None:
@@ -2283,8 +2395,7 @@ def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
     for path in active_dir.glob("*.json"):
         with contextlib.suppress(OSError):
             path.unlink()
-    _append_memory_guard_jsonl(
-        Path(os.environ[_DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV]),
+    _record_memory_guard_event(
         {
             "event": "run_started",
             "max_process_gb": config.max_process_gb,
@@ -2292,13 +2403,15 @@ def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
             "global_gb": config.global_gb,
             "poll_interval": config.poll_interval,
             "sample_interval": _diff_memory_guard_sample_interval_sec(),
+            "write_samples": _diff_memory_guard_write_samples(),
+            "stream_mode": _diff_memory_guard_stream_mode(),
             "event_max_bytes": _memory_guard_jsonl_max_bytes(
                 Path(os.environ[_DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV])
             ),
             "sample_max_bytes": _memory_guard_jsonl_max_bytes(
                 Path(os.environ[_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV])
             ),
-        },
+        }
     )
 
 
@@ -2330,9 +2443,8 @@ class _DiffGlobalMemoryMonitor:
             try:
                 self._sample_once()
             except Exception as exc:  # pragma: no cover - defensive monitor boundary
-                _append_memory_guard_jsonl(
-                    _diff_memory_guard_events_jsonl(),
-                    {"event": "monitor_error", "error": repr(exc)},
+                _record_memory_guard_event(
+                    {"event": "monitor_error", "error": repr(exc)}
                 )
 
     def _sample_once(self) -> None:
@@ -2379,15 +2491,14 @@ class _DiffGlobalMemoryMonitor:
             or tree_violation is not None
         ):
             self._last_sample_write = now
-            _append_memory_guard_jsonl(
-                _diff_memory_guard_global_samples_jsonl(),
+            _record_memory_guard_sample(
                 {
                     "event": "sample",
                     "active_roots": active_roots,
                     "total_kb": total_kb,
                     "total_gb": total_kb / (1024 * 1024),
                     "trees": tree_records,
-                },
+                }
             )
         if tree_violation is not None:
             root_pid, violation, limit_gb = tree_violation
@@ -2611,8 +2722,7 @@ def _run_subprocess(
                         guard_message = _memory_guard_message(
                             violation, limit_gb=limit_gb, phase="subprocess"
                         )
-                        _append_memory_guard_jsonl(
-                            _diff_memory_guard_events_jsonl(),
+                        _record_memory_guard_event(
                             {
                                 "event": "subprocess_guard_tripped",
                                 "message": guard_message,
@@ -2621,7 +2731,7 @@ def _run_subprocess(
                                 "violation": _memory_guard_record(violation),
                                 "peak": _memory_guard_record(peak),
                                 "peak_total": _memory_guard_record(peak_total),
-                            },
+                            }
                         )
                         _terminate_process_tree(proc, grace=0.20)
                         break
@@ -4204,6 +4314,8 @@ def run_diff(
                 "global_gb": guard_config.global_gb,
                 "poll_interval": guard_config.poll_interval,
                 "sample_interval": _diff_memory_guard_sample_interval_sec(),
+                "write_samples": _diff_memory_guard_write_samples(),
+                "stream_mode": _diff_memory_guard_stream_mode(),
                 "event_max_bytes": _memory_guard_jsonl_max_bytes(
                     _diff_memory_guard_events_jsonl()
                 ),
