@@ -875,27 +875,27 @@ pub extern "C" fn molt_obj_set_state(data_ptr: *mut u8, state: i64) {
 /// native backend's `object_new_bound_stack` lowering: Cranelift
 /// allocates a `StackSlot` of size `MoltHeader::SIZE +
 /// payload_size_bytes` and calls into this helper to:
-///   * zero the payload (StackSlot contents are undefined on entry,
-///     so this is mandatory for soundness — a stale pointer in a
-///     slot would corrupt subsequent `dec_ref` / `has_ptrs`
-///     traversal),
-///   * stamp the MoltHeader fields:
-///       - `type_id        = TYPE_ID_OBJECT`
-///       - `ref_count      = 1` (paired with IMMORTAL — never
-///          decrements)
-///       - `flags          = HEADER_FLAG_IMMORTAL |
-///          HEADER_FLAG_SKIP_CLASS_DECREF` (so dec_ref_ptr
-///          short-circuits and the runtime never tries to free a
-///          stack pointer through the dealloc path; the class is
-///          borrowed from the module-owned class object)
-///       - `size_class     = 0`  (size lives nowhere — IMMORTAL
-///          objects bypass the size lookup paths)
-///       - `cold_idx       = ensure_shared_cold_idx(cls_ptr)`
-///         (per-class shared cold header storing class_bits in
-///         `state`; reads via `object_class_bits()` work
-///         transparently)
-///       - `reserved       = 0`
-///   * return the tagged data pointer bits (header_ptr + 24).
+/// - zero the payload (StackSlot contents are undefined on entry,
+///   so this is mandatory for soundness — a stale pointer in a
+///   slot would corrupt subsequent `dec_ref` / `has_ptrs`
+///   traversal),
+/// - stamp the MoltHeader fields:
+///     - `type_id        = TYPE_ID_OBJECT`
+///     - `ref_count      = 1` (paired with IMMORTAL — never
+///       decrements)
+///     - `flags          = HEADER_FLAG_IMMORTAL |
+///       HEADER_FLAG_SKIP_CLASS_DECREF` (so dec_ref_ptr
+///       short-circuits and the runtime never tries to free a
+///       stack pointer through the dealloc path; the class is
+///       borrowed from the module-owned class object)
+///     - `size_class     = 0`  (size lives nowhere — IMMORTAL
+///       objects bypass the size lookup paths)
+///     - `cold_idx       = ensure_shared_cold_idx(cls_ptr)`
+///       (per-class shared cold header storing class_bits in
+///       `state`; reads via `object_class_bits()` work
+///       transparently)
+///     - `reserved       = 0`
+/// - return the tagged data pointer bits (header_ptr + 24).
 ///
 /// Returns `MoltObject::none().bits()` if `cls_bits` does not point
 /// to a valid type object.  The frontend gates the fold on

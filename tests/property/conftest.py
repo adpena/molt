@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from hypothesis import settings as hypothesis_settings
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIR = _REPO_ROOT / "src"
@@ -92,9 +93,28 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Run tests that require a working Molt compiler",
     )
+    parser.addoption(
+        "--molt-max-examples",
+        type=int,
+        default=None,
+        help="Override Hypothesis max_examples for Molt property test gates.",
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    max_examples = config.getoption("--molt-max-examples", default=None)
+    if max_examples is not None:
+        if max_examples <= 0:
+            raise pytest.UsageError("--molt-max-examples must be greater than 0")
+        for item in items:
+            target = getattr(item.obj, "__func__", item.obj)
+            current = getattr(target, "_hypothesis_internal_use_settings", None)
+            if current is None:
+                continue
+            target._hypothesis_internal_use_settings = hypothesis_settings(
+                parent=current,
+                max_examples=max_examples,
+            )
     if config.getoption("--run-molt", default=False):
         return
     skip_molt = pytest.mark.skip(reason="Need --run-molt to run Molt compilation tests")

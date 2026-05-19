@@ -77,7 +77,7 @@ fn module_dict_ptr(module_ptr: *mut u8) -> Option<*mut u8> {
     let dict_bits = unsafe { module_dict_bits(module_ptr) };
     match obj_from_bits(dict_bits).as_ptr() {
         Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_DICT } => Some(ptr),
-        _ => return None,
+        _ => None,
     }
 }
 
