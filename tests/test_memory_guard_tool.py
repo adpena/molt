@@ -351,6 +351,49 @@ def test_main_reexec_hides_guarded_command_from_guard_argv() -> None:
     assert env[memory_guard.INTERNAL_WORKER_ENV] == "1"
 
 
+def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> None:
+    captured: dict[str, object] = {}
+    samples_path = tmp_path / "samples.jsonl"
+
+    def fake_execve(path, argv, env):
+        captured["path"] = path
+        captured["argv"] = list(argv)
+        captured["env"] = dict(env)
+        raise SystemExit(74)
+
+    with pytest.raises(SystemExit) as exc:
+        memory_guard.main(
+            [
+                "--max-rss-gb",
+                "1",
+                "--poll-interval",
+                "0.01",
+                "--samples-jsonl",
+                str(samples_path),
+                "--samples-max-mb",
+                "0.5",
+                "--stream",
+                "json-stderr",
+                "--",
+                sys.executable,
+                "-c",
+                "print('ok')",
+            ],
+            hide_command_argv=True,
+            execve=fake_execve,
+        )
+
+    assert exc.value.code == 74
+    worker_argv = captured["argv"]
+    assert isinstance(worker_argv, list)
+    assert "--samples-jsonl" in worker_argv
+    assert str(samples_path) in worker_argv
+    assert "--samples-max-mb" in worker_argv
+    assert "0.5" in worker_argv
+    assert "--stream" in worker_argv
+    assert "json-stderr" in worker_argv
+
+
 def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> None:
     command = [sys.executable, "-c", "print('worker')"]
     observed: dict[str, object] = {}
@@ -443,3 +486,49 @@ def test_main_writes_samples_jsonl(tmp_path) -> None:
     assert payload["root_pid"] > 0
     assert "peak" in payload
     assert "total" in payload
+
+
+def test_sample_jsonl_rotation_bounds_artifacts(tmp_path) -> None:
+    samples_path = tmp_path / "samples.jsonl"
+    peak = memory_guard.RssViolation(pid=100, rss_kb=10, command="root")
+
+    for _ in range(8):
+        memory_guard._append_sample_jsonl(
+            str(samples_path),
+            root_pid=100,
+            peak=peak,
+            total=peak,
+            violation=None,
+            max_bytes=1024,
+        )
+
+    assert samples_path.exists()
+    assert samples_path.with_name("samples.jsonl.1").exists()
+    assert samples_path.stat().st_size <= 1024
+    assert samples_path.with_name("samples.jsonl.1").stat().st_size <= 1024
+
+
+def test_main_streams_samples_without_sample_artifact(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    samples_path = tmp_path / "samples.jsonl"
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--poll-interval",
+            "0.01",
+            "--stream",
+            "stderr",
+            "--",
+            sys.executable,
+            "-c",
+            "import time; time.sleep(0.05)",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "memory_guard sample:" in captured.err
+    assert not samples_path.exists()

@@ -18,6 +18,7 @@ DEFAULT_MAX_RSS_GB = 25.0
 DEFAULT_MAX_TOTAL_RSS_GB = 28.0
 DEFAULT_HARD_MAX_RSS_GB = 112.0
 DEFAULT_POLL_INTERVAL_SEC = 1.0
+DEFAULT_SAMPLES_MAX_MB = 2.0
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
@@ -209,10 +210,36 @@ def max_rss_kb_from_gb(value: float) -> int:
     if value <= 0:
         raise ValueError("max RSS must be greater than 0 GB")
     if value >= DEFAULT_HARD_MAX_RSS_GB:
-        raise ValueError(
-            f"max RSS must stay below {DEFAULT_HARD_MAX_RSS_GB:g} GB"
-        )
+        raise ValueError(f"max RSS must stay below {DEFAULT_HARD_MAX_RSS_GB:g} GB")
     return int(value * 1024 * 1024)
+
+
+def _samples_max_bytes_from_mb(value: float | None) -> int | None:
+    if value is None:
+        value = DEFAULT_SAMPLES_MAX_MB
+    if value <= 0:
+        return None
+    return max(1024, int(value * 1024 * 1024))
+
+
+def _rotate_jsonl_if_needed(
+    path: Path, incoming_bytes: int, max_bytes: int | None
+) -> None:
+    if max_bytes is None:
+        return
+    try:
+        current_size = path.stat().st_size
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if current_size + incoming_bytes <= max_bytes:
+        return
+    rotated = path.with_name(f"{path.name}.1")
+    with contextlib.suppress(OSError):
+        rotated.unlink()
+    with contextlib.suppress(OSError):
+        path.replace(rotated)
 
 
 def _append_sample_jsonl(
@@ -222,6 +249,7 @@ def _append_sample_jsonl(
     peak: RssViolation | None,
     total: RssViolation | None,
     violation: RssViolation | None,
+    max_bytes: int | None = None,
 ) -> None:
     sample_path = Path(path)
     if sample_path.parent:
@@ -233,8 +261,75 @@ def _append_sample_jsonl(
         "total": _rss_record_payload(total),
         "violation": _rss_record_payload(violation),
     }
+    line = json.dumps(payload, sort_keys=True) + "\n"
+    _rotate_jsonl_if_needed(sample_path, len(line.encode("utf-8")), max_bytes)
     with sample_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.write(line)
+
+
+def _record_gb(record: object) -> str:
+    if not isinstance(record, dict):
+        return "-"
+    value = record.get("rss_gb")
+    if isinstance(value, (int, float)):
+        return f"{value:.2f}GB"
+    return "-"
+
+
+def _format_sample_payload(payload: dict[str, object]) -> str:
+    violation = payload.get("violation")
+    if violation is not None:
+        return f"memory_guard sample: TRIP violation={_record_gb(violation)}"
+    return (
+        "memory_guard sample: "
+        f"peak={_record_gb(payload.get('peak'))} "
+        f"total={_record_gb(payload.get('total'))}"
+    )
+
+
+def _stream_sample_payload(payload: dict[str, object], stream: str) -> None:
+    if not stream:
+        return
+    target = sys.stdout if "stdout" in stream else sys.stderr
+    try:
+        if "json" in stream:
+            print(json.dumps(payload, sort_keys=True), file=target, flush=True)
+        else:
+            print(_format_sample_payload(payload), file=target, flush=True)
+    except Exception:
+        return
+
+
+def _record_sample(
+    *,
+    root_pid: int,
+    peak: RssViolation | None,
+    total: RssViolation | None,
+    violation: RssViolation | None,
+    samples_jsonl: str | None,
+    samples_jsonl_max_bytes: int | None,
+    stream: str,
+) -> None:
+    payload = {
+        "ts": time.time(),
+        "root_pid": root_pid,
+        "peak": _rss_record_payload(peak),
+        "total": _rss_record_payload(total),
+        "violation": _rss_record_payload(violation),
+    }
+    if samples_jsonl is not None:
+        sample_path = Path(samples_jsonl)
+        if sample_path.parent:
+            sample_path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload, sort_keys=True) + "\n"
+        _rotate_jsonl_if_needed(
+            sample_path,
+            len(line.encode("utf-8")),
+            samples_jsonl_max_bytes,
+        )
+        with sample_path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    _stream_sample_payload(payload, stream)
 
 
 def _terminate_process_group(pid: int) -> None:
@@ -273,6 +368,8 @@ def run_guarded(
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
     samples_jsonl: str | None = None,
+    samples_jsonl_max_bytes: int | None = None,
+    stream: str = "",
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -317,23 +414,26 @@ def run_guarded(
             max_total_rss_kb=max_total_rss_kb,
         )
         if violation is not None:
-            if samples_jsonl is not None:
-                _append_sample_jsonl(
-                    samples_jsonl,
-                    root_pid=proc.pid,
-                    peak=observed_peak,
-                    total=observed_total,
-                    violation=violation,
-                )
+            _record_sample(
+                root_pid=proc.pid,
+                peak=observed_peak,
+                total=observed_total,
+                violation=violation,
+                samples_jsonl=samples_jsonl,
+                samples_jsonl_max_bytes=samples_jsonl_max_bytes,
+                stream=stream,
+            )
             _terminate_process_group(proc.pid)
             break
-        if samples_jsonl is not None:
-            _append_sample_jsonl(
-                samples_jsonl,
+        if samples_jsonl is not None or stream:
+            _record_sample(
                 root_pid=proc.pid,
                 peak=observed_peak,
                 total=observed_total,
                 violation=None,
+                samples_jsonl=samples_jsonl,
+                samples_jsonl_max_bytes=samples_jsonl_max_bytes,
+                stream=stream,
             )
         if proc.poll() is not None:
             break
@@ -470,6 +570,21 @@ def _parser() -> argparse.ArgumentParser:
         help="Append per-poll peak and process-tree RSS samples as JSONL.",
     )
     parser.add_argument(
+        "--samples-max-mb",
+        type=float,
+        default=DEFAULT_SAMPLES_MAX_MB,
+        help=(
+            "Rotate --samples-jsonl after this many MB; set <=0 to disable "
+            f"rotation (default: {DEFAULT_SAMPLES_MAX_MB})."
+        ),
+    )
+    parser.add_argument(
+        "--stream",
+        choices=("stderr", "stdout", "json-stderr", "json-stdout"),
+        default="",
+        help="Emit per-poll guard samples to this stream without writing artifacts.",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         help="Abort the command if wall-clock runtime exceeds this many seconds.",
@@ -526,6 +641,9 @@ def _worker_argv(args: argparse.Namespace) -> list[str]:
         worker_args.extend(["--summary-json", args.summary_json])
     if args.samples_jsonl:
         worker_args.extend(["--samples-jsonl", args.samples_jsonl])
+        worker_args.extend(["--samples-max-mb", str(args.samples_max_mb)])
+    if args.stream:
+        worker_args.extend(["--stream", args.stream])
     if args.timeout is not None:
         worker_args.extend(["--timeout", str(args.timeout)])
     return worker_args
@@ -561,6 +679,7 @@ def main(
             raise ValueError("poll interval must be greater than 0")
         if args.timeout is not None and args.timeout <= 0:
             raise ValueError("timeout must be greater than 0")
+        samples_jsonl_max_bytes = _samples_max_bytes_from_mb(args.samples_max_mb)
     except ValueError as exc:
         print(f"memory_guard: {exc}", file=sys.stderr)
         return 2
@@ -582,6 +701,8 @@ def main(
         timeout=args.timeout,
         env=_child_env_without_internal_keys(current_env),
         samples_jsonl=args.samples_jsonl,
+        samples_jsonl_max_bytes=samples_jsonl_max_bytes,
+        stream=args.stream,
     )
     if args.summary_json:
         try:
@@ -616,11 +737,7 @@ def main(
             file=sys.stderr,
         )
     exit_signal = _exit_signal_payload(result.returncode)
-    if (
-        exit_signal is not None
-        and result.violation is None
-        and not result.timed_out
-    ):
+    if exit_signal is not None and result.violation is None and not result.timed_out:
         signame = exit_signal["name"] or f"signal {exit_signal['signal']}"
         print(
             "memory_guard: command exited with "
