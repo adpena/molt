@@ -585,6 +585,59 @@ def test_invalidate_stale_stdlib_cache_tracks_active_artifact_profiles(
     assert not cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
 
 
+def test_invalidate_stale_stdlib_cache_tracks_target_runtime_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path
+    target_root = project_root / "target"
+    target_triple = "aarch64-apple-darwin"
+    cache_root = project_root / ".molt_cache"
+    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    cache_root.mkdir(parents=True)
+
+    stdlib_object = cache_root / "stdlib_shared_target.o"
+    stdlib_object.write_bytes(b"stdlib")
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "target-key\n", encoding="utf-8"
+    )
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+        _manifest("target-key") + "\n", encoding="utf-8"
+    )
+    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+        "1\n", encoding="utf-8"
+    )
+
+    runtime_lib = (
+        target_root
+        / target_triple
+        / "release-output"
+        / "libmolt_runtime.stdlib_full.a"
+    )
+    runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+    runtime_lib.write_bytes(b"artifact")
+
+    monkeypatch.delenv("MOLT_SESSION_ID", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+
+    old = 1_700_000_000.0
+    current = old + 10.0
+    os.utime(stdlib_object, (old, old))
+    os.utime(runtime_lib, (current, current))
+
+    cli._invalidate_stale_stdlib_cache(
+        stdlib_object,
+        project_root,
+        expected_key="target-key",
+        expected_manifest=_manifest("target-key"),
+        target_triple=target_triple,
+    )
+
+    assert not stdlib_object.exists()
+    assert not cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert not cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
+    assert not cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
+
+
 def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
     tmp_path: Path,
 ) -> None:

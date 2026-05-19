@@ -24,7 +24,7 @@ pub struct SimpleIR {
     pub profile: Option<PgoProfileIR>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct FunctionIR {
     pub name: String,

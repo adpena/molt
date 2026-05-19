@@ -3002,7 +3002,12 @@ def test_runtime_lib_path_is_cached(
     second = cli._runtime_lib_path(tmp_path, "dev-fast", None)
 
     info = cli._runtime_lib_path_cached.cache_info()
-    expected = Path.cwd() / "external-target" / "dev-fast" / "libmolt_runtime.a"
+    expected = (
+        Path.cwd()
+        / "external-target"
+        / "dev-fast"
+        / "libmolt_runtime.stdlib_micro.a"
+    )
     assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -3023,7 +3028,7 @@ def test_runtime_lib_path_includes_target_triple(
         / "external-target"
         / "aarch64-apple-darwin"
         / "release"
-        / "libmolt_runtime.a"
+        / "libmolt_runtime.stdlib_micro.a"
     )
 
 
@@ -6520,6 +6525,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
             socket_path,
             cargo_profile="dev-fast",
             project_root=tmp_path,
+            target_triple=None,
             startup_timeout=2.0,
             json_output=True,
             warnings=[],
@@ -6593,6 +6599,7 @@ def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
             socket_path,
             cargo_profile="dev-fast",
             project_root=tmp_path,
+            target_triple=None,
             startup_timeout=2.0,
             json_output=True,
             warnings=[],
@@ -6663,6 +6670,7 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
                 socket_path,
                 cargo_profile="dev-fast",
                 project_root=tmp_path,
+                target_triple=None,
                 startup_timeout=2.0,
                 json_output=True,
                 warnings=[],
@@ -6738,6 +6746,7 @@ def test_start_backend_daemon_restarts_stale_daemon_without_running_cargo(
             socket_path,
             cargo_profile="dev-fast",
             project_root=project_root,
+            target_triple=None,
             startup_timeout=2.0,
             json_output=True,
             warnings=[],
@@ -11399,6 +11408,7 @@ def test_start_backend_daemon_rejects_overlong_unix_socket_paths(
         socket_path,
         cargo_profile="dev-fast",
         project_root=tmp_path,
+        target_triple=None,
         startup_timeout=2.0,
         json_output=True,
         warnings=warnings,
@@ -12354,6 +12364,41 @@ def test_backend_daemon_stale_check_tracks_active_runtime_profiles(
     os.utime(runtime_lib, (current, current))
 
     assert cli._backend_daemon_binary_is_newer(backend_bin, pid_path)
+
+
+def test_backend_daemon_stale_check_tracks_target_specific_runtime_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path
+    target_root = project_root / "target"
+    target_triple = "aarch64-apple-darwin"
+    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    backend_bin = target_root / "dev-fast" / "molt-backend"
+    runtime_lib = (
+        target_root
+        / target_triple
+        / "release-output"
+        / "libmolt_runtime.stdlib_full.a"
+    )
+    pid_path = target_root / ".molt_state" / "backend_daemon" / "molt-backend.pid"
+    for path in (backend_bin, runtime_lib, pid_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    monkeypatch.delenv("MOLT_SESSION_ID", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+
+    old = 1_700_000_000.0
+    current = old + 10.0
+    os.utime(backend_bin, (old, old))
+    os.utime(pid_path, (old + 5.0, old + 5.0))
+    os.utime(runtime_lib, (current, current))
+
+    assert cli._backend_daemon_binary_is_newer(
+        backend_bin,
+        pid_path,
+        target_triple=target_triple,
+    )
 
 
 def test_sweep_orphaned_backend_daemon_locks_removes_dead_pid_files(

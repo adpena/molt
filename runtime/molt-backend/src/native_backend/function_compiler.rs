@@ -123,21 +123,21 @@ fn collect_pre_loop_defined_names(ops: &[OpIR], start_idx: usize) -> BTreeSet<St
 fn generic_list_int_lane_eligible(
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
-    prefers_int_lane: bool,
+    integer_key_lane: bool,
 ) -> bool {
-    prefers_int_lane && representation_plan.op_has_container_kind(op, ContainerKind::List)
+    integer_key_lane && representation_plan.op_has_container_kind(op, ContainerKind::List)
 }
 
 #[cfg(feature = "native-backend")]
 fn index_fallback_import_name(
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
-    prefers_int_lane: bool,
+    integer_key_lane: bool,
 ) -> &'static str {
     match representation_plan.op_container_kind(op) {
         Some(ContainerKind::Dict) => "molt_dict_getitem",
         Some(ContainerKind::Tuple) => "molt_tuple_getitem",
-        _ if prefers_int_lane => "molt_list_getitem_int_fast",
+        _ if integer_key_lane => "molt_list_getitem_int_fast",
         _ => "molt_index",
     }
 }
@@ -146,11 +146,11 @@ fn index_fallback_import_name(
 fn store_index_fallback_import_name(
     representation_plan: &ScalarRepresentationPlan,
     op: &OpIR,
-    prefers_int_lane: bool,
+    integer_key_lane: bool,
 ) -> &'static str {
     match representation_plan.op_container_kind(op) {
         Some(ContainerKind::Dict) => "molt_dict_setitem",
-        _ if prefers_int_lane => "molt_list_setitem_int_fast",
+        _ if integer_key_lane => "molt_list_setitem_int_fast",
         _ => "molt_store_index",
     }
 }
@@ -2394,6 +2394,9 @@ impl SimpleBackend {
             scalar_fast_paths_enabled
                 && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
         };
+        let op_index_key_is_integer_family = |op: &OpIR| {
+            scalar_fast_paths_enabled && representation_plan.op_index_key_is_integer_family(op)
+        };
         let op_prefers_integer_runtime_lane = |op: &OpIR| {
             scalar_fast_paths_enabled && representation_plan.op_prefers_integer_runtime_lane(op)
         };
@@ -3289,7 +3292,6 @@ impl SimpleBackend {
                         // container pointer, not a new heap allocation.
                         // dec_ref of the container corrupts cell lists.
                         | "store_index"
-                        | "load_index"
                         | "index"
                 ) {
                 // Check the precomputed loop_body_out_vars: this variable must
@@ -12585,13 +12587,25 @@ impl SimpleBackend {
                                 let call = builder.ins().call(local_callee, &[*obj, *idx]);
                                 let res = builder.inst_results(call)[0];
                                 if let Some(out__) = op.out {
-                                    def_var_named(&mut builder, &vars, out__, res);
+                                    def_var_from_boxed_transport(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &vars,
+                                        &int_primary_vars,
+                                        &bool_primary_vars,
+                                        &float_primary_vars,
+                                        &nbc,
+                                        &out__,
+                                        res,
+                                    );
                                 }
                             }
                         } else if generic_list_int_lane_eligible(
                             &representation_plan,
                             &op,
-                            op_prefers_int_lane(&op),
+                            op_index_key_is_integer_family(&op),
                         ) {
                             // Inline list getitem — handles both TYPE_ID_LIST (Vec<u64>)
                             // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
@@ -13081,7 +13095,19 @@ impl SimpleBackend {
                                 let call = builder.ins().call(local_callee, &[*obj, *idx]);
                                 let res = builder.inst_results(call)[0];
                                 if let Some(out__) = op.out {
-                                    def_var_named(&mut builder, &vars, out__, res);
+                                    def_var_from_boxed_transport(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &vars,
+                                        &int_primary_vars,
+                                        &bool_primary_vars,
+                                        &float_primary_vars,
+                                        &nbc,
+                                        &out__,
+                                        res,
+                                    );
                                 }
                             }
                         } else {
@@ -13093,7 +13119,7 @@ impl SimpleBackend {
                             let fn_name = index_fallback_import_name(
                                 &representation_plan,
                                 &op,
-                                op_prefers_int_lane(&op),
+                                op_index_key_is_integer_family(&op),
                             );
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
@@ -13107,7 +13133,19 @@ impl SimpleBackend {
                             let call = builder.ins().call(local_callee, &[*obj, *idx]);
                             let res = builder.inst_results(call)[0];
                             if let Some(out__) = op.out {
-                                def_var_named(&mut builder, &vars, out__, res);
+                                def_var_from_boxed_transport(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    &vars,
+                                    &int_primary_vars,
+                                    &bool_primary_vars,
+                                    &float_primary_vars,
+                                    &nbc,
+                                    &out__,
+                                    res,
+                                );
                             }
                         }
                     }
@@ -13305,7 +13343,7 @@ impl SimpleBackend {
                     } else if generic_list_int_lane_eligible(
                         &representation_plan,
                         &op,
-                        op_prefers_int_lane(&op),
+                        op_index_key_is_integer_family(&op),
                     ) {
                         // Inline list setitem — handles both TYPE_ID_LIST (Vec<u64>)
                         // and TYPE_ID_LIST_BOOL (ListBoolStorage, repr(C): [data@0, len@8, cap@16]).
@@ -13663,7 +13701,7 @@ impl SimpleBackend {
                         let fn_name = store_index_fallback_import_name(
                             &representation_plan,
                             &op,
-                            op_prefers_int_lane(&op),
+                            op_index_key_is_integer_family(&op),
                         );
                         // Deferred overflow re-boxing at heap store (store_index).
                         let safe_val = ensure_boxed_primitive_safe(
@@ -13792,7 +13830,7 @@ impl SimpleBackend {
                             }
                         }
                     } else {
-                        let fn_name = if op_prefers_int_lane(&op) {
+                        let fn_name = if op_index_key_is_integer_family(&op) {
                             "molt_list_setitem_int_fast"
                         } else {
                             "molt_dict_set"
