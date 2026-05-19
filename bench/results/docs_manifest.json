@@ -1,5 +1,5 @@
 {
-  "native": "bench/results/full_native_baseline_20260320.json",
+  "native": "bench/results/full_native_refresh_20260519.json",
   "wasm": "bench/results/bench_wasm_20260328_102249.json",
   "out": "docs/benchmarks/bench_summary.md",
   "status_doc": "docs/spec/STATUS.md"
