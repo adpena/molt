@@ -369,6 +369,29 @@ def _rss_record_payload(record: RssViolation | None) -> dict[str, object] | None
     }
 
 
+def _exit_signal_payload(returncode: int) -> dict[str, object] | None:
+    conventional_shell_status = False
+    if returncode < 0:
+        signo = -returncode
+    elif 129 <= returncode <= 192:
+        signo = returncode - 128
+        conventional_shell_status = True
+    else:
+        return None
+    with contextlib.suppress(ValueError):
+        signame = signal.Signals(signo).name
+        return {
+            "signal": signo,
+            "name": signame,
+            "conventional_shell_status": conventional_shell_status,
+        }
+    return {
+        "signal": signo,
+        "name": None,
+        "conventional_shell_status": conventional_shell_status,
+    }
+
+
 def _write_summary_json(
     path: str,
     *,
@@ -393,6 +416,11 @@ def _write_summary_json(
         "peak": _rss_record_payload(result.peak),
         "peak_total": _rss_record_payload(result.peak_total),
         "timed_out": result.timed_out,
+        "exit_signal": (
+            None
+            if result.violation is not None or result.timed_out
+            else _exit_signal_payload(result.returncode)
+        ),
     }
     summary_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -585,6 +613,18 @@ def main(
     if result.timed_out:
         print(
             f"memory_guard: timeout after {args.timeout:.2f}s",
+            file=sys.stderr,
+        )
+    exit_signal = _exit_signal_payload(result.returncode)
+    if (
+        exit_signal is not None
+        and result.violation is None
+        and not result.timed_out
+    ):
+        signame = exit_signal["name"] or f"signal {exit_signal['signal']}"
+        print(
+            "memory_guard: command exited with "
+            f"{signame} status ({result.returncode}); no RSS violation observed",
             file=sys.stderr,
         )
     return result.returncode
