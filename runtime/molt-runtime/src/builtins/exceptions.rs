@@ -6034,8 +6034,8 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 mod tests {
     use super::{
         frame_stack_pop, frame_stack_push, frame_stack_push_owned, generator_exception_stack_drop,
-        generator_exception_stack_store, generator_exception_stack_take,
-        task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
+        generator_exception_stack_store, generator_exception_stack_take, task_exception_stack_drop,
+        task_exception_stack_store, task_exception_stack_take,
     };
     use crate::object::builders::alloc_code_obj;
     use crate::object::header_from_obj_ptr;
@@ -6044,7 +6044,11 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     unsafe fn ref_count(ptr: *mut u8) -> u32 {
-        unsafe { (*header_from_obj_ptr(ptr)).ref_count.load(Ordering::Relaxed) }
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Relaxed)
+        }
     }
 
     fn alloc_test_code(_py: &crate::PyToken<'_>) -> (*mut u8, u64) {

@@ -9367,6 +9367,36 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "string_split_validate" => {
+                        let args = op.args.as_ref().unwrap();
+                        let hay = locals[&args[0]];
+                        let needle = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(hay));
+                        func.instruction(&Instruction::LocalGet(needle));
+                        emit_call(func, reloc_enabled, import_ids["string_split_validate"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "string_split_field" => {
+                        let args = op.args.as_ref().unwrap();
+                        let hay = locals[&args[0]];
+                        let needle = locals[&args[1]];
+                        let index = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(hay));
+                        func.instruction(&Instruction::LocalGet(needle));
+                        func.instruction(&Instruction::LocalGet(index));
+                        emit_call(func, reloc_enabled, import_ids["string_split_field"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "string_split_max" => {
                         let args = op.args.as_ref().unwrap();
                         let hay = locals[&args[0]];

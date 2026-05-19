@@ -175,11 +175,7 @@ fn return_bytes_val(_py: &PyToken<'_>, data: &[u8]) -> u64 {
 
 #[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
 fn ssl_runtime_profile_unavailable(_py: &PyToken<'_>) -> u64 {
-    raise_exception::<u64>(
-        _py,
-        "OSError",
-        "ssl not supported by this runtime profile",
-    )
+    raise_exception::<u64>(_py, "OSError", "ssl not supported by this runtime profile")
 }
 
 // ── SSLContext public intrinsics ──────────────────────────────────────────
@@ -1098,10 +1094,7 @@ pub extern "C" fn molt_ssl_socket_getpeercert(_handle_bits: u64, _binary_form_bi
 
 #[unsafe(no_mangle)]
 #[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
-pub extern "C" fn molt_ssl_socket_getpeercert(
-    _handle_bits: u64,
-    _binary_form_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_ssl_socket_getpeercert(_handle_bits: u64, _binary_form_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { ssl_runtime_profile_unavailable(_py) })
 }
 
@@ -1235,11 +1228,7 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
         #[cfg(all(not(molt_has_net_io), not(target_arch = "wasm32")))]
         {
             let _ = id;
-            raise_exception::<u64>(
-                _py,
-                "OSError",
-                "ssl not supported by this runtime profile",
-            )
+            raise_exception::<u64>(_py, "OSError", "ssl not supported by this runtime profile")
         }
     })
 }
