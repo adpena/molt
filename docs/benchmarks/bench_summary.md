@@ -1,32 +1,30 @@
 # Molt Bench Summary
 
 ## Inputs
-- Native: `bench/results/full_native_baseline_20260320.json`; git_rev=72e5368164a59fd7cedb6073af82fa2796a6430a; created_at=2026-03-21T02:52:46.950072+00:00; system=cpu_count=18, load_avg=[12.78857421875, 14.8154296875, 11.0595703125], machine=arm64, platform=macOS-26.3.1-arm64-arm-64bit, python=3.12.13
-- WASM: `bench/results/bench_wasm_20260328_102249.json`; git_rev=2b80788b94edbe8a99b883e09e78decbf798ed45; created_at=2026-03-28T10:22:49.339021+00:00; system=cpu_count=18, load_avg=[5.90234375, 5.3505859375, 4.70947265625], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
+- Native: `bench/results/full_native_refresh_20260519.json`; git_rev=1a7796eec67d6023d3a63520395723803733564e; created_at=2026-05-19T17:27:09.954967+00:00; timing_mode=warm_throughput, warmup=1, samples=3; system=cpu_count=18, load_avg=[3.71484375, 3.837890625, 4.2490234375], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
+- WASM: `bench/results/bench_wasm_20260328_102249.json`; git_rev=2b80788b94edbe8a99b883e09e78decbf798ed45; created_at=2026-03-28T10:22:49.339021+00:00; timing_mode=legacy-unknown, warmup=1, samples=3; system=cpu_count=18, load_avg=[5.90234375, 5.3505859375, 4.70947265625], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
 - NOTE: native and wasm results come from different git revisions; interpret combined ratios cautiously.
 
 ## Summary
-- Benchmarks: 54 total; native ok 28/54; wasm ok 0/1.
-- Median native speedup vs CPython: 0.30x.
+- Benchmarks: 56 total; native ok 49/56; wasm ok 0/1.
+- Median native speedup vs CPython: 1.63x.
 - Median wasm speedup vs CPython: -.
 - Median wasm/native ratio: -.
-- Native regressions (< 1.0x): 23.
-- Comparator coverage: PyPy 51/54, Codon 0/54, Nuitka 0/54, Pyodide 0/54.
-- Missing wasm entries: bench_async_await, bench_attr_access, bench_bytearray_find, bench_bytearray_replace, bench_bytes_find, bench_bytes_find_only, bench_bytes_replace, bench_channel_throughput, bench_class_hierarchy, bench_counter_words, bench_csv_parse, bench_csv_parse_wide, bench_deeply_nested_loop, bench_descriptor_property, bench_dict_comprehension, bench_dict_ops, bench_dict_views, bench_etl_orders, bench_exception_heavy, bench_fib, bench_gc_pressure, bench_generator_iter, bench_json_roundtrip, bench_list_ops, bench_list_slice, bench_matrix_math, bench_max_list, bench_memoryview_tobytes, bench_min_list, bench_parse_msgpack, bench_prod_list, bench_ptr_registry, bench_range_iter, bench_set_ops, bench_startup, bench_str_count, bench_str_count_unicode, bench_str_count_unicode_warm, bench_str_endswith, bench_str_find, bench_str_find_unicode, bench_str_find_unicode_warm, bench_str_join, bench_str_replace, bench_str_split, bench_str_startswith, bench_struct, bench_sum_list, bench_sum_list_hints, bench_try_except, bench_tuple_index, bench_tuple_pack, bench_tuple_slice.
+- Native regressions (< 1.0x): 8.
+- Comparator coverage: PyPy 0/56, Codon 0/56, Nuitka 0/56, Pyodide 0/56.
+- Missing wasm entries: bench_async_await, bench_attr_access, bench_bytearray_find, bench_bytearray_replace, bench_bytes_find, bench_bytes_find_only, bench_bytes_replace, bench_channel_throughput, bench_class_hierarchy, bench_counter_words, bench_csv_parse, bench_csv_parse_wide, bench_deeply_nested_loop, bench_descriptor_property, bench_dict_comprehension, bench_dict_ops, bench_dict_views, bench_etl_orders, bench_exception_heavy, bench_fib, bench_gc_pressure, bench_generator_iter, bench_import_time, bench_json_roundtrip, bench_list_ops, bench_list_slice, bench_matrix_math, bench_max_list, bench_memoryview_tobytes, bench_min_list, bench_parse_msgpack, bench_procedural_gen, bench_prod_list, bench_ptr_registry, bench_range_iter, bench_set_ops, bench_startup, bench_str_count, bench_str_count_unicode, bench_str_count_unicode_warm, bench_str_endswith, bench_str_find, bench_str_find_unicode, bench_str_find_unicode_warm, bench_str_join, bench_str_replace, bench_str_split, bench_str_startswith, bench_struct, bench_sum_list, bench_sum_list_hints, bench_try_except, bench_tuple_index, bench_tuple_pack, bench_tuple_slice.
 
 ## Regressions (Native < 1.0x)
 | Benchmark | Speedup | Molt s | CPython s |
 | --- | --- | --- | --- |
-| bench_class_hierarchy | 0.01x | 33.249677 | 0.399121 |
-| bench_struct | 0.05x | 1.903567 | 0.094102 |
-| bench_bytes_find_only | 0.06x | 3.764117 | 0.209854 |
-| bench_bytes_find | 0.07x | 2.897665 | 0.201727 |
-| bench_exception_heavy | 0.10x | 1.406110 | 0.143784 |
-| bench_attr_access | 0.11x | 0.219055 | 0.023784 |
-| bench_json_roundtrip | 0.13x | 0.121444 | 0.015798 |
-| bench_descriptor_property | 0.13x | 0.232723 | 0.030456 |
-| bench_str_endswith | 0.19x | 0.103849 | 0.019240 |
-| bench_str_startswith | 0.21x | 0.095630 | 0.019630 |
+| bench_exception_heavy | 0.06x | 1.957929 | 0.121389 |
+| bench_json_roundtrip | 0.15x | 0.102909 | 0.015420 |
+| bench_counter_words | 0.31x | 0.069943 | 0.021645 |
+| bench_etl_orders | 0.46x | 0.100697 | 0.045929 |
+| bench_csv_parse_wide | 0.61x | 0.048072 | 0.029429 |
+| bench_csv_parse | 0.74x | 0.023211 | 0.017281 |
+| bench_generator_iter | 0.83x | 0.018378 | 0.015236 |
+| bench_tuple_pack | 0.94x | 0.024365 | 0.022812 |
 
 ## WASM vs Native (Slowest)
 | Benchmark | WASM s | Native s | WASM/Native |
@@ -36,16 +34,7 @@
 ## Molt vs PyPy (Both OK)
 | Benchmark | Molt s | Comparator s | Molt/Comparator |
 | --- | --- | --- | --- |
-| bench_class_hierarchy | 33.249677 | 0.041078 | 809.42x |
-| bench_struct | 1.903567 | 0.041849 | 45.49x |
-| bench_bytes_find | 2.897665 | 0.079648 | 36.38x |
-| bench_exception_heavy | 1.406110 | 0.053166 | 26.45x |
-| bench_bytes_find_only | 3.764117 | 0.557311 | 6.75x |
-| bench_attr_access | 0.219055 | 0.039539 | 5.54x |
-| bench_descriptor_property | 0.232723 | 0.047533 | 4.90x |
-| bench_str_endswith | 0.103849 | 0.042742 | 2.43x |
-| bench_str_startswith | 0.095630 | 0.044777 | 2.14x |
-| bench_str_count | 0.094528 | 0.045583 | 2.07x |
+| - | - | - | - |
 
 ## Molt vs Codon (Both OK)
 | Benchmark | Molt s | Comparator s | Molt/Comparator |
@@ -65,59 +54,61 @@
 ## Combined Table
 | Benchmark | Molt OK | CPython s | PyPy s | Codon build s | Codon run s | Codon KB | Nuitka build s | Nuitka run s | Nuitka KB | Pyodide run s | Molt build s | Molt run s | Molt KB | Molt/CPython | Molt/PyPy | Molt/Codon | Molt/Nuitka | Molt/Pyodide | WASM OK | WASM s | WASM/Native | WASM/CPython |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| bench_async_await | no | 0.043817 | 0.103757 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_attr_access | yes | 0.023784 | 0.039539 | - | - | - | - | - | - | - | 12.960254 | 0.219055 | 30931.976562 | 9.21x | 5.54x | - | - | - | no | - | - | - |
-| bench_bytearray_find | yes | 0.011446 | 0.039507 | - | - | - | - | - | - | - | 11.195212 | 0.014998 | 30910.742188 | 1.31x | 0.38x | - | - | - | no | - | - | - |
-| bench_bytearray_replace | yes | 0.030070 | 0.073547 | - | - | - | - | - | - | - | 11.356831 | 0.014000 | 30910.968750 | 0.47x | 0.19x | - | - | - | no | - | - | - |
-| bench_bytes_find | yes | 0.201727 | 0.079648 | - | - | - | - | - | - | - | 13.735348 | 2.897665 | 30894.382812 | 14.36x | 36.38x | - | - | - | no | - | - | - |
-| bench_bytes_find_only | yes | 0.209854 | 0.557311 | - | - | - | - | - | - | - | 11.652172 | 3.764117 | 30910.835938 | 17.94x | 6.75x | - | - | - | no | - | - | - |
-| bench_bytes_replace | yes | 0.015324 | 0.046281 | - | - | - | - | - | - | - | 11.248881 | 0.009325 | 30910.679688 | 0.61x | 0.20x | - | - | - | no | - | - | - |
-| bench_channel_throughput | no | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_class_hierarchy | yes | 0.399121 | 0.041078 | - | - | - | - | - | - | - | 69.080161 | 33.249677 | 30780.570312 | 83.31x | 809.42x | - | - | - | no | - | - | - |
-| bench_counter_words | yes | 0.041013 | 0.099853 | - | - | - | - | - | - | - | 35.733874 | 0.106845 | 47862.554688 | 2.61x | 1.07x | - | - | - | no | - | - | - |
-| bench_csv_parse | no | 0.018588 | 0.043511 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_csv_parse_wide | no | 0.032090 | 0.067662 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_deeply_nested_loop | no | 0.032507 | 0.041053 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_descriptor_property | yes | 0.030456 | 0.047533 | - | - | - | - | - | - | - | 17.958950 | 0.232723 | 30953.187500 | 7.64x | 4.90x | - | - | - | no | - | - | - |
-| bench_dict_comprehension | no | 0.023631 | 0.049080 | - | - | - | - | - | - | - | 14.388251 | - | 30751.312500 | - | - | - | - | - | no | - | - | - |
-| bench_dict_ops | yes | 0.018818 | 0.053599 | - | - | - | - | - | - | - | 20.092476 | 0.028984 | 30893.937500 | 1.54x | 0.54x | - | - | - | no | - | - | - |
-| bench_dict_views | yes | 0.020859 | 0.062324 | - | - | - | - | - | - | - | 22.305234 | 0.036312 | 30926.304688 | 1.74x | 0.58x | - | - | - | no | - | - | - |
-| bench_etl_orders | no | 0.054194 | 0.070173 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_exception_heavy | yes | 0.143784 | 0.053166 | - | - | - | - | - | - | - | 37.167246 | 1.406110 | 30684.554688 | 9.78x | 26.45x | - | - | - | no | - | - | - |
-| bench_fib | no | 0.060794 | 0.048855 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_gc_pressure | yes | 0.409200 | 0.307045 | - | - | - | - | - | - | - | 10.933512 | 0.519157 | 30684.226562 | 1.27x | 1.69x | - | - | - | no | - | - | - |
-| bench_generator_iter | no | 0.016054 | 0.048782 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_json_roundtrip | yes | 0.015798 | 0.059793 | - | - | - | - | - | - | - | 34.797451 | 0.121444 | 42310.460938 | 7.69x | 2.03x | - | - | - | no | - | - | - |
-| bench_list_ops | no | 0.014171 | 0.047452 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_list_slice | no | 0.019548 | 0.046296 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_matrix_math | no | 0.031183 | 0.041908 | - | - | - | - | - | - | - | 32.180167 | - | 30930.429688 | - | - | - | - | - | no | - | - | - |
-| bench_max_list | no | 0.029036 | 0.041338 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_memoryview_tobytes | yes | 0.011887 | 0.095807 | - | - | - | - | - | - | - | 11.058896 | 0.008857 | 30911.750000 | 0.75x | 0.09x | - | - | - | no | - | - | - |
-| bench_min_list | no | 0.035456 | 0.051973 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_parse_msgpack | no | 0.016786 | - | - | - | - | - | - | - | - | 10.965979 | - | 30912.601562 | - | - | - | - | - | no | - | - | - |
-| bench_prod_list | no | 0.027408 | 0.042327 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_ptr_registry | no | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_range_iter | no | 0.016508 | 0.042930 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_set_ops | yes | 0.029166 | 0.051906 | - | - | - | - | - | - | - | 38.048615 | 0.025881 | 30700.250000 | 0.89x | 0.50x | - | - | - | no | - | - | - |
-| bench_startup | yes | 0.010347 | 0.038309 | - | - | - | - | - | - | - | 12.611910 | 0.006623 | 30667.859375 | 0.64x | 0.17x | - | - | - | no | - | - | - |
-| bench_str_count | yes | 0.021285 | 0.045583 | - | - | - | - | - | - | - | 11.538849 | 0.094528 | 30914.007812 | 4.44x | 2.07x | - | - | - | no | - | - | - |
-| bench_str_count_unicode | yes | 0.017734 | 0.045389 | - | - | - | - | - | - | - | 11.282721 | 0.062297 | 30914.796875 | 3.51x | 1.37x | - | - | - | no | - | - | - |
-| bench_str_count_unicode_warm | yes | 0.028591 | 0.060731 | - | - | - | - | - | - | - | 11.530958 | 0.083139 | 30931.562500 | 2.91x | 1.37x | - | - | - | no | - | - | - |
-| bench_str_endswith | yes | 0.019240 | 0.042742 | - | - | - | - | - | - | - | 12.497095 | 0.103849 | 30914.273438 | 5.40x | 2.43x | - | - | - | no | - | - | - |
-| bench_str_find | yes | 0.020014 | 0.048759 | - | - | - | - | - | - | - | 11.435626 | 0.095984 | 30913.968750 | 4.80x | 1.97x | - | - | - | no | - | - | - |
-| bench_str_find_unicode | yes | 0.014727 | 0.046462 | - | - | - | - | - | - | - | 11.641488 | 0.043869 | 30914.757812 | 2.98x | 0.94x | - | - | - | no | - | - | - |
-| bench_str_find_unicode_warm | yes | 0.014788 | 0.046690 | - | - | - | - | - | - | - | 19.669258 | 0.046862 | 30931.484375 | 3.17x | 1.00x | - | - | - | no | - | - | - |
-| bench_str_join | no | 0.023788 | 0.043904 | - | - | - | - | - | - | - | 11.213165 | - | 30910.281250 | - | - | - | - | - | no | - | - | - |
-| bench_str_replace | yes | 0.016836 | 0.045786 | - | - | - | - | - | - | - | 11.511492 | 0.061619 | 30914.273438 | 3.66x | 1.35x | - | - | - | no | - | - | - |
-| bench_str_split | yes | 0.016900 | 0.047830 | - | - | - | - | - | - | - | 34.008610 | 0.017992 | 30914.054688 | 1.06x | 0.38x | - | - | - | no | - | - | - |
-| bench_str_startswith | yes | 0.019630 | 0.044777 | - | - | - | - | - | - | - | 10.936105 | 0.095630 | 30914.460938 | 4.87x | 2.14x | - | - | - | no | - | - | - |
-| bench_struct | yes | 0.094102 | 0.041849 | - | - | - | - | - | - | - | 31.578684 | 1.903567 | 30931.546875 | 20.23x | 45.49x | - | - | - | no | - | - | - |
-| bench_sum | no | 0.165260 | 0.041837 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_sum_list | no | 0.031831 | 0.037774 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_sum_list_hints | no | 0.037908 | 0.046685 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_try_except | no | 0.017068 | 0.044597 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_tuple_index | no | 0.023945 | 0.048655 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_tuple_pack | no | 0.028192 | 0.044838 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
-| bench_tuple_slice | no | 0.018484 | 0.045302 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
+| bench_async_await | no | 0.042179 | - | - | - | - | - | - | - | - | 11.887222 | - | 24287.335938 | - | - | - | - | - | no | - | - | - |
+| bench_attr_access | yes | 0.022664 | - | - | - | - | - | - | - | - | 0.620140 | 0.012087 | 7458.476562 | 0.53x | - | - | - | - | no | - | - | - |
+| bench_bytearray_find | yes | 0.010788 | - | - | - | - | - | - | - | - | 0.740189 | 0.008557 | 7458.476562 | 0.79x | - | - | - | - | no | - | - | - |
+| bench_bytearray_replace | yes | 0.027338 | - | - | - | - | - | - | - | - | 0.747778 | 0.013468 | 7458.484375 | 0.49x | - | - | - | - | no | - | - | - |
+| bench_bytes_find | yes | 0.157111 | - | - | - | - | - | - | - | - | 0.801626 | 0.007778 | 7442.351562 | 0.05x | - | - | - | - | no | - | - | - |
+| bench_bytes_find_only | yes | 0.186876 | - | - | - | - | - | - | - | - | 0.709859 | 0.026645 | 7442.351562 | 0.14x | - | - | - | - | no | - | - | - |
+| bench_bytes_replace | yes | 0.014953 | - | - | - | - | - | - | - | - | 0.887921 | 0.006193 | 7458.476562 | 0.41x | - | - | - | - | no | - | - | - |
+| bench_channel_throughput | no | - | - | - | - | - | - | - | - | - | 11.689951 | - | 24335.750000 | - | - | - | - | - | no | - | - | - |
+| bench_class_hierarchy | yes | 0.384959 | - | - | - | - | - | - | - | - | 1.079770 | 0.090114 | 7458.492188 | 0.23x | - | - | - | - | no | - | - | - |
+| bench_counter_words | yes | 0.021645 | - | - | - | - | - | - | - | - | 4.206579 | 0.069943 | 12718.554688 | 3.23x | - | - | - | - | no | - | - | - |
+| bench_csv_parse | yes | 0.017281 | - | - | - | - | - | - | - | - | 0.855474 | 0.023211 | 7458.476562 | 1.34x | - | - | - | - | no | - | - | - |
+| bench_csv_parse_wide | yes | 0.029429 | - | - | - | - | - | - | - | - | 0.854247 | 0.048072 | 7474.617188 | 1.63x | - | - | - | - | no | - | - | - |
+| bench_deeply_nested_loop | yes | 0.032198 | - | - | - | - | - | - | - | - | 0.766040 | 0.012458 | 7458.484375 | 0.39x | - | - | - | - | no | - | - | - |
+| bench_descriptor_property | yes | 0.023821 | - | - | - | - | - | - | - | - | 0.978661 | 0.014930 | 7458.500000 | 0.63x | - | - | - | - | no | - | - | - |
+| bench_dict_comprehension | no | 0.022913 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
+| bench_dict_ops | yes | 0.011500 | - | - | - | - | - | - | - | - | 0.623590 | 0.004766 | 7442.343750 | 0.41x | - | - | - | - | no | - | - | - |
+| bench_dict_views | yes | 0.011378 | - | - | - | - | - | - | - | - | 0.658982 | 0.006973 | 7458.476562 | 0.61x | - | - | - | - | no | - | - | - |
+| bench_etl_orders | yes | 0.045929 | - | - | - | - | - | - | - | - | 4.093457 | 0.100697 | 12024.476562 | 2.19x | - | - | - | - | no | - | - | - |
+| bench_exception_heavy | yes | 0.121389 | - | - | - | - | - | - | - | - | 0.748414 | 1.957929 | 7458.476562 | 16.13x | - | - | - | - | no | - | - | - |
+| bench_fib | yes | 0.058108 | - | - | - | - | - | - | - | - | 0.773368 | 0.051725 | 7442.343750 | 0.89x | - | - | - | - | no | - | - | - |
+| bench_gc_pressure | yes | 0.422199 | - | - | - | - | - | - | - | - | 0.812146 | 0.385473 | 7442.351562 | 0.91x | - | - | - | - | no | - | - | - |
+| bench_generator_iter | yes | 0.015236 | - | - | - | - | - | - | - | - | 3.252918 | 0.018378 | 11153.398438 | 1.21x | - | - | - | - | no | - | - | - |
+| bench_import_time | no | 0.021409 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
+| bench_json_roundtrip | yes | 0.015420 | - | - | - | - | - | - | - | - | 1.127830 | 0.102909 | 7587.570312 | 6.67x | - | - | - | - | no | - | - | - |
+| bench_list_ops | yes | 0.011362 | - | - | - | - | - | - | - | - | 0.714547 | 0.005530 | 7442.343750 | 0.49x | - | - | - | - | no | - | - | - |
+| bench_list_slice | yes | 0.016544 | - | - | - | - | - | - | - | - | 0.693371 | 0.015395 | 7442.351562 | 0.93x | - | - | - | - | no | - | - | - |
+| bench_matrix_math | yes | 0.029719 | - | - | - | - | - | - | - | - | 0.778309 | 0.004924 | 7458.476562 | 0.17x | - | - | - | - | no | - | - | - |
+| bench_max_list | yes | 0.026799 | - | - | - | - | - | - | - | - | 0.656822 | 0.009897 | 7442.343750 | 0.37x | - | - | - | - | no | - | - | - |
+| bench_memoryview_tobytes | yes | 0.010627 | - | - | - | - | - | - | - | - | 0.763334 | 0.008375 | 7458.484375 | 0.79x | - | - | - | - | no | - | - | - |
+| bench_min_list | yes | 0.026204 | - | - | - | - | - | - | - | - | 0.654574 | 0.009117 | 7442.343750 | 0.35x | - | - | - | - | no | - | - | - |
+| bench_parse_msgpack | no | 0.016810 | - | - | - | - | - | - | - | - | 0.800556 | - | 7442.351562 | - | - | - | - | - | no | - | - | - |
+| bench_procedural_gen | no | 0.016513 | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | no | - | - | - |
+| bench_prod_list | yes | 0.023905 | - | - | - | - | - | - | - | - | 0.661200 | 0.007772 | 7442.351562 | 0.33x | - | - | - | - | no | - | - | - |
+| bench_ptr_registry | no | - | - | - | - | - | - | - | - | - | 3.449390 | - | 11185.679688 | - | - | - | - | - | no | - | - | - |
+| bench_range_iter | yes | 0.013310 | - | - | - | - | - | - | - | - | 0.715002 | 0.004649 | 7442.351562 | 0.35x | - | - | - | - | no | - | - | - |
+| bench_set_ops | yes | 0.014013 | - | - | - | - | - | - | - | - | 0.862116 | 0.010925 | 7442.343750 | 0.78x | - | - | - | - | no | - | - | - |
+| bench_startup | yes | 0.009683 | - | - | - | - | - | - | - | - | 0.745429 | 0.004239 | 7442.343750 | 0.44x | - | - | - | - | no | - | - | - |
+| bench_str_count | yes | 0.019982 | - | - | - | - | - | - | - | - | 0.835706 | 0.011049 | 7458.476562 | 0.55x | - | - | - | - | no | - | - | - |
+| bench_str_count_unicode | yes | 0.017303 | - | - | - | - | - | - | - | - | 0.786692 | 0.011660 | 7458.484375 | 0.67x | - | - | - | - | no | - | - | - |
+| bench_str_count_unicode_warm | yes | 0.026257 | - | - | - | - | - | - | - | - | 0.772107 | 0.010529 | 7458.484375 | 0.40x | - | - | - | - | no | - | - | - |
+| bench_str_endswith | yes | 0.017828 | - | - | - | - | - | - | - | - | 0.819544 | 0.012590 | 7458.476562 | 0.71x | - | - | - | - | no | - | - | - |
+| bench_str_find | yes | 0.017651 | - | - | - | - | - | - | - | - | 0.766042 | 0.014963 | 7458.468750 | 0.85x | - | - | - | - | no | - | - | - |
+| bench_str_find_unicode | yes | 0.014412 | - | - | - | - | - | - | - | - | 0.774473 | 0.009205 | 7458.476562 | 0.64x | - | - | - | - | no | - | - | - |
+| bench_str_find_unicode_warm | yes | 0.015075 | - | - | - | - | - | - | - | - | 0.749262 | 0.008075 | 7458.484375 | 0.54x | - | - | - | - | no | - | - | - |
+| bench_str_join | yes | 0.021469 | - | - | - | - | - | - | - | - | 0.837438 | 0.011421 | 7442.343750 | 0.53x | - | - | - | - | no | - | - | - |
+| bench_str_replace | yes | 0.015398 | - | - | - | - | - | - | - | - | 0.748564 | 0.011084 | 7442.351562 | 0.72x | - | - | - | - | no | - | - | - |
+| bench_str_split | yes | 0.012973 | - | - | - | - | - | - | - | - | 0.761303 | 0.006309 | 7442.351562 | 0.49x | - | - | - | - | no | - | - | - |
+| bench_str_startswith | yes | 0.018388 | - | - | - | - | - | - | - | - | 0.775062 | 0.012100 | 7458.476562 | 0.66x | - | - | - | - | no | - | - | - |
+| bench_struct | yes | 0.087884 | - | - | - | - | - | - | - | - | 0.563421 | 0.009376 | 7458.468750 | 0.11x | - | - | - | - | no | - | - | - |
+| bench_sum | yes | 0.144394 | - | - | - | - | - | - | - | - | 0.630105 | 0.006356 | 7442.343750 | 0.04x | - | - | - | - | no | - | - | - |
+| bench_sum_list | yes | 0.033029 | - | - | - | - | - | - | - | - | 0.677816 | 0.008081 | 7458.484375 | 0.24x | - | - | - | - | no | - | - | - |
+| bench_sum_list_hints | yes | 0.029366 | - | - | - | - | - | - | - | - | 1.046568 | 0.009474 | 7442.351562 | 0.32x | - | - | - | - | no | - | - | - |
+| bench_try_except | yes | 0.014897 | - | - | - | - | - | - | - | - | 0.707592 | 0.011692 | 7442.351562 | 0.78x | - | - | - | - | no | - | - | - |
+| bench_tuple_index | yes | 0.019090 | - | - | - | - | - | - | - | - | 0.729473 | 0.014729 | 7442.351562 | 0.77x | - | - | - | - | no | - | - | - |
+| bench_tuple_pack | yes | 0.022812 | - | - | - | - | - | - | - | - | 0.706872 | 0.024365 | 7458.476562 | 1.07x | - | - | - | - | no | - | - | - |
+| bench_tuple_slice | yes | 0.017368 | - | - | - | - | - | - | - | - | 0.785005 | 0.016814 | 7442.351562 | 0.97x | - | - | - | - | no | - | - | - |
 
 Generated by `tools/bench_report.py`.

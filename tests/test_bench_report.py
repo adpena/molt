@@ -71,7 +71,11 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
                     "molt_time_s": 0.50,
                     "cpython_time_s": 1.00,
                     "molt_speedup": 2.0,
-                }
+                },
+                "bench_broken.py": {
+                    "molt_ok": False,
+                    "cpython_time_s": 1.25,
+                },
             },
         },
     )
@@ -127,6 +131,8 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
     updated_status = status_doc.read_text(encoding="utf-8")
     assert "Latest run: 2026-04-03" in updated_status
     assert "Top speedups:" in updated_status
+    assert "Molt build/run failures: `bench_broken.py`." in updated_status
+    assert "Comparator baseline coverage:" in updated_status
     assert "WASM run: 2026-04-03" in updated_status
     assert (
         module.main(
