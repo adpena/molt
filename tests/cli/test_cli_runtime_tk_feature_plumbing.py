@@ -99,6 +99,67 @@ def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
     assert info.currsize >= 1
 
 
+def test_runtime_lib_path_is_stdlib_profile_qualified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cli._runtime_lib_path_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
+
+    micro = cli._runtime_lib_path(
+        tmp_path,
+        "dev-fast",
+        None,
+        stdlib_profile="micro",
+    )
+    full = cli._runtime_lib_path(
+        tmp_path,
+        "dev-fast",
+        None,
+        stdlib_profile="full",
+    )
+    target_micro = cli._runtime_lib_path(
+        tmp_path,
+        "dev-fast",
+        "aarch64-apple-darwin",
+        stdlib_profile="micro",
+    )
+
+    assert micro != full
+    assert micro.name == "libmolt_runtime.stdlib_micro.a"
+    assert full.name == "libmolt_runtime.stdlib_full.a"
+    assert target_micro == (
+        tmp_path
+        / "target"
+        / "aarch64-apple-darwin"
+        / "dev-fast"
+        / "libmolt_runtime.stdlib_micro.a"
+    )
+
+
+def test_runtime_fingerprint_path_is_stdlib_profile_qualified(tmp_path: Path) -> None:
+    target_root = tmp_path / "target" / "dev-fast"
+    micro = target_root / "libmolt_runtime.stdlib_micro.a"
+    full = target_root / "libmolt_runtime.stdlib_full.a"
+
+    micro_fingerprint = cli._runtime_fingerprint_path(
+        tmp_path,
+        micro,
+        "dev-fast",
+        None,
+    )
+    full_fingerprint = cli._runtime_fingerprint_path(
+        tmp_path,
+        full,
+        "dev-fast",
+        None,
+    )
+
+    assert micro_fingerprint != full_fingerprint
+    assert "libmolt_runtime.stdlib_micro.a" in micro_fingerprint.name
+    assert "libmolt_runtime.stdlib_full.a" in full_fingerprint.name
+
+
 def test_runtime_fingerprint_changes_with_runtime_features(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -395,6 +456,200 @@ def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(
     features = set(seen_cmds[0][feature_index + 1].split(","))
     assert {"molt_tk_native", "stdlib_full"} <= features
     assert "stdlib_micro" not in features
+
+
+def test_ensure_runtime_lib_materializes_stdlib_profile_aliases_without_rebuilding_final_micro(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    target_root = tmp_path / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    cli._runtime_lib_path_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+    cli._build_state_root_cached.cache_clear()
+
+    micro_lib = cli._runtime_lib_path(
+        project_root,
+        "dev-fast",
+        None,
+        stdlib_profile="micro",
+    )
+    full_lib = cli._runtime_lib_path(
+        project_root,
+        "dev-fast",
+        None,
+        stdlib_profile="full",
+    )
+    cargo_profiles: list[str] = []
+
+    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [], raising=True)
+    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test", raising=True)
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+
+    def fake_run_cargo(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        json_output: bool,
+        label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, timeout, json_output, label
+        joined = " ".join(cmd)
+        profile = "micro" if "stdlib_micro" in joined else "full"
+        cargo_profiles.append(profile)
+        scratch = Path(env["CARGO_TARGET_DIR"]) / "dev-fast" / "libmolt_runtime.a"
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_bytes(f"!<arch>\n{profile}".encode("utf-8"))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+    )
+
+    try:
+        assert cli._ensure_runtime_lib(
+            micro_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="micro",
+        )
+        assert cli._ensure_runtime_lib(
+            full_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="full",
+        )
+        assert cli._ensure_runtime_lib(
+            micro_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="micro",
+        )
+        cli._RUNTIME_LIB_VERIFIED.clear()
+        assert cli._ensure_runtime_lib(
+            micro_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="micro",
+        )
+    finally:
+        cli._RUNTIME_LIB_VERIFIED.clear()
+
+    assert cargo_profiles == ["micro", "full"]
+    assert micro_lib.read_bytes() == b"!<arch>\nmicro"
+    assert full_lib.read_bytes() == b"!<arch>\nfull"
+
+
+def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    target_root = tmp_path / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    cli._runtime_lib_path_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+
+    output_obj = tmp_path / "output.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    output_binary = tmp_path / "app"
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+    captured_runtime_libs: list[Path] = []
+
+    def fake_build_native_link_command(
+        *,
+        output_obj: Path,
+        stub_path: Path,
+        runtime_lib: Path,
+        output_binary: Path,
+        target_triple: str | None,
+        sysroot_path: Path | None,
+        profile: str,
+        stdlib_obj_path: Path | None = None,
+    ) -> tuple[list[str], str | None, str | None]:
+        del output_obj, stub_path, output_binary, target_triple, sysroot_path, profile
+        del stdlib_obj_path
+        captured_runtime_libs.append(runtime_lib)
+        return ["clang", str(runtime_lib)], None, None
+
+    monkeypatch.setattr(
+        cli,
+        "_build_native_link_command",
+        fake_build_native_link_command,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_link_fingerprint",
+        lambda *args, **kwargs: {
+            "hash": "link",
+            "rustc": None,
+            "inputs_digest": None,
+        },
+        raising=True,
+    )
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        cli,
+        "_run_native_link_command",
+        lambda **kwargs: subprocess.CompletedProcess(kwargs["link_cmd"], 0, "", ""),
+    )
+
+    prepared, error = cli._prepare_native_link(
+        output_artifact=output_obj,
+        trusted=False,
+        capabilities_list=None,
+        artifacts_root=artifacts_root,
+        json_output=True,
+        output_binary=output_binary,
+        runtime_lib=None,
+        molt_root=project_root,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        project_root=project_root,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        stdlib_profile="full",
+    )
+
+    expected = cli._runtime_lib_path(
+        project_root,
+        "dev-fast",
+        None,
+        stdlib_profile="full",
+    )
+    assert error is None
+    assert prepared is not None
+    assert captured_runtime_libs == [expected]
+    assert prepared.runtime_lib == expected
+    assert str(expected) in prepared.link_cmd
 
 
 def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profile(

@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -255,6 +257,26 @@ def test_native_full_profile_importlib_machinery_sees_bootstrapped_sys_platform(
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["str", "True", ".so"]
+
+
+@pytest.mark.parametrize("split_limit", ["", "1000", "500"])
+def test_native_full_profile_import_threading_survives_split_frame_transport(
+    tmp_path: Path, split_limit: str
+) -> None:
+    cache_suffix = split_limit or "default"
+    run = _build_and_run_with_env(
+        tmp_path,
+        "import threading\nprint(threading.__name__)\n",
+        f"full_profile_import_threading_{cache_suffix}",
+        session_id=f"pytest-native-bootstrap-full-threading-{cache_suffix}",
+        cache_dir=ROOT / f".molt_cache-threading-split-{cache_suffix}",
+        backend="cranelift",
+        extra_env={"MOLT_MAX_FUNCTION_OPS": split_limit},
+        extra_build_args=["--stdlib-profile", "full"],
+        run_timeout_secs=60,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "threading"
 
 
 def test_native_globals_builtin_is_callable(tmp_path: Path) -> None:

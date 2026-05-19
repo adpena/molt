@@ -262,6 +262,14 @@ impl ScalarRepresentationPlan {
         })
     }
 
+    pub(crate) fn op_index_key_is_integer_family(&self, op: &OpIR) -> bool {
+        matches!(op.kind.as_str(), "index" | "store_index" | "dict_set")
+            && op.args.as_ref().is_some_and(|args| {
+                args.get(1)
+                    .is_some_and(|key| self.name_is_integer_family(key))
+            })
+    }
+
     fn insert_lir_value(&mut self, name: String, value: &LirValue) {
         self.insert_fact(
             name,
@@ -1270,9 +1278,7 @@ impl ScalarRepresentationPlan {
             "invert" => first_source()
                 .filter(|src| is_int(src))
                 .map(|_| ScalarKind::Int),
-            "index" | "store_index" | "dict_set" => {
-                args.get(1).filter(|k| is_int(k)).map(|_| ScalarKind::Int)
-            }
+            "index" => op.out.as_deref().and_then(|out| self.name_scalar_kind(out)),
             _ => None,
         }
     }
@@ -1696,6 +1702,62 @@ mod tests {
             !primary.bool_.contains("item"),
             "semantic element type alone must not prove native raw-bool carrier codegen"
         );
+    }
+
+    #[test]
+    fn index_result_lane_comes_from_element_fact_not_key() {
+        let index = op("index", Some("item"), None, &["items", "idx"]);
+        let func = function(
+            "typed_list_int_index",
+            &["items", "idx"],
+            Some(vec!["list[int]", "int"]),
+            vec![index.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+        let primary = plan.primary_name_sets();
+
+        assert_eq!(plan.op_scalar_lane(&index), Some(ScalarKind::Int));
+        assert!(plan.op_index_key_is_integer_family(&index));
+        assert!(int_like.contains("item"));
+        assert!(
+            !primary.int.contains("item"),
+            "generic index results are boxed transport unless lowering proves a raw element carrier"
+        );
+    }
+
+    #[test]
+    fn generic_index_does_not_promote_result_from_integer_key() {
+        let index = op(
+            "index",
+            Some("object_type_tag"),
+            None,
+            &["__molt_split_frame", "__molt_split_frame_index"],
+        );
+        let func = function(
+            "split_frame_index",
+            &[],
+            None,
+            vec![
+                op("list_new", Some("__molt_split_frame"), None, &[]),
+                const_int("__molt_split_frame_index", 0),
+                index.clone(),
+                op(
+                    "builtin_type",
+                    Some("object_type"),
+                    None,
+                    &["object_type_tag"],
+                ),
+            ],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+        let primary = plan.primary_name_sets();
+
+        assert_eq!(plan.op_scalar_lane(&index), None);
+        assert!(plan.op_index_key_is_integer_family(&index));
+        assert!(!int_like.contains("object_type_tag"));
+        assert!(!primary.int.contains("object_type_tag"));
     }
 
     #[test]

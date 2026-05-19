@@ -8016,6 +8016,37 @@ _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 3
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 3
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 
+_RUNTIME_STDLIB_PROFILE_ALIASES = {
+    "micro": "stdlib_micro",
+    "full": "stdlib_full",
+}
+
+
+def _normalize_runtime_stdlib_profile(stdlib_profile: str | None) -> str:
+    profile = stdlib_profile or "micro"
+    if profile not in _RUNTIME_STDLIB_PROFILE_ALIASES:
+        raise ValueError("stdlib_profile must be 'micro' or 'full'")
+    return profile
+
+
+def _runtime_lib_archive_name(stdlib_profile: str | None) -> str:
+    profile = _normalize_runtime_stdlib_profile(stdlib_profile)
+    alias = _RUNTIME_STDLIB_PROFILE_ALIASES[profile]
+    return f"libmolt_runtime.{alias}.a"
+
+
+def _runtime_lib_archive_names() -> tuple[str, ...]:
+    names = [
+        _runtime_lib_archive_name("micro"),
+        _runtime_lib_archive_name("full"),
+        "libmolt_runtime.a",
+    ]
+    return tuple(dict.fromkeys(names))
+
+
+def _runtime_cargo_scratch_lib_path(runtime_lib: Path) -> Path:
+    return runtime_lib.with_name("libmolt_runtime.a")
+
 
 @functools.lru_cache(maxsize=1024)
 def _module_graph_cache_key(
@@ -8476,6 +8507,54 @@ def _runtime_builtin_features_for_profile(
             if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
         ]
     return list(_ALL_BUILTIN_FEATURES)
+
+
+_WASM_RUNTIME_FULL_FEATURES: tuple[str, ...] = (
+    "stdlib_crypto",
+    "stdlib_compression",
+    "stdlib_serialization",
+    "stdlib_archive",
+    "stdlib_fs_extra",
+    "builtin_set",
+    "builtin_complex",
+    "builtin_memoryview",
+    "builtin_contextvars",
+    "builtin_fcntl",
+)
+
+
+def _wasm_runtime_feature_plan(
+    *,
+    stdlib_profile: str | None,
+    runtime_features: tuple[str, ...],
+    builtin_features: Collection[str],
+    resolved_modules: set[str] | frozenset[str] | None,
+) -> tuple[bool, tuple[str, ...], tuple[str, ...]]:
+    effective_profile = stdlib_profile or "micro"
+    if effective_profile == "micro":
+        cargo_features = tuple(
+            _dedupe_preserve_order(
+                list(runtime_features) + sorted(builtin_features) + ["stdlib_micro"]
+            )
+        )
+    else:
+        cargo_features = tuple(
+            _dedupe_preserve_order(
+                list(runtime_features)
+                + list(_WASM_RUNTIME_FULL_FEATURES)
+                + (
+                    ["molt_gpu_primitives"]
+                    if _resolved_modules_require_gpu_primitives(
+                        frozenset(resolved_modules or ())
+                    )
+                    else []
+                )
+            )
+        )
+    fingerprint_features = tuple(
+        _dedupe_preserve_order(list(cargo_features) + ["no-default-features"])
+    )
+    return True, cargo_features, fingerprint_features
 
 
 def _builtin_features_from_import_graph(
@@ -11713,6 +11792,7 @@ def _runtime_lib_path_cached(
     project_root_str: str,
     cargo_profile: str,
     target_triple: str | None,
+    stdlib_profile: str | None,
     cargo_target_override: str | None,
     cwd_str: str,
 ) -> Path:
@@ -11723,20 +11803,23 @@ def _runtime_lib_path_cached(
         cwd_str,
         _molt_session_id(),
     )
+    archive_name = _runtime_lib_archive_name(stdlib_profile)
     if target_triple:
-        return target_root / target_triple / profile_dir / "libmolt_runtime.a"
-    return target_root / profile_dir / "libmolt_runtime.a"
+        return target_root / target_triple / profile_dir / archive_name
+    return target_root / profile_dir / archive_name
 
 
 def _runtime_lib_path(
     project_root: Path,
     cargo_profile: str,
     target_triple: str | None,
+    stdlib_profile: str | None = "micro",
 ) -> Path:
     return _runtime_lib_path_cached(
         os.fspath(project_root),
         cargo_profile,
         target_triple,
+        stdlib_profile,
         os.environ.get("CARGO_TARGET_DIR"),
         os.fspath(Path.cwd()),
     )
@@ -11909,6 +11992,30 @@ def _active_artifact_profile_dirs() -> tuple[str, ...]:
         seen.add(profile_dir)
         profile_dirs.append(profile_dir)
     return tuple(profile_dirs)
+
+
+def _runtime_lib_freshness_candidates(
+    target_root: Path,
+    *,
+    target_triple: str | None = None,
+    profile_dirs: tuple[str, ...] | None = None,
+) -> tuple[Path, ...]:
+    profile_dirs = profile_dirs or _active_artifact_profile_dirs()
+    names = _runtime_lib_archive_names()
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for profile_dir in profile_dirs:
+        roots = [target_root / profile_dir]
+        if target_triple:
+            roots.append(target_root / target_triple / profile_dir)
+        for root in roots:
+            for name in names:
+                path = root / name
+                if path in seen:
+                    continue
+                seen.add(path)
+                candidates.append(path)
+    return tuple(candidates)
 
 
 @functools.lru_cache(maxsize=32)
@@ -12574,7 +12681,12 @@ def _sweep_orphaned_backend_daemon_locks_once(project_root: Path) -> None:
         pass
 
 
-def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
+def _backend_daemon_binary_is_newer(
+    backend_bin: Path,
+    pid_path: Path,
+    *,
+    target_triple: str | None = None,
+) -> bool:
     """Check if the backend binary OR runtime library is newer than the daemon.
 
     This prevents the daemon from serving stale compiled code when either
@@ -12584,11 +12696,12 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
         pid_mtime = pid_path.stat().st_mtime + 1e-6
         if backend_bin.stat().st_mtime > pid_mtime:
             return True
-        # Also check if the runtime library was rebuilt — the daemon
+        # Also check if the runtime library was rebuilt. The daemon
         # links compiled output against the runtime, so a stale daemon
         # produces binaries with old runtime behavior.  The staticlib
         # bundles all sub-crates (serial, crypto, compression, math, tk)
-        # so checking libmolt_runtime.a covers the entire multi-crate tree.
+        # so checking the linkable runtime aliases covers the entire
+        # multi-crate tree without conflating stdlib profile identities.
         #
         # Discover project root from Cargo.toml proximity to backend binary,
         # handling CARGO_TARGET_DIR and non-standard layouts.
@@ -12602,8 +12715,10 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
         # Resolve the runtime artifact root through the canonical cargo-target
         # resolver so explicit CARGO_TARGET_DIR always wins over session fallback.
         target_root = _cargo_target_root(candidate)
-        for profile_dir in _active_artifact_profile_dirs():
-            runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
+        for runtime_lib in _runtime_lib_freshness_candidates(
+            target_root,
+            target_triple=target_triple,
+        ):
             try:
                 if runtime_lib.stat().st_mtime > pid_mtime:
                     return True
@@ -13334,6 +13449,7 @@ def _start_backend_daemon(
     *,
     cargo_profile: str,
     project_root: Path,
+    target_triple: str | None,
     startup_timeout: float | None,
     json_output: bool,
     warnings: list[str],
@@ -13357,7 +13473,11 @@ def _start_backend_daemon(
     existing_pid = _read_backend_daemon_pid(pid_path)
     if existing_pid is not None:
         if _pid_alive(existing_pid):
-            if _backend_daemon_binary_is_newer(backend_bin, pid_path):
+            if _backend_daemon_binary_is_newer(
+                backend_bin,
+                pid_path,
+                target_triple=target_triple,
+            ):
                 if not json_output:
                     print(
                         "Backend binary changed; restarting daemon...",
@@ -16897,6 +17017,7 @@ def _invalidate_stale_stdlib_cache(
     expected_key: str | None = None,
     *,
     expected_manifest: str | None = None,
+    target_triple: str | None = None,
 ) -> None:
     """Delete the cached stdlib .o if the backend binary or runtime library is newer.
 
@@ -16936,16 +17057,25 @@ def _invalidate_stale_stdlib_cache(
     # explicit CARGO_TARGET_DIR remains authoritative across stale-cache checks.
     target_root = _cargo_target_root(_root)
 
-    # Check backend binary and runtime library across all profile dirs.
+    # Check backend binary and runtime archives across all live profile dirs.
     for profile_dir in _active_artifact_profile_dirs():
-        for artifact_name in ("molt-backend", "libmolt_runtime.a"):
-            artifact = target_root / profile_dir / artifact_name
-            try:
-                if artifact.stat().st_mtime > stdlib_mtime:
-                    _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
-                    return
-            except OSError:
-                continue
+        artifact = target_root / profile_dir / "molt-backend"
+        try:
+            if artifact.stat().st_mtime > stdlib_mtime:
+                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
+                return
+        except OSError:
+            continue
+    for artifact in _runtime_lib_freshness_candidates(
+        target_root,
+        target_triple=target_triple,
+    ):
+        try:
+            if artifact.stat().st_mtime > stdlib_mtime:
+                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
+                return
+        except OSError:
+            continue
 
     # Also check backend and runtime Rust sources — cargo incremental
     # compilation may skip the link step (no binary mtime change) even
@@ -19222,6 +19352,7 @@ def _prepare_backend_setup(
         molt_root=molt_root,
         runtime_cargo_profile=runtime_cargo_profile,
         target_triple=target_triple,
+        stdlib_profile=stdlib_profile,
     )
     cache_setup = _prepare_backend_cache_setup(
         cache_enabled=cache,
@@ -19545,6 +19676,7 @@ def _prepare_backend_dispatch(
                 daemon_socket,
                 cargo_profile=backend_cargo_profile,
                 project_root=molt_root,
+                target_triple=target_triple,
                 startup_timeout=startup_timeout,
                 json_output=json_output,
                 warnings=warnings,
@@ -19761,6 +19893,7 @@ def _execute_backend_compile(
                         daemon_socket,
                         cargo_profile=backend_cargo_profile,
                         project_root=molt_root,
+                        target_triple=target_triple,
                         startup_timeout=restart_timeout,
                         json_output=json_output,
                         warnings=warnings,
@@ -20720,6 +20853,7 @@ def _run_backend_pipeline(
         stdlib_obj_path=stdlib_link_obj_path,
         stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
         stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
+        stdlib_profile=stdlib_profile,
     )
     if prepared_native_link_error is not None:
         return prepared_native_link_error
@@ -21229,6 +21363,7 @@ def _prepare_native_link(
     stdlib_obj_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
+    stdlib_profile: str | None = "micro",
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
@@ -21275,6 +21410,7 @@ def _prepare_native_link(
             molt_root,
             runtime_cargo_profile,
             target_triple,
+            stdlib_profile=stdlib_profile,
         )
     try:
         link_cmd, linker_hint, normalized_target = _build_native_link_command(
@@ -22227,6 +22363,7 @@ def _prepare_backend_cache_setup(
                     project_root,
                     _nocache_stdlib_key,
                     expected_manifest=_nocache_stdlib_manifest,
+                    target_triple=target_triple,
                 )
         return _BackendCacheSetup(
             cache_enabled=False,
@@ -22306,6 +22443,7 @@ def _prepare_backend_cache_setup(
                 project_root,
                 stdlib_object_cache_key,
                 expected_manifest=stdlib_object_manifest,
+                target_triple=target_triple,
             )
     cache_candidates: list[tuple[str, Path]] = []
     if cache_path is not None:
@@ -22349,6 +22487,7 @@ def _initialize_runtime_artifact_state(
     molt_root: Path,
     runtime_cargo_profile: str,
     target_triple: str | None,
+    stdlib_profile: str | None = "micro",
 ) -> _RuntimeArtifactState:
     state = _RuntimeArtifactState()
     if is_rust_transpile:
@@ -22364,6 +22503,7 @@ def _initialize_runtime_artifact_state(
             molt_root,
             runtime_cargo_profile,
             target_triple,
+            stdlib_profile=stdlib_profile,
         )
     return state
 
@@ -24319,10 +24459,9 @@ def _ensure_runtime_lib(
         stdlib_profile,
         target_triple=target_triple,
     )
-    # The native runtime archive path is shared across stdlib profiles, so the
-    # requested Cargo feature profile must be an explicit fingerprint input.
-    # Otherwise an old default/full fingerprint can be indistinguishable from a
-    # differently featured artifact after the shared archive is overwritten.
+    # Cargo always writes libmolt_runtime.a as scratch output. Molt then
+    # materializes a profile-qualified link alias, so the requested feature
+    # profile must remain an explicit fingerprint input.
     fingerprint_features: tuple[str, ...] = tuple(
         _dedupe_preserve_order(
             list(runtime_features) + ["stdlib_full", "default-features"]
@@ -24336,11 +24475,16 @@ def _ensure_runtime_lib(
                 + ["stdlib_micro", "no-default-features"]
             )
         )
+    fingerprint_path = _runtime_fingerprint_path(
+        project_root, runtime_lib, cargo_profile, target_triple
+    )
     # Session-level short-circuit: once we have verified (and possibly built)
-    # the runtime for the exact fingerprint-driving feature set, do not repeat
-    # the fingerprint/stat dance in this process.
+    # the runtime for the exact linkable alias and fingerprint-driving feature
+    # set, do not repeat the fingerprint/stat dance in this process.
     session_key = (
         os.fspath(project_root),
+        os.fspath(runtime_lib),
+        os.fspath(fingerprint_path),
         cargo_profile,
         target_triple,
         rustflags,
@@ -24355,9 +24499,6 @@ def _ensure_runtime_lib(
         if runtime_lib.exists():
             _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
-    fingerprint_path = _runtime_fingerprint_path(
-        project_root, runtime_lib, cargo_profile, target_triple
-    )
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     fingerprint = _runtime_fingerprint(
         project_root,
@@ -24480,6 +24621,24 @@ def _ensure_runtime_lib(
             if err:
                 print(err, file=sys.stderr)
             return False
+        cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib)
+        if cargo_runtime_lib != runtime_lib:
+            if not cargo_runtime_lib.exists():
+                if not json_output:
+                    print(
+                        f"Runtime build succeeded but archive is missing: {cargo_runtime_lib}",
+                        file=sys.stderr,
+                    )
+                return False
+            try:
+                _atomic_copy_file(cargo_runtime_lib, runtime_lib)
+            except OSError as exc:
+                if not json_output:
+                    print(
+                        f"Failed to materialize runtime archive alias {runtime_lib}: {exc}",
+                        file=sys.stderr,
+                    )
+                return False
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -24796,15 +24955,14 @@ def _ensure_runtime_wasm(
         target_triple="wasm32-wasip1",
     )
     runtime_features = cargo_runtime_features
-    fingerprint_features: tuple[str, ...] = runtime_features
-    if effective_stdlib_profile == "micro":
-        fingerprint_features = tuple(
-            _dedupe_preserve_order(
-                list(runtime_features)
-                + sorted(builtin_features)
-                + ["stdlib_micro", "no-default-features"]
-            )
+    no_default_features, wasm_cargo_features, fingerprint_features = (
+        _wasm_runtime_feature_plan(
+            stdlib_profile=effective_stdlib_profile,
+            runtime_features=runtime_features,
+            builtin_features=builtin_features,
+            resolved_modules=resolved_modules,
         )
+    )
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
@@ -25097,35 +25255,10 @@ def _ensure_runtime_wasm(
                 "wasm32-wasip1",
                 "--lib",
             ]
-        if effective_stdlib_profile == "micro":
+        if no_default_features:
             cmd.append("--no-default-features")
-            micro_features = _dedupe_preserve_order(
-                list(runtime_features) + sorted(builtin_features) + ["stdlib_micro"]
-            )
-            if micro_features:
-                cmd.extend(["--features", ",".join(micro_features)])
-        else:
-            # Exclude stdlib_ast (rustpython-parser ~2MB) and
-            # stdlib_unicode_names (unicode_names2 ~1MB) from WASM builds.
-            # These are not useful on WASM and inflate the binary past 3MB.
-            cmd.append("--no-default-features")
-            wasm_features = list(cargo_runtime_features) + [
-                "stdlib_crypto",
-                "stdlib_compression",
-                "stdlib_serialization",
-                "stdlib_archive",
-                "stdlib_fs_extra",
-                "builtin_set",
-                "builtin_complex",
-                "builtin_memoryview",
-                "builtin_contextvars",
-                "builtin_fcntl",
-            ]
-            if _resolved_modules_require_gpu_primitives(
-                frozenset(resolved_modules or ())
-            ):
-                wasm_features.append("molt_gpu_primitives")
-            cmd.extend(["--features", ",".join(wasm_features)])
+        if wasm_cargo_features:
+            cmd.extend(["--features", ",".join(wasm_cargo_features)])
         if reloc:
             cmd.extend(["--", "--crate-type=staticlib"])
         else:
@@ -29363,8 +29496,8 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         runtime_detail,
         level="warning",
         advice=[
-            "Run: cargo build --release -p molt-runtime",
-            "Or: molt run will auto-build it on first use",
+            "Run: molt run examples/hello.py to auto-build and materialize runtime aliases",
+            "Raw cargo builds only refresh scratch libmolt_runtime.a; Molt publishes profile-qualified aliases",
         ]
         if not runtime_exists
         else None,
