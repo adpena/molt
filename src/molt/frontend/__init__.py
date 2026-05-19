@@ -21178,6 +21178,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 class_name = "Unknown"
                 method_name = "method"
                 method_info = None
+                return_hint = None
                 parts = target_info.type_hint.split(":", 2)
                 if len(parts) == 3:
                     class_name = parts[1]
