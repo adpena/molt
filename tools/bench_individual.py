@@ -130,6 +130,7 @@ class SampleBatch:
     def first_output(self) -> str:
         return self.samples[0].output if self.samples else ""
 
+
 # ---------------------------------------------------------------------------
 # Daemon management
 # ---------------------------------------------------------------------------
