@@ -9,6 +9,21 @@ print(sum(i * i for i in range(100000) if (i * i) % 2 == 0))
 print(sum(v for v in {str(i): i * i for i in range(100000)}.values() if v % 2 == 0))
 print(type(sum([1.0, 2.0])).__name__, sum([1.0, 2.0]))
 print(sum([0.1] * 10) == 1.0)
+big_start = 10**100
+print(sum([], big_start) is big_start)
+print(sum((), big_start) is big_start)
+print(sum((i for i in []), big_start) is big_start)
+float_start = float("nan")
+print(sum([], float_start) is float_start)
+
+
+class MyInt(int):
+    pass
+
+
+subclass_start = MyInt(7)
+subclass_empty = sum([], subclass_start)
+print(type(subclass_empty).__name__, subclass_empty is subclass_start)
 
 try:
     sum([], "")
