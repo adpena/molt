@@ -431,6 +431,65 @@ def test_prepare_entry_module_graph_collects_literal_dunder_import_targets(
     assert "math" in prepared.module_graph
 
 
+def test_prepare_entry_module_graph_closes_added_package_parent_imports(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "molt"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        "from ._version import version\n"
+        "from .subpkg.mod import VALUE\n"
+        "__version__ = version()\n",
+        encoding="utf-8",
+    )
+    (package / "_version.py").write_text(
+        "def version():\n    return '1.0'\n",
+        encoding="utf-8",
+    )
+    (package / "intrinsics.py").write_text(
+        "def require(name, namespace):\n    return namespace[name]\n",
+        encoding="utf-8",
+    )
+    subpkg = package / "subpkg"
+    subpkg.mkdir()
+    (subpkg / "__init__.py").write_text(
+        "from .helper import helper\n",
+        encoding="utf-8",
+    )
+    (subpkg / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (subpkg / "helper.py").write_text("helper = 2\n", encoding="utf-8")
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("from molt import intrinsics as _intrinsics\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    module_reasons: dict[str, set[str]] = {}
+
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=tmp_path,
+        entry_tree=entry_tree,
+        diagnostics_enabled=True,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert {
+        "molt",
+        "molt.intrinsics",
+        "molt._version",
+        "molt.subpkg",
+        "molt.subpkg.mod",
+        "molt.subpkg.helper",
+    } <= set(prepared.module_graph)
+    assert "package_parent_closure" in module_reasons["molt._version"]
+    assert "package_parent_closure" in module_reasons["molt.subpkg.helper"]
+
+
 def test_prepare_entry_module_graph_marks_generated_importer_references_explicitly(
     tmp_path: Path,
 ) -> None:
@@ -861,6 +920,23 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     assert first["hash"] != second["hash"]
 
 
+def _write_shared_stdlib_test_contract(stdlib_obj: Path, cache_key: str) -> str:
+    manifest = cli._shared_stdlib_manifest(
+        cache_key=cache_key,
+        cache_variant="test",
+        target_triple=None,
+        compiler_fingerprint="test",
+    )
+    assert manifest is not None
+    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
+        f"{cache_key}\n", encoding="utf-8"
+    )
+    cli._stdlib_object_manifest_sidecar_path(stdlib_obj).write_text(
+        manifest, encoding="utf-8"
+    )
+    return manifest
+
+
 def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -871,7 +947,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib")
-    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
+    stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     captured_inputs: list[Path] = []
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
@@ -911,6 +987,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         warnings=[],
         stdlib_obj_path=stdlib_obj,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
 
     assert error is None
@@ -935,7 +1012,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib-v1")
-    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
+    stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
@@ -967,12 +1044,13 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         warnings=[],
         stdlib_obj_path=stdlib_obj,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
     assert first_error is None
     assert first is not None
 
     stdlib_obj.write_bytes(b"stdlib-v2")
-    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
+    _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
 
     second, second_error = cli._prepare_native_link(
         output_artifact=output_obj,
@@ -994,6 +1072,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         warnings=[],
         stdlib_obj_path=stdlib_obj,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
     assert second_error is None
     assert second is not None
@@ -1010,7 +1089,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib")
-    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
+    stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
     captured_link_cmd: list[str] = []
@@ -1050,6 +1129,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
         warnings=[],
         stdlib_obj_path=stdlib_obj,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
 
     assert error is None

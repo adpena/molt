@@ -452,6 +452,117 @@ def test_bench_results_rejects_unstable_cpython_reference(
     assert entry["molt_output_parity"]["reason"] == "reference_unstable"
 
 
+def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmark(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = REPO_ROOT / "tests" / "benchmarks" / "bench_channel_throughput.py"
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
+    monkeypatch.setattr(
+        bench_tool,
+        "prepare_molt_binary",
+        lambda *args, **kwargs: bench_tool.MoltBinary(
+            tmp_path / "molt-bin", _TempDirStub(), 0.25, 64.0
+        ),
+    )
+    monkeypatch.setattr(
+        bench_tool,
+        "measure_molt_run",
+        lambda *args, **kwargs: bench_tool.RunSample(1.0, "intrinsic-only\n", ""),
+    )
+
+    def fail_external_reference(*args, **kwargs):
+        raise AssertionError("Molt-only intrinsic benchmark ran an external baseline")
+
+    monkeypatch.setattr(bench_tool, "measure_runtime", fail_external_reference)
+
+    entry = bench_tool.bench_results(
+        [str(script)],
+        1,
+        0,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        None,
+        "release",
+        tty=False,
+        nuitka_cmd=None,
+        pyodide_cmd=None,
+    )[script.name]
+
+    assert entry["reference_runtime"] == "molt"
+    assert entry["reference_reason"] == "molt_runtime_intrinsics_without_external_reference"
+    assert entry["cpython_time_s"] is None
+    assert entry["cpython_samples_s"] is None
+    assert entry["molt_ok"] is True
+    assert entry["molt_output_parity"] == {
+        "checked": False,
+        "ok": None,
+        "reference_runtime": "molt",
+        "reason": "molt_runtime_intrinsics_without_external_reference",
+        "stdout_match": None,
+        "stderr_match": None,
+        "reference_stdout_sha256": None,
+        "molt_stdout_sha256": None,
+        "reference_stderr_sha256": None,
+        "molt_stderr_sha256": None,
+    }
+
+
+def test_bench_results_custom_same_basename_keeps_external_reference(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_channel_throughput.py"
+    script.write_text("print('custom')\n", encoding="utf-8")
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
+    monkeypatch.setattr(
+        bench_tool,
+        "prepare_molt_binary",
+        lambda *args, **kwargs: bench_tool.MoltBinary(
+            tmp_path / "molt-bin", _TempDirStub(), 0.25, 64.0
+        ),
+    )
+    monkeypatch.setattr(
+        bench_tool,
+        "measure_molt_run",
+        lambda *args, **kwargs: bench_tool.RunSample(1.0, "custom\n", ""),
+    )
+    monkeypatch.setattr(
+        bench_tool,
+        "measure_runtime",
+        lambda *args, **kwargs: bench_tool.RunSample(2.0, "custom\n", ""),
+    )
+
+    entry = bench_tool.bench_results(
+        [str(script)],
+        1,
+        0,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        None,
+        "release",
+        tty=False,
+        nuitka_cmd=None,
+        pyodide_cmd=None,
+    )[script.name]
+
+    assert entry["reference_runtime"] == "cpython"
+    assert entry["reference_reason"] == "cpython_reference"
+    assert entry["cpython_time_s"] == 2.0
+    assert entry["molt_output_parity"]["checked"] is True
+    assert entry["molt_output_parity"]["reference_runtime"] == "cpython"
+
+
 def test_main_writes_json_then_exits_nonzero_on_output_parity_failure(
     monkeypatch, tmp_path: Path
 ) -> None:

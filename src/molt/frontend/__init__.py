@@ -1308,6 +1308,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals_cache_val: MoltValue | None = None
         self.boxed_locals: dict[str, MoltValue] = {}
         self.closure_locals: set[str] = set()
+        self.comp_shadow_locals: set[str] = set()
         self._expr_col: tuple[int, int] | None = (
             None  # expression-level col_offset for traceback carets
         )
@@ -1817,6 +1818,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals = {}
         self.boxed_locals = {}
         self.closure_locals = set()
+        self.comp_shadow_locals = set()
         self.boxed_local_hints = {}
         self.free_vars = {}
         self.free_var_hints = {}
@@ -3066,6 +3068,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals_cache_val = None
         self.boxed_locals = {}
         self.closure_locals = set()
+        self.comp_shadow_locals = set()
         self.boxed_local_hints = {}
         self.free_vars = {}
         self.free_var_hints = {}
@@ -3685,6 +3688,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "locals_cache_val": self.locals_cache_val,
             "boxed_locals": self.boxed_locals,
             "closure_locals": self.closure_locals,
+            "comp_shadow_locals": self.comp_shadow_locals,
             "boxed_local_hints": self.boxed_local_hints,
             "free_vars": self.free_vars,
             "free_var_hints": self.free_var_hints,
@@ -3743,6 +3747,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals_cache_val = state["locals_cache_val"]
         self.boxed_locals = state["boxed_locals"]
         self.closure_locals = state["closure_locals"]
+        self.comp_shadow_locals = state["comp_shadow_locals"]
         self.boxed_local_hints = state["boxed_local_hints"]
         self.free_vars = state["free_vars"]
         self.free_var_hints = state["free_var_hints"]
@@ -8618,6 +8623,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value_node.type_hint = hint
 
     def _load_local_value(self, name: str) -> MoltValue | None:
+        if name in self.comp_shadow_locals:
+            return self.locals.get(name)
         if self.current_func_name != "molt_main" and name in self.global_decls:
             return self._emit_global_get(name)
         cell = self._load_boxed_cell(name)
@@ -8669,6 +8676,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return cached
 
     def _load_local_value_unchecked(self, name: str) -> MoltValue | None:
+        if name in self.comp_shadow_locals:
+            return self.locals.get(name)
         if self.current_func_name != "molt_main" and name in self.global_decls:
             return None
         cell = self._load_boxed_cell(name)
@@ -8752,6 +8761,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
 
         self._invalidate_loop_guard(name)
+        if name in self.comp_shadow_locals:
+            self.locals[name] = value
+            return
         if self.current_func_name != "molt_main" and name in self.global_decls:
             self._emit_module_attr_set_runtime(name, value)
             return
@@ -8859,6 +8871,51 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
         update_locals_cache()
+
+    def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None:
+        self._invalidate_loop_guard(name)
+        cell = self._load_boxed_cell(name)
+        if cell is not None:
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[cell, idx, value],
+                    result=MoltValue("none"),
+                )
+            )
+            if value.type_hint:
+                self.boxed_local_hints[name] = value.type_hint
+            return
+        if self.is_async():
+            if name not in self.async_locals:
+                self._async_local_offset(name)
+            offset = self.async_locals[name]
+            self.emit(
+                MoltOp(
+                    kind="STORE_CLOSURE",
+                    args=["self", offset, value],
+                    result=MoltValue("none"),
+                )
+            )
+            if value.type_hint:
+                self.async_local_hints[name] = value.type_hint
+            return
+        self.locals[name] = value
+        if (
+            self.current_func_name != "molt_main"
+            and name in self.scope_assigned
+            and name not in self.boxed_locals
+        ):
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[value],
+                    result=MoltValue("none"),
+                    metadata={"var": name},
+                )
+            )
 
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool:
         if iterable is None:
@@ -12938,13 +12995,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return True
         return False
 
-    def _can_inline_list_comp(self, node: ast.ListComp) -> bool:
-        """Check whether a list comprehension can be lowered as an inline loop.
+    def _inline_simple_comp_exprs(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp
+    ) -> list[ast.AST]:
+        if isinstance(node, ast.DictComp):
+            return [node.key, node.value]
+        return [node.elt]
+
+    def _can_inline_simple_comp(
+        self,
+        generators: list[ast.comprehension],
+        exprs: Sequence[ast.AST],
+    ) -> bool:
+        """Check whether a comprehension can be lowered as an inline loop.
 
         Requirements: single generator, no async, simple target (Name or a
-        flat Tuple of Names), no nested comprehensions in the element
-        expression.  Multi-for comprehensions use the GeneratorExp path
-        which handles walrus scope leaking separately.
+        flat Tuple of Names), no nested comprehensions in emitted element
+        expressions. Multi-for comprehensions use the GeneratorExp path, which
+        handles walrus scope leaking separately.
 
         Tuple targets such as ``for i, value in enumerate(values)`` are
         accepted: the inline emitter assigns to a temp Name and emits an
@@ -12953,9 +13021,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         generator-poll path (which has known Cranelift codegen
         fragility for large surrounding functions).
         """
-        if len(node.generators) != 1:
+        if len(generators) != 1:
             return False
-        comp = node.generators[0]
+        comp = generators[0]
         if comp.is_async:
             return False
         if isinstance(comp.target, ast.Name):
@@ -12970,46 +13038,87 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return False
         else:
             return False
-        # Reject element expressions that themselves contain comprehensions
+        # Reject emitted expressions that themselves contain comprehensions
         # (they would require their own generator and cannot be inlined).
-        for child in ast.walk(node.elt):
-            if isinstance(
-                child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-            ):
-                return False
+        for expr in exprs:
+            for child in ast.walk(expr):
+                if isinstance(
+                    child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+                ):
+                    return False
         return True
 
-    def _emit_inline_list_comp(self, node: ast.ListComp) -> MoltValue:
-        """Emit an inline loop for a simple list comprehension.
+    def _can_inline_list_comp(self, node: ast.ListComp) -> bool:
+        return self._can_inline_simple_comp(node.generators, [node.elt])
+
+    def _can_inline_set_comp(self, node: ast.SetComp) -> bool:
+        return self._can_inline_simple_comp(node.generators, [node.elt])
+
+    def _can_inline_dict_comp(self, node: ast.DictComp) -> bool:
+        return self._can_inline_simple_comp(node.generators, [node.key, node.value])
+
+    def _inline_simple_comp_target(
+        self, comp: ast.comprehension, temp_prefix: str
+    ) -> tuple[str, list[str] | None]:
+        if isinstance(comp.target, ast.Name):
+            return comp.target.id, None
+        if isinstance(comp.target, ast.Tuple) and all(
+            isinstance(e, ast.Name) for e in comp.target.elts
+        ):
+            tuple_target_names = [cast(ast.Name, e).id for e in comp.target.elts]
+            target_name = f"{temp_prefix}_{self.next_var()}"
+            return target_name, tuple_target_names
+        raise NotImplementedError("Only simple comprehension targets supported")
+
+    def _collect_inline_comp_walrus_names(
+        self, exprs: Sequence[ast.AST], ifs: Sequence[ast.AST]
+    ) -> set[str]:
+        walrus_names: set[str] = set()
+        for expr in exprs:
+            walrus_names |= self._collect_namedexpr_names(expr)
+        for if_node in ifs:
+            walrus_names |= self._collect_namedexpr_names(if_node)
+        return walrus_names
+
+    def _collect_inline_comp_lambda_free_vars(
+        self, exprs: Sequence[ast.AST], ifs: Sequence[ast.AST]
+    ) -> set[str]:
+        lambda_free_vars: set[str] = set()
+        for root in [*exprs, *ifs]:
+            for child in ast.walk(root):
+                if isinstance(
+                    child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    for inner in ast.walk(child):
+                        if isinstance(inner, ast.Name) and isinstance(
+                            inner.ctx, ast.Load
+                        ):
+                            lambda_free_vars.add(inner.id)
+        return lambda_free_vars
+
+    def _emit_inline_simple_comp(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp,
+        *,
+        result_type_hint: str,
+        result_op: str,
+        temp_prefix: str,
+        emit_result_values: Callable[[MoltValue, list[MoltValue]], None],
+    ) -> MoltValue:
+        """Emit an inline loop for a simple collection comprehension.
 
         Avoids generating a generator task, working around a native-backend
         Cranelift code-generation issue where generator poll functions with
         non-trivial element expressions produce corrupted state machines.
         """
         comp = node.generators[0]
-        if isinstance(comp.target, ast.Name):
-            tuple_target_names: list[str] | None = None
-            target_name = comp.target.id
-        elif isinstance(comp.target, ast.Tuple) and all(
-            isinstance(e, ast.Name) for e in comp.target.elts
-        ):
-            # ``for a, b in iter`` — bind the iteration value to a hidden
-            # temp Name, then re-use the existing visit_Assign(target=Tuple)
-            # machinery to unpack it into the user-named locals.
-            tuple_target_names = [cast(ast.Name, e).id for e in comp.target.elts]
-            # Use a synthetic local name keyed off `next_var()` so it
-            # cannot collide with any user-visible binding.
-            target_name = f"__molt_listcomp_unpack_{self.next_var()}"
-        else:
-            raise NotImplementedError(
-                "Only simple list comprehension targets supported"
-            )
+        exprs = self._inline_simple_comp_exprs(node)
+        target_name, tuple_target_names = self._inline_simple_comp_target(
+            comp, temp_prefix
+        )
         # Collect walrus (:=) targets in the element expression and
         # filters. These must leak to the enclosing scope per PEP 572.
-        walrus_names: set[str] = set()
-        walrus_names |= self._collect_namedexpr_names(node.elt)
-        for if_node in comp.ifs:
-            walrus_names |= self._collect_namedexpr_names(if_node)
+        walrus_names = self._collect_inline_comp_walrus_names(exprs, comp.ifs)
         # Box walrus targets so their values survive the loop boundary.
         # The boxed cell lives on the heap, so store_index inside the
         # loop persists and index after the loop reads the final value.
@@ -13020,22 +13129,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # reference the iteration variable, box it so the lambda can
         # capture it as a closure cell.  Without boxing, the iteration
         # variable is a plain SSA local that lambdas can't close over.
-        lambda_free_vars: set[str] = set()
-        for child in ast.walk(node.elt):
-            if isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
-                for inner in ast.walk(child):
-                    if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
-                        lambda_free_vars.add(inner.id)
-        for if_node in comp.ifs:
-            for child in ast.walk(if_node):
-                if isinstance(
-                    child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)
-                ):
-                    for inner in ast.walk(child):
-                        if isinstance(inner, ast.Name) and isinstance(
-                            inner.ctx, ast.Load
-                        ):
-                            lambda_free_vars.add(inner.id)
+        lambda_free_vars = self._collect_inline_comp_lambda_free_vars(exprs, comp.ifs)
         outer_boxed = self.boxed_locals.pop(target_name, None)
         outer_boxed_hint = self.boxed_local_hints.pop(target_name, None)
         # When unpacking a tuple target, the user-named locals are bound
@@ -13043,9 +13137,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # restore them after the comprehension exits (CPython per-comp
         # scoping: the iteration variables don't leak).
         saved_tuple_locals: dict[str, MoltValue | None] = {}
+        saved_tuple_boxed: dict[str, MoltValue | None] = {}
+        saved_tuple_boxed_hints: dict[str, str | None] = {}
+        tuple_cells: dict[str, MoltValue] = {}
         if tuple_target_names is not None:
             for tname in tuple_target_names:
                 saved_tuple_locals[tname] = self.locals.get(tname)
+                saved_tuple_boxed[tname] = self.boxed_locals.pop(tname, None)
+                saved_tuple_boxed_hints[tname] = self.boxed_local_hints.pop(tname, None)
         comp_cell: MoltValue | None = None
         if target_name in lambda_free_vars:
             missing = MoltValue(self.next_var(), type_hint="missing")
@@ -13054,10 +13153,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="LIST_NEW", args=[missing], result=comp_cell))
             self.boxed_locals[target_name] = comp_cell
             self.boxed_local_hints[target_name] = "Any"
+        if tuple_target_names is not None:
+            for tname in tuple_target_names:
+                if tname not in lambda_free_vars:
+                    continue
+                missing = MoltValue(self.next_var(), type_hint="missing")
+                self.emit(MoltOp(kind="MISSING", args=[], result=missing))
+                tcell = MoltValue(self.next_var(), type_hint="list")
+                self.emit(MoltOp(kind="LIST_NEW", args=[missing], result=tcell))
+                tuple_cells[tname] = tcell
+                self.boxed_locals[tname] = tcell
+                self.boxed_local_hints[tname] = "Any"
         iterable_val = self.visit(comp.iter)
         iter_obj = self._emit_iter_new(iterable_val)
-        res = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[], result=res))
+        res = MoltValue(self.next_var(), type_hint=result_type_hint)
+        self.emit(MoltOp(kind=result_op, args=[], result=res))
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
@@ -13092,7 +13202,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="MISSING", args=[], result=restore_local))
         self.locals[target_name] = item
         if target_name not in self.boxed_locals:
-            self._store_local_value(target_name, item)
+            self._store_comprehension_local_value(target_name, item)
         # If the variable is boxed, write through to the cell so that
         # _load_local_value reads the current iteration value.
         if cell is not None:
@@ -13106,16 +13216,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
         # If the original target was a tuple, unpack the synthetic temp
-        # Name into the user-facing locals.  ``_emit_unpack_assign`` handles
-        # length checks, starred expansion, and the per-element rebind.
+        # Name into comprehension-local user names. Do not route this through
+        # normal assignment lowering: module-level comprehension targets must
+        # not publish module globals, and tuple element names need their own
+        # cells when nested lambdas close over them.
         if tuple_target_names is not None:
-            unpack_target = ast.Tuple(
-                elts=[
-                    ast.Name(id=name, ctx=ast.Store()) for name in tuple_target_names
-                ],
-                ctx=ast.Store(),
+            item_vals = [
+                MoltValue(self.next_var(), type_hint="Any") for _ in tuple_target_names
+            ]
+            self.emit(
+                MoltOp(
+                    kind="UNPACK_SEQUENCE",
+                    args=[item] + item_vals,
+                    result=MoltValue("none"),
+                    metadata={"expected_count": len(tuple_target_names)},
+                )
             )
-            self._emit_unpack_assign(unpack_target, item)
+            for tname, item_val in zip(tuple_target_names, item_vals):
+                self._store_comprehension_local_value(tname, item_val)
         # Evaluate optional filter conditions.
         skip_label_needed = bool(comp.ifs)
         if skip_label_needed:
@@ -13128,19 +13246,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        elt_val = self.visit(node.elt)
-        self.emit(
-            MoltOp(kind="LIST_APPEND", args=[res, elt_val], result=MoltValue("none"))
-        )
-        # Propagate element type hint to the result list.
-        elt_hint = elt_val.type_hint if isinstance(elt_val, MoltValue) else None
-        if elt_hint and elt_hint not in {"Any", "Unknown"}:
-            if self.current_func_name == "molt_main":
-                self.global_elem_hints[res.name] = elt_hint
-            else:
-                self.container_elem_hints[res.name] = elt_hint
-        # Restore the previous binding (if any).
-        if restore_local is not None:
+        values: list[MoltValue] = []
+        for expr in exprs:
+            value = self.visit(expr)
+            if value is None:
+                raise NotImplementedError("Unsupported comprehension expression")
+            values.append(cast(MoltValue, value))
+        emit_result_values(res, values)
+        # Restore the previous binding (if any). When this comprehension
+        # created a closure-owned cell, never write the outer value through
+        # _store_local_value while boxed_locals[target_name] still points at
+        # the comprehension cell; late-bound lambdas must retain the final
+        # iteration value in that cell.
+        if restore_local is not None and cell is None:
             self._store_local_value(target_name, restore_local)
         if old_local is not None:
             self.locals[target_name] = old_local
@@ -13200,7 +13318,80 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.boxed_locals[target_name] = outer_boxed
             if outer_boxed_hint is not None:
                 self.boxed_local_hints[target_name] = outer_boxed_hint
+        if tuple_target_names is not None:
+            for tname in tuple_target_names:
+                self.boxed_locals.pop(tname, None)
+                self.boxed_local_hints.pop(tname, None)
+                prior_boxed = saved_tuple_boxed.get(tname)
+                prior_hint = saved_tuple_boxed_hints.get(tname)
+                if prior_boxed is not None:
+                    self.boxed_locals[tname] = prior_boxed
+                    if prior_hint is not None:
+                        self.boxed_local_hints[tname] = prior_hint
         return res
+
+    def _emit_inline_list_comp(self, node: ast.ListComp) -> MoltValue:
+        def emit_list_value(res: MoltValue, values: list[MoltValue]) -> None:
+            elt_val = values[0]
+            self.emit(
+                MoltOp(
+                    kind="LIST_APPEND",
+                    args=[res, elt_val],
+                    result=MoltValue("none"),
+                )
+            )
+            # Propagate element type hint to the result list.
+            elt_hint = elt_val.type_hint if isinstance(elt_val, MoltValue) else None
+            if elt_hint and elt_hint not in {"Any", "Unknown"}:
+                if self.current_func_name == "molt_main":
+                    self.global_elem_hints[res.name] = elt_hint
+                else:
+                    self.container_elem_hints[res.name] = elt_hint
+
+        return self._emit_inline_simple_comp(
+            node,
+            result_type_hint="list",
+            result_op="LIST_NEW",
+            temp_prefix="__molt_listcomp_unpack",
+            emit_result_values=emit_list_value,
+        )
+
+    def _emit_inline_set_comp(self, node: ast.SetComp) -> MoltValue:
+        def emit_set_value(res: MoltValue, values: list[MoltValue]) -> None:
+            self.emit(
+                MoltOp(
+                    kind="SET_ADD",
+                    args=[res, values[0]],
+                    result=MoltValue("none"),
+                )
+            )
+
+        return self._emit_inline_simple_comp(
+            node,
+            result_type_hint="set",
+            result_op="SET_NEW",
+            temp_prefix="__molt_setcomp_unpack",
+            emit_result_values=emit_set_value,
+        )
+
+    def _emit_inline_dict_comp(self, node: ast.DictComp) -> MoltValue:
+        def emit_dict_item(res: MoltValue, values: list[MoltValue]) -> None:
+            key_val, item_val = values
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[res, key_val, item_val],
+                    result=MoltValue("none"),
+                )
+            )
+
+        return self._emit_inline_simple_comp(
+            node,
+            result_type_hint="dict",
+            result_op="DICT_NEW",
+            temp_prefix="__molt_dictcomp_unpack",
+            emit_result_values=emit_dict_item,
+        )
 
     def visit_ListComp(self, node: ast.ListComp) -> Any:
         async_needed = self._comprehension_requires_async(node.generators, [node.elt])
@@ -13235,6 +13426,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise SyntaxError(
                 "asynchronous comprehension outside of an asynchronous function"
             )
+        if not async_needed and self._can_inline_set_comp(node):
+            return self._emit_inline_set_comp(node)
         genexp = ast.GeneratorExp(elt=node.elt, generators=node.generators)
         gen_val = self.visit(genexp)
         if gen_val is None:
@@ -13251,6 +13444,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise SyntaxError(
                 "asynchronous comprehension outside of an asynchronous function"
             )
+        if not async_needed and self._can_inline_dict_comp(node):
+            return self._emit_inline_dict_comp(node)
         pair = ast.Tuple(elts=[node.key, node.value], ctx=ast.Load())
         genexp = ast.GeneratorExp(elt=pair, generators=node.generators)
         gen_val = self.visit(genexp)
@@ -13270,21 +13465,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             raise SyntaxError(
                 "asynchronous comprehension outside of an asynchronous function"
             )
-        # When a generator expression is shape-equivalent to an inline
-        # list comprehension, materialise it eagerly as a list and let the
-        # consumer iterate that list. This sidesteps the Cranelift native
-        # backend's known fragility with complex genexpr poll functions
-        # (the state machine regularly trips a `Value::reserved_value()`
-        # entity-table panic in cranelift-codegen during alias resolution
-        # and at opt_level=none retry, leaving the function as a runtime
-        # trap stub). The lazy semantics are preserved for any genexpr
-        # that does not match the inline criteria — multi-generator,
-        # async, walrus-leaking, or nested-comprehension forms still flow
-        # through the poll-function path unchanged.
-        if not async_needed:
-            equivalent_listcomp = ast.ListComp(elt=node.elt, generators=node.generators)
-            if self._can_inline_list_comp(equivalent_listcomp):
-                return self._emit_inline_list_comp(equivalent_listcomp)
+        # Generator expressions are lazy after the outermost iterable is
+        # evaluated. Eager materialisation changes exception and side-effect
+        # timing, so genexprs always use the poll-function lowering.
         cell_vars = self._collect_comprehension_cell_vars(node)
         func_symbol = self._genexpr_symbol()
         poll_func_name = f"{func_symbol}_poll"

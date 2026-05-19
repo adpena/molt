@@ -29,6 +29,12 @@ import tempfile
 import time
 from pathlib import Path
 
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+from bench_metadata import benchmark_reference_contract  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Benchmark list (mirrors bench.py)
 # ---------------------------------------------------------------------------
@@ -105,7 +111,7 @@ class RunSample:
 
 
 class SampleBatch:
-    __slots__ = ("failed_phase", "ok", "samples", "warmup_samples")
+    __slots__ = ("failed_detail", "failed_phase", "ok", "samples", "warmup_samples")
 
     def __init__(
         self,
@@ -113,11 +119,13 @@ class SampleBatch:
         warmup_samples: list[RunSample] | None = None,
         ok: bool = False,
         failed_phase: str | None = None,
+        failed_detail: str = "",
     ) -> None:
         self.samples = samples if samples is not None else []
         self.warmup_samples = warmup_samples if warmup_samples is not None else []
         self.ok = ok
         self.failed_phase = failed_phase
+        self.failed_detail = failed_detail
 
     @property
     def times_s(self) -> list[float]:
@@ -279,7 +287,7 @@ def molt_build(
 
 
 def run_binary(binary: Path, timeout_s: float) -> tuple[bool, float, str]:
-    """Run a compiled binary.  Returns (ok, elapsed_s, stdout_stripped)."""
+    """Run a compiled binary.  Returns (ok, elapsed_s, stdout_or_diagnostic)."""
     start = time.perf_counter()
     try:
         res = subprocess.run(
@@ -289,15 +297,15 @@ def run_binary(binary: Path, timeout_s: float) -> tuple[bool, float, str]:
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
-        return False, time.perf_counter() - start, ""
+        return False, time.perf_counter() - start, f"timed out after {timeout_s}s"
     elapsed = time.perf_counter() - start
     if res.returncode != 0:
-        return False, elapsed, ""
+        return False, elapsed, _format_run_failure(res.returncode, res.stdout, res.stderr)
     return True, elapsed, (res.stdout or "").strip()
 
 
 def run_cpython(script: str, timeout_s: float) -> tuple[bool, float, str]:
-    """Run a script with CPython.  Returns (ok, elapsed_s, stdout_stripped)."""
+    """Run a script with CPython.  Returns (ok, elapsed_s, stdout_or_diagnostic)."""
     start = time.perf_counter()
     try:
         res = subprocess.run(
@@ -307,11 +315,20 @@ def run_cpython(script: str, timeout_s: float) -> tuple[bool, float, str]:
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
-        return False, time.perf_counter() - start, ""
+        return False, time.perf_counter() - start, f"timed out after {timeout_s}s"
     elapsed = time.perf_counter() - start
     if res.returncode != 0:
-        return False, elapsed, ""
+        return False, elapsed, _format_run_failure(res.returncode, res.stdout, res.stderr)
     return True, elapsed, (res.stdout or "").strip()
+
+
+def _format_run_failure(returncode: int, stdout: str | None, stderr: str | None) -> str:
+    parts = [f"rc={returncode}"]
+    if stderr:
+        parts.append("stderr:\n" + stderr.strip())
+    if stdout:
+        parts.append("stdout:\n" + stdout.strip())
+    return "\n".join(parts)[:4000]
 
 
 def collect_samples(
@@ -329,6 +346,7 @@ def collect_samples(
                 warmup_samples=warmup_samples,
                 ok=False,
                 failed_phase=f"warmup {idx + 1}/{warmup}",
+                failed_detail=output,
             )
         warmup_samples.append(RunSample(elapsed_s=elapsed, output=output))
 
@@ -341,6 +359,7 @@ def collect_samples(
                 warmup_samples=warmup_samples,
                 ok=False,
                 failed_phase=f"sample {idx + 1}/{samples}",
+                failed_detail=output,
             )
         measured.append(RunSample(elapsed_s=elapsed, output=output))
 
@@ -370,8 +389,11 @@ def bench_one(
     Returns a result dict for the JSON report.
     """
     extra_args = MOLT_ARGS_BY_BENCH.get(script)
+    reference_contract = benchmark_reference_contract(script)
 
     result: dict = {
+        "reference_runtime": reference_contract.reference_runtime,
+        "reference_reason": reference_contract.reason,
         "build_ok": False,
         "build_time_s": None,
         "run_ok": False,
@@ -389,6 +411,8 @@ def bench_one(
         "output_match": None,
         "molt_output": None,
         "cpython_output": None,
+        "molt_failure_detail": None,
+        "cpython_failure_detail": None,
         "error": None,
     }
 
@@ -409,18 +433,20 @@ def bench_one(
     if binary is None:
         result["error"] = build_err
         print(f"  BUILD FAIL: {build_err}", file=sys.stderr)
-        # Still try CPython
-        cp_batch = collect_samples(
-            lambda: run_cpython(script, timeout_run),
-            samples=samples,
-            warmup=warmup,
-        )
-        result["cpython_samples_s"] = cp_batch.times_s
-        result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
-        if cp_batch.ok:
-            cp_time = statistics.median(cp_batch.times_s)
-            result["cpython_time_s"] = round(cp_time, 6)
-            result["cpython_output"] = cp_batch.first_output
+        if reference_contract.external_baselines:
+            cp_batch = collect_samples(
+                lambda: run_cpython(script, timeout_run),
+                samples=samples,
+                warmup=warmup,
+            )
+            result["cpython_samples_s"] = cp_batch.times_s
+            result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+            if cp_batch.ok:
+                cp_time = statistics.median(cp_batch.times_s)
+                result["cpython_time_s"] = round(cp_time, 6)
+                result["cpython_output"] = cp_batch.first_output
+            else:
+                result["cpython_failure_detail"] = cp_batch.failed_detail or None
         tmp.cleanup()
         return result
 
@@ -442,31 +468,42 @@ def bench_one(
         result["molt_output"] = molt_output
     else:
         result["error"] = f"Molt run failed during {molt_batch.failed_phase}"
+        if molt_batch.failed_detail:
+            result["molt_failure_detail"] = molt_batch.failed_detail
+            result["error"] += f": {molt_batch.failed_detail}"
 
-    # --- Run CPython (multiple samples, take median) ---
-    cp_batch = collect_samples(
-        lambda: run_cpython(script, timeout_run),
-        samples=samples,
-        warmup=warmup,
-    )
-    result["cpython_samples_s"] = cp_batch.times_s
-    result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
-    cpython_output = cp_batch.first_output
-    if cp_batch.ok:
-        result["cpython_time_s"] = round(statistics.median(cp_batch.times_s), 6)
-        result["cpython_output"] = cpython_output
-    elif result["error"] is None:
-        result["error"] = f"CPython run failed during {cp_batch.failed_phase}"
-
-    # --- Output match ---
-    if molt_batch.ok and cp_batch.ok:
-        result["output_match"] = molt_output == cpython_output
-        if result["output_match"]:
+    if not reference_contract.external_baselines:
+        if molt_batch.ok:
             result["molt_ok"] = True
+    else:
+        # --- Run CPython (multiple samples, take median) ---
+        cp_batch = collect_samples(
+            lambda: run_cpython(script, timeout_run),
+            samples=samples,
+            warmup=warmup,
+        )
+        result["cpython_samples_s"] = cp_batch.times_s
+        result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+        cpython_output = cp_batch.first_output
+        if cp_batch.ok:
+            result["cpython_time_s"] = round(statistics.median(cp_batch.times_s), 6)
+            result["cpython_output"] = cpython_output
         else:
-            result["error"] = "output mismatch"
-    elif molt_output or cpython_output:
-        result["output_match"] = False
+            result["cpython_failure_detail"] = cp_batch.failed_detail or None
+            if result["error"] is None:
+                result["error"] = f"CPython run failed during {cp_batch.failed_phase}"
+                if cp_batch.failed_detail:
+                    result["error"] += f": {cp_batch.failed_detail}"
+
+        # --- Output match ---
+        if molt_batch.ok and cp_batch.ok:
+            result["output_match"] = molt_output == cpython_output
+            if result["output_match"]:
+                result["molt_ok"] = True
+            else:
+                result["error"] = "output mismatch"
+        elif molt_output or cpython_output:
+            result["output_match"] = False
 
     # --- Speedup ---
     if result["molt_ok"] and result["cpython_time_s"] and result["molt_time_s"] > 0:
@@ -648,8 +685,13 @@ def main() -> None:
         # Quick inline status
         if result["build_ok"] and result["run_ok"]:
             speedup = f" ({result['speedup']:.1f}x)" if result["speedup"] else ""
+            cpython = (
+                f"{result['cpython_time_s']:.4f}s"
+                if result["cpython_time_s"] is not None
+                else "-"
+            )
             print(
-                f"  -> OK  molt={result['molt_time_s']:.4f}s  cpython={result['cpython_time_s']:.4f}s{speedup}"
+                f"  -> OK  molt={result['molt_time_s']:.4f}s  cpython={cpython}{speedup}"
             )
         elif result["build_ok"]:
             print("  -> BUILD OK, RUN FAIL")

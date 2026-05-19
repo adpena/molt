@@ -1677,10 +1677,10 @@ class _BackendCacheSetup:
     function_cache_path: Path | None
     stdlib_object_path: Path | None
     stdlib_object_cache_key: str | None
-    stdlib_object_manifest: str | None
     cache_candidates: tuple[tuple[str, Path], ...]
     cache_hit: bool
     cache_hit_tier: str | None
+    stdlib_object_manifest: str | None = None
     stdlib_module_symbols_json: str | None = None
 
 
@@ -4848,9 +4848,10 @@ def _collect_package_parents(
     stdlib_allowlist: set[str],
     *,
     resolver_cache: _ModuleResolutionCache | None = None,
-) -> None:
+) -> set[str]:
     resolution_cache = resolver_cache or _ModuleResolutionCache()
     pending: set[str] = set()
+    added: set[str] = set()
     for module_name in list(module_graph):
         parts = module_name.split(".")
         for idx in range(1, len(parts)):
@@ -4866,11 +4867,13 @@ def _collect_package_parents(
         if resolved is None or resolved.name != "__init__.py":
             continue
         module_graph[parent] = resolved
+        added.add(parent)
         parent_parts = parent.split(".")
         for idx in range(1, len(parent_parts)):
             ancestor = ".".join(parent_parts[:idx])
             if ancestor not in module_graph:
                 pending.add(ancestor)
+    return added
 
 
 def _resolve_relative_import(
@@ -12936,9 +12939,9 @@ def _try_cached_backend_candidates(
     cache_path: Path | None,
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
-    stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
     warnings: list[str],
+    stdlib_object_manifest: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
 ) -> tuple[bool, str | None]:
     del stdlib_module_symbols
     state_path = _artifact_sync_state_path(project_root, output_artifact)
@@ -18693,21 +18696,53 @@ def _prepare_entry_module_graph(
     if diagnostics_enabled:
         for name in module_graph:
             _record_module_reason(module_reasons, name, "entry_closure")
-    package_before = set(module_graph)
-    _collect_package_parents(
-        module_graph,
-        roots,
-        stdlib_root,
-        stdlib_allowlist,
-        resolver_cache=module_resolution_cache,
-    )
-    if diagnostics_enabled:
-        _record_new_module_reasons(
+    while True:
+        package_before = set(module_graph)
+        added_package_parents = _collect_package_parents(
             module_graph,
-            package_before,
-            module_reasons,
-            "package_parent",
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolver_cache=module_resolution_cache,
         )
+        if diagnostics_enabled:
+            _record_new_module_reasons(
+                module_graph,
+                package_before,
+                module_reasons,
+                "package_parent",
+            )
+        if not added_package_parents:
+            break
+        package_parent_paths = [
+            module_graph[name]
+            for name in sorted(added_package_parents)
+            if name in module_graph
+        ]
+        before_parent_closure = set(module_graph)
+        _extend_module_graph_with_closure(
+            module_graph,
+            entry_paths=package_parent_paths,
+            roots=roots,
+            module_roots=module_roots,
+            stdlib_root=stdlib_root,
+            project_root=project_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolver_cache=module_resolution_cache,
+            diagnostics_enabled=diagnostics_enabled,
+            module_reasons=module_reasons,
+            reason="package_parent_closure",
+            skip_modules=STUB_MODULES,
+            stub_parents=STUB_PARENT_MODULES,
+            target_python=target_python,
+        )
+        if diagnostics_enabled:
+            _record_new_module_reasons(
+                module_graph,
+                before_parent_closure,
+                module_reasons,
+                "package_parent_closure",
+            )
     core_before = set(module_graph)
     _ensure_core_stdlib_modules(module_graph, stdlib_root)
     if diagnostics_enabled:
