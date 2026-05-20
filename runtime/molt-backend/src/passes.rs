@@ -2051,51 +2051,199 @@ fn is_protected_runtime_entrypoint(name: &str) -> bool {
 // Side-effecting ops (calls, stores, raises, imports) are always preserved.
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if a SimpleIR op kind is pure (has no side effects).
-/// Only pure ops with unused results can be eliminated.
-fn simple_ir_op_is_pure(kind: &str) -> bool {
-    matches!(
+/// Returns `true` for SimpleIR ops that provably cannot introduce a Python
+/// exception. This is intentionally stricter than "has no writes": expression
+/// statements still have to execute user dispatch and raise the same exceptions
+/// as CPython even when their produced value is unused.
+pub(crate) fn simple_ir_op_is_provably_nonthrowing(op: &OpIR) -> bool {
+    let kind = op.kind.as_str();
+
+    if matches!(
         kind,
-        "const_int"
+        "const"
+            | "const_int"
             | "const_float"
             | "const_str"
             | "const_bool"
             | "const_none"
             | "const_bytes"
+            | "const_bigint"
+            | "const_ellipsis"
+            | "missing"
+    ) {
+        return true;
+    }
+
+    if matches!(
+        kind,
+        "load_var"
+            | "store_var"
+            | "load_fast"
+            | "store_fast"
+            | "load_var_slot"
+            | "store_var_slot"
+            | "load_closure"
+            | "store_closure"
+    ) {
+        return true;
+    }
+
+    if matches!(
+        kind,
+        "copy" | "copy_var" | "identity_alias" | "box" | "unbox" | "cast" | "widen" | "phi"
+    ) {
+        return true;
+    }
+
+    if matches!(
+        kind,
+        "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" | "neg" | "pos"
+    ) && (op.fast_int == Some(true) || op.fast_float == Some(true))
+    {
+        return true;
+    }
+
+    if matches!(
+        kind,
+        "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "bit_not"
+            | "bitand"
+            | "bitor"
+            | "bitxor"
+            | "shl"
+            | "shr"
+            | "lshift"
+            | "rshift"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "inplace_lshift"
+            | "inplace_rshift"
+    ) && op.fast_int == Some(true)
+    {
+        return true;
+    }
+
+    if matches!(kind, "lt" | "le" | "gt" | "ge" | "eq" | "ne")
+        && (op.fast_int == Some(true) || op.fast_float == Some(true))
+    {
+        return true;
+    }
+
+    if matches!(kind, "is" | "is_not") {
+        return true;
+    }
+
+    if matches!(
+        kind,
+        "guard_tag" | "guard_layout" | "guard_int" | "guard_float" | "type_guard"
+    ) {
+        return true;
+    }
+
+    if matches!(kind, "store" | "load") {
+        return true;
+    }
+
+    if matches!(
+        kind,
+        "if" | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "loop_continue"
+            | "loop_break"
+            | "loop_break_if_false"
+            | "loop_index_start"
+            | "loop_index_next"
+            | "jump"
+            | "label"
+            | "line"
+    ) {
+        return true;
+    }
+
+    if matches!(kind, "code_slots_init" | "code_slot_set" | "code_new") {
+        return true;
+    }
+
+    if matches!(
+        kind,
+        "trace_enter_slot"
+            | "trace_exit"
+            | "exception_clear"
+            | "exception_last"
+            | "exception_stack_enter"
+            | "exception_stack_clear"
+            | "exception_stack_depth"
+            | "context_depth"
+            | "check_exception"
+    ) {
+        return true;
+    }
+
+    false
+}
+
+/// Returns `true` when an unused-result op can be erased without dropping
+/// Python-observable behaviour.
+fn simple_ir_unused_result_is_removable(op: &OpIR) -> bool {
+    if !simple_ir_op_is_provably_nonthrowing(op) {
+        return false;
+    }
+
+    matches!(
+        op.kind.as_str(),
+        "const"
+            | "const_int"
+            | "const_float"
+            | "const_str"
+            | "const_bool"
+            | "const_none"
+            | "const_bytes"
+            | "const_bigint"
+            | "const_ellipsis"
+            | "missing"
             | "copy"
             | "copy_var"
             | "load_var"
             | "load_fast"
-            | "nop"
+            | "load_var_slot"
+            | "load_closure"
             | "add"
             | "sub"
             | "mul"
-            | "div"
-            | "floor_div"
-            | "mod"
-            | "pow"
+            | "inplace_add"
+            | "inplace_sub"
+            | "inplace_mul"
             | "neg"
             | "pos"
-            | "eq"
-            | "ne"
-            | "lt"
-            | "le"
-            | "gt"
-            | "ge"
-            | "is"
-            | "is_not"
-            | "in"
-            | "not_in"
             | "bit_and"
             | "bit_or"
             | "bit_xor"
             | "bit_not"
+            | "bitand"
+            | "bitor"
+            | "bitxor"
             | "shl"
             | "shr"
-            | "and"
-            | "or"
-            | "not"
-            | "bool"
+            | "lshift"
+            | "rshift"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "inplace_lshift"
+            | "inplace_rshift"
+            | "lt"
+            | "le"
+            | "gt"
+            | "ge"
+            | "eq"
+            | "ne"
+            | "is"
+            | "is_not"
             | "box"
             | "unbox"
             | "cast"
@@ -2106,11 +2254,6 @@ fn simple_ir_op_is_pure(kind: &str) -> bool {
             | "build_dict"
             | "build_set"
             | "build_slice"
-            | "get_iter"
-            | "format_value"
-            | "build_string"
-            | "load_attr"
-            | "index"
             | "type_guard"
     )
 }
@@ -2484,8 +2627,9 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
             let before = func.ops.len();
 
             func.ops.retain(|op| {
-                // Keep all side-effecting ops.
-                if !simple_ir_op_is_pure(&op.kind) {
+                // Keep all ops whose execution is observable, including
+                // potential exceptions and user-code dispatch.
+                if !simple_ir_unused_result_is_removable(op) {
                     return true;
                 }
 
@@ -3637,6 +3781,95 @@ mod tests {
                 .any(|op| op.kind == "add" && op.out.as_deref() == Some("_sum")),
             "dead-op elimination must preserve producers consumed through copy_var.var: {ops:?}"
         );
+    }
+
+    #[test]
+    fn dead_op_elim_keeps_unused_potentially_throwing_index() {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "unused_index".to_string(),
+                params: vec!["mapping".to_string(), "key".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "index".to_string(),
+                        args: Some(vec!["mapping".to_string(), "key".to_string()]),
+                        out: Some("_unused".to_string()),
+                        ..Default::default()
+                    },
+                    make_op("ret_void"),
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter().any(|op| op.kind == "index"),
+            "dead-op elimination must preserve unused index ops because __getitem__/__missing__ exceptions are observable: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn dead_op_elim_keeps_unused_untyped_arithmetic() {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "unused_untyped_add".to_string(),
+                params: vec!["left".to_string(), "right".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    make_arith("add", &["left", "right"], "_unused"),
+                    make_op("ret_void"),
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter().any(|op| op.kind == "add"),
+            "dead-op elimination must preserve unused untyped arithmetic because protocol dispatch can raise: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn dead_op_elim_removes_unused_fast_int_arithmetic_chain() {
+        let mut add = make_arith("add", &["_v0", "_v1"], "_unused");
+        add.fast_int = Some(true);
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "unused_fast_add".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    make_const_int("_v0", 40),
+                    make_const_int("_v1", 2),
+                    add,
+                    make_op("ret_void"),
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter().all(|op| op.kind != "add" && op.out.is_none()),
+            "dead-op elimination should still remove provably nonthrowing unused fast-int value chains: {ops:?}"
+        );
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, "ret_void");
     }
 
     // --- RC coalescing tests ---

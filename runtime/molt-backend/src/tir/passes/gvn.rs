@@ -53,17 +53,7 @@ struct ValueKey {
 /// native backend handles the op (ConstFloat → raw f64 vs
 /// Copy → NaN-boxed path), causing type mismatches.
 fn is_always_numberable(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::ConstInt
-            | OpCode::ConstFloat
-            | OpCode::ConstStr
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstBytes
-            | OpCode::BoxVal
-            | OpCode::UnboxVal
-    )
+    matches!(opcode, OpCode::BoxVal | OpCode::UnboxVal)
 }
 
 /// Returns `true` if the opcode is numberable when operands are proven typed.
@@ -626,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_constants_folded() {
+    fn duplicate_constants_not_folded_by_gvn() {
         let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
         let c1 = func.fresh_value();
         let c2 = func.fresh_value(); // same constant as c1
@@ -637,12 +627,13 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![c2] };
 
         let stats = run(&mut func);
-        assert!(stats.values_changed > 0);
 
-        // c2 should be replaced with a Copy from c1.
+        // Constants are intentionally left as constants. Backends handle
+        // safe constant pooling in backend-native form; GVN must not create
+        // cross-control-flow Copy dependencies for constants.
         let ops = &func.blocks[&func.entry_block].ops;
-        assert_eq!(ops[1].opcode, OpCode::Copy);
-        assert_eq!(ops[1].operands[0], c1);
+        assert_eq!(stats.values_changed, 0);
+        assert_eq!(ops[1].opcode, OpCode::ConstInt);
     }
 
     #[test]

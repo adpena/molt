@@ -3450,7 +3450,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
         // Fast path: dict[key] — skips exception_pending and type dispatch chain.
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             unsafe {
-                if object_type_id(obj_ptr) == TYPE_ID_DICT {
+                if object_is_exact_builtin_dict(_py, obj_ptr) {
                     if let Some(val) = dict_get_in_place(_py, obj_ptr, key_bits) {
                         if obj_from_bits(val).as_ptr().is_some() {
                             inc_ref_bits(_py, val);
@@ -4050,6 +4050,46 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     let val = start + step * idx;
                     return int_bits_from_bigint(_py, val);
                 }
+                if type_id != TYPE_ID_DICT {
+                    let class_bits = object_class_bits(ptr);
+                    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                        && object_type_id(class_ptr) == TYPE_ID_TYPE
+                        && let Some(getitem_name_bits) =
+                            attr_name_bits_from_bytes(_py, b"__getitem__")
+                    {
+                        let explicit_getitem = obj_from_bits(class_dict_bits(class_ptr))
+                            .as_ptr()
+                            .is_some_and(|dict_ptr| {
+                                object_type_id(dict_ptr) == TYPE_ID_DICT
+                                    && dict_get_in_place(_py, dict_ptr, getitem_name_bits).is_some()
+                            });
+                        if explicit_getitem {
+                            if let Some(call_bits) = class_attr_lookup(
+                                _py,
+                                class_ptr,
+                                class_ptr,
+                                Some(ptr),
+                                getitem_name_bits,
+                            ) {
+                                dec_ref_bits(_py, getitem_name_bits);
+                                exception_stack_push();
+                                let res = call_callable1(_py, call_bits, key_bits);
+                                dec_ref_bits(_py, call_bits);
+                                if exception_pending(_py) {
+                                    exception_stack_pop(_py);
+                                    return MoltObject::none().bits();
+                                }
+                                exception_stack_pop(_py);
+                                return res;
+                            }
+                            if exception_pending(_py) {
+                                dec_ref_bits(_py, getitem_name_bits);
+                                return MoltObject::none().bits();
+                            }
+                        }
+                        dec_ref_bits(_py, getitem_name_bits);
+                    }
+                }
                 if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
@@ -4061,17 +4101,20 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         return val;
                     }
-                    if object_type_id(ptr) != TYPE_ID_DICT
+                    if !object_is_exact_builtin_dict(_py, ptr)
                         && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__missing__")
                     {
                         if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, name_bits)
                         {
                             dec_ref_bits(_py, name_bits);
+                            exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
                             dec_ref_bits(_py, call_bits);
                             if exception_pending(_py) {
+                                exception_stack_pop(_py);
                                 return MoltObject::none().bits();
                             }
+                            exception_stack_pop(_py);
                             return res;
                         }
                         dec_ref_bits(_py, name_bits);
@@ -5445,6 +5488,9 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                 if !obj_from_bits(iter_bits).is_none() {
                     loop {
                         let pair_bits = molt_iter_next(iter_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
                         let pair_obj = obj_from_bits(pair_bits);
                         let Some(pair_ptr) = pair_obj.as_ptr() else {
                             return raise_exception::<_>(
@@ -5507,12 +5553,14 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                                         }
                                     }
                                 }
-                                dec_ref_bits(_py, exc_bits);
-                                exception_stack_pop(_py);
                                 if is_index_error {
                                     clear_exception(_py);
+                                    exception_stack_pop(_py);
+                                    dec_ref_bits(_py, exc_bits);
                                     return MoltObject::from_bool(false).bits();
                                 }
+                                exception_stack_pop_restore_last(_py, exc_bits);
+                                dec_ref_bits(_py, exc_bits);
                                 return MoltObject::none().bits();
                             }
                             exception_stack_pop(_py);

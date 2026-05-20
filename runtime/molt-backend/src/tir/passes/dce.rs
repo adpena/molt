@@ -20,12 +20,14 @@ use super::reachability::metadata_preserving_reachable_blocks;
 // ---------------------------------------------------------------------------
 
 /// Returns `true` if an op must be preserved even when all of its results
-/// are dead.  Checks both the opcode and, for `Copy` ops that originated
-/// from an unknown SimpleIR kind, the `_original_kind` attribute so that
-/// unmapped call variants are never silently dropped.
+/// are dead.  Potential exceptions are observable control flow even outside
+/// an explicit try region, so raising operations are side-effecting for DCE.
+/// Checks both the opcode and, for `Copy` ops that originated from an unknown
+/// SimpleIR kind, the `_original_kind` attribute so that unmapped call variants
+/// are never silently dropped.
 #[inline]
 fn op_is_side_effecting(op: &TirOp) -> bool {
-    if is_side_effecting(op.opcode) {
+    if is_side_effecting(op.opcode) || is_potentially_throwing(op.opcode) {
         return true;
     }
     // Safety net: if this Copy was originally an unmapped SimpleIR op (has
@@ -105,9 +107,9 @@ fn is_side_effecting(opcode: OpCode) -> bool {
     )
 }
 
-/// Returns `true` if the op may throw an exception.  Used when
-/// `has_exception_handling` is set to conservatively keep all
-/// potentially-throwing ops alive inside try regions.
+/// Returns `true` if the op may throw an exception.  Used by DCE to preserve
+/// observable exceptional control flow and by `check_exception_elim` to avoid
+/// removing required checks.
 ///
 /// Also re-used by `check_exception_elim` so both passes share a
 /// single source of truth for raising semantics.
@@ -447,6 +449,36 @@ mod tests {
         assert!(ops.iter().any(|o| o.opcode == OpCode::Call));
         // The ConstInt feeding the Call is used by it, so it stays too.
         let _ = stats;
+    }
+
+    #[test]
+    fn index_kept_when_result_dead() {
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::Str],
+            TirType::None,
+        );
+        let container = ValueId(0);
+        let key = ValueId(1);
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::Index, vec![container, key], vec![result]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert!(is_potentially_throwing(OpCode::Index));
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Index),
+            "dead index must be preserved because missing keys and bad indices raise"
+        );
     }
 
     #[test]

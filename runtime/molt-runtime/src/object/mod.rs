@@ -1307,6 +1307,16 @@ pub(crate) unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
     unsafe { object_class_bits_from_state(state) }
 }
 
+#[inline]
+pub(crate) unsafe fn object_is_exact_builtin_dict(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
+        return false;
+    }
+    let class_bits = unsafe { object_class_bits(ptr) };
+    class_bits == 0
+        || builtin_classes_if_initialized(_py).is_some_and(|builtins| class_bits == builtins.dict)
+}
+
 pub(crate) unsafe fn object_set_class_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     crate::gil_assert();
     object_set_state(ptr, bits as i64);

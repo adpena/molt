@@ -10378,6 +10378,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_counter_neg",
+        symbol: "molt_counter_neg",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_counter_new",
         symbol: "molt_counter_new",
         arity: 0,
@@ -10386,6 +10391,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_counter_or",
         symbol: "molt_counter_or",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_counter_pos",
+        symbol: "molt_counter_pos",
+        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_counter_pop",
@@ -10435,6 +10445,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_defaultdict_missing",
         symbol: "molt_defaultdict_missing",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_defaultdict_missing_method",
+        symbol: "molt_defaultdict_missing_method",
         arity: 2,
     },
     IntrinsicSpec {
@@ -15116,6 +15131,10 @@ fn resolve_collections_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_counter_most_common",
             crate::molt_counter_most_common as *const (),
         )),
+        "molt_counter_neg" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_counter_neg",
+            crate::molt_counter_neg as *const (),
+        )),
         "molt_counter_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_counter_new",
             crate::molt_counter_new as *const (),
@@ -15123,6 +15142,10 @@ fn resolve_collections_symbol(symbol: &str) -> Option<u64> {
         "molt_counter_or" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_counter_or",
             crate::molt_counter_or as *const (),
+        )),
+        "molt_counter_pos" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_counter_pos",
+            crate::molt_counter_pos as *const (),
         )),
         "molt_counter_pop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_counter_pop",
@@ -15163,6 +15186,10 @@ fn resolve_collections_symbol(symbol: &str) -> Option<u64> {
         "molt_defaultdict_missing" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_defaultdict_missing",
             crate::molt_defaultdict_missing as *const (),
+        )),
+        "molt_defaultdict_missing_method" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_defaultdict_missing_method",
+            crate::molt_defaultdict_missing_method as *const (),
         )),
         "molt_defaultdict_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_defaultdict_new",

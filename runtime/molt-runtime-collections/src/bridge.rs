@@ -108,6 +108,21 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
+    fn __molt_collections_string_data(
+        ptr: *mut u8,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
+    fn __molt_collections_attr_name_bits_from_bytes(
+        name_ptr: *const u8,
+        name_len: usize,
+        out: *mut u64,
+    ) -> i32;
+    fn __molt_collections_attr_lookup_ptr_allow_missing(
+        obj_ptr: *mut u8,
+        attr_bits: u64,
+        out: *mut u64,
+    ) -> i32;
     fn __molt_collections_is_truthy(bits: u64) -> i32;
     fn __molt_collections_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize)
     -> i32;
@@ -137,6 +152,42 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     } else {
         None
     }
+}
+
+/// # Safety
+///
+/// `ptr` must refer to a live Molt string object for the duration of the
+/// returned borrow.
+pub unsafe fn string_data(ptr: *mut u8) -> Option<&'static [u8]> {
+    let mut out_ptr: *const u8 = std::ptr::null();
+    let mut out_len: usize = 0;
+    let ok = unsafe { __molt_collections_string_data(ptr, &mut out_ptr, &mut out_len) };
+    if ok == 0 || out_ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(out_ptr, out_len) })
+}
+
+pub fn attr_name_bits_from_bytes(_py: &CoreGilToken, name: &[u8]) -> Option<u64> {
+    let mut out: u64 = 0;
+    let ok = unsafe {
+        __molt_collections_attr_name_bits_from_bytes(name.as_ptr(), name.len(), &mut out)
+    };
+    if ok != 0 { Some(out) } else { None }
+}
+
+/// # Safety
+///
+/// `obj_ptr` must refer to a live Molt object for the duration of this call.
+pub unsafe fn attr_lookup_ptr_allow_missing(
+    _py: &CoreGilToken,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<u64> {
+    let mut out: u64 = 0;
+    let ok =
+        unsafe { __molt_collections_attr_lookup_ptr_allow_missing(obj_ptr, attr_bits, &mut out) };
+    if ok != 0 { Some(out) } else { None }
 }
 
 pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
@@ -226,6 +277,7 @@ unsafe extern "C" {
     fn __molt_collections_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64)
     -> i32;
     fn __molt_collections_dict_del_in_place(dict_ptr: *mut u8, key_bits: u64) -> i32;
+    fn __molt_collections_dict_like_bits_from_ptr(obj_ptr: *mut u8, out: *mut u64) -> i32;
     fn __molt_collections_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
     fn __molt_collections_dict_order_clone(
         ptr: *mut u8,
@@ -269,6 +321,15 @@ pub unsafe fn dict_set_in_place(
 /// this call.
 pub unsafe fn dict_del_in_place(_py: &CoreGilToken, dict_ptr: *mut u8, key_bits: u64) -> bool {
     unsafe { __molt_collections_dict_del_in_place(dict_ptr, key_bits) != 0 }
+}
+
+/// # Safety
+///
+/// `ptr` must refer to a live Molt object for the duration of this call.
+pub unsafe fn dict_like_bits_from_ptr(_py: &CoreGilToken, ptr: *mut u8) -> Option<u64> {
+    let mut out: u64 = 0;
+    let ok = unsafe { __molt_collections_dict_like_bits_from_ptr(ptr, &mut out) };
+    if ok != 0 { Some(out) } else { None }
 }
 
 /// # Safety

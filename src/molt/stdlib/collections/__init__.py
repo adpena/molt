@@ -85,8 +85,10 @@ _MOLT_COUNTER_GETITEM = _require_intrinsic("molt_counter_getitem")
 _MOLT_COUNTER_ITEMS = _require_intrinsic("molt_counter_items")
 _MOLT_COUNTER_LEN = _require_intrinsic("molt_counter_len")
 _MOLT_COUNTER_MOST_COMMON = _require_intrinsic("molt_counter_most_common")
+_MOLT_COUNTER_NEG = _require_intrinsic("molt_counter_neg")
 _MOLT_COUNTER_NEW = _require_intrinsic("molt_counter_new")
 _MOLT_COUNTER_OR = _require_intrinsic("molt_counter_or")
+_MOLT_COUNTER_POS = _require_intrinsic("molt_counter_pos")
 _MOLT_COUNTER_POP = _require_intrinsic("molt_counter_pop")
 _MOLT_COUNTER_SETITEM = _require_intrinsic("molt_counter_setitem")
 _MOLT_COUNTER_SUB = _require_intrinsic("molt_counter_sub")
@@ -98,7 +100,7 @@ _MOLT_COUNTER_UPDATE = _require_intrinsic("molt_counter_update")
 _MOLT_DEFAULTDICT_COPY = _require_intrinsic("molt_defaultdict_copy")
 _MOLT_DEFAULTDICT_DROP = _require_intrinsic("molt_defaultdict_drop")
 _MOLT_DEFAULTDICT_FACTORY = _require_intrinsic("molt_defaultdict_factory")
-_MOLT_DEFAULTDICT_MISSING = _require_intrinsic("molt_defaultdict_missing")
+_MOLT_DEFAULTDICT_MISSING_METHOD = _require_intrinsic("molt_defaultdict_missing_method")
 _MOLT_DEFAULTDICT_NEW = _require_intrinsic("molt_defaultdict_new")
 
 # --- ChainMap intrinsics ---
@@ -844,6 +846,12 @@ class Counter:
             return NotImplemented
         return Counter._from_handle(_MOLT_COUNTER_AND(self._handle, other._handle))
 
+    def __pos__(self) -> "Counter":
+        return Counter._from_handle(_MOLT_COUNTER_POS(self._handle))
+
+    def __neg__(self) -> "Counter":
+        return Counter._from_handle(_MOLT_COUNTER_NEG(self._handle))
+
     def __iadd__(self, other: "Counter"):
         if not isinstance(other, Counter):
             return NotImplemented
@@ -934,16 +942,7 @@ class defaultdict(dict):
         except Exception:
             pass
 
-    def __getitem__(self, key: Any) -> Any:
-        try:
-            return dict.__getitem__(self, key)
-        except KeyError:
-            return self.__missing__(key)
-
-    def __missing__(self, key: Any) -> Any:
-        result = _MOLT_DEFAULTDICT_MISSING(self._dd_handle, key)
-        dict.__setitem__(self, key, result)
-        return result
+    __missing__ = _MOLT_DEFAULTDICT_MISSING_METHOD
 
     def copy(self) -> "defaultdict":
         factory = self.default_factory

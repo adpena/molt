@@ -1447,8 +1447,8 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                     dec_ref_bits(_py, exc_bits);
                                     return out_bits;
                                 }
+                                exception_stack_pop_restore_last(_py, exc_bits);
                                 dec_ref_bits(_py, exc_bits);
-                                exception_stack_pop(_py);
                                 return MoltObject::none().bits();
                             }
                             exception_stack_pop(_py);
@@ -1711,8 +1711,8 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                         false,
                                     );
                                 }
+                                exception_stack_pop_restore_last(_py, exc_bits);
                                 dec_ref_bits(_py, exc_bits);
-                                exception_stack_pop(_py);
                                 return MoltObject::none().bits();
                             }
                             exception_stack_pop(_py);
