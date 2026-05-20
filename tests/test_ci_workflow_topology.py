@@ -40,6 +40,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "Install native linker" in ci_text
     assert "sudo apt-get install -y lld" in ci_text
     assert "ld.lld --version" in ci_text
+    assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in ci_text
 
 
 def test_pre_commit_hooks_are_read_only_by_default() -> None:

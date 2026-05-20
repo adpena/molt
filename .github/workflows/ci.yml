@@ -62,6 +62,8 @@ jobs:
           ld.lld --version
 
       - name: Run Python smoke tests
+        env:
+          MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
         run: |
           uv run python3 -m pytest -q \
             tests/test_bench_harness.py \
