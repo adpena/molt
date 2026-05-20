@@ -607,11 +607,11 @@ fn daemon_memory_cache_allowed_for_job(job: &DaemonJobRequest) -> bool {
     };
     #[cfg(feature = "native-backend")]
     {
-        return shared_stdlib_cache_matches(
+        shared_stdlib_cache_matches(
             Path::new(&stdlib_obj_path),
             std::env::var("MOLT_STDLIB_CACHE_KEY").ok().as_deref(),
             std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok().as_deref(),
-        );
+        )
     }
     #[cfg(not(feature = "native-backend"))]
     {
