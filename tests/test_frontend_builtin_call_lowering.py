@@ -586,6 +586,38 @@ def test_counter_string_constructor_keeps_general_constructor_path() -> None:
     assert all(op.get("kind") != "object_new_bound" for op in main_ops)
 
 
+def test_counter_index_and_len_use_intrinsic_handle_path() -> None:
+    gen = SimpleTIRGenerator(
+        known_classes=_counter_known_classes(),
+        known_modules={"collections"},
+        stdlib_allowlist={"collections"},
+    )
+    gen.visit(
+        ast.parse(
+            "from collections import Counter\n"
+            'words = "a b a".split()\n'
+            "c = Counter(words)\n"
+            'x = c["a"]\n'
+            "n = len(c)\n"
+        )
+    )
+    main_ops = next(
+        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+    )
+
+    assert any(
+        op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_counter_getitem"
+        for op in main_ops
+    )
+    assert any(
+        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_counter_len"
+        for op in main_ops
+    )
+    assert all(op.get("kind") != "index" for op in main_ops)
+    assert all(op.get("kind") != "len" for op in main_ops)
+
+
 def test_dotted_import_alias_uses_runtime_module_import_when_parent_allowlisted() -> (
     None
 ):
