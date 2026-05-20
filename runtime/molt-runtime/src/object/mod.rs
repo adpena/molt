@@ -92,8 +92,8 @@ use crate::{
     TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
     TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY,
     TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
-    TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer, asyncgen_gen_bits,
-    asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,
+    TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer,
+    asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,
     asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop, asyncio_gather_poll_fn_addr,
     asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr, asyncio_ready_runner_task_drop,
     asyncio_server_accept_loop_poll_fn_addr, asyncio_server_accept_loop_task_drop,
@@ -135,8 +135,9 @@ use crate::{
     property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
     reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr, set_table_ptr,
     slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
-    task_cancel_message_clear, thread_poll_fn_addr, union_type_args_bits, utf8_cache_remove,
-    weakref_clear_for_ptr, ws_wait_release, zip_iters_ptr, zip_strict_bits,
+    task_cancel_message_clear, thread_poll_fn_addr, traceback_payload_code_bits,
+    traceback_payload_next_bits, union_type_args_bits, utf8_cache_remove, weakref_clear_for_ptr,
+    ws_wait_release, zip_iters_ptr, zip_strict_bits,
 };
 #[cfg(feature = "stdlib_itertools")]
 use molt_runtime_itertools::itertools::itertools_drop_instance;
@@ -2140,6 +2141,16 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let dict_bits = dict_view_dict_bits(ptr);
                     if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
                         dec_ref_bits(py, dict_bits);
+                    }
+                }
+                TYPE_ID_TRACEBACK_PAYLOAD => {
+                    let code_bits = traceback_payload_code_bits(ptr);
+                    if code_bits != 0 && !obj_from_bits(code_bits).is_none() {
+                        dec_ref_bits(py, code_bits);
+                    }
+                    let next_bits = traceback_payload_next_bits(ptr);
+                    if next_bits != 0 && !obj_from_bits(next_bits).is_none() {
+                        dec_ref_bits(py, next_bits);
                     }
                 }
                 TYPE_ID_EXCEPTION => {

@@ -3043,94 +3043,12 @@ impl SimpleBackend {
             }
         }
 
-        // ── Frame stack push for module chunk functions ────────────────
-        // Module chunks need traceback info (File/line) for exception
-        // formatting.  Emit molt_frame_push_info(filename_bits, name_bits,
-        // lineno) at entry and molt_frame_pop() before every return.
-        let is_module_chunk =
-            func_ir.name.contains("__molt_module_chunk_") || func_ir.name == "molt_main";
-        if is_module_chunk {
-            // Allocate filename string.
-            let filename_bytes = func_ir
-                .source_file
-                .as_deref()
-                .unwrap_or("<module>")
-                .as_bytes();
-            let filename_data_id = Self::intern_data_segment(
-                &mut self.module,
-                &mut self.data_pool,
-                &mut self.next_data_id,
-                filename_bytes,
-            );
-            let filename_global = self
-                .module
-                .declare_data_in_func(filename_data_id, builder.func);
-            let filename_ptr = builder.ins().symbol_value(types::I64, filename_global);
-            let filename_len = builder
-                .ins()
-                .iconst(types::I64, filename_bytes.len() as i64);
-
-            let str_from_bytes = Self::import_func_id_split(
-                &mut self.module,
-                &mut self.import_ids,
-                "molt_string_from_bytes",
-                &[types::I64, types::I64, types::I64],
-                &[types::I32],
-            );
-            let str_from_bytes_ref = self
-                .module
-                .declare_func_in_func(str_from_bytes, builder.func);
-
-            let filename_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            ));
-            let filename_out_ptr = builder.ins().stack_addr(types::I64, filename_slot, 0);
-            builder.ins().call(
-                str_from_bytes_ref,
-                &[filename_ptr, filename_len, filename_out_ptr],
-            );
-            let filename_bits = builder.ins().stack_load(types::I64, filename_slot, 0);
-
-            // Allocate "<module>" name string.
-            let name_bytes = b"<module>";
-            let name_data_id = Self::intern_data_segment(
-                &mut self.module,
-                &mut self.data_pool,
-                &mut self.next_data_id,
-                name_bytes,
-            );
-            let name_global = self.module.declare_data_in_func(name_data_id, builder.func);
-            let name_ptr = builder.ins().symbol_value(types::I64, name_global);
-            let name_len = builder.ins().iconst(types::I64, name_bytes.len() as i64);
-
-            let name_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            ));
-            let name_out_ptr = builder.ins().stack_addr(types::I64, name_slot, 0);
-            builder
-                .ins()
-                .call(str_from_bytes_ref, &[name_ptr, name_len, name_out_ptr]);
-            let name_bits = builder.ins().stack_load(types::I64, name_slot, 0);
-
-            // Call molt_frame_push_info(filename_bits, name_bits, lineno).
-            let lineno = builder.ins().iconst(types::I64, 1);
-            let frame_push_fn = import_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                &mut builder,
-                &mut import_refs,
-                "molt_frame_push_info",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
-            );
-            builder
-                .ins()
-                .call(frame_push_fn, &[filename_bits, name_bits, lineno]);
-        }
+        // Traceback frame tracking is separate from full call tracing. The
+        // frontend emits code-slot-backed trace_enter_slot/trace_exit markers
+        // for every Python frame; native codegen lowers the enter marker at its
+        // IR position so module code can initialize code slots first, then pops
+        // exactly once in the unified return block.
+        let has_frame_slot = func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot");
 
         seal_block_once(&mut builder, &mut sealed_blocks, entry_block);
         sealed_blocks.insert(entry_block);
@@ -3230,10 +3148,10 @@ impl SimpleBackend {
             // line/column update calls below can try to append instructions to
             // a filled block and panic.
             sync_block_filled(&builder, &mut is_block_filled);
-            // Update frame stack column offsets for traceback carets.
-            // Only emit for module chunks and only when the op carries col info.
-            // Skip inside active loops — same rationale as line tracking elision.
-            if is_module_chunk
+            // Update frame stack column offsets for traceback carets when this
+            // function has a code-slot-backed frame. Skip inside active loops;
+            // line tracking follows the same hot-loop elision below.
+            if has_frame_slot
                 && !is_block_filled
                 && loop_stack.is_empty()
                 && let (Some(col_offset), Some(end_col_offset)) = (op.col_offset, op.end_col_offset)
@@ -22969,7 +22887,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[count_val]);
                 }
-                "trace_enter_slot" if emit_traces => {
+                "trace_enter_slot" => {
                     let code_id = op.value.unwrap_or(0);
                     let code_id_val = builder.ins().iconst(types::I64, code_id);
                     let callee = Self::import_func_id_split(
@@ -22982,17 +22900,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[code_id_val]);
                 }
-                "trace_exit" if emit_traces => {
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_trace_exit",
-                        &[],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let _ = builder.ins().call(local_callee, &[]);
-                }
+                "trace_exit" => {}
                 "frame_locals_set" => {
                     let arg_names = op.args.as_deref().unwrap_or(&[]);
                     let dict_bits = arg_names
@@ -23045,7 +22953,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[line_val]);
                     // Update frame stack line (+ column offsets) for tracebacks.
-                    if is_module_chunk {
+                    if has_frame_slot {
                         let has_col = op.col_offset.is_some() && op.end_col_offset.is_some();
                         if has_col {
                             let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
@@ -23533,8 +23441,32 @@ impl SimpleBackend {
                             } else {
                                 raise_results[0]
                             };
+                            if has_frame_slot {
+                                let trace_exit_ref = import_func_ref(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    "molt_trace_exit",
+                                    &[],
+                                    &[types::I64],
+                                );
+                                builder.ins().call(trace_exit_ref, &[]);
+                            }
                             builder.ins().return_(&[err_val]);
                         } else {
+                            if has_frame_slot {
+                                let trace_exit_ref = import_func_ref(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    &mut builder,
+                                    &mut import_refs,
+                                    "molt_trace_exit",
+                                    &[],
+                                    &[types::I64],
+                                );
+                                builder.ins().call(trace_exit_ref, &[]);
+                            }
                             builder.ins().return_(&[]);
                         }
 
@@ -24359,6 +24291,18 @@ impl SimpleBackend {
                     // the pending RecursionError propagates to the caller
                     // instead of being silently swallowed as None (which
                     // caused TypeError: NoneType + int downstream).
+                    if has_frame_slot {
+                        let trace_exit_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_trace_exit",
+                            &[],
+                            &[types::I64],
+                        );
+                        builder.ins().call(trace_exit_ref, &[]);
+                    }
                     if has_ret {
                         let none_bits = builder.ins().iconst(types::I64, box_none());
                         builder.ins().return_(&[none_bits]);
@@ -24400,6 +24344,18 @@ impl SimpleBackend {
                     seal_block_once(&mut builder, &mut sealed_blocks, else_fail_block);
                     // Same as then_fail_block: return immediately on recursion
                     // guard failure so the pending RecursionError propagates.
+                    if has_frame_slot {
+                        let trace_exit_ref = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_trace_exit",
+                            &[],
+                            &[types::I64],
+                        );
+                        builder.ins().call(trace_exit_ref, &[]);
+                    }
                     if has_ret {
                         let none_bits = builder.ins().iconst(types::I64, box_none());
                         builder.ins().return_(&[none_bits]);
@@ -34813,52 +34769,17 @@ impl SimpleBackend {
         switch_to_block_materialized(&mut builder, master_return_block);
         seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
 
-        // Pop frame stack for module chunk functions — but only on the
-        // non-exception path.  When an exception is pending, the frame
-        // must stay pushed so the traceback formatter can read the
-        // col_offset/end_col_offset for caret annotations.  The caller
-        // (molt_finish in the C stub) pops it after formatting.
-        if is_module_chunk {
-            let pending_fn = import_func_ref(
+        if has_frame_slot {
+            let trace_exit_fn = import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
-                "molt_exception_pending_fast",
+                "molt_trace_exit",
                 &[],
                 &[types::I64],
             );
-            let pending_call = builder.ins().call(pending_fn, &[]);
-            let pending = builder.inst_results(pending_call)[0];
-            let zero = builder.ins().iconst(types::I64, 0);
-            let not_pending = builder.ins().icmp(
-                cranelift_codegen::ir::condcodes::IntCC::Equal,
-                pending,
-                zero,
-            );
-
-            let pop_block = builder.create_block();
-            let skip_pop_block = builder.create_block();
-            builder
-                .ins()
-                .brif(not_pending, pop_block, &[], skip_pop_block, &[]);
-
-            switch_to_block_materialized(&mut builder, pop_block);
-            builder.seal_block(pop_block);
-            let frame_pop_fn = import_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                &mut builder,
-                &mut import_refs,
-                "molt_frame_pop",
-                &[],
-                &[types::I64],
-            );
-            builder.ins().call(frame_pop_fn, &[]);
-            builder.ins().jump(skip_pop_block, &[]);
-
-            switch_to_block_materialized(&mut builder, skip_pop_block);
-            builder.seal_block(skip_pop_block);
+            builder.ins().call(trace_exit_fn, &[]);
         }
 
         for slot in slot_backed_join_slots.values() {

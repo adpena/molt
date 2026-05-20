@@ -13,11 +13,12 @@ use crate::{
     CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT, EXCEPTION_STACK, FRAME_STACK,
     GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GIL_DEPTH, GilReleaseGuard, MoltObject,
     NEXT_CANCEL_TOKEN_ID, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT, TASK_RAISE_ACTIVE,
-    TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string, builtin_classes_shutdown,
-    call_callable0, clear_exception, clear_exception_state, clear_exception_type_cache,
-    dec_ref_bits, default_cancel_tokens, dict_clear_in_place_shutdown, dict_get_in_place,
-    exception_pending, inc_ref_bits, intern_static_name, module_dict_bits, molt_file_flush,
-    molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
+    TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string,
+    builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
+    clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_clear_in_place_shutdown,
+    dict_get_in_place, exception_pending, inc_ref_bits, intern_static_name, module_dict_bits,
+    molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
+    runtime_state,
 };
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -288,6 +289,9 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
                 dec_ref_bits(_py, entry.code_bits);
             }
         }
+    });
+    let _ = TRACE_FRAME_PUSH_STACK.try_with(|stack| {
+        let _ = std::mem::take(&mut *stack.borrow_mut());
     });
     let _ = ACTIVE_EXCEPTION_STACK.try_with(|stack| {
         let mut stack = stack.borrow_mut();
@@ -620,6 +624,9 @@ fn drain_heap_tls() {
         let _ = std::mem::take(&mut *s.borrow_mut());
     });
     let _ = FRAME_STACK.try_with(|s| {
+        let _ = std::mem::take(&mut *s.borrow_mut());
+    });
+    let _ = TRACE_FRAME_PUSH_STACK.try_with(|s| {
         let _ = std::mem::take(&mut *s.borrow_mut());
     });
     let _ = ACTIVE_EXCEPTION_STACK.try_with(|s| {

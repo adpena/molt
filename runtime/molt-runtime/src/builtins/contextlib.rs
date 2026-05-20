@@ -5,14 +5,14 @@ use crate::{
     clear_exception, clear_exception_state, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, exception_kind_bits,
-    exception_pending, exception_stack_pop, exception_stack_push, exception_trace_bits,
-    has_capability, header_from_obj_ptr, inc_ref_bits, is_missing_bits, is_truthy, missing_bits,
-    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
-    molt_exception_clear, molt_exception_last, molt_future_new, molt_future_poll,
-    molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_inspect_isawaitable,
-    molt_is_callable, molt_issubclass, molt_object_setattr, molt_raise, obj_from_bits,
-    object_type_id, path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception, release_ptr,
-    resolve_ptr, string_obj_to_owned, type_of_bits,
+    exception_materialize_traceback_bits, exception_pending, exception_stack_pop,
+    exception_stack_push, has_capability, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
+    is_truthy, missing_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    molt_callargs_expand_star, molt_callargs_new, molt_exception_clear, molt_exception_last,
+    molt_future_new, molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate,
+    molt_inspect_isawaitable, molt_is_callable, molt_issubclass, molt_object_setattr, molt_raise,
+    obj_from_bits, object_type_id, path_from_bits, pending_bits_i64, ptr_from_bits,
+    raise_exception, release_ptr, resolve_ptr, string_obj_to_owned, type_of_bits,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -576,7 +576,7 @@ unsafe fn async_exitstack_set_current_exception_owned(
         let new_type_bits = type_of_bits(_py, new_exc_bits);
         let new_tb_bits = obj_from_bits(new_exc_bits)
             .as_ptr()
-            .map(|ptr| exception_trace_bits(ptr))
+            .map(|ptr| exception_materialize_traceback_bits(_py, ptr))
             .unwrap_or(none_bits);
         payload_replace_borrowed(
             _py,
@@ -773,7 +773,7 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
             .unwrap_or_else(|| type_of_bits(_py, raised_bits));
         let raised_tb_bits = obj_from_bits(raised_bits)
             .as_ptr()
-            .map(|ptr| unsafe { exception_trace_bits(ptr) })
+            .map(|ptr| exception_materialize_traceback_bits(_py, ptr))
             .unwrap_or(none_bits);
         let exit_out = call_method3(
             _py,
@@ -1476,7 +1476,7 @@ pub extern "C" fn molt_contextlib_exitstack_exit(
                 current_type = type_of_bits(_py, new_exc_bits);
                 current_tb = obj_from_bits(new_exc_bits)
                     .as_ptr()
-                    .map(|ptr| unsafe { exception_trace_bits(ptr) })
+                    .map(|ptr| exception_materialize_traceback_bits(_py, ptr))
                     .unwrap_or(none_bits);
                 suppressed = false;
                 continue;
