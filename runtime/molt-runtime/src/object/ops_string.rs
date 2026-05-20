@@ -2535,23 +2535,17 @@ fn split_field_index_error(_py: &PyToken<'_>) -> u64 {
     raise_exception::<_>(_py, "IndexError", "list index out of range")
 }
 
-fn alloc_split_field_at_index(
-    _py: &PyToken<'_>,
+fn split_field_bounds_at_index(
     hay: &[u8],
     needle: &[u8],
     target_index: usize,
-) -> u64 {
+) -> Option<(usize, usize)> {
     let mut field_index = 0usize;
     let mut start = 0usize;
     if needle.len() == 1 {
         for idx in memchr::memchr_iter(needle[0], hay) {
             if field_index == target_index {
-                let ptr = alloc_string(_py, &hay[start..idx]);
-                return if ptr.is_null() {
-                    MoltObject::none().bits()
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                };
+                return Some((start, idx));
             }
             start = idx + 1;
             field_index += 1;
@@ -2560,19 +2554,27 @@ fn alloc_split_field_at_index(
         let finder = memmem::Finder::new(needle);
         for idx in finder.find_iter(hay) {
             if field_index == target_index {
-                let ptr = alloc_string(_py, &hay[start..idx]);
-                return if ptr.is_null() {
-                    MoltObject::none().bits()
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                };
+                return Some((start, idx));
             }
             start = idx + needle.len();
             field_index += 1;
         }
     }
     if field_index == target_index {
-        let ptr = alloc_string(_py, &hay[start..]);
+        Some((start, hay.len()))
+    } else {
+        None
+    }
+}
+
+fn alloc_split_field_at_index(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    needle: &[u8],
+    target_index: usize,
+) -> u64 {
+    if let Some((start, end)) = split_field_bounds_at_index(hay, needle, target_index) {
+        let ptr = alloc_string(_py, &hay[start..end]);
         return if ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -2582,29 +2584,115 @@ fn alloc_split_field_at_index(
     split_field_index_error(_py)
 }
 
+fn explicit_split_field_args(
+    _py: &PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+    index_bits: u64,
+) -> Option<(*mut u8, *mut u8, usize)> {
+    unsafe {
+        let Some((hay_ptr, needle_ptr)) =
+            validate_explicit_string_split_args(_py, hay_bits, needle_bits)
+        else {
+            return None;
+        };
+        let Some(index) = to_i64(obj_from_bits(index_bits)) else {
+            let msg = format!(
+                "list indices must be integers or slices, not {}",
+                type_name(_py, obj_from_bits(index_bits))
+            );
+            raise_exception::<()>(_py, "TypeError", &msg);
+            return None;
+        };
+        let Ok(target_index) = usize::try_from(index) else {
+            split_field_index_error(_py);
+            return None;
+        };
+        Some((hay_ptr, needle_ptr, target_index))
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_split_field(hay_bits: u64, needle_bits: u64, index_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let Some((hay_ptr, needle_ptr)) =
-                validate_explicit_string_split_args(_py, hay_bits, needle_bits)
+            let Some((hay_ptr, needle_ptr, target_index)) =
+                explicit_split_field_args(_py, hay_bits, needle_bits, index_bits)
             else {
                 return MoltObject::none().bits();
-            };
-            let Some(index) = to_i64(obj_from_bits(index_bits)) else {
-                let msg = format!(
-                    "list indices must be integers or slices, not {}",
-                    type_name(_py, obj_from_bits(index_bits))
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            };
-            let Ok(target_index) = usize::try_from(index) else {
-                return split_field_index_error(_py);
             };
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
                 std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
             alloc_split_field_at_index(_py, hay_bytes, needle_bytes, target_index)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_split_field_len(
+    hay_bits: u64,
+    needle_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let Some((hay_ptr, needle_ptr, target_index)) =
+                explicit_split_field_args(_py, hay_bits, needle_bits, index_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let needle_bytes =
+                std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+            let Some((start, end)) =
+                split_field_bounds_at_index(hay_bytes, needle_bytes, target_index)
+            else {
+                return split_field_index_error(_py);
+            };
+            let field = &hay_bytes[start..end];
+            let count = if field.is_ascii() {
+                field.len() as i64
+            } else {
+                utf8_codepoint_count_cached(_py, field, None)
+            };
+            MoltObject::from_int(count).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_split_field_eq(
+    hay_bits: u64,
+    needle_bits: u64,
+    index_bits: u64,
+    expected_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let Some((hay_ptr, needle_ptr, target_index)) =
+                explicit_split_field_args(_py, hay_bits, needle_bits, index_bits)
+            else {
+                return MoltObject::none().bits();
+            };
+            let expected = obj_from_bits(expected_bits);
+            let Some(expected_ptr) = expected.as_ptr() else {
+                return MoltObject::from_bool(false).bits();
+            };
+            if object_type_id(expected_ptr) != TYPE_ID_STRING {
+                return MoltObject::from_bool(false).bits();
+            }
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let needle_bytes =
+                std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+            let Some((start, end)) =
+                split_field_bounds_at_index(hay_bytes, needle_bytes, target_index)
+            else {
+                return split_field_index_error(_py);
+            };
+            let expected_bytes =
+                std::slice::from_raw_parts(string_bytes(expected_ptr), string_len(expected_ptr));
+            MoltObject::from_bool(&hay_bytes[start..end] == expected_bytes).bits()
         }
     })
 }

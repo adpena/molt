@@ -382,6 +382,26 @@ main(True)
     assert kinds.count("string_split_field") == 4
 
 
+def test_string_split_field_len_and_eq_fuse_without_field_allocation():
+    src = """
+def main() -> None:
+    fields = "alpha|22|eu|tail".split("|")
+    total = len(fields[0])
+    if fields[2] == "eu":
+        total += len(fields[3])
+    print(total)
+main()
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    kinds = [op["kind"] for op in ops]
+    assert "string_split" not in kinds
+    assert kinds.count("string_split_validate") == 1
+    assert kinds.count("string_split_field_len") == 2
+    assert kinds.count("string_split_field_eq") == 1
+    assert kinds.count("string_split_field") == 0
+
+
 def test_string_split_scalarization_keeps_escaping_and_dynamic_uses_on_list_path():
     cases = [
         """
