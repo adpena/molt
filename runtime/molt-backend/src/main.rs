@@ -37,6 +37,7 @@ const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
 const DEFAULT_STDLIB_BATCH_OP_BUDGET: usize = 12_000;
 const MIB: usize = 1024 * 1024;
 const DEFAULT_DAEMON_REQUEST_LIMIT_BYTES: usize = 512 * MIB;
+const DEFAULT_STDIN_REQUEST_LIMIT_BYTES: usize = DEFAULT_DAEMON_REQUEST_LIMIT_BYTES;
 const DEFAULT_DAEMON_MAX_JOBS: usize = 512;
 const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
@@ -1040,8 +1041,70 @@ fn daemon_request_limit_bytes() -> usize {
     )
 }
 
+fn stdin_request_limit_bytes() -> usize {
+    env_usize_limit(
+        "MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES",
+        DEFAULT_STDIN_REQUEST_LIMIT_BYTES,
+        1024,
+    )
+}
+
 fn daemon_max_jobs() -> usize {
     env_usize_limit("MOLT_BACKEND_DAEMON_MAX_JOBS", DEFAULT_DAEMON_MAX_JOBS, 1)
+}
+
+#[derive(Debug)]
+struct RequestBoundedRead<R> {
+    inner: R,
+    remaining: usize,
+    limit_bytes: usize,
+    context: &'static str,
+}
+
+impl<R: Read> RequestBoundedRead<R> {
+    fn new(inner: R, limit_bytes: usize, context: &'static str) -> Self {
+        Self {
+            inner,
+            remaining: limit_bytes,
+            limit_bytes,
+            context,
+        }
+    }
+}
+
+impl<R: Read> Read for RequestBoundedRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            let mut probe = [0_u8; 1];
+            return match self.inner.read(&mut probe) {
+                Ok(0) => Ok(0),
+                Ok(_) => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} exceeded {} byte limit", self.context, self.limit_bytes),
+                )),
+                Err(err) => Err(err),
+            };
+        }
+
+        let read_len = buf.len().min(self.remaining);
+        let n = self.inner.read(&mut buf[..read_len])?;
+        self.remaining = self.remaining.saturating_sub(n);
+        Ok(n)
+    }
+}
+
+fn read_bounded_request_bytes<R: Read>(
+    reader: R,
+    limit_bytes: usize,
+    context: &'static str,
+) -> io::Result<Vec<u8>> {
+    let mut bounded = RequestBoundedRead::new(reader, limit_bytes, context);
+    let mut bytes = Vec::new();
+    bounded.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u64>) -> usize {
@@ -1933,6 +1996,7 @@ fn main() -> io::Result<()> {
 
     // Read and parse IR.  Drop the raw buffer immediately after
     // deserialization to avoid holding two copies in memory simultaneously.
+    let stdin_request_limit_bytes = stdin_request_limit_bytes();
     let mut ir: SimpleIR = {
         if ir_format == "msgpack" {
             // msgpack binary format — deserialize directly via serde
@@ -1951,7 +2015,13 @@ fn main() -> io::Result<()> {
             } else {
                 // Streaming msgpack from stdin via BufReader — avoids
                 // loading the entire IR into a Vec<u8> first.
-                let reader = io::BufReader::with_capacity(1 << 20, io::stdin().lock());
+                let stdin = io::stdin();
+                let bounded = RequestBoundedRead::new(
+                    stdin.lock(),
+                    stdin_request_limit_bytes,
+                    "backend stdin request",
+                );
+                let reader = io::BufReader::with_capacity(1 << 20, bounded);
                 match rmp_serde::from_read::<_, SimpleIR>(reader) {
                     Ok(ir) => ir,
                     Err(err) => {
@@ -1982,8 +2052,11 @@ fn main() -> io::Result<()> {
                         }
                     }
                 } else {
-                    let mut buf = Vec::new();
-                    io::stdin().read_to_end(&mut buf)?;
+                    let buf = read_bounded_request_bytes(
+                        io::stdin().lock(),
+                        stdin_request_limit_bytes,
+                        "backend stdin request",
+                    )?;
                     match ciborium::de::from_reader::<SimpleIR, _>(&buf[..]) {
                         Ok(ir) => {
                             drop(buf);
@@ -2011,7 +2084,13 @@ fn main() -> io::Result<()> {
                     }
                 }
             } else {
-                let reader = io::BufReader::new(io::stdin());
+                let stdin = io::stdin();
+                let bounded = RequestBoundedRead::new(
+                    stdin.lock(),
+                    stdin_request_limit_bytes,
+                    "backend stdin request",
+                );
+                let reader = io::BufReader::new(bounded);
                 match SimpleIR::from_ndjson_reader(reader) {
                     Ok(ir) => ir,
                     Err(err) => {
@@ -2035,8 +2114,17 @@ fn main() -> io::Result<()> {
             }
         } else {
             // Stdin: read into string then deserialize directly (skips DOM intermediate).
-            let mut buffer = String::new();
-            io::stdin().read_to_string(&mut buffer)?;
+            let raw_bytes = read_bounded_request_bytes(
+                io::stdin().lock(),
+                stdin_request_limit_bytes,
+                "backend stdin request",
+            )?;
+            let buffer = String::from_utf8(raw_bytes).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("backend stdin request is not UTF-8: {err}"),
+                )
+            })?;
             let result = serde_json::from_str::<SimpleIR>(&buffer);
             drop(buffer);
             match result {
@@ -2429,16 +2517,17 @@ mod tests {
     use super::{
         BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
         DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse,
-        GIB, MIB, compile_single_job, create_backend_output_file, daemon_response_payload,
-        default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
-        default_daemon_cache_bytes_from_physical_mem_bytes, ensure_output_parent_dir,
-        is_user_owned_symbol, merge_relocatable_objects, partition_functions_for_batches,
-        prune_and_partition_native_stdlib, read_daemon_request_bytes, relocatable_linker_binary,
+        GIB, MIB, RequestBoundedRead, compile_single_job, create_backend_output_file,
+        daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
+        default_backend_output_path, default_daemon_cache_bytes_from_physical_mem_bytes,
+        ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
+        partition_functions_for_batches, prune_and_partition_native_stdlib,
+        read_bounded_request_bytes, read_daemon_request_bytes, relocatable_linker_binary,
         resolve_backend_output_path, resolved_batch_size_limit, shared_stdlib_cache_matches,
         write_cached_output, write_shared_stdlib_cache_sidecars,
     };
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
-    use std::io::{self, Cursor, Write};
+    use std::io::{self, Cursor, Read, Write};
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2484,6 +2573,45 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("daemon request exceeded 4 byte limit")
+        );
+    }
+
+    #[test]
+    fn read_bounded_request_bytes_allows_exact_limit() {
+        let cursor = Cursor::new(b"abcd".to_vec());
+        let bytes =
+            read_bounded_request_bytes(cursor, 4, "backend stdin request").expect("request bytes");
+        assert_eq!(bytes, b"abcd");
+    }
+
+    #[test]
+    fn read_bounded_request_bytes_rejects_oversized_request() {
+        let cursor = Cursor::new(b"abcde".to_vec());
+        let err = read_bounded_request_bytes(cursor, 4, "backend stdin request")
+            .expect_err("oversized request");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("backend stdin request exceeded 4 byte limit")
+        );
+    }
+
+    #[test]
+    fn request_bounded_read_rejects_streaming_read_past_limit() {
+        let cursor = Cursor::new(b"abcde".to_vec());
+        let mut reader = RequestBoundedRead::new(cursor, 4, "streaming backend stdin request");
+        let mut first_chunk = [0_u8; 4];
+        assert_eq!(
+            reader.read(&mut first_chunk).expect("first bounded read"),
+            4
+        );
+        assert_eq!(&first_chunk, b"abcd");
+        let mut probe = [0_u8; 1];
+        let err = reader.read(&mut probe).expect_err("stream overflow");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("streaming backend stdin request exceeded 4 byte limit")
         );
     }
 
