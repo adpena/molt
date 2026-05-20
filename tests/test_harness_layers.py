@@ -14,6 +14,85 @@ from molt.harness_layers import (
 from molt.harness_report import LayerStatus
 
 
+def test_run_cmd_uses_harness_memory_guard(monkeypatch, tmp_path: Path):
+    import molt.harness_layers as harness_layers
+
+    calls: list[dict[str, object]] = []
+
+    def fake_guarded_completed_process(args, **kwargs):
+        calls.append({"args": args, **kwargs})
+        return harness_layers.harness_memory_guard.GuardedCompletedProcess(
+            args,
+            0,
+            "ok\n",
+            "",
+            elapsed_s=0.01,
+        )
+
+    monkeypatch.setattr(
+        harness_layers.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    proc = harness_layers._run_cmd(
+        ["python3", "--version"],
+        cwd=tmp_path,
+        timeout_s=12,
+        env={"MOLT_HARNESS_MAX_PROCESS_RSS_GB": "2"},
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout == "ok\n"
+    call = calls[0]
+    assert call["args"] == ["python3", "--version"]
+    assert call["prefix"] == harness_layers.HARNESS_MEMORY_PREFIX
+    assert call["cwd"] == tmp_path
+    assert call["capture_output"] is True
+    assert call["text"] is True
+    assert call["timeout"] == 12
+    assert call["limits"].max_process_rss_gb == 2
+    assert call["env"]["MOLT_EXT_ROOT"] == str(harness_layers._REPO_ROOT)
+    assert call["env"]["CARGO_TARGET_DIR"] == str(harness_layers._REPO_ROOT / "target")
+    assert call["env"]["TMPDIR"] == str(harness_layers._REPO_ROOT / "tmp")
+
+
+def test_harness_repo_sentinel_uses_canonical_artifact_root(
+    monkeypatch, tmp_path: Path
+):
+    import molt.harness_layers as harness_layers
+
+    calls: list[dict[str, object]] = []
+
+    class FakeSentinel:
+        def __enter__(self):
+            calls.append({"event": "enter"})
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            calls.append({"event": "exit"})
+
+    def fake_repo_process_sentinel(**kwargs):
+        calls.append(kwargs)
+        return FakeSentinel()
+
+    monkeypatch.setattr(
+        harness_layers.harness_memory_guard,
+        "repo_process_sentinel",
+        fake_repo_process_sentinel,
+    )
+    limits = harness_layers.harness_memory_limits()
+
+    with harness_layers.harness_repo_sentinel(tmp_path, limits=limits):
+        calls.append({"event": "body"})
+
+    assert calls[0]["repo_root"] == tmp_path
+    assert calls[0]["artifact_root"] == tmp_path / "tmp" / "harness"
+    assert calls[0]["label"] == "molt_harness"
+    assert calls[0]["limits"] is limits
+    assert [call["event"] for call in calls[1:]] == ["enter", "body", "exit"]
+
+
 def test_profiles_are_supersets():
     quick = {layer.name for layer in get_layers_for_profile("quick")}
     standard = {layer.name for layer in get_layers_for_profile("standard")}
