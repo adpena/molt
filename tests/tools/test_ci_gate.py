@@ -180,32 +180,50 @@ def test_check_env_preserves_explicit_artifact_roots(monkeypatch, tmp_path) -> N
     assert env["CARGO_BUILD_JOBS"] == "1"
 
 
-def test_run_check_can_opt_out_of_memory_guard(monkeypatch) -> None:
+def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch) -> None:
     module = _load_ci_gate()
-    direct_calls: list[dict[str, object]] = []
+    guarded_calls: list[dict[str, object]] = []
 
-    def fail_guarded_completed_process(*_args, **_kwargs):
-        raise AssertionError("memory guard should not run")
+    disabled_limits = module.MemoryGuardLimits(
+        enabled=False,
+        max_process_rss_gb=2.0,
+        max_total_rss_gb=3.0,
+        max_global_rss_gb=9.0,
+        poll_interval=0.5,
+    )
 
-    def fake_subprocess_run(command, **kwargs):
-        direct_calls.append({"command": list(command), **kwargs})
-        return subprocess.CompletedProcess(command, 0, "direct\n", "")
+    def fake_guarded_completed_process(command, **kwargs):
+        guarded_calls.append({"command": list(command), **kwargs})
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            0,
+            "guarded\n",
+            "",
+            elapsed_s=0.1,
+        )
 
     monkeypatch.setattr(
         module.harness_memory_guard,
         "guarded_completed_process",
-        fail_guarded_completed_process,
+        fake_guarded_completed_process,
     )
-    monkeypatch.setattr(module.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ci gate used raw subprocess.run")
+        ),
+    )
 
     result = module._run_check(
         module.Check(name="unit", tier=1, cmd=["python3", "-c", "print('ok')"]),
-        memory_limits=None,
+        memory_limits=disabled_limits,
     )
 
     assert result.status == "pass"
-    assert result.stdout == "direct\n"
-    assert direct_calls[0]["command"] == ["python3", "-c", "print('ok')"]
+    assert result.stdout == "guarded\n"
+    assert guarded_calls[0]["command"] == ["python3", "-c", "print('ok')"]
+    assert guarded_calls[0]["limits"].enabled is True
 
 
 def test_parallel_workers_clamped_by_global_memory_budget() -> None:
@@ -219,7 +237,7 @@ def test_parallel_workers_clamped_by_global_memory_budget() -> None:
     )
 
     assert module._parallel_workers_for_memory_guard(4, memory_limits=limits) == 2
-    assert module._parallel_workers_for_memory_guard(4, memory_limits=None) == 4
+    assert module._parallel_workers_for_memory_guard(4, memory_limits=None) >= 1
 
 
 def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
@@ -352,3 +370,4 @@ def test_ci_gate_help_reports_memory_guard_hard_cap() -> None:
     assert "must be <112" in result.stdout
     assert "<4096" in result.stdout
     assert "must be <30" not in result.stdout
+    assert "--no-memory-guard" not in result.stdout
