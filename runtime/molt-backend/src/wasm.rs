@@ -2953,6 +2953,7 @@ impl WasmBackend {
             ("molt_id", "id", 1),
             ("molt_hash_builtin", "hash_builtin", 1),
             ("molt_ord", "ord", 1),
+            ("molt_ord_at", "ord_at", 2),
             ("molt_chr", "chr", 1),
             ("molt_ascii_from_obj", "ascii_from_obj", 1),
             ("molt_bin_builtin", "bin_builtin", 1),
@@ -7763,6 +7764,20 @@ impl WasmBackend {
                         let arg = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(arg));
                         emit_call(func, reloc_enabled, import_ids["ord"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "ord_at" => {
+                        let args = op.args.as_ref().unwrap();
+                        let obj = locals[&args[0]];
+                        let index = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(obj));
+                        func.instruction(&Instruction::LocalGet(index));
+                        emit_call(func, reloc_enabled, import_ids["ord_at"]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

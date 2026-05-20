@@ -4218,6 +4218,71 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let obj = obj_from_bits(obj_bits);
+        let key = obj_from_bits(key_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_STRING {
+                    if key
+                        .as_ptr()
+                        .is_some_and(|key_ptr| object_type_id(key_ptr) == TYPE_ID_SLICE)
+                    {
+                        let indexed = molt_index(obj_bits, key_bits);
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        let out = super::ops_sys::molt_ord(indexed);
+                        if obj_from_bits(indexed).as_ptr().is_some() {
+                            dec_ref_bits(_py, indexed);
+                        }
+                        return out;
+                    }
+                    let type_err = format!(
+                        "string indices must be integers, not '{}'",
+                        type_name(_py, key)
+                    );
+                    let Some(idx) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
+                        return MoltObject::none().bits();
+                    };
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let len = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
+                    let mut i = idx;
+                    if i < 0 {
+                        i += len;
+                    }
+                    if i < 0 || i >= len {
+                        return raise_exception::<_>(
+                            _py,
+                            "IndexError",
+                            "string index out of range",
+                        );
+                    }
+                    let Some(code) = wtf8_codepoint_at(bytes, i as usize) else {
+                        return raise_exception::<_>(
+                            _py,
+                            "IndexError",
+                            "string index out of range",
+                        );
+                    };
+                    return MoltObject::from_int(code.to_u32() as i64).bits();
+                }
+            }
+        }
+        let indexed = molt_index(obj_bits, key_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let out = super::ops_sys::molt_ord(indexed);
+        if obj_from_bits(indexed).as_ptr().is_some() {
+            dec_ref_bits(_py, indexed);
+        }
+        out
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);

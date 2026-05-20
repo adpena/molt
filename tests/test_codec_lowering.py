@@ -589,6 +589,30 @@ if __name__ == "__main__":
     assert "dict_get" in kinds
 
 
+def test_ord_subscript_lowers_to_fused_ord_at():
+    src = """
+def parse_digit(text: str, i: int) -> int:
+    return ord(text[i]) - 48
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir, "__main____parse_digit")
+    assert "ord_at" in kinds
+    assert "ord" not in kinds
+    assert kinds.count("index") == 0
+
+
+def test_ord_slice_keeps_normal_index_then_ord_path():
+    src = """
+def parse_digit(text: str) -> int:
+    return ord(text[0:1])
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir, "__main____parse_digit")
+    assert "ord_at" not in kinds
+    assert "slice" in kinds
+    assert "ord" in kinds
+
+
 def test_prod_reduction_over_flat_listcomp_skips_intarray_conversion():
     src = """
 def main():
