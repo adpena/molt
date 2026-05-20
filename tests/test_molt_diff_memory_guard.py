@@ -284,6 +284,23 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
     assert module._default_jobs() == 12
 
 
+def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
+    monkeypatch,
+) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "32")
+    monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 64)
+
+    config = module._diff_memory_guard_config()
+
+    assert config.global_gb == pytest.approx(23.5904)
+    assert module._memory_guard_scheduler_per_job_gb(config) == pytest.approx(1.0)
+    assert module._memory_guard_max_jobs(config) == 23
+    assert module._default_jobs() == 23
+
+
 def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
