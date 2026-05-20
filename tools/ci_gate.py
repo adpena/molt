@@ -47,6 +47,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import tools.memory_guard as memory_guard  # noqa: E402
+import tools.harness_memory_guard as harness_memory_guard  # noqa: E402
 import tools.compile_governor as compile_governor  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -120,38 +121,7 @@ class CheckResult:
     skip_reason: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class MemoryGuardLimits:
-    max_rss_gb: float
-    max_total_rss_gb: float
-    max_global_rss_gb: float
-    poll_interval: float
-    child_rlimit_gb: float | None = None
-
-    @property
-    def max_rss_kb(self) -> int:
-        return memory_guard.max_rss_kb_from_gb(self.max_rss_gb)
-
-    @property
-    def max_total_rss_kb(self) -> int:
-        return memory_guard.max_rss_kb_from_gb(self.max_total_rss_gb)
-
-    @property
-    def max_global_rss_kb(self) -> int:
-        return memory_guard.max_global_rss_kb_from_gb(self.max_global_rss_gb)
-
-    @property
-    def child_rlimit_kb(self) -> int | None:
-        child_rlimit_gb = self.child_rlimit_gb
-        if child_rlimit_gb is None:
-            child_rlimit_gb = memory_guard.default_child_rlimit_gb(
-                max_process_rss_gb=self.max_rss_gb,
-                max_total_rss_gb=self.max_total_rss_gb,
-                max_global_rss_gb=self.max_global_rss_gb,
-            )
-        if child_rlimit_gb <= 0:
-            return None
-        return memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb)
+MemoryGuardLimits = harness_memory_guard.HarnessMemoryLimits
 
 
 _DEFAULT_MEMORY_LIMITS = object()
@@ -161,20 +131,8 @@ def default_memory_guard_limits(
     *,
     prefix: str = "MOLT_CI_GATE",
     environ: Mapping[str, str] | None = None,
-    poll_interval: float = memory_guard.DEFAULT_POLL_INTERVAL_SEC,
 ) -> MemoryGuardLimits:
-    budget = memory_guard.adaptive_memory_budget(prefix, environ)
-    return MemoryGuardLimits(
-        max_rss_gb=budget.max_process_rss_gb,
-        max_total_rss_gb=budget.max_total_rss_gb,
-        max_global_rss_gb=budget.max_global_rss_gb,
-        poll_interval=poll_interval,
-        child_rlimit_gb=memory_guard.default_child_rlimit_gb(
-            max_process_rss_gb=budget.max_process_rss_gb,
-            max_total_rss_gb=budget.max_total_rss_gb,
-            max_global_rss_gb=budget.max_global_rss_gb,
-        ),
-    )
+    return harness_memory_guard.limits_from_env(prefix, environ)
 
 
 def _resolve_memory_limits(
@@ -552,7 +510,15 @@ def _status_from_process_result(
     violation: memory_guard.RssViolation | None = None,
     timed_out: bool = False,
 ) -> str:
-    if timed_out or violation is not None:
+    if (
+        timed_out
+        or violation is not None
+        or returncode
+        in {
+            memory_guard.GUARD_RETURN_CODE,
+            memory_guard.TIMEOUT_RETURN_CODE,
+        }
+    ):
         return "error"
     return "pass" if returncode == 0 else "fail"
 
@@ -606,24 +572,21 @@ def _run_check(
                 stderr = proc.stderr
                 status = _status_from_process_result(returncode=returncode)
             else:
-                guarded = memory_guard.run_guarded(
+                guarded = harness_memory_guard.guarded_completed_process(
                     check.cmd,
-                    max_rss_kb=resolved_memory_limits.max_rss_kb,
-                    max_total_rss_kb=resolved_memory_limits.max_total_rss_kb,
-                    poll_interval=resolved_memory_limits.poll_interval,
+                    prefix="MOLT_CI_GATE",
                     cwd=cwd,
                     env=env,
                     timeout=check.timeout,
                     capture_output=True,
-                    child_rlimit_kb=resolved_memory_limits.child_rlimit_kb,
+                    text=True,
+                    limits=resolved_memory_limits,
                 )
                 returncode = guarded.returncode
-                stdout = guarded.stdout
-                stderr = guarded.stderr
+                stdout = guarded.stdout or ""
+                stderr = guarded.stderr or ""
                 status = _status_from_process_result(
                     returncode=guarded.returncode,
-                    violation=guarded.violation,
-                    timed_out=guarded.timed_out,
                 )
         duration = time.monotonic() - start
         return CheckResult(
@@ -689,11 +652,22 @@ def _parallel_workers_for_memory_guard(
     memory_limits: MemoryGuardLimits | None,
 ) -> int:
     requested = max(1, requested_workers)
-    if memory_limits is None:
+    if memory_limits is None or not memory_limits.enabled:
         return requested
+    current_limits = memory_limits.current_memory_limits()
+    global_kb = (
+        memory_limits.max_global_rss_kb
+        if current_limits.max_global_rss_kb is None
+        else current_limits.max_global_rss_kb
+    )
+    total_kb = (
+        memory_limits.max_total_rss_kb
+        if current_limits.max_total_rss_kb is None
+        else current_limits.max_total_rss_kb
+    )
     safe_workers = max(
         1,
-        memory_limits.max_global_rss_kb // max(1, memory_limits.max_total_rss_kb),
+        global_kb // max(1, total_kb),
     )
     return min(requested, safe_workers)
 
@@ -805,16 +779,9 @@ def _background_process_kwargs(
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {"start_new_session": True}
     resolved_limits = _resolve_memory_limits(limits)
-    if resolved_limits is None or os.name != "posix":
+    if resolved_limits is None or not resolved_limits.enabled or os.name != "posix":
         return kwargs
-    limit_kb = resolved_limits.child_rlimit_kb
-    if limit_kb is None:
-        return kwargs
-
-    def apply_limit() -> None:
-        memory_guard._apply_child_resource_limit(limit_kb)
-
-    kwargs["preexec_fn"] = apply_limit
+    kwargs.update(harness_memory_guard.batch_process_group_kwargs(resolved_limits))
     return kwargs
 
 
@@ -900,6 +867,22 @@ def _results_to_dict(results: list[CheckResult]) -> dict[str, Any]:
             for r in results
         ],
     }
+
+
+def _memory_guard_limits_from_args(args: argparse.Namespace) -> MemoryGuardLimits | None:
+    if args.no_memory_guard:
+        return None
+    env = os.environ.copy()
+    if args.max_rss_gb is not None:
+        env["MOLT_CI_GATE_MAX_PROCESS_RSS_GB"] = str(args.max_rss_gb)
+    if args.max_total_rss_gb is not None:
+        env["MOLT_CI_GATE_MAX_TOTAL_RSS_GB"] = str(args.max_total_rss_gb)
+    if args.max_global_rss_gb is not None:
+        env["MOLT_CI_GATE_MAX_GLOBAL_RSS_GB"] = str(args.max_global_rss_gb)
+    if args.child_rlimit_gb is not None:
+        env["MOLT_CI_GATE_CHILD_RLIMIT_GB"] = str(args.child_rlimit_gb)
+    env["MOLT_CI_GATE_MEMORY_GUARD_POLL_SEC"] = str(args.memory_poll_interval)
+    return harness_memory_guard.limits_from_env("MOLT_CI_GATE", env)
 
 
 def main() -> None:
@@ -1027,46 +1010,9 @@ def main() -> None:
         tiers = list(range(1, tier_num + 1))
 
     try:
-        adaptive_budget = memory_guard.adaptive_memory_budget("MOLT_CI_GATE")
-        memory_limits = (
-            None
-            if args.no_memory_guard
-            else MemoryGuardLimits(
-                max_rss_gb=(
-                    adaptive_budget.max_process_rss_gb
-                    if args.max_rss_gb is None
-                    else args.max_rss_gb
-                ),
-                max_total_rss_gb=(
-                    adaptive_budget.max_total_rss_gb
-                    if args.max_total_rss_gb is None
-                    else args.max_total_rss_gb
-                ),
-                max_global_rss_gb=(
-                    adaptive_budget.max_global_rss_gb
-                    if args.max_global_rss_gb is None
-                    else args.max_global_rss_gb
-                ),
-                poll_interval=args.memory_poll_interval,
-                child_rlimit_gb=(
-                    memory_guard.default_child_rlimit_gb(
-                        max_process_rss_gb=adaptive_budget.max_process_rss_gb
-                        if args.max_rss_gb is None
-                        else args.max_rss_gb,
-                        max_total_rss_gb=adaptive_budget.max_total_rss_gb
-                        if args.max_total_rss_gb is None
-                        else args.max_total_rss_gb,
-                        max_global_rss_gb=adaptive_budget.max_global_rss_gb
-                        if args.max_global_rss_gb is None
-                        else args.max_global_rss_gb,
-                    )
-                    if args.child_rlimit_gb is None
-                    else args.child_rlimit_gb
-                ),
-            )
-        )
+        memory_limits = _memory_guard_limits_from_args(args)
         if memory_limits is not None:
-            memory_limits.max_rss_kb
+            memory_limits.max_process_rss_kb
             memory_limits.max_total_rss_kb
             memory_limits.max_global_rss_kb
             memory_limits.child_rlimit_kb
