@@ -86,7 +86,12 @@ class DxProject:
             run_env.pop("UV_NO_SYNC", None)
         return run_env
 
-    def canonical_env(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    def canonical_env(
+        self,
+        base: Mapping[str, str] | None = None,
+        *,
+        create_dirs: bool = True,
+    ) -> dict[str, str]:
         dx = self.load_config()
         env = dict(os.environ if base is None else base)
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
@@ -100,17 +105,18 @@ class DxProject:
         env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
         env.setdefault("MOLT_BACKEND_DAEMON", "1" if dx.get("backend_daemon") else "0")
         env.setdefault("CARGO_BUILD_JOBS", str(dx.get("cargo_build_jobs", 2)))
-        for key in (
-            "CARGO_TARGET_DIR",
-            "MOLT_CACHE",
-            "MOLT_DIFF_ROOT",
-            "MOLT_DIFF_TMPDIR",
-            "UV_CACHE_DIR",
-            "TMPDIR",
-        ):
-            value = env.get(key)
-            if value:
-                Path(value).mkdir(parents=True, exist_ok=True)
+        if create_dirs:
+            for key in (
+                "CARGO_TARGET_DIR",
+                "MOLT_CACHE",
+                "MOLT_DIFF_ROOT",
+                "MOLT_DIFF_TMPDIR",
+                "UV_CACHE_DIR",
+                "TMPDIR",
+            ):
+                value = env.get(key)
+                if value:
+                    Path(value).mkdir(parents=True, exist_ok=True)
         return env
 
     def require_project_python(self, context: str) -> Path:

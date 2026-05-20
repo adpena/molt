@@ -48,11 +48,16 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
 def test_dev_py_clean_artifacts_dispatches_to_cleanup_tool(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[list[str]] = []
+    create_dirs_values: list[bool] = []
+
+    def fake_canonical_env(*, create_dirs=True):
+        create_dirs_values.append(create_dirs)
+        return {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")}
 
     monkeypatch.setattr(
         module,
         "_canonical_env",
-        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        fake_canonical_env,
         raising=True,
     )
     monkeypatch.setattr(
@@ -72,11 +77,12 @@ def test_dev_py_clean_artifacts_dispatches_to_cleanup_tool(monkeypatch) -> None:
 
     assert calls == [
         [
-            module.sys.executable,
+            str(module.DX.project_python()),
             "tools/artifact_cleanup.py",
             "--apply",
         ]
     ]
+    assert create_dirs_values == [False]
 
 
 def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None:
