@@ -189,8 +189,8 @@ def _load_dx_config() -> dict[str, object]:
     return DX.load_config()
 
 
-def _canonical_env() -> dict[str, str]:
-    return DX.canonical_env()
+def _canonical_env(*, create_dirs: bool = True) -> dict[str, str]:
+    return DX.canonical_env(create_dirs=create_dirs)
 
 
 def _dx_commands() -> dict[str, object]:
@@ -232,6 +232,17 @@ def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
 def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:
     command = _dx_commands().get(name)
     _run_repo_cmd(_split_command(command, name), env, tty=tty)
+
+
+def _run_dx_command_with_args(
+    name: str,
+    extra_args: list[str],
+    env: dict[str, str],
+    *,
+    tty: bool,
+) -> None:
+    command = _dx_commands().get(name)
+    _run_repo_cmd([*_split_command(command, name), *extra_args], env, tty=tty)
 
 
 def _require_project_python() -> Path:
@@ -370,9 +381,10 @@ def main() -> None:
             tty=use_tty,
         )
     elif cmd[0] == "clean-artifacts":
-        _run_repo_cmd(
-            [sys.executable, "tools/artifact_cleanup.py", *cmd[1:]],
-            _canonical_env(),
+        _run_dx_command_with_args(
+            "clean-artifacts",
+            cmd[1:],
+            _canonical_env(create_dirs=False),
             tty=use_tty,
         )
     else:
