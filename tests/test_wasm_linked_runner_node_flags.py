@@ -97,6 +97,7 @@ def test_run_wasm_linked_uses_stable_node_flags(
     assert cmd[-2:] == [str(tmp_path / "wasm" / "run_wasm.js"), str(wasm_path)]
     env = cast(dict[str, str], recorded["env"])
     assert env.get("NODE_NO_WARNINGS") == "1"
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "16"
 
 
 def test_run_wasm_linked_env_overrides_can_opt_out_of_node_warning_suppression(
