@@ -70,6 +70,55 @@ def _module_import_targets(main_ops: list[dict[str, object]]) -> set[str]:
     return targets
 
 
+def _module_get_attr_names(main_ops: list[dict[str, object]]) -> set[str]:
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("s_value"), str)
+    }
+    attrs: set[str] = set()
+    for op in main_ops:
+        if op.get("kind") != "module_get_attr":
+            continue
+        args = op.get("args")
+        if not isinstance(args, list) or len(args) != 2:
+            continue
+        name_var = args[1]
+        if isinstance(name_var, str) and isinstance(const_str.get(name_var), str):
+            attrs.add(const_str[name_var])
+    return attrs
+
+
+def _importlib_literal_main_ops(source: str) -> list[dict[str, object]]:
+    gen = SimpleTIRGenerator(
+        known_modules={"importlib", "json"},
+        stdlib_allowlist={"importlib", "json"},
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    return next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+
+def _importlib_literal_function_ops(
+    source: str, func_name: str
+) -> list[dict[str, object]]:
+    gen = SimpleTIRGenerator(
+        known_modules={"importlib", "json"},
+        stdlib_allowlist={"importlib", "json"},
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    return next(func["ops"] for func in ir["functions"] if func["name"] == func_name)
+
+
+def _has_static_call(main_ops: list[dict[str, object]], symbol: str) -> bool:
+    return any(
+        op.get("kind") == "call" and op.get("s_value") == symbol for op in main_ops
+    )
+
+
 def _has_builtin_func(source: str, runtime_name: str) -> bool:
     ir = compile_to_tir(source)
     main_ops = next(
@@ -859,6 +908,75 @@ def test_known_module_import_uses_runtime_import_boundary() -> None:
         not (op.get("kind") == "call" and op.get("s_value") == "molt_init_sys")
         for op in main_ops
     )
+
+
+def test_importlib_import_module_literal_lowers_to_module_import() -> None:
+    main_ops = _importlib_literal_main_ops(
+        "import importlib\nmod = importlib.import_module('json')\n"
+    )
+    assert "json" in _module_import_targets(main_ops)
+    assert "import_module" not in _module_get_attr_names(main_ops)
+    assert not _has_static_call(main_ops, "importlib__import_module")
+
+
+def test_importlib_import_module_literal_alias_lowers_to_module_import() -> None:
+    main_ops = _importlib_literal_main_ops(
+        "import importlib as loader\nmod = loader.import_module('json')\n"
+    )
+    assert "json" in _module_import_targets(main_ops)
+    assert "import_module" not in _module_get_attr_names(main_ops)
+    assert not _has_static_call(main_ops, "importlib__import_module")
+
+
+def test_importlib_import_module_literal_from_import_lowers_to_module_import() -> None:
+    main_ops = _importlib_literal_main_ops(
+        "from importlib import import_module\nmod = import_module('json')\n"
+    )
+    assert "json" in _module_import_targets(main_ops)
+    assert not _has_static_call(main_ops, "importlib__import_module")
+
+
+def test_importlib_import_module_literal_in_function_lowers_to_module_import() -> None:
+    func_ops = _importlib_literal_function_ops(
+        "import importlib\n"
+        "def f():\n"
+        "    return importlib.import_module('json')\n",
+        "__main____f",
+    )
+    assert "json" in _module_import_targets(func_ops)
+    assert "import_module" not in _module_get_attr_names(func_ops)
+    assert not _has_static_call(func_ops, "importlib__import_module")
+
+
+def test_importlib_import_module_literal_respects_local_shadowing() -> None:
+    func_ops = _importlib_literal_function_ops(
+        "import importlib\n"
+        "def f(importlib):\n"
+        "    return importlib.import_module('json')\n",
+        "__main____f",
+    )
+    assert "json" not in _module_import_targets(func_ops)
+
+
+def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"importlib"},
+        stdlib_allowlist={"importlib"},
+    )
+    gen.visit(
+        ast.parse(
+            "import importlib\n"
+            "mod = importlib.import_module('molt_missing_importlib_literal_target')\n"
+        )
+    )
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    assert "molt_missing_importlib_literal_target" not in _module_import_targets(
+        main_ops
+    )
+    assert _has_static_call(main_ops, "importlib__import_module")
 
 
 def test_internal_module_function_import_lowers_via_direct_call() -> None:

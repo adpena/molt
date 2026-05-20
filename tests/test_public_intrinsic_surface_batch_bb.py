@@ -34,3 +34,11 @@ def test_public_intrinsic_surface_batch_bb_avoids_globals_injection() -> None:
         for line in source.splitlines():
             if "require_intrinsic(" in line:
                 assert "globals()" not in line, path
+
+
+def test_importlib_import_module_uses_rust_intrinsic() -> None:
+    source = (ROOT / "src/molt/stdlib/importlib/__init__.py").read_text()
+
+    assert 'require_intrinsic("molt_importlib_import_module")' in source
+    assert 'if not name.startswith(".") and resolved in modules:' in source
+    assert "return _MOLT_IMPORTLIB_IMPORT_MODULE(resolved, util, machinery)" in source

@@ -22,6 +22,7 @@ _MOLT_IMPORTLIB_INVALIDATE_CACHES = _require_intrinsic(
     "molt_importlib_invalidate_caches"
 )
 _MOLT_IMPORTLIB_RELOAD = _require_intrinsic("molt_importlib_reload")
+_MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic("molt_importlib_import_module")
 _MODULE_ALIASES: dict[str, str] = {}
 
 
@@ -98,6 +99,11 @@ def import_module(name: str, package: str | None = None):
         modules = _runtime_modules()
         modules[resolved] = target
         return target
+
+    modules = _runtime_modules()
+    if not name.startswith(".") and resolved in modules:
+        return _MOLT_IMPORTLIB_IMPORT_MODULE(resolved, util, machinery)
+
     try:
         mod = _builtins.__import__(resolved, globals(), locals(), ("*",), 0)
     except BaseException as exc:
@@ -108,7 +114,6 @@ def import_module(name: str, package: str | None = None):
         if kind == "ImportError":
             raise ImportError(text)
         raise
-    modules = _runtime_modules()
     if resolved in modules:
         return modules[resolved]
     if mod is not None:
