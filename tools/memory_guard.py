@@ -23,6 +23,8 @@ DEFAULT_HARD_MAX_RSS_GB = 112.0
 DEFAULT_HARD_MAX_GLOBAL_RSS_GB = 4096.0
 DEFAULT_HARD_MAX_CHILD_RLIMIT_GB = 4096.0
 DEFAULT_POLL_INTERVAL_SEC = 0.10
+DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
+DEFAULT_FAST_START_DURATION_SEC = 2.0
 DEFAULT_SAMPLES_MAX_MB = 2.0
 DEFAULT_MEMORY_RESERVE_FRACTION = 0.06
 DEFAULT_MEMORY_RESERVE_MIN_GB = 1.0
@@ -30,8 +32,6 @@ DEFAULT_MEMORY_RESERVE_MAX_GB = 12.0
 DEFAULT_GLOBAL_FRACTION_OF_USABLE = 0.97
 DEFAULT_TOTAL_FRACTION_OF_GLOBAL = 0.60
 DEFAULT_PROCESS_FRACTION_OF_TOTAL = 0.90
-DEFAULT_CHILD_RLIMIT_MIN_GB = 8.0
-DEFAULT_CHILD_RLIMIT_TREE_MULTIPLIER = 2.0
 _RSS_HARD_MARGIN_GB = 0.001
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
@@ -132,12 +132,18 @@ class GuardResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ChildExitResourceUsage:
+    max_rss_kb: int
+
+
+@dataclass(frozen=True, slots=True)
 class GuardedLaunch:
     command: list[str]
     env: Mapping[str, str] | None
     pass_fds: tuple[int, ...] = ()
     close_fds: tuple[int, ...] = ()
     started_read_fd: int | None = None
+    preexec_fn: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,6 +630,30 @@ def find_rss_violation(
     )
 
 
+def _rusage_maxrss_kb(rusage: object) -> int:
+    raw = int(getattr(rusage, "ru_maxrss", 0) or 0)
+    if raw <= 0:
+        return 0
+    if sys.platform == "darwin":
+        return max(1, raw // 1024)
+    return raw
+
+
+def _poll_wait4_child(proc: subprocess.Popen[str]) -> ChildExitResourceUsage | None:
+    if os.name != "posix" or not hasattr(os, "wait4"):
+        return None
+    if proc.returncode is not None:
+        return None
+    try:
+        pid, status, rusage = os.wait4(proc.pid, os.WNOHANG)
+    except ChildProcessError:
+        return None
+    if pid == 0:
+        return None
+    proc.returncode = os.waitstatus_to_exitcode(status)
+    return ChildExitResourceUsage(max_rss_kb=_rusage_maxrss_kb(rusage))
+
+
 def max_rss_kb_from_gb(value: float) -> int:
     if value <= 0:
         raise ValueError("max RSS must be greater than 0 GB")
@@ -659,14 +689,8 @@ def default_child_rlimit_gb(
     max_total_rss_gb: float,
     max_global_rss_gb: float | None = None,
 ) -> float:
-    limit_gb = min(
-        DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001,
-        max(
-            max_process_rss_gb,
-            max_total_rss_gb * DEFAULT_CHILD_RLIMIT_TREE_MULTIPLIER,
-            DEFAULT_CHILD_RLIMIT_MIN_GB,
-        ),
-    )
+    limit_gb = min(DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001, max_process_rss_gb)
+    limit_gb = min(limit_gb, max_total_rss_gb)
     if max_global_rss_gb is not None:
         limit_gb = min(limit_gb, max_global_rss_gb)
     return limit_gb
@@ -946,6 +970,17 @@ def _write_child_started_timestamp(environ: Mapping[str, str]) -> None:
         os.close(fd)
 
 
+def _write_child_started_fd(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        os.write(fd, f"{time.monotonic_ns()}\n".encode("ascii"))
+    except OSError:
+        pass
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
 def _child_runner_env(
     environ: Mapping[str, str],
     command: Sequence[str],
@@ -979,6 +1014,20 @@ def _guarded_launch(
         started_read_fd, started_write_fd = os.pipe()
         pass_fds = (started_write_fd,)
         close_fds = (started_write_fd,)
+        limit_kb = child_rlimit_kb
+
+        def apply_posix_limits() -> None:
+            _apply_child_resource_limit(limit_kb)
+            _write_child_started_fd(started_write_fd)
+
+        return GuardedLaunch(
+            command=list(command),
+            env=env,
+            pass_fds=pass_fds,
+            close_fds=close_fds,
+            started_read_fd=started_read_fd,
+            preexec_fn=apply_posix_limits,
+        )
     return GuardedLaunch(
         command=[sys.executable, str(Path(__file__).resolve())],
         env=_child_runner_env(
@@ -1060,6 +1109,8 @@ def run_guarded(
     }
     if launch.pass_fds:
         popen_kwargs["pass_fds"] = launch.pass_fds
+    if launch.preexec_fn is not None:
+        popen_kwargs["preexec_fn"] = launch.preexec_fn
     try:
         proc = subprocess.Popen(launch.command, **popen_kwargs)
     except Exception:
@@ -1091,6 +1142,8 @@ def run_guarded(
     peak_total: RssViolation | None = None
     timed_out = False
     tracker = ProcessTreeTracker(proc.pid)
+    child_exit_usage: ChildExitResourceUsage | None = None
+    last_limits: ResolvedMemoryLimits | None = None
     while True:
         if timeout is not None and time.monotonic() - start >= timeout:
             timed_out = True
@@ -1123,6 +1176,7 @@ def run_guarded(
             dynamic_total_rss=dynamic_total_rss,
             accounted_rss_kb=0 if observed_total is None else observed_total.rss_kb,
         )
+        last_limits = current_limits
         violation = find_rss_violation(
             samples,
             root_pid=proc.pid,
@@ -1160,18 +1214,53 @@ def run_guarded(
                 samples_jsonl_max_bytes=samples_jsonl_max_bytes,
                 stream=stream,
             )
-        if proc.poll() is not None:
+        exited_usage = _poll_wait4_child(proc)
+        if exited_usage is not None:
+            child_exit_usage = exited_usage
             break
-        wait_timeout = poll_interval
+        if os.name != "posix" and proc.poll() is not None:
+            break
+        elapsed = time.monotonic() - start
+        wait_timeout = (
+            min(poll_interval, DEFAULT_FAST_START_POLL_INTERVAL_SEC)
+            if elapsed < DEFAULT_FAST_START_DURATION_SEC
+            else poll_interval
+        )
         if timeout is not None:
-            remaining = timeout - (time.monotonic() - start)
+            remaining = timeout - elapsed
             wait_timeout = max(0.0, min(wait_timeout, remaining))
-        try:
-            proc.wait(timeout=wait_timeout)
-            break
-        except subprocess.TimeoutExpired:
-            pass
+        if os.name == "posix" and hasattr(os, "wait4"):
+            time.sleep(wait_timeout)
+            exited_usage = _poll_wait4_child(proc)
+            if exited_usage is not None:
+                child_exit_usage = exited_usage
+                break
+        else:
+            try:
+                proc.wait(timeout=wait_timeout)
+                break
+            except subprocess.TimeoutExpired:
+                pass
     finished = time.monotonic()
+    if violation is None and child_exit_usage is not None:
+        current_limits = last_limits or resolve_memory_limits(
+            max_process_rss_kb=max_rss_kb,
+            max_total_rss_kb=max_total_rss_kb,
+            adaptive_budget_provider=adaptive_budget_provider,
+            dynamic_process_rss=dynamic_process_rss,
+            dynamic_total_rss=dynamic_total_rss,
+            accounted_rss_kb=0,
+        )
+        if child_exit_usage.max_rss_kb > current_limits.max_process_rss_kb:
+            violation = RssViolation(
+                pid=proc.pid,
+                rss_kb=child_exit_usage.max_rss_kb,
+                command=" ".join(command),
+                scope="process_rusage",
+            )
+            limit_at_violation = current_limits
+            if peak is None or child_exit_usage.max_rss_kb > peak.rss_kb:
+                peak = violation
     try:
         stdout, stderr = proc.communicate(timeout=max(1.0, poll_interval * 4.0))
     except subprocess.TimeoutExpired:
