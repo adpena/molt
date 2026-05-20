@@ -529,6 +529,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::ModuleGetName => "module_get_name",
         OpCode::ModuleSetAttr => "module_set_attr",
         OpCode::ModuleDelGlobal => "module_del_global",
+        OpCode::ModuleDelGlobalIfPresent => "module_del_global_if_present",
         OpCode::ScfIf => "if",
         OpCode::ScfFor => "for",
         OpCode::ScfWhile => "while",

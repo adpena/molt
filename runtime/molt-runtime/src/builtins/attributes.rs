@@ -1160,20 +1160,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     return Some(dict_bits);
                 }
                 "args" => {
-                    let mut args_bits = exception_args_bits(obj_ptr);
-                    if obj_from_bits(args_bits).is_none() || args_bits == 0 {
-                        let ptr = alloc_tuple(_py, &[]);
-                        if ptr.is_null() {
-                            return None;
-                        }
-                        let new_bits = MoltObject::from_ptr(ptr).bits();
-                        let slot = obj_ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64;
-                        let old_bits = *slot;
-                        if old_bits != new_bits {
-                            dec_ref_bits(_py, old_bits);
-                            *slot = new_bits;
-                        }
-                        args_bits = new_bits;
+                    let args_bits = exception_materialized_args_bits(_py, obj_ptr);
+                    if obj_from_bits(args_bits).is_none() {
+                        return None;
                     }
                     inc_ref_bits(_py, args_bits);
                     return Some(args_bits);
@@ -3307,7 +3296,6 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         return MoltObject::none().bits() as i64;
                     }
                     exception_store_args_and_message(_py, obj_ptr, args_bits, msg_bits);
-                    exception_set_stop_iteration_value(_py, obj_ptr, args_bits);
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }

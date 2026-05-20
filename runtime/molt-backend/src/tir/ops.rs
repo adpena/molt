@@ -189,6 +189,13 @@ pub enum OpCode {
     /// Result: none. This mutates the module dictionary and raises `NameError`
     /// when the binding is absent.
     ModuleDelGlobal,
+    /// Delete a module global when present, suppressing absent-name errors.
+    ///
+    /// Operands: `[module_value, global_name_value]`.
+    /// Result: none. This mutates the module dictionary and is used for
+    /// compiler-generated cleanup where CPython requires missing cleanup names
+    /// to be ignored. Invalid module operands remain observable errors.
+    ModuleDelGlobalIfPresent,
     // IO / diagnostics
     WarnStderr,
     // Structured control flow (scf dialect)

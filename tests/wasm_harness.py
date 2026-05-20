@@ -4077,6 +4077,20 @@ const exceptionNewBuiltin = (tagBits, argsBits) => {
   }
   return exceptionNewFromClass(getExceptionClassForName(name), argsBits);
 };
+const exceptionNewBuiltinEmpty = (tagBits) => {
+  const name = exceptionBuiltinNamesByTag.get(Number(tagBits));
+  if (!name) {
+    throw new Error('RuntimeError: unknown builtin exception tag');
+  }
+  return exceptionNewFromClass(getExceptionClassForName(name), tupleFromArray([]));
+};
+const exceptionNewBuiltinOne = (tagBits, argBits) => {
+  const name = exceptionBuiltinNamesByTag.get(Number(tagBits));
+  if (!name) {
+    throw new Error('RuntimeError: unknown builtin exception tag');
+  }
+  return exceptionNewFromClass(getExceptionClassForName(name), tupleFromArray([argBits]));
+};
 const exceptionMatchBuiltin = (excBits, tagBits) => {
   const name = exceptionBuiltinNamesByTag.get(Number(tagBits));
   if (!name) {
@@ -8450,6 +8464,32 @@ BASE_IMPORTS = """\
       ),
     );
     return raiseException(exc);
+  },
+  module_del_global_if_present: (moduleBits, nameBits) => {
+    const name = getStrObj(nameBits);
+    const moduleObj = getModule(moduleBits);
+    if (!moduleObj || name === null) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({
+            type: 'str',
+            value: 'module attribute access expects module',
+          }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const dict = getDict(moduleObj.dictBits);
+    if (!dict) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
+      );
+      return raiseException(exc);
+    }
+    dictDelete(dict, nameBits);
+    return boxNone();
   },
   module_import_star: (srcBits, dstBits) => {
     const srcModule = getModule(srcBits);
@@ -13920,6 +13960,8 @@ BASE_IMPORTS = """\
   exception_active: () => exceptionActive(),
   exception_new: (kind, args) => exceptionNew(kind, args),
   exception_new_builtin: (tag, args) => exceptionNewBuiltin(tag, args),
+  exception_new_builtin_empty: (tag) => exceptionNewBuiltinEmpty(tag),
+  exception_new_builtin_one: (tag, arg) => exceptionNewBuiltinOne(tag, arg),
   exception_match_builtin: (exc, tag) => exceptionMatchBuiltin(exc, tag),
   exception_new_from_class: (cls, args) => exceptionNewFromClass(cls, args),
   exception_class: (kind) => exceptionClass(kind),

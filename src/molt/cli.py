@@ -27148,6 +27148,49 @@ def _run_subprocess_captured_to_tempfiles(
     open after the direct child has already exited.
     """
 
+    harness_memory_guard = _load_cli_harness_memory_guard(
+        Path(__file__).resolve().parents[2]
+    )
+    memory_guard = harness_memory_guard.memory_guard
+    guard_limits = harness_memory_guard.limits_from_env("MOLT_CLI", env)
+    guard_enabled = bool(guard_limits.enabled)
+    popen_kwargs: dict[str, object] = {}
+    if guard_enabled:
+        popen_kwargs.update(
+            harness_memory_guard.batch_process_group_kwargs(guard_limits)
+        )
+
+    def _terminate_guarded_tree(
+        proc: subprocess.Popen[bytes],
+        tracker: Any | None,
+        *,
+        grace: float,
+    ) -> None:
+        if tracker is None:
+            proc.kill()
+            return
+        samples = memory_guard.sample_processes()
+        watched = tracker.update(samples)
+        memory_guard.terminate_watched_processes(
+            proc.pid,
+            samples=samples,
+            watched=watched,
+            grace=grace,
+        )
+
+    def _guard_violation_message(violation: Any, limit_gb: float | None) -> bytes:
+        rss_gb = violation.rss_kb / (1024 * 1024)
+        scope = getattr(violation, "scope", "process")
+        limit = "unknown" if limit_gb is None else f"{limit_gb:.2f}GB"
+        command = str(getattr(violation, "command", "")).strip()
+        return (
+            "\n"
+            f"molt memory guard: RSS limit exceeded scope={scope} "
+            f"pid={violation.pid} rss={rss_gb:.2f}GB limit={limit}"
+            + (f" command={command}" if command else "")
+            + "\n"
+        ).encode("utf-8", errors="replace")
+
     def _keepalive_interval_secs() -> float | None:
         raw = os.environ.get("MOLT_SUBPROCESS_KEEPALIVE_SECS", "20").strip()
         if raw in {"", "0", "off", "false"}:
@@ -27169,7 +27212,9 @@ def _run_subprocess_captured_to_tempfiles(
             cwd=cwd,
             env=dict(env) if env is not None else None,
             stdin=subprocess.PIPE if input is not None else None,
+            **popen_kwargs,
         )
+        tracker = memory_guard.ProcessTreeTracker(proc.pid) if guard_enabled else None
         if input is not None and proc.stdin is not None:
             proc.stdin.write(input)
             proc.stdin.close()
@@ -27180,11 +27225,14 @@ def _run_subprocess_captured_to_tempfiles(
         next_keepalive = (
             started + keepalive_interval if keepalive_interval is not None else None
         )
+        next_guard_sample = (
+            started + max(0.01, guard_limits.poll_interval) if guard_enabled else None
+        )
         while True:
             now = time.monotonic()
             remaining = None if timeout is None else timeout - (now - started)
             if remaining is not None and remaining <= 0:
-                proc.kill()
+                _terminate_guarded_tree(proc, tracker, grace=0.0)
                 proc.wait()
                 assert timeout is not None
                 raise subprocess.TimeoutExpired(list(cmd), timeout)
@@ -27196,11 +27244,45 @@ def _run_subprocess_captured_to_tempfiles(
                     if wait_timeout is None
                     else min(wait_timeout, keepalive_wait)
                 )
+            if next_guard_sample is not None:
+                guard_wait = max(0.0, next_guard_sample - now)
+                wait_timeout = (
+                    guard_wait
+                    if wait_timeout is None
+                    else min(wait_timeout, guard_wait)
+                )
             try:
                 returncode = proc.wait(timeout=wait_timeout)
                 break
             except subprocess.TimeoutExpired:
                 now = time.monotonic()
+                if next_guard_sample is not None and now >= next_guard_sample:
+                    assert tracker is not None
+                    samples = memory_guard.sample_processes()
+                    watched = tracker.update(samples)
+                    current_limits = guard_limits.current_memory_limits(env)
+                    violation = memory_guard.find_rss_violation(
+                        samples,
+                        root_pid=proc.pid,
+                        max_rss_kb=current_limits.max_process_rss_kb,
+                        max_total_rss_kb=current_limits.max_total_rss_kb,
+                        watched=watched,
+                    )
+                    if violation is not None:
+                        limit_gb = (
+                            current_limits.max_total_rss_gb
+                            if getattr(violation, "scope", "") == "process_tree"
+                            else current_limits.max_process_rss_gb
+                        )
+                        stderr_file.write(_guard_violation_message(violation, limit_gb))
+                        stderr_file.flush()
+                        _terminate_guarded_tree(proc, tracker, grace=0.25)
+                        with contextlib.suppress(Exception):
+                            proc.wait(timeout=1.0)
+                        returncode = memory_guard.GUARD_RETURN_CODE
+                        break
+                    next_guard_sample = now + max(0.01, guard_limits.poll_interval)
+                    continue
                 if next_keepalive is not None and now >= next_keepalive:
                     assert keepalive_interval is not None
                     elapsed = now - started
@@ -27211,7 +27293,7 @@ def _run_subprocess_captured_to_tempfiles(
                     next_keepalive = now + keepalive_interval
                     continue
                 if timeout is not None and now - started >= timeout:
-                    proc.kill()
+                    _terminate_guarded_tree(proc, tracker, grace=0.0)
                     proc.wait()
                     raise subprocess.TimeoutExpired(list(cmd), timeout)
         stdout_file.seek(0)

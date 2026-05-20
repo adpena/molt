@@ -28,6 +28,18 @@ def _raise_call():
     raise ValueError("x")
 
 
+def _report_direct_instance():
+    exc = ValueError(7)
+    print(
+        "direct",
+        type(exc.args).__name__,
+        exc.args,
+        exc.args is exc.args,
+        str(exc),
+        repr(exc),
+    )
+
+
 def _raise_non_exception():
     try:
         raise 1
@@ -39,6 +51,7 @@ def main():
     _report("instance", _raise_instance)
     _report("class", _raise_class)
     _report("call", _raise_call)
+    _report_direct_instance()
     _raise_non_exception()
 
 
