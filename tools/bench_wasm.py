@@ -501,46 +501,6 @@ def _log_command(log: TextIO | None, cmd: list[str]) -> None:
     _log_write(log, f"\n# {ts} $ {' '.join(cmd)}\n")
 
 
-def _run_with_pty(
-    cmd: list[str], env: dict[str, str], log: TextIO | None
-) -> _RunResult:
-    import os
-    import pty
-
-    _log_command(log, cmd)
-    master_fd, slave_fd = pty.openpty()
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-        )
-    finally:
-        os.close(slave_fd)
-
-    try:
-        while True:
-            data = os.read(master_fd, 1024)
-            if not data:
-                break
-            if hasattr(sys.stdout, "buffer"):
-                sys.stdout.buffer.write(data)
-                sys.stdout.buffer.flush()
-            else:
-                sys.stdout.write(data.decode(errors="replace"))
-                sys.stdout.flush()
-            _log_write(log, data.decode(errors="replace"))
-    except KeyboardInterrupt:
-        proc.terminate()
-        raise
-    finally:
-        os.close(master_fd)
-
-    return _RunResult(returncode=proc.wait())
-
-
 def _run_cmd(
     cmd: list[str],
     env: dict[str, str],
@@ -552,131 +512,27 @@ def _run_cmd(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> _RunResult:
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
-    if resolved_limits.enabled:
-        if tty and not capture:
-            print(
-                "TTY mode requested; using guarded subprocess mode.",
-                file=sys.stderr,
-            )
-        if log is not None:
-            _log_command(log, cmd)
-        res = harness_memory_guard.guarded_completed_process(
-            cmd,
-            prefix="MOLT_BENCH",
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            limits=resolved_limits,
-        )
-        stdout = res.stdout or ""
-        stderr = res.stderr or ""
-        if log is not None:
-            if stdout:
-                _log_write(log, stdout)
-            if stderr:
-                _log_write(log, stderr)
-        if not capture:
-            if stdout:
-                sys.stdout.write(stdout)
-                sys.stdout.flush()
-            if stderr:
-                sys.stderr.write(stderr)
-                sys.stderr.flush()
-        return _RunResult(
-            res.returncode,
-            stdout,
-            stderr,
-            res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
-            getattr(res, "elapsed_s", None),
-        )
-    if tty and not capture and os.name == "posix" and timeout_s is None:
-        return _run_with_pty(cmd, env, log)
-    if tty and timeout_s is not None and not capture:
+    if tty and not capture:
         print(
-            "TTY mode requested with timeout; using non-TTY subprocess mode.",
+            "TTY mode requested; using guarded subprocess mode.",
             file=sys.stderr,
         )
-    timeout_term_grace_s = _parse_env_float(
-        "MOLT_WASM_TIMEOUT_TERM_GRACE_SEC", default=1.0
-    )
-
     if log is not None:
         _log_command(log, cmd)
-    if timeout_s is not None:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout_s)
-            res = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
-        except subprocess.TimeoutExpired as exc:
-            out = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-            err = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
-            try:
-                if os.name == "posix":
-                    proc.terminate()
-                    try:
-                        term_out, term_err = proc.communicate(
-                            timeout=timeout_term_grace_s
-                        )
-                    except subprocess.TimeoutExpired as term_exc:
-                        term_out = (
-                            term_exc.stdout if isinstance(term_exc.stdout, str) else ""
-                        )
-                        term_err = (
-                            term_exc.stderr if isinstance(term_exc.stderr, str) else ""
-                        )
-                        proc.kill()
-                        kill_out, kill_err = proc.communicate()
-                        term_out += kill_out or ""
-                        term_err += kill_err or ""
-                    out += term_out or ""
-                    err += term_err or ""
-                else:
-                    proc.kill()
-                    kill_out, kill_err = proc.communicate()
-                    out += kill_out or ""
-                    err += kill_err or ""
-            except OSError:
-                pass
-            if log is not None:
-                if out:
-                    _log_write(log, out)
-                if err:
-                    _log_write(log, err)
-                _log_write(
-                    log,
-                    f"# timeout after {timeout_s:.1f}s (command aborted)\n",
-                )
-            if not capture:
-                if out:
-                    sys.stdout.write(out)
-                    sys.stdout.flush()
-                if err:
-                    sys.stderr.write(err)
-                    sys.stderr.flush()
-            return _RunResult(
-                returncode=124,
-                stdout=out,
-                stderr=err,
-                timed_out=True,
-                elapsed_s=timeout_s,
-            )
-    else:
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
 
+    res = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_BENCH",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        limits=resolved_limits,
+    )
     stdout = res.stdout or ""
     stderr = res.stderr or ""
+    timed_out = res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    elapsed_s = getattr(res, "elapsed_s", None)
     if log is not None:
         if stdout:
             _log_write(log, stdout)
@@ -689,8 +545,7 @@ def _run_cmd(
         if stderr:
             sys.stderr.write(stderr)
             sys.stderr.flush()
-        return _RunResult(res.returncode, timed_out=False)
-    return _RunResult(res.returncode, stdout, stderr, False)
+    return _RunResult(res.returncode, stdout, stderr, timed_out, elapsed_s)
 
 
 def _summarize_error_text(

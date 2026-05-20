@@ -164,6 +164,36 @@ def test_bench_run_cmd_uses_memory_guard_by_default(monkeypatch) -> None:
     assert calls[0]["prefix"] == "MOLT_BENCH"
 
 
+def test_bench_run_cmd_routes_tty_through_guard_without_raw_pty(monkeypatch) -> None:
+    limits = bench_tool.harness_memory_guard.HarnessMemoryLimits(
+        enabled=False,
+        max_process_rss_gb=1.0,
+        max_total_rss_gb=1.0,
+        max_global_rss_gb=1.0,
+        poll_interval=0.1,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_guard(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return subprocess.CompletedProcess(command, 0, None, None)
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guard,
+    )
+
+    result = bench_tool._run_cmd(
+        ["tool", "arg"], env={}, capture=False, tty=True, limits=limits
+    )
+
+    assert result == bench_tool._RunResult(0, "", "")
+    assert calls[0]["command"] == ["tool", "arg"]
+    assert calls[0]["capture_output"] is False
+    assert calls[0]["limits"] is limits
+
+
 def test_measure_runtime_uses_guard_child_elapsed(monkeypatch) -> None:
     completed = subprocess.CompletedProcess(["tool"], 0, "out", "")
     completed.elapsed_s = 0.0125
