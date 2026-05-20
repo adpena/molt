@@ -65,7 +65,6 @@ jobs:
       - name: Run differential correctness lane
         env:
           MOLT_DIFF_MEASURE_RSS: "1"
-          MOLT_DIFF_RLIMIT_GB: "10"
         run: |
           PYTHONPATH=src uv run python3 -u tests/molt_diff.py \
             --build-profile dev \

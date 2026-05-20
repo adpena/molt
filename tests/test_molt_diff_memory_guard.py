@@ -6,6 +6,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"
@@ -187,6 +189,46 @@ def test_memory_guard_sample_interval_env_is_bounded(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_SAMPLE_INTERVAL_SEC", "120")
 
     assert module._diff_memory_guard_sample_interval_sec() == 60.0
+
+
+def test_diff_memory_guard_defaults_are_adaptive(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "96")
+    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TREE_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
+
+    config = module._diff_memory_guard_config()
+
+    assert config.global_gb == pytest.approx(85.6704)
+    assert config.max_tree_gb == pytest.approx(51.40224)
+    assert config.max_process_gb == pytest.approx(38.55168)
+
+
+def test_diff_rlimit_defaults_to_adaptive_process_budget(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "96")
+    monkeypatch.delenv("MOLT_DIFF_RLIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_RLIMIT_MB", raising=False)
+
+    config = module._diff_memory_guard_config()
+
+    assert module._memory_limit_bytes() == config.max_process_kb * 1024
+    assert module._memory_limit_bytes() > 10 * 1024 * 1024 * 1024
+
+
+def test_diff_measure_rss_is_enabled_by_default(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.delenv("MOLT_DIFF_MEASURE_RSS", raising=False)
+
+    assert module._diff_measure_rss() is True
+
+    monkeypatch.setenv("MOLT_DIFF_MEASURE_RSS", "0")
+    assert module._diff_measure_rss() is False
 
 
 def test_popen_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
