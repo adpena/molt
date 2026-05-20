@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tests.helpers.falcon_ocr_paths import FALCON_OCR_TOKENIZER_PATH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,8 +54,9 @@ def _cloudflare_prompt_ids() -> dict[str, list[int]]:
       );
       process.stdout.write(JSON.stringify(out));
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -139,8 +140,9 @@ def test_browser_loader_defaults_point_at_worker_artifacts() -> None:
         weightsBaseUrl: loader.weightsBaseUrl
       }));
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -194,8 +196,9 @@ def test_wasm_simd_engine_requires_real_module_exports() -> None:
       const missing = await run({ memory, matmul_f32() {} });
       process.stdout.write(JSON.stringify({ complete, missing }));
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -229,8 +232,9 @@ def test_browser_tokenizer_decoder_uses_byte_level_bpe() -> None:
       }));
       process.stdout.write(JSON.stringify(decoder.decode([0, 1, 2, 3, 4])));
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -294,8 +298,9 @@ def test_cloudflare_worker_routes_browser_artifacts_through_r2_keys() -> None:
       }
       process.stdout.write(JSON.stringify({ calls, results }));
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -378,8 +383,9 @@ def test_gpu_proxy_requires_supported_https_provider() -> None:
       ];
       process.stdout.write(JSON.stringify(states));
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -443,8 +449,9 @@ def test_cloudflare_worker_gpu_backend_route_uses_proxy_contract() -> None:
         fetchCalls
       }) + '\\nENDRESULT\\n');
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,
@@ -494,8 +501,9 @@ def test_cloudflare_worker_gpu_backend_rejects_unconfigured_proxy() -> None:
       const response = await workerModule.default.fetch(request, env, { waitUntil() {} });
       process.stdout.write('\\nRESULT:' + JSON.stringify({ status: response.status, payload: await response.json() }) + '\\nENDRESULT\\n');
     """
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

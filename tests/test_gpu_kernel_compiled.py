@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 from molt.frontend import compile_to_tir
+
+from tests.native_process_guard import run_native_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +69,7 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
     )
 
     env = _gpu_env()
-    build = subprocess.run(
+    build = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -92,7 +93,7 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(out_path)],
         cwd=ROOT,
         env=env,
@@ -129,7 +130,7 @@ def test_compiled_gpu_kernel_vector_add_uses_metal_backend_when_enabled(
     )
 
     env = _gpu_env(metal=True)
-    build = subprocess.run(
+    build = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -153,7 +154,7 @@ def test_compiled_gpu_kernel_vector_add_uses_metal_backend_when_enabled(
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(out_path)],
         cwd=ROOT,
         env=env,
@@ -189,7 +190,7 @@ def test_compiled_gpu_kernel_vector_add_uses_webgpu_backend_when_enabled(
     )
 
     env = _gpu_env_webgpu()
-    build = subprocess.run(
+    build = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -213,7 +214,7 @@ def test_compiled_gpu_kernel_vector_add_uses_webgpu_backend_when_enabled(
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(out_path)],
         cwd=ROOT,
         env=env,

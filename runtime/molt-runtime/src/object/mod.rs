@@ -189,6 +189,12 @@ fn debug_file_rc() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_FILE_RC").as_deref() == Ok("1"))
 }
 
+#[inline]
+fn trace_object_state() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_OBJECT_STATE").as_deref() == Ok("1"))
+}
+
 /// Cached debug flag for tracing BigInt refcount inc/dec on the hot path.
 /// Reading the env var on every refcount op would call libc `getenv` (mutex-
 /// guarded), which dominates throughput on integer-heavy benchmarks even
@@ -862,12 +868,25 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
 /// Returns the state value (0 if no cold header exists).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_obj_get_state(data_ptr: *mut u8) -> i64 {
-    object_state(data_ptr)
+    let state = object_state(data_ptr);
+    if trace_object_state() {
+        eprintln!(
+            "molt object_state get ptr=0x{:x} state={}",
+            data_ptr as usize, state
+        );
+    }
+    state
 }
 
 /// Write the generator/coroutine state for the object at `data_ptr`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_obj_set_state(data_ptr: *mut u8, state: i64) {
+    if trace_object_state() {
+        eprintln!(
+            "molt object_state set ptr=0x{:x} state={}",
+            data_ptr as usize, state
+        );
+    }
     object_set_state(data_ptr, state);
 }
 

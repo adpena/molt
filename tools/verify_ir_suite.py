@@ -19,6 +19,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 
 def compile_to_tir_json(source_path: Path) -> dict | None:
     """Compile a Python file to TIR JSON via the frontend."""
@@ -31,9 +37,16 @@ def compile_to_tir_json(source_path: Path) -> dict | None:
         f"json.dump(tir, sys.stdout)",
     ]
     env = {"PYTHONPATH": "src", "PATH": "/usr/bin:/bin:/usr/local/bin"}
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, env=env, timeout=60
+        result = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_TEST_SUITE",
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return None
@@ -48,12 +61,15 @@ def compile_to_tir_json(source_path: Path) -> dict | None:
 def verify_tir(tir_json: dict) -> tuple[int, str]:
     """Run check_ir_structure on TIR JSON. Returns (exit_code, output)."""
     cmd = [sys.executable, "tools/check_ir_structure.py", "--stdin", "--quiet"]
-    result = subprocess.run(
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
+    result = harness_memory_guard.guarded_completed_process(
         cmd,
+        prefix="MOLT_TEST_SUITE",
         input=json.dumps(tir_json),
         capture_output=True,
         text=True,
         timeout=30,
+        limits=limits,
     )
     return result.returncode, result.stdout + result.stderr
 

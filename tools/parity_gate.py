@@ -29,6 +29,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -200,13 +206,16 @@ def _run_process(
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
+            limits=limits,
         )
         return result.stdout, result.stderr, result.returncode
     except subprocess.TimeoutExpired:

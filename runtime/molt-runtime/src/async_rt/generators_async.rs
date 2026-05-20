@@ -23,6 +23,7 @@ use super::generators::{
     asyncio_connect_trace_enabled, debug_current_task, promise_trace_enabled, resolve_sleep_target,
     sleep_trace_enabled,
 };
+use super::scheduler::trace_task_result;
 
 const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
 const ASYNC_SLEEP_YIELD_SENTINEL: f64 = -1.0;
@@ -227,6 +228,14 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 return raise_cancelled_with_message::<i64>(_py, ptr);
             }
             let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
+            if trace_task_result() {
+                eprintln!(
+                    "molt task_result poll ptr=0x{:x} res=0x{:x} pending={} done_before=false",
+                    ptr as usize,
+                    res as u64,
+                    res == pending_bits_i64()
+                );
+            }
             if promise_trace_enabled() && poll_fn_addr == promise_poll_fn_addr() {
                 let state = crate::object::object_state(ptr);
                 eprintln!(

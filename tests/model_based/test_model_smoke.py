@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import ast
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 # Repository root — two levels up from this file
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -65,7 +66,7 @@ def _run_generator(
         pytest.skip(f"Model not found: {model}")
 
     tool_path = _REPO_ROOT / "tools" / "quint_trace_to_tests.py"
-    result = subprocess.run(
+    result = run_native_test_process(
         [
             sys.executable,
             str(tool_path),
@@ -136,7 +137,7 @@ def test_generated_programs_run(
     assert len(files) > 0
 
     for f in files:
-        result = subprocess.run(
+        result = run_native_test_process(
             [sys.executable, str(f)],
             capture_output=True,
             text=True,
@@ -186,7 +187,7 @@ def test_json_report(tmp_output_dir: Path) -> None:
     json_dir = tmp_output_dir / "json_test"
     json_dir.mkdir(exist_ok=True)
 
-    result = subprocess.run(
+    result = run_native_test_process(
         [
             sys.executable,
             str(tool_path),

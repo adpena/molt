@@ -20,6 +20,52 @@ def _load_wasm_link():
 wasm_link = _load_wasm_link()
 
 
+def test_wasm_link_external_tool_uses_memory_guard(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return wasm_link.subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(
+        wasm_link.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    result = wasm_link._run_external_tool(["wasm-tools", "validate", "x.wasm"])
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert captured["cmd"] == ["wasm-tools", "validate", "x.wasm"]
+    assert captured["kwargs"]["prefix"] == "MOLT_WASM_LINK"
+    assert captured["kwargs"]["capture_output"] is True
+
+
+def test_wasm_link_external_tool_preserves_timeout_semantics(monkeypatch) -> None:
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        return wasm_link.subprocess.CompletedProcess(
+            cmd,
+            wasm_link.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            stdout="partial",
+            stderr="memory_guard: timeout after 1.00s\n",
+        )
+
+    monkeypatch.setattr(
+        wasm_link.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    with pytest.raises(wasm_link.subprocess.TimeoutExpired) as exc_info:
+        wasm_link._run_external_tool(["wasm-opt", "x.wasm"], timeout=1)
+
+    assert exc_info.value.cmd == ["wasm-opt", "x.wasm"]
+    assert exc_info.value.output == "partial"
+    assert exc_info.value.stderr == "memory_guard: timeout after 1.00s\n"
+
+
 def test_wasm_link_default_artifact_paths_use_canonical_dist(monkeypatch) -> None:
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
@@ -640,7 +686,7 @@ def test_tree_shake_runtime_reuses_cached_result(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "/usr/bin/wasm-opt")
     monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "wasm-opt 1.0")
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", fake_final_optimize)
 
     first = wasm_link._tree_shake_runtime(module, {"exception_pending"})
@@ -649,8 +695,8 @@ def test_tree_shake_runtime_reuses_cached_result(
     assert calls["count"] == 1
 
     monkeypatch.setattr(
-        wasm_link.subprocess,
-        "run",
+        wasm_link,
+        "_run_external_tool",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("wasm-opt should not rerun for cached tree-shake output")
         ),
@@ -687,7 +733,7 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
         return Result()
 
     monkeypatch.setenv("MOLT_WASM_DEPLOY_RUNTIME", str(stale_runtime))
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
@@ -738,7 +784,7 @@ def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocation
 
         return Result()
 
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
     monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
@@ -789,7 +835,7 @@ def test_tree_shake_runtime_uses_converge_flag(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "/usr/bin/wasm-opt")
     monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "wasm-opt 1.0")
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(
         wasm_link, "_run_wasm_opt_via_optimize", lambda *_a, **_k: False
     )
@@ -1636,7 +1682,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
 
         return Result()
 
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
@@ -1742,7 +1788,7 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
 
         return Result()
 
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
     monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
@@ -1827,7 +1873,7 @@ def test_run_wasm_ld_split_runtime_fails_if_linked_validation_fails_after_output
 
         return Result()
 
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: False)
     monkeypatch.setattr(
         wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
@@ -1887,7 +1933,7 @@ def test_run_wasm_ld_fails_when_ref_func_declaration_cannot_be_materialized(
 
         return Result()
 
-    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link, "_scan_code_ref_funcs", lambda _data: {0})
     monkeypatch.setattr(
         wasm_link,

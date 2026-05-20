@@ -2041,7 +2041,15 @@ def _popen_group_kwargs() -> dict[str, object]:
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return {"creationflags": creationflags}
-    return {"start_new_session": True}
+    kwargs: dict[str, object] = {"start_new_session": True}
+    if _diff_memory_guard_enabled():
+        limit_kb = _diff_memory_guard_config().max_process_kb
+
+        def apply_limit() -> None:
+            memory_guard._apply_child_resource_limit(limit_kb)
+
+        kwargs["preexec_fn"] = apply_limit
+    return kwargs
 
 
 def _terminate_pid_tree(pid: int, *, grace: float = 1.0) -> None:

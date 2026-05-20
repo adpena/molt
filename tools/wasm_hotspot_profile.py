@@ -46,6 +46,10 @@ RUN_WASM_JS = MOLT_ROOT / "wasm/run_wasm.js"
 
 # Make tools/ importable
 sys.path.insert(0, str(TOOLS_DIR))
+if str(MOLT_ROOT) not in sys.path:
+    sys.path.insert(0, str(MOLT_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 # Programs used for baseline profiling (subset of bench/wasm_bench.py list).
 DEFAULT_PROGRAMS: list[str] = [
@@ -459,8 +463,9 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
         python_cmd = [sys.executable, "-m", "molt.cli"]
 
     t0 = time.monotonic()
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     try:
-        r = subprocess.run(
+        r = harness_memory_guard.guarded_completed_process(
             python_cmd
             + [
                 "build",
@@ -472,11 +477,13 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
                 "--out-dir",
                 str(out_dir),
             ],
+            prefix="MOLT_BENCH",
             cwd=MOLT_ROOT,
             capture_output=True,
             text=True,
             env=env,
             timeout=180,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return (
@@ -486,7 +493,7 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
             time.monotonic() - t0,
         )
 
-    elapsed = time.monotonic() - t0
+    elapsed = r.elapsed_s if r.elapsed_s is not None else time.monotonic() - t0
     wasm = out_dir / "output.wasm"
     if r.returncode != 0 or not wasm.exists():
         return False, wasm, (r.stderr or r.stdout)[:500], elapsed
@@ -536,14 +543,17 @@ def _try_profile_wasm_node(
     ]
 
     r = None
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     try:
-        r = subprocess.run(
+        r = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             env=env,
             cwd=MOLT_ROOT,
             timeout=timeout_s + 10,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         pass  # Profile may still have been written
@@ -991,11 +1001,14 @@ def build_baseline_report(results: list[HotspotResult]) -> dict[str, Any]:
     """Build a JSON baseline report from multiple program profiles."""
     git_rev = ""
     try:
-        r = subprocess.run(
+        limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+        r = harness_memory_guard.guarded_completed_process(
             ["git", "rev-parse", "HEAD"],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             cwd=MOLT_ROOT,
+            limits=limits,
         )
         if r.returncode == 0:
             git_rev = r.stdout.strip()
@@ -1006,8 +1019,14 @@ def build_baseline_report(results: list[HotspotResult]) -> dict[str, Any]:
     node = _resolve_node()
     if node:
         try:
-            r = subprocess.run(
-                [node, "--version"], capture_output=True, text=True, timeout=5
+            limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+            r = harness_memory_guard.guarded_completed_process(
+                [node, "--version"],
+                prefix="MOLT_BENCH",
+                capture_output=True,
+                text=True,
+                timeout=5,
+                limits=limits,
             )
             if r.returncode == 0:
                 node_ver = r.stdout.strip()

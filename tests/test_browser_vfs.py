@@ -3,9 +3,10 @@
 import base64
 import io
 import json
-import subprocess
 import tarfile
 from pathlib import Path
+
+from tests.native_process_guard import run_native_test_process
 
 
 def test_browser_vfs_js_exists():
@@ -41,7 +42,7 @@ console.log(JSON.stringify({{
   helloText: Buffer.from(fs.read("hello.txt")).toString("utf8"),
 }}));
 """
-    result = subprocess.run(
+    result = run_native_test_process(
         ["node", "-e", js],
         capture_output=True,
         text=True,

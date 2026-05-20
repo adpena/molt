@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,7 +55,7 @@ def _compile_source_to_ir_subprocess(
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = pythonhashseed
 
-    result = subprocess.run(
+    result = run_native_test_process(
         [sys.executable, "-c", script],
         input=source_text,
         capture_output=True,

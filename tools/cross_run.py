@@ -81,9 +81,46 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_INVENTORY = REPO / "tools" / "cross_hosts.toml"
 DEFAULT_REPORT_DIR = REPO / "reports"
+TOOLS_ROOT = REPO / "tools"
+
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 VALID_SHELLS = ("bash", "sh", "powershell")
 VALID_TRANSPORTS = ("ssh", "docker")
+
+
+def _guarded_run(
+    cmd: list[str],
+    *,
+    capture_output: bool = True,
+    text: bool = True,
+    timeout: float | None = None,
+    env: dict[str, str] | None = None,
+    cwd: str | Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    proc = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_CROSS",
+        cwd=cwd,
+        env=env,
+        capture_output=capture_output,
+        text=text,
+        timeout=timeout,
+    )
+    if (
+        timeout is not None
+        and proc.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    ):
+        raise subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=timeout,
+            output=proc.stdout,
+            stderr=proc.stderr,
+        )
+    return proc
 
 # ---------------------------------------------------------------------------
 # Smoke corpus
@@ -319,7 +356,7 @@ def _python_for_build() -> str:
 
 def _host_target_triple() -> str:
     """Best-effort rust target triple for the build host."""
-    proc = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, timeout=15)
+    proc = _guarded_run(["rustc", "-vV"], capture_output=True, text=True, timeout=15)
     if proc.returncode == 0:
         for line in proc.stdout.splitlines():
             if line.startswith("host:"):
@@ -372,7 +409,7 @@ def _local_compile(
     env.setdefault("PYTHONPATH", str(REPO / "src"))
     env.setdefault("MOLT_EXT_ROOT", str(REPO))
     started = time.monotonic()
-    proc = subprocess.run(
+    proc = _guarded_run(
         cmd,
         capture_output=True,
         text=True,
@@ -404,7 +441,7 @@ def _local_compile(
 
 def _local_expected(case: Case) -> str:
     """Run the case under host CPython to capture the reference stdout."""
-    proc = subprocess.run(
+    proc = _guarded_run(
         [sys.executable, "-c", case.source],
         capture_output=True,
         text=True,
@@ -509,7 +546,7 @@ class SSHTransport(Transport):
             )
         else:
             mkdir = f"mkdir -p {shlex.quote(self.host.remote_dir)}"
-        proc = subprocess.run(
+        proc = _guarded_run(
             self._remote_shell_invoke(mkdir),
             capture_output=True,
             text=True,
@@ -529,7 +566,7 @@ class SSHTransport(Transport):
         for src in local_files:
             dest = f"{self.host.user}@{self.host.hostname}:{self.host.remote_dir}/"
             cmd = self._scp_base() + [str(src), dest]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            proc = _guarded_run(cmd, capture_output=True, text=True, timeout=180)
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"scp {src.name} -> {self.host.name} failed: "
@@ -547,7 +584,7 @@ class SSHTransport(Transport):
         else:
             command = " ".join(shlex.quote(a) for a in remote_argv)
             full = self._remote_shell_invoke(command)
-        proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
+        proc = _guarded_run(full, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, proc.stdout, proc.stderr
 
     def cleanup(self) -> None:
@@ -560,7 +597,7 @@ class SSHTransport(Transport):
         else:
             rm = f"rm -rf {shlex.quote(self.host.remote_dir)}"
         # Best-effort; cleanup failure is logged but not fatal.
-        subprocess.run(
+        _guarded_run(
             self._remote_shell_invoke(rm),
             capture_output=True,
             text=True,
@@ -581,14 +618,14 @@ class DockerTransport(Transport):
             raise RuntimeError("docker not found on PATH for docker transport")
         # Pre-pull the image so the first ``run`` doesn't time out on a
         # slow network. Failure here is fatal — the host is unusable.
-        proc = subprocess.run(
+        proc = _guarded_run(
             ["docker", "image", "inspect", self.host.container],
             capture_output=True,
             text=True,
             timeout=30,
         )
         if proc.returncode != 0:
-            pull = subprocess.run(
+            pull = _guarded_run(
                 ["docker", "pull", self.host.container],
                 capture_output=True,
                 text=True,
@@ -622,7 +659,7 @@ class DockerTransport(Transport):
             mount,
             self.host.container,
         ] + remote_argv
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = _guarded_run(cmd, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, proc.stdout, proc.stderr
 
     def cleanup(self) -> None:

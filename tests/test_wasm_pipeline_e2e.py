@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
@@ -88,12 +89,10 @@ def _molt_build(
     ]
     if linked:
         cmd.append("--linked")
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         cmd,
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=300,
     )
     if result.returncode != 0:
@@ -111,7 +110,7 @@ def _wasm_opt(input_path: Path, output_path: Path) -> bool:
     wasm_opt = _find_wasm_opt()
     if not wasm_opt:
         return False
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             wasm_opt,
             "-Oz",
@@ -127,8 +126,8 @@ def _wasm_opt(input_path: Path, output_path: Path) -> bool:
             "-o",
             str(output_path),
         ],
-        capture_output=True,
-        text=True,
+        cwd=ROOT,
+        env=os.environ,
         timeout=120,
     )
     return result.returncode == 0 and output_path.exists()
@@ -139,13 +138,69 @@ def _wasmtime_run(wasm_path: Path) -> tuple[bool, str]:
     wasmtime = _find_wasmtime()
     if not wasmtime:
         return False, "wasmtime not found"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [wasmtime, str(wasm_path)],
-        capture_output=True,
-        text=True,
+        cwd=ROOT,
+        env=os.environ,
         timeout=30,
     )
     return result.returncode == 0, result.stdout.strip()
+
+
+def test_wasm_pipeline_molt_build_uses_guarded_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "hello.py"
+    source.write_text("print(42)\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        (out_dir / "output.wasm").write_bytes(b"\x00asm")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run_wasm_test_process",
+        fake_run,
+    )
+
+    output = _molt_build(source, out_dir)
+
+    assert output == out_dir / "output.wasm"
+    assert captured["kwargs"]["cwd"] == ROOT
+    assert captured["kwargs"]["timeout"] == 300
+
+
+def test_wasm_pipeline_external_tools_use_guarded_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_wasm = tmp_path / "in.wasm"
+    output_wasm = tmp_path / "out.wasm"
+    input_wasm.write_bytes(b"\x00asm")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(list(cmd))
+        if "-o" in cmd:
+            output_wasm.write_bytes(b"\x00asm")
+        return subprocess.CompletedProcess(cmd, 0, stdout="42\n", stderr="")
+
+    monkeypatch.setattr(sys.modules[__name__], "_find_wasm_opt", lambda: "wasm-opt")
+    monkeypatch.setattr(sys.modules[__name__], "_find_wasmtime", lambda: "wasmtime")
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run_wasm_test_process",
+        fake_run,
+    )
+
+    assert _wasm_opt(input_wasm, output_wasm) is True
+    assert _wasmtime_run(output_wasm) == (True, "42")
+    assert calls[0][0] == "wasm-opt"
+    assert calls[1][0] == "wasmtime"
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,12 @@ import sys
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 
 def _extract_binary(build_json: dict) -> str | None:
     """Extract the binary path from build JSON, unwrapping data envelope."""
@@ -47,6 +53,7 @@ def build_program(source: str, profile: str = "dev") -> tuple[str | None, str]:
     env.setdefault("PYTHONPATH", "src")
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_DETERMINISTIC"] = "1"
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     cmd = [
         sys.executable,
@@ -60,8 +67,14 @@ def build_program(source: str, profile: str = "dev") -> tuple[str | None, str]:
         source,
     ]
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, env=env, timeout=120
+        result = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_TEST_SUITE",
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return None, "build timed out"
@@ -104,14 +117,17 @@ def run_binary(
     env = os.environ.copy()
     env["MOLT_DETERMINISTIC"] = "1"
     env["PYTHONHASHSEED"] = "0"
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             [binary],
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             env=env,
             timeout=timeout,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return "", "", None

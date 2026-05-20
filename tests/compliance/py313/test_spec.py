@@ -5,12 +5,13 @@ Tests cover version-specific semantics introduced in CPython 3.13.
 """
 
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests.compliance.process_guard import run_compliance_process
 
 MOLT_DIR = Path(__file__).resolve().parents[3]
 ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
@@ -32,7 +33,7 @@ def _python_for(min_version: tuple[int, int]) -> str:
     ):
         if Path(candidate).exists():
             try:
-                ver = subprocess.run(
+                ver = run_compliance_process(
                     [candidate, "-c", "import sys; print(sys.version_info[:2])"],
                     capture_output=True,
                     text=True,
@@ -65,7 +66,7 @@ def _compile_and_run(
             "PYTHONPATH": str(MOLT_DIR / "src"),
         }
 
-        build = subprocess.run(
+        build = run_compliance_process(
             [
                 python_exe,
                 "-m",
@@ -92,7 +93,7 @@ def _compile_and_run(
         if not binary_path.exists():
             pytest.skip(f"Binary not produced at {binary_path}")
 
-        run = subprocess.run(
+        run = run_compliance_process(
             [str(binary_path)],
             capture_output=True,
             text=True,
@@ -110,7 +111,7 @@ def _compile_and_run(
 def _python_output(source: str, *, min_version: tuple[int, int] = (3, 12)) -> str:
     """Get CPython reference output."""
     python_exe = _python_for(min_version)
-    result = subprocess.run(
+    result = run_compliance_process(
         [python_exe, "-c", source],
         capture_output=True,
         text=True,

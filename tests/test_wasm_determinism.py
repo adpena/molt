@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -69,11 +70,10 @@ def _molt_cli_available() -> bool:
     try:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(SRC_DIR)
-        result = subprocess.run(
+        result = _run_wasm_test_process(
             [sys.executable, "-c", "import molt.cli"],
-            capture_output=True,
-            text=True,
             env=env,
+            cwd=ROOT,
             timeout=30,
         )
         return result.returncode == 0
@@ -89,7 +89,7 @@ def _build_wasm(src_path: Path, out_dir: Path) -> Path | None:
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     try:
-        result = subprocess.run(
+        result = _run_wasm_test_process(
             [
                 sys.executable,
                 "-m",
@@ -103,8 +103,6 @@ def _build_wasm(src_path: Path, out_dir: Path) -> Path | None:
             ],
             cwd=ROOT,
             env=env,
-            capture_output=True,
-            text=True,
             timeout=_SUBPROCESS_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -188,14 +186,15 @@ def _extract_f64_constants(wasm_path: Path) -> list[int]:
     floating-point constants.
     """
     try:
-        result = subprocess.run(
+        result = _run_wasm_test_process(
             ["wasm-tools", "print", str(wasm_path)],
-            capture_output=True,
-            text=True,
+            cwd=ROOT,
+            env=os.environ,
             timeout=30,
-            check=True,
         )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
         return []
 
     constants: list[int] = []
@@ -204,6 +203,55 @@ def _extract_f64_constants(wasm_path: Path) -> list[int]:
         if bits is not None:
             constants.append(bits)
     return constants
+
+
+def test_wasm_determinism_build_uses_wasm_test_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("print(42)\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        (out_dir / "output.wasm").write_bytes(WASM_MAGIC + WASM_VERSION)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
+
+    output = _build_wasm(source, out_dir)
+
+    assert output == out_dir / "output.wasm"
+    assert captured["kwargs"]["cwd"] == ROOT
+    assert captured["kwargs"]["timeout"] == _SUBPROCESS_TIMEOUT
+
+
+def test_extract_f64_constants_uses_wasm_test_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    wasm = tmp_path / "module.wasm"
+    wasm.write_bytes(WASM_MAGIC + WASM_VERSION)
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="(module (func (f64.const nan)))\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
+
+    assert _extract_f64_constants(wasm) == [F64_QNAN_BITS]
+    assert captured["cmd"] == ["wasm-tools", "print", str(wasm)]
+    assert captured["kwargs"]["cwd"] == ROOT
+    assert captured["kwargs"]["timeout"] == 30
 
 
 # ------------------------------------------------------------------

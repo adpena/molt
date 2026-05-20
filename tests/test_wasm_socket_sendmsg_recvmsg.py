@@ -1,8 +1,9 @@
+import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 
 def test_wasm_socket_sendmsg_recvmsg_parity() -> None:
@@ -179,11 +180,11 @@ def test_wasm_socket_sendmsg_recvmsg_parity() -> None:
         "});\n"
     )
 
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", "-e", script],
         cwd=root,
-        capture_output=True,
-        text=True,
+        env=os.environ,
+        timeout=None,
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "ok"

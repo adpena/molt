@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.surface_process_guard import run_surface_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -67,7 +68,7 @@ print("CHECK|behavior|" + str(behavior_ok))
 
 
 def _run_probe() -> tuple[list[str], dict[str, str]]:
-    proc = subprocess.run(
+    proc = run_surface_test_process(
         [sys.executable, "-c", _PROBE],
         cwd=REPO_ROOT,
         text=True,

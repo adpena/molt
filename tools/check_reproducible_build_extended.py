@@ -26,11 +26,15 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 SRC_DIR = ROOT / "src" / "molt"
 FRONTEND_INIT = SRC_DIR / "frontend" / "__init__.py"
 BASIC_DIR = ROOT / "tests" / "differential" / "basic"
@@ -53,14 +57,17 @@ def _compile_to_ir_json(source_text: str) -> str:
 
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
-    result = subprocess.run(
+    result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", script],
+        prefix="MOLT_TEST_SUITE",
         input=source_text,
         capture_output=True,
         text=True,
         env=env,
         timeout=60,
+        limits=limits,
     )
     if result.returncode != 0:
         raise RuntimeError(

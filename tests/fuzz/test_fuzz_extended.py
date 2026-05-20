@@ -16,6 +16,8 @@ from random import Random
 
 import pytest
 
+from tests.native_process_guard import run_native_test_process
+
 # Allow importing tools/fuzz_compiler.py from the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "tools"))
@@ -88,7 +90,7 @@ class TestFuzzExtendedBatch:
         for seed in range(SEED_BATCH_SIZE):
             source = _generate(seed, max_depth, max_stmts)
             try:
-                result = subprocess.run(
+                result = run_native_test_process(
                     [sys.executable, "-c", source],
                     capture_output=True,
                     text=True,
@@ -182,7 +184,7 @@ class TestFuzzMoltCompile:
     @staticmethod
     def _molt_available() -> bool:
         try:
-            result = subprocess.run(
+            result = run_native_test_process(
                 [sys.executable, "-m", "molt.cli", "--help"],
                 capture_output=True,
                 text=True,
@@ -212,7 +214,7 @@ class TestFuzzMoltCompile:
             src_file = tmp_path / f"fuzz_{seed}.py"
             src_file.write_text(source)
             try:
-                result = subprocess.run(
+                result = run_native_test_process(
                     [
                         sys.executable,
                         "-m",
@@ -279,7 +281,7 @@ class TestFuzzExtendedReport:
 
             # Runtime
             try:
-                result = subprocess.run(
+                result = run_native_test_process(
                     [sys.executable, "-c", source],
                     capture_output=True,
                     text=True,

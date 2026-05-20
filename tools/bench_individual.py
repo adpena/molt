@@ -29,11 +29,15 @@ import tempfile
 import time
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = Path(__file__).resolve().parent
+BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
+BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from bench_metadata import benchmark_reference_contract  # noqa: E402
+import harness_memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
 
 BENCHMARKS = bench_suites.BENCHMARKS
@@ -169,6 +173,7 @@ def molt_build(
     out_dir: Path,
     timeout_s: float,
     extra_args: list[str] | None = None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> tuple[Path | None, float, str]:
     """Build a benchmark with Molt.
 
@@ -192,15 +197,16 @@ def molt_build(
     args.append(script)
 
     start = time.perf_counter()
-    try:
-        res = subprocess.run(
-            args,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired:
+    res = harness_memory_guard.guarded_completed_process(
+        args,
+        prefix="MOLT_BENCH",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        limits=limits,
+    )
+    if res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
         return None, time.perf_counter() - start, f"build timed out after {timeout_s}s"
     build_s = time.perf_counter() - start
 
@@ -225,19 +231,27 @@ def molt_build(
 # ---------------------------------------------------------------------------
 
 
-def run_binary(binary: Path, timeout_s: float) -> tuple[bool, float, str]:
+def run_binary(
+    binary: Path,
+    timeout_s: float,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[bool, float, str]:
     """Run a compiled binary.  Returns (ok, elapsed_s, stdout_or_diagnostic)."""
     start = time.perf_counter()
-    try:
-        res = subprocess.run(
-            [str(binary)],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired:
+    res = harness_memory_guard.guarded_completed_process(
+        [str(binary)],
+        prefix="MOLT_BENCH",
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        limits=limits,
+    )
+    if res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
         return False, time.perf_counter() - start, f"timed out after {timeout_s}s"
-    elapsed = time.perf_counter() - start
+    elapsed = getattr(res, "elapsed_s", None)
+    if elapsed is None:
+        elapsed = time.perf_counter() - start
     if res.returncode != 0:
         return (
             False,
@@ -247,19 +261,27 @@ def run_binary(binary: Path, timeout_s: float) -> tuple[bool, float, str]:
     return True, elapsed, (res.stdout or "").strip()
 
 
-def run_cpython(script: str, timeout_s: float) -> tuple[bool, float, str]:
+def run_cpython(
+    script: str,
+    timeout_s: float,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[bool, float, str]:
     """Run a script with CPython.  Returns (ok, elapsed_s, stdout_or_diagnostic)."""
     start = time.perf_counter()
-    try:
-        res = subprocess.run(
-            [sys.executable, script],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired:
+    res = harness_memory_guard.guarded_completed_process(
+        [sys.executable, script],
+        prefix="MOLT_BENCH",
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        limits=limits,
+    )
+    if res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
         return False, time.perf_counter() - start, f"timed out after {timeout_s}s"
-    elapsed = time.perf_counter() - start
+    elapsed = getattr(res, "elapsed_s", None)
+    if elapsed is None:
+        elapsed = time.perf_counter() - start
     if res.returncode != 0:
         return (
             False,
@@ -330,6 +352,7 @@ def bench_one(
     timeout_run: float,
     *,
     isolate_daemon: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> dict:
     """Run a single benchmark.
 
@@ -367,13 +390,15 @@ def bench_one(
         _ensure_clean_slate()
 
     # --- Build with Molt ---
-    tmp = tempfile.TemporaryDirectory(prefix="molt-iso-bench-")
+    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.TemporaryDirectory(prefix="molt-iso-bench-", dir=BENCH_TMP_ROOT)
     out_dir = Path(tmp.name)
     binary, build_s, build_err = molt_build(
         script,
         out_dir,
         timeout_build,
         extra_args=extra_args,
+        limits=limits,
     )
     result["build_time_s"] = round(build_s, 4)
 
@@ -382,7 +407,7 @@ def bench_one(
         print(f"  BUILD FAIL: {build_err}", file=sys.stderr)
         if reference_contract.external_baselines:
             cp_batch = collect_samples(
-                lambda: run_cpython(script, timeout_run),
+                lambda: run_cpython(script, timeout_run, limits=limits),
                 samples=samples,
                 warmup=warmup,
             )
@@ -402,7 +427,7 @@ def bench_one(
 
     # --- Run Molt (multiple samples, take median) ---
     molt_batch = collect_samples(
-        lambda: run_binary(binary, timeout_run),
+        lambda: run_binary(binary, timeout_run, limits=limits),
         samples=samples,
         warmup=warmup,
     )
@@ -425,7 +450,7 @@ def bench_one(
     else:
         # --- Run CPython (multiple samples, take median) ---
         cp_batch = collect_samples(
-            lambda: run_cpython(script, timeout_run),
+            lambda: run_cpython(script, timeout_run, limits=limits),
             samples=samples,
             warmup=warmup,
         )
@@ -579,6 +604,9 @@ def main() -> None:
         raise SystemExit("--samples must be >= 1")
     if args.warmup < 0:
         raise SystemExit("--warmup must be >= 0")
+    BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     # Filter benchmarks
     benchmarks = list(BENCHMARKS)
@@ -616,34 +644,41 @@ def main() -> None:
 
     results: dict[str, dict] = {}
 
-    for idx, script in enumerate(benchmarks, 1):
-        name = Path(script).name
-        print(f"[{idx}/{total}] {name}")
-        result = bench_one(
-            script,
-            samples=args.samples,
-            warmup=args.warmup,
-            timeout_build=args.timeout_build,
-            timeout_run=args.timeout_run,
-            isolate_daemon=args.isolate_daemon,
-        )
-        results[name] = result
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=BENCH_TMP_ROOT,
+        label="bench_individual",
+        limits=limits,
+    ):
+        for idx, script in enumerate(benchmarks, 1):
+            name = Path(script).name
+            print(f"[{idx}/{total}] {name}")
+            result = bench_one(
+                script,
+                samples=args.samples,
+                warmup=args.warmup,
+                timeout_build=args.timeout_build,
+                timeout_run=args.timeout_run,
+                isolate_daemon=args.isolate_daemon,
+                limits=limits,
+            )
+            results[name] = result
 
-        # Quick inline status
-        if result["build_ok"] and result["run_ok"]:
-            speedup = f" ({result['speedup']:.1f}x)" if result["speedup"] else ""
-            cpython = (
-                f"{result['cpython_time_s']:.4f}s"
-                if result["cpython_time_s"] is not None
-                else "-"
-            )
-            print(
-                f"  -> OK  molt={result['molt_time_s']:.4f}s  cpython={cpython}{speedup}"
-            )
-        elif result["build_ok"]:
-            print("  -> BUILD OK, RUN FAIL")
-        else:
-            print("  -> BUILD FAIL")
+            # Quick inline status
+            if result["build_ok"] and result["run_ok"]:
+                speedup = f" ({result['speedup']:.1f}x)" if result["speedup"] else ""
+                cpython = (
+                    f"{result['cpython_time_s']:.4f}s"
+                    if result["cpython_time_s"] is not None
+                    else "-"
+                )
+                print(
+                    f"  -> OK  molt={result['molt_time_s']:.4f}s  cpython={cpython}{speedup}"
+                )
+            elif result["build_ok"]:
+                print("  -> BUILD OK, RUN FAIL")
+            else:
+                print("  -> BUILD FAIL")
 
     # Summary
     print_summary(results)
@@ -668,6 +703,7 @@ def main() -> None:
             "cpu_count": os.cpu_count(),
             "load_avg": load_avg,
         },
+        "memory_guard": harness_memory_guard.limits_summary(limits),
         "benchmarks": results,
     }
     if args.json_out:
@@ -677,7 +713,9 @@ def main() -> None:
         print(f"Results written to {out_path}")
     else:
         # Also dump to a default location
-        default_out = Path("bench_individual_results.json")
+        default_out = BENCH_RESULTS_DIR / (
+            "bench_individual_" + datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + ".json"
+        )
         default_out.write_text(json.dumps(report, indent=2) + "\n")
         print(f"Results written to {default_out}")
 

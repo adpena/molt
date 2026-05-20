@@ -167,6 +167,34 @@ def test_run_command_passes_through_success() -> None:
     assert result.peak is not None
     assert result.peak.rss_kb > 0
     assert result.stdout == "ok\n"
+    assert result.elapsed_s is not None
+    assert result.elapsed_s > 0
+
+
+def test_run_command_feeds_stdin_under_guard() -> None:
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        input="guarded stdin",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "GUARDED STDIN\n"
+
+
+def test_run_command_elapsed_excludes_guard_child_runner_startup() -> None:
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import time; time.sleep(0.03); print('ok')"],
+        max_rss_kb=1_000_000,
+        poll_interval=1.0,
+        child_rlimit_kb=1_000_000,
+    )
+
+    assert result.returncode == 0
+    assert result.elapsed_s is not None
+    assert result.elapsed_s >= 0.02
+    assert result.elapsed_s < 0.5
 
 
 def test_run_command_ignores_samples_without_root_pid() -> None:
@@ -464,25 +492,29 @@ def test_child_runner_env_wraps_command_without_leaking_guard_keys() -> None:
     assert env[memory_guard.INTERNAL_CHILD_RUNNER_ENV] == "1"
     assert json.loads(env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
     assert env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
+    assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV not in env
     child_env = memory_guard._child_env_without_internal_keys(env)
     assert child_env == {"KEEP": "1"}
 
 
 def test_guarded_launch_uses_child_runner_when_resource_limit_enabled() -> None:
     command = [sys.executable, "-c", "print('child')"]
-    launch_command, launch_env = memory_guard._guarded_launch(
+    launch = memory_guard._guarded_launch(
         command,
         {"KEEP": "1"},
         child_rlimit_kb=12345,
     )
 
-    assert launch_command == [
+    assert launch.command == [
         sys.executable,
         str(Path(memory_guard.__file__).resolve()),
     ]
+    launch_env = launch.env
     assert launch_env is not None
     assert json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
     assert launch_env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
+    assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV in launch_env
+    memory_guard._close_fds((*launch.close_fds, launch.started_read_fd))
 
 
 def test_main_writes_summary_json(tmp_path) -> None:

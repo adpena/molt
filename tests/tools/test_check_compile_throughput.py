@@ -4,12 +4,14 @@ import json
 import subprocess
 from pathlib import Path
 
+from tests.native_process_guard import run_native_test_process
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_check(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_native_test_process(
         ["python3", "tools/check_compile_throughput.py", *args],
         cwd=REPO_ROOT,
         text=True,

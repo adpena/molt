@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 def find_bench_files(bench_dir: Path) -> list[Path]:
@@ -42,9 +47,11 @@ def compile_with_ir(py_path: Path, profile: str = "dev") -> tuple[Path | None, s
     ir_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
     ir_path = Path(ir_file.name)
     ir_file.close()
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
 
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             [
                 sys.executable,
                 "-m",
@@ -56,10 +63,12 @@ def compile_with_ir(py_path: Path, profile: str = "dev") -> tuple[Path | None, s
                 str(ir_path),
                 str(py_path),
             ],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=120,
-            env={**__import__("os").environ, "PYTHONPATH": str(ROOT / "src")},
+            env=env,
+            limits=limits,
         )
         if result.returncode != 0:
             ir_path.unlink(missing_ok=True)

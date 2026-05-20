@@ -42,6 +42,7 @@ from molt.harness_conformance import (  # noqa: E402
 )
 from run_monty_conformance import parse_expectation  # noqa: E402
 from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 
 CORPUS_DIR = _HARNESS_DIR / "corpus" / "monty_compat"
 SMOKE_MANIFEST = CORPUS_DIR / "SMOKE.txt"
@@ -204,11 +205,20 @@ class ConformanceBatchCompiler:
     def start(self) -> None:
         if self._client is not None:
             return
+        limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", self._env)
         try:
             self._client = BatchCompileServerClient(
                 self.command,
                 cwd=self._repo_root,
                 env=self._env,
+                process_group_kwargs=harness_memory_guard.batch_process_group_kwargs(
+                    limits
+                ),
+                force_close=(
+                    harness_memory_guard.force_close_process_group
+                    if limits.enabled
+                    else None
+                ),
                 reader_name="molt-conformance-batch-server-reader",
             )
         except OSError as exc:
@@ -300,8 +310,9 @@ def _stats_to_summary(
     manifest_path: Path | None,
     corpus_root: Path,
     duration_s: float,
+    memory_guard: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    return {
+    summary: dict[str, object] = {
         "suite": suite,
         "manifest_path": str(manifest_path) if manifest_path is not None else None,
         "corpus_root": str(corpus_root),
@@ -326,6 +337,9 @@ def _stats_to_summary(
         ],
         "timeouts": list(stats.timeouts),
     }
+    if memory_guard is not None:
+        summary["memory_guard"] = memory_guard
+    return summary
 
 
 def _pick_preflight_files(test_files: list[Path], n: int = 5) -> list[Path]:
@@ -424,12 +438,15 @@ def run_binary(binary: Path) -> tuple[int | None, str, str]:
     returncode is None on timeout.
     """
     try:
-        r = subprocess.run(
+        r = harness_memory_guard.guarded_completed_process(
             [str(binary)],
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             timeout=RUN_TIMEOUT,
         )
+        if r.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
+            return None, r.stdout, r.stderr
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
         return None, "", "run timeout"
@@ -526,84 +543,101 @@ def main(argv: list[str] | None = None) -> int:
 
     env = _molt_build_env()
     _ensure_build_dirs(env)
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     tmp_root = Path(env["TMPDIR"])
     tmp_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="molt_conform_", dir=tmp_root) as tmpdir:
         tmp = Path(tmpdir)
 
         try:
-            with ConformanceBatchCompiler(
-                molt_cmd, env, repo_root=REPO_ROOT
-            ) as compiler:
-                print(f"Using Molt batch build server: {shlex.join(compiler.command)}")
-                compiler.ping()
-
-                # Preflight -- also warms up the runtime build cache
-                print(
-                    "Running preflight (first build may take minutes if runtime "
-                    "needs recompilation)..."
-                )
-                if not preflight(compiler, test_files, tmp):
+            with harness_memory_guard.repo_process_sentinel(
+                repo_root=REPO_ROOT,
+                artifact_root=tmp_root,
+                label="conformance",
+                limits=limits,
+            ):
+                with ConformanceBatchCompiler(
+                    molt_cmd, env, repo_root=REPO_ROOT
+                ) as compiler:
                     print(
-                        "ERROR: preflight failed -- Molt cannot compile any files.",
-                        file=sys.stderr,
+                        f"Using Molt batch build server: {shlex.join(compiler.command)}"
                     )
-                    return 1
-                print()
+                    compiler.ping()
 
-                stats = Stats()
-                t0 = time.monotonic()
+                    # Preflight -- also warms up the runtime build cache
+                    print(
+                        "Running preflight (first build may take minutes if runtime "
+                        "needs recompilation)..."
+                    )
+                    if not preflight(compiler, test_files, tmp):
+                        print(
+                            "ERROR: preflight failed -- Molt cannot compile any files.",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    print()
 
-                for i, filepath in enumerate(test_files, 1):
-                    kind, _ = parse_expectation(filepath)
-                    if kind == "skip":
-                        stats.skipped += 1
-                        if args.verbose:
-                            print(f"  [{i:3d}] SKIP   {filepath.name}")
-                        continue
+                    stats = Stats()
+                    t0 = time.monotonic()
 
-                    binary = tmp / filepath.stem
-                    compile_result = compile_file(compiler, filepath, binary)
-
-                    if not compile_result.ok:
-                        detail = compile_result.detail
-                        if compile_result.timed_out:
-                            stats.timeout += 1
-                            stats.timeouts.append(filepath.name)
+                    for i, filepath in enumerate(test_files, 1):
+                        kind, _ = parse_expectation(filepath)
+                        if kind == "skip":
+                            stats.skipped += 1
                             if args.verbose:
-                                print(f"  [{i:3d}] TMOUT  {filepath.name}: {detail}")
+                                print(f"  [{i:3d}] SKIP   {filepath.name}")
+                            continue
+
+                        binary = tmp / filepath.stem
+                        compile_result = compile_file(compiler, filepath, binary)
+
+                        if not compile_result.ok:
+                            detail = compile_result.detail
+                            if compile_result.timed_out:
+                                stats.timeout += 1
+                                stats.timeouts.append(filepath.name)
+                                if args.verbose:
+                                    print(
+                                        f"  [{i:3d}] TMOUT  {filepath.name}: {detail}"
+                                    )
+                            else:
+                                stats.compile_error += 1
+                                stats.compile_errors.append((filepath.name, detail))
+                                if args.verbose:
+                                    print(
+                                        f"  [{i:3d}] CERR   {filepath.name}: {detail}"
+                                    )
+                            continue
+
+                        rc, stdout, stderr = run_binary(binary)
+                        passed, detail = check_result(filepath, rc, stdout, stderr)
+
+                        if passed is None:
+                            stats.skipped += 1
+                            if args.verbose:
+                                print(f"  [{i:3d}] SKIP   {filepath.name}: {detail}")
+                        elif passed:
+                            stats.passed += 1
+                            if args.verbose:
+                                print(f"  [{i:3d}] PASS   {filepath.name}: {detail}")
                         else:
-                            stats.compile_error += 1
-                            stats.compile_errors.append((filepath.name, detail))
-                            if args.verbose:
-                                print(f"  [{i:3d}] CERR   {filepath.name}: {detail}")
-                        continue
+                            if rc is None:
+                                stats.timeout += 1
+                                stats.timeouts.append(filepath.name)
+                                if args.verbose:
+                                    print(
+                                        f"  [{i:3d}] TMOUT  {filepath.name}: {detail}"
+                                    )
+                            else:
+                                stats.failed += 1
+                                stats.failures.append((filepath.name, detail))
+                                if args.verbose:
+                                    print(
+                                        f"  [{i:3d}] FAIL   {filepath.name}: {detail}"
+                                    )
 
-                    rc, stdout, stderr = run_binary(binary)
-                    passed, detail = check_result(filepath, rc, stdout, stderr)
-
-                    if passed is None:
-                        stats.skipped += 1
-                        if args.verbose:
-                            print(f"  [{i:3d}] SKIP   {filepath.name}: {detail}")
-                    elif passed:
-                        stats.passed += 1
-                        if args.verbose:
-                            print(f"  [{i:3d}] PASS   {filepath.name}: {detail}")
-                    else:
-                        if rc is None:
-                            stats.timeout += 1
-                            stats.timeouts.append(filepath.name)
-                            if args.verbose:
-                                print(f"  [{i:3d}] TMOUT  {filepath.name}: {detail}")
-                        else:
-                            stats.failed += 1
-                            stats.failures.append((filepath.name, detail))
-                            if args.verbose:
-                                print(f"  [{i:3d}] FAIL   {filepath.name}: {detail}")
-
-                    # Clean up binary between runs to save disk space
-                    binary.unlink(missing_ok=True)
+                        # Clean up binary between runs to save disk space
+                        binary.unlink(missing_ok=True)
         except BatchBuildServerError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
@@ -647,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path=SMOKE_MANIFEST if args.suite == "smoke" else None,
         corpus_root=CORPUS_DIR,
         duration_s=elapsed,
+        memory_guard=harness_memory_guard.limits_summary(limits),
     )
     if args.json_out is not None:
         write_molt_conformance_summary(args.json_out, summary)

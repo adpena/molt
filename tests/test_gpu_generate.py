@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 @pytest.fixture(autouse=True)
@@ -284,7 +285,7 @@ def test_speculative_decode_greedy_compiles_in_native_molt(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -493,7 +494,7 @@ def test_tinygrad_dflash_import_fails_closed_with_provenance(tmp_path: Path) -> 
         "    print(str(exc))\n",
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_native_test_process(
         [sys.executable, str(probe)],
         cwd=root,
         capture_output=True,
@@ -550,7 +551,7 @@ def test_conditioned_speculative_decode_compiles_in_native_molt(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",

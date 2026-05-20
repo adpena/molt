@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 
+from tests.native_process_guard import run_native_test_process
+
 
 def _molt_available() -> bool:
     return shutil.which("molt") is not None
@@ -31,7 +33,7 @@ def _run_molt(
         env = os.environ.copy()
         if env_overrides:
             env.update(env_overrides)
-        return subprocess.run(
+        return run_native_test_process(
             ["molt", "run", path],
             capture_output=True,
             text=True,
@@ -55,7 +57,7 @@ def _run_python(source: str, timeout: int = 10) -> subprocess.CompletedProcess:
         f.write(source)
         path = f.name
     try:
-        return subprocess.run(
+        return run_native_test_process(
             [sys.executable, path],
             capture_output=True,
             text=True,

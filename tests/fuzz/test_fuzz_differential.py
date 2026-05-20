@@ -11,12 +11,13 @@ randomized parameters rather than being fully random.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 from random import Random
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "tools"))
@@ -30,7 +31,7 @@ _TIMEOUT = 10
 
 def _run_cpython(source: str) -> tuple[str, int]:
     """Run *source* under CPython and return (stdout, returncode)."""
-    result = subprocess.run(
+    result = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -41,7 +42,7 @@ def _run_cpython(source: str) -> tuple[str, int]:
 
 def _molt_available() -> bool:
     try:
-        result = subprocess.run(
+        result = run_native_test_process(
             [sys.executable, "-m", "molt.cli", "--help"],
             capture_output=True,
             text=True,
@@ -60,7 +61,7 @@ def _run_molt(source: str, tmp_path: Path, tag: str) -> tuple[str | None, str]:
     """
     src_file = tmp_path / f"diff_{tag}.py"
     src_file.write_text(source)
-    build = subprocess.run(
+    build = run_native_test_process(
         [
             sys.executable,
             "-m",

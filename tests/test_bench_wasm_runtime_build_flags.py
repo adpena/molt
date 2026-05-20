@@ -36,8 +36,9 @@ def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
         tty: bool,
         log,
         timeout_s: float | None = None,
+        limits=None,
     ):
-        del capture, tty, log, timeout_s
+        del capture, tty, log, timeout_s, limits
         captured.append((list(cmd), dict(env)))
         _fake_runtime_build(cmd, env)
         return bench_wasm._RunResult(returncode=0)
@@ -79,8 +80,9 @@ def test_build_runtime_wasm_honors_baseline_mode_and_legacy_shared_link_flags(
         tty: bool,
         log,
         timeout_s: float | None = None,
+        limits=None,
     ):
-        del capture, tty, log, timeout_s
+        del capture, tty, log, timeout_s, limits
         captured.append((list(cmd), dict(env)))
         _fake_runtime_build(cmd, env)
         return bench_wasm._RunResult(returncode=0)
@@ -151,6 +153,38 @@ def test_failed_wasm_run_has_null_time_and_samples(monkeypatch, tmp_path: Path) 
     assert entry["molt_wasm_time_s"] is None
     assert entry["molt_wasm_samples_s"] == []
     assert entry["molt_wasm_failure_class"] == "runtime_error"
+
+
+def test_measure_wasm_run_uses_guard_child_elapsed(monkeypatch) -> None:
+    limits = bench_wasm.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
+    calls: list[dict[str, object]] = []
+
+    def fake_run_cmd(*args, **kwargs):
+        calls.append(kwargs)
+        return bench_wasm._RunResult(
+            returncode=0,
+            stdout="",
+            stderr="",
+            elapsed_s=0.045,
+        )
+
+    monkeypatch.setattr(
+        bench_wasm,
+        "_run_cmd",
+        fake_run_cmd,
+    )
+
+    result = bench_wasm.measure_wasm_run(
+        {},
+        ["node", "wasm/run_wasm.js"],
+        runner_name="node",
+        log=None,
+        limits=limits,
+    )
+
+    assert result.elapsed_s == 0.045
+    assert result.error is None
+    assert calls[0]["limits"] is limits
 
 
 def test_partial_wasm_sample_failure_has_null_time(monkeypatch, tmp_path: Path) -> None:

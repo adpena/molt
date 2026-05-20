@@ -5487,19 +5487,12 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
         .task_last_exception_pending
         .load(AtomicOrdering::Relaxed);
     let global_pending = state.last_exception_pending.load(AtomicOrdering::Relaxed);
-    let handler_active = exception_handler_active();
     if !task_pending && !global_pending {
         if let Some(bits) = exception_context_active_bits() {
             inc_ref_bits(_py, bits);
             return bits;
         }
-        if !handler_active {
-            return MoltObject::none().bits();
-        }
-        // Handler-entry semantics need the current caught exception even if
-        // the pending flags were already cleared by the control-flow path.
-        // In that case, fall through and inspect the stored task/global
-        // exception slots directly instead of returning None.
+        return MoltObject::none().bits();
     }
     let debug_flow = debug_exception_flow();
     if let Some(task_key) = current_task_key() {
@@ -6033,13 +6026,15 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        frame_stack_pop, frame_stack_push, frame_stack_push_owned, generator_exception_stack_drop,
-        generator_exception_stack_store, generator_exception_stack_take, task_exception_stack_drop,
+        alloc_exception, clear_exception, exception_context_set, exception_last_public_bits,
+        exception_stack_pop, exception_stack_push, frame_stack_pop, frame_stack_push,
+        frame_stack_push_owned, generator_exception_stack_drop, generator_exception_stack_store,
+        generator_exception_stack_take, record_exception, task_exception_stack_drop,
         task_exception_stack_store, task_exception_stack_take,
     };
     use crate::object::builders::alloc_code_obj;
     use crate::object::header_from_obj_ptr;
-    use crate::{alloc_string, dec_ref_bits, inc_ref_bits};
+    use crate::{alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
@@ -6129,6 +6124,33 @@ mod tests {
             unsafe {
                 drop(Box::from_raw(ptr));
             }
+        });
+    }
+
+    #[test]
+    fn exception_last_ignores_non_pending_slots_inside_handler() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let exc_ptr = alloc_exception(_py, "RuntimeError", "stale");
+            let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+
+            exception_stack_push();
+            record_exception(_py, exc_ptr);
+
+            let first_bits = exception_last_public_bits(_py);
+            assert!(!obj_from_bits(first_bits).is_none());
+            dec_ref_bits(_py, first_bits);
+
+            exception_context_set(_py, MoltObject::none().bits());
+            let stale_bits = exception_last_public_bits(_py);
+            assert!(
+                obj_from_bits(stale_bits).is_none(),
+                "non-pending last-exception slots must not be resurrected by handler state"
+            );
+
+            clear_exception(_py);
+            exception_stack_pop(_py);
+            dec_ref_bits(_py, exc_bits);
         });
     }
 }

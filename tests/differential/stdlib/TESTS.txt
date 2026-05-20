@@ -221,6 +221,7 @@ tests/differential/stdlib/asyncio_loop_call_soon_context.py
 tests/differential/stdlib/asyncio_loop_exception_handler_debug.py
 tests/differential/stdlib/asyncio_loop_read_write_callbacks.py
 tests/differential/stdlib/asyncio_nested.py
+tests/differential/stdlib/asyncio_nested_child_return_completion.py
 tests/differential/stdlib/asyncio_new_event_loop_run_until_complete.py
 tests/differential/stdlib/asyncio_queue_basic.py
 tests/differential/stdlib/asyncio_queue_join.py

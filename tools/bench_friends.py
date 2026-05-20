@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import harness_memory_guard
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 SUPPORTED_SEMANTIC_MODES = {
     "runs_unmodified",
@@ -285,6 +290,7 @@ def _run_command(
     stdout_path: Path,
     stderr_path: Path,
     dry_run: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> PhaseResult:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
@@ -304,17 +310,23 @@ def _run_command(
 
     start = dt.datetime.now(dt.timezone.utc)
     timed_out = False
+    guard_elapsed_s: float | None = None
     try:
-        res = subprocess.run(
+        res = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_BENCH",
             cwd=str(cwd),
             env=env,
             capture_output=True,
             text=True,
             timeout=timeout_sec,
-            check=False,
+            limits=limits,
         )
-        rc = res.returncode
+        guard_elapsed_s = res.elapsed_s
+        timed_out = (
+            res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        )
+        rc = -9 if timed_out else res.returncode
         stdout = res.stdout or ""
         stderr = res.stderr or ""
     except subprocess.TimeoutExpired as exc:
@@ -324,7 +336,11 @@ def _run_command(
         stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
         stderr = f"{stderr}\n[timeout] command exceeded {timeout_sec}s\n"
     end = dt.datetime.now(dt.timezone.utc)
-    elapsed = (end - start).total_seconds()
+    elapsed = (
+        guard_elapsed_s
+        if guard_elapsed_s is not None
+        else (end - start).total_seconds()
+    )
     stdout_path.write_text(stdout, encoding="utf-8")
     stderr_path.write_text(stderr, encoding="utf-8")
     return PhaseResult(
@@ -338,18 +354,24 @@ def _run_command(
 
 
 def _run_git(
-    args: list[str], *, cwd: Path | None, timeout_sec: int, dry_run: bool
+    args: list[str],
+    *,
+    cwd: Path | None,
+    timeout_sec: int,
+    dry_run: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> tuple[int, str, str]:
     cmd = ["git", *args]
     if dry_run:
         return 0, "[dry-run]\n", ""
-    res = subprocess.run(
+    res = harness_memory_guard.guarded_completed_process(
         cmd,
+        prefix="MOLT_BENCH",
         cwd=str(cwd) if cwd is not None else None,
         capture_output=True,
         text=True,
         timeout=timeout_sec,
-        check=False,
+        limits=limits,
     )
     return res.returncode, res.stdout or "", res.stderr or ""
 
@@ -362,6 +384,7 @@ def _acquire_suite(
     fetch: bool,
     timeout_sec: int,
     dry_run: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> tuple[Path, Path, str | None]:
     if suite.source == "local":
         if not suite.local_path:
@@ -401,6 +424,7 @@ def _acquire_suite(
                 cwd=None,
                 timeout_sec=timeout_sec,
                 dry_run=dry_run,
+                limits=limits,
             )
             if rc != 0:
                 raise RuntimeError(f"suite {suite.id}: git clone failed: {err.strip()}")
@@ -410,6 +434,7 @@ def _acquire_suite(
                 cwd=repo_dir,
                 timeout_sec=timeout_sec,
                 dry_run=dry_run,
+                limits=limits,
             )
             if rc != 0:
                 raise RuntimeError(f"suite {suite.id}: git fetch failed: {err.strip()}")
@@ -418,6 +443,7 @@ def _acquire_suite(
             cwd=repo_dir,
             timeout_sec=timeout_sec,
             dry_run=dry_run,
+            limits=limits,
         )
         if rc != 0:
             raise RuntimeError(
@@ -436,6 +462,7 @@ def _acquire_suite(
             cwd=repo_dir,
             timeout_sec=timeout_sec,
             dry_run=False,
+            limits=limits,
         )
         if rc != 0:
             raise RuntimeError(f"suite {suite.id}: git rev-parse failed: {err.strip()}")
@@ -455,6 +482,7 @@ def _run_prepare_steps(
     timeout_sec: int,
     logs_dir: Path,
     dry_run: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> tuple[bool, str | None]:
     for idx, prepare_cmd in enumerate(suite.prepare_cmds, start=1):
         resolved_cmd = _resolve_tokenized(prepare_cmd, tokens)
@@ -468,6 +496,7 @@ def _run_prepare_steps(
             stdout_path=out,
             stderr_path=err,
             dry_run=dry_run,
+            limits=limits,
         )
         if not phase.ok:
             return False, f"prepare step {idx} failed"
@@ -483,6 +512,7 @@ def _run_runner(
     tokens: dict[str, str],
     logs_dir: Path,
     dry_run: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> RunnerResult:
     if runner.skip_reason:
         return RunnerResult(
@@ -509,6 +539,7 @@ def _run_runner(
             stdout_path=logs_dir / f"{runner.name}.build.stdout.log",
             stderr_path=logs_dir / f"{runner.name}.build.stderr.log",
             dry_run=dry_run,
+            limits=limits,
         )
         result.build = build
         if not build.ok:
@@ -526,6 +557,7 @@ def _run_runner(
             stdout_path=logs_dir / f"{runner.name}.run{run_idx}.stdout.log",
             stderr_path=logs_dir / f"{runner.name}.run{run_idx}.stderr.log",
             dry_run=dry_run,
+            limits=limits,
         )
         result.runs.append(phase)
         if not phase.ok:
@@ -863,111 +895,121 @@ def main() -> int:
     run_env = os.environ.copy()
     run_env.setdefault("PYTHONHASHSEED", "0")
     run_env.setdefault("PYTHONUNBUFFERED", "1")
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", run_env)
 
     suite_results: list[SuiteResult] = []
     overall_rc = 0
-    for suite in selected:
-        suite_timeout = args.timeout_sec or suite.timeout_sec
-        suite_repeat = args.repeat or suite.repeat
-        suite = SuiteSpec(
-            **{
-                **suite.__dict__,
-                "timeout_sec": suite_timeout,
-                "repeat": suite_repeat,
-            }
-        )
-        try:
-            suite_root, suite_workdir, resolved_ref = _acquire_suite(
-                suite,
-                repos_root=repos_root,
-                checkout=args.checkout,
-                fetch=args.fetch,
-                timeout_sec=suite.timeout_sec,
-                dry_run=args.dry_run,
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=output_root,
+        label="bench_friends",
+        limits=limits,
+    ):
+        for suite in selected:
+            suite_timeout = args.timeout_sec or suite.timeout_sec
+            suite_repeat = args.repeat or suite.repeat
+            suite = SuiteSpec(
+                **{
+                    **suite.__dict__,
+                    "timeout_sec": suite_timeout,
+                    "repeat": suite_repeat,
+                }
             )
-            suite_logs = output_root / "logs" / suite.id
-            tokens = {
-                "repo_root": str(Path.cwd().resolve()),
-                "suite_root": str(suite_root.resolve()),
-                "suite_workdir": str(suite_workdir.resolve()),
-                "output_root": str(output_root),
-            }
-            suite_env = run_env.copy()
-            suite_env.update(_resolve_env(suite.env, tokens))
-            prep_ok, prep_reason = _run_prepare_steps(
-                suite,
-                suite_workdir=suite_workdir,
-                suite_env=suite_env,
-                tokens=tokens,
-                timeout_sec=suite.timeout_sec,
-                logs_dir=suite_logs,
-                dry_run=args.dry_run,
-            )
-            runners: dict[str, RunnerResult] = {}
-            if prep_ok:
-                for runner_name, runner_spec in suite.runners.items():
-                    runners[runner_name] = _run_runner(
-                        runner_spec,
-                        suite=suite,
-                        suite_workdir=suite_workdir,
-                        suite_env=suite_env,
-                        tokens=tokens,
-                        logs_dir=suite_logs,
-                        dry_run=args.dry_run,
-                    )
-            else:
-                for runner_name in suite.runners:
-                    runners[runner_name] = RunnerResult(
-                        name=runner_name,
-                        status="failed",
-                        reason=prep_reason,
-                    )
-            status, reason = _suite_status(runners)
-            if prep_reason and not reason:
-                reason = prep_reason
-            metrics = _suite_metrics(runners)
-            suite_result = SuiteResult(
-                id=suite.id,
-                friend=suite.friend,
-                display_name=suite.display_name,
-                semantic_mode=suite.semantic_mode,
-                source=suite.source,
-                suite_root=str(suite_root),
-                suite_workdir=str(suite_workdir),
-                resolved_ref=resolved_ref,
-                status=status,
-                reason=reason,
-                adapter_notes=suite.adapter_notes,
-                tags=suite.tags,
-                runners=runners,
-                metrics=metrics,
-            )
-            suite_results.append(suite_result)
-            if status == "failed":
+            try:
+                suite_root, suite_workdir, resolved_ref = _acquire_suite(
+                    suite,
+                    repos_root=repos_root,
+                    checkout=args.checkout,
+                    fetch=args.fetch,
+                    timeout_sec=suite.timeout_sec,
+                    dry_run=args.dry_run,
+                    limits=limits,
+                )
+                suite_logs = output_root / "logs" / suite.id
+                tokens = {
+                    "repo_root": str(Path.cwd().resolve()),
+                    "suite_root": str(suite_root.resolve()),
+                    "suite_workdir": str(suite_workdir.resolve()),
+                    "output_root": str(output_root),
+                }
+                suite_env = run_env.copy()
+                suite_env.update(_resolve_env(suite.env, tokens))
+                prep_ok, prep_reason = _run_prepare_steps(
+                    suite,
+                    suite_workdir=suite_workdir,
+                    suite_env=suite_env,
+                    tokens=tokens,
+                    timeout_sec=suite.timeout_sec,
+                    logs_dir=suite_logs,
+                    dry_run=args.dry_run,
+                    limits=limits,
+                )
+                runners: dict[str, RunnerResult] = {}
+                if prep_ok:
+                    for runner_name, runner_spec in suite.runners.items():
+                        runners[runner_name] = _run_runner(
+                            runner_spec,
+                            suite=suite,
+                            suite_workdir=suite_workdir,
+                            suite_env=suite_env,
+                            tokens=tokens,
+                            logs_dir=suite_logs,
+                            dry_run=args.dry_run,
+                            limits=limits,
+                        )
+                else:
+                    for runner_name in suite.runners:
+                        runners[runner_name] = RunnerResult(
+                            name=runner_name,
+                            status="failed",
+                            reason=prep_reason,
+                        )
+                status, reason = _suite_status(runners)
+                if prep_reason and not reason:
+                    reason = prep_reason
+                metrics = _suite_metrics(runners)
+                suite_result = SuiteResult(
+                    id=suite.id,
+                    friend=suite.friend,
+                    display_name=suite.display_name,
+                    semantic_mode=suite.semantic_mode,
+                    source=suite.source,
+                    suite_root=str(suite_root),
+                    suite_workdir=str(suite_workdir),
+                    resolved_ref=resolved_ref,
+                    status=status,
+                    reason=reason,
+                    adapter_notes=suite.adapter_notes,
+                    tags=suite.tags,
+                    runners=runners,
+                    metrics=metrics,
+                )
+                suite_results.append(suite_result)
+                if status == "failed":
+                    overall_rc = 1
+                    if args.fail_fast:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                suite_result = SuiteResult(
+                    id=suite.id,
+                    friend=suite.friend,
+                    display_name=suite.display_name,
+                    semantic_mode=suite.semantic_mode,
+                    source=suite.source,
+                    suite_root="",
+                    suite_workdir="",
+                    resolved_ref=None,
+                    status="failed",
+                    reason=str(exc),
+                    adapter_notes=suite.adapter_notes,
+                    tags=suite.tags,
+                    runners={},
+                    metrics=_suite_metrics({}),
+                )
+                suite_results.append(suite_result)
                 overall_rc = 1
                 if args.fail_fast:
                     break
-        except Exception as exc:  # noqa: BLE001
-            suite_result = SuiteResult(
-                id=suite.id,
-                friend=suite.friend,
-                display_name=suite.display_name,
-                semantic_mode=suite.semantic_mode,
-                source=suite.source,
-                suite_root="",
-                suite_workdir="",
-                resolved_ref=None,
-                status="failed",
-                reason=str(exc),
-                adapter_notes=suite.adapter_notes,
-                tags=suite.tags,
-                runners={},
-                metrics=_suite_metrics({}),
-            )
-            suite_results.append(suite_result)
-            overall_rc = 1
-            if args.fail_fast:
-                break
 
     json_out = (args.json_out or (output_root / "results.json")).resolve()
     json_out.parent.mkdir(parents=True, exist_ok=True)
@@ -978,6 +1020,7 @@ def main() -> int:
         "manifest_path": str(manifest_path),
         "git_rev": _git_rev(),
         "dry_run": args.dry_run,
+        "memory_guard": harness_memory_guard.limits_summary(limits),
         "host": {
             "platform": platform.platform(),
             "machine": platform.machine(),

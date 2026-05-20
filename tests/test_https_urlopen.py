@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import os
 import socket
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
@@ -65,7 +66,7 @@ def _compile_and_run(source: str) -> str:
             ),
             "PYTHONPATH": str(MOLT_DIR / "src"),
         }
-        build = subprocess.run(
+        build = run_native_test_process(
             [
                 sys.executable,
                 "-m",
@@ -89,7 +90,7 @@ def _compile_and_run(source: str) -> str:
             )
         if not binary_path.exists():
             pytest.fail(f"compiled binary missing at {binary_path}")
-        run = subprocess.run(
+        run = run_native_test_process(
             [str(binary_path)],
             capture_output=True,
             text=True,

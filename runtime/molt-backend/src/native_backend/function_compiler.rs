@@ -610,6 +610,7 @@ fn emit_conditional_list_bool_truthiness(
     list_is_bool_cache: &BTreeMap<String, Variable>,
     shadow: Option<&ConditionalListBoolShadow>,
     truthy_merge: Block,
+    live_through: &[LiveThroughValue],
 ) -> bool {
     let Some(shadow) = shadow else {
         return false;
@@ -630,7 +631,8 @@ fn emit_conditional_list_bool_truthiness(
     switch_to_block_materialized(builder, raw_bool_block);
     seal_block_once(builder, sealed_blocks, raw_bool_block);
     let raw_truthy = builder.ins().icmp_imm(IntCC::NotEqual, shadow.payload, 0);
-    jump_block(builder, truthy_merge, &[raw_truthy]);
+    let merge_args = merge_args_with_live_through(raw_truthy, live_through);
+    jump_block(builder, truthy_merge, &merge_args);
 
     switch_to_block_materialized(builder, speculative_block);
     seal_block_once(builder, sealed_blocks, speculative_block);
@@ -748,6 +750,77 @@ fn def_var_from_boxed_transport(
         def_var_named(builder, vars, name, raw_i64);
     } else {
         def_var_named(builder, vars, name, boxed);
+    }
+}
+
+#[cfg(feature = "native-backend")]
+struct LiveThroughValue {
+    name: String,
+    value: Value,
+    ty: cranelift_codegen::ir::Type,
+}
+
+#[cfg(feature = "native-backend")]
+fn collect_live_through_values(
+    builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    first_defined_at: &BTreeMap<String, usize>,
+    last_use: &BTreeMap<String, usize>,
+    op_idx: usize,
+    current_out: Option<&str>,
+) -> Vec<LiveThroughValue> {
+    first_defined_at
+        .iter()
+        .filter_map(|(name, first)| {
+            if name == "none" || current_out == Some(name.as_str()) {
+                return None;
+            }
+            if name.ends_with("_ptr") || name.ends_with("_len") {
+                return None;
+            }
+            if *first >= op_idx || last_use.get(name).copied().unwrap_or(0) <= op_idx {
+                return None;
+            }
+            let var = *vars.get(name)?;
+            let value = builder.use_var(var);
+            let ty = builder.func.dfg.value_type(value);
+            Some(LiveThroughValue {
+                name: name.clone(),
+                value,
+                ty,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "native-backend")]
+fn append_live_through_params(
+    builder: &mut FunctionBuilder<'_>,
+    block: Block,
+    live_through: &[LiveThroughValue],
+) {
+    for live in live_through {
+        builder.append_block_param(block, live.ty);
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn merge_args_with_live_through(head: Value, live_through: &[LiveThroughValue]) -> Vec<Value> {
+    let mut args = Vec::with_capacity(1 + live_through.len());
+    args.push(head);
+    args.extend(live_through.iter().map(|live| live.value));
+    args
+}
+
+#[cfg(feature = "native-backend")]
+fn rebind_live_through_values(
+    builder: &mut FunctionBuilder<'_>,
+    vars: &BTreeMap<String, Variable>,
+    live_through: &[LiveThroughValue],
+    params: &[Value],
+) {
+    for (live, param) in live_through.iter().zip(params.iter().copied()) {
+        def_var_named(builder, vars, live.name.clone(), param);
     }
 }
 
@@ -1570,7 +1643,14 @@ fn preanalyze_function_ir(
                     if seen_state_ids.insert(state_id) {
                         state_ids.push(state_id);
                     }
-                    if op.kind == "state_yield" || op.kind == "state_label" {
+                    if matches!(
+                        op.kind.as_str(),
+                        "state_transition"
+                            | "state_yield"
+                            | "chan_send_yield"
+                            | "chan_recv_yield"
+                            | "state_label"
+                    ) {
                         resume_states.insert(state_id);
                     }
                     if matches!(op.kind.as_str(), "label" | "state_label") {
@@ -24385,6 +24465,18 @@ impl SimpleBackend {
                     let nargs = args.len();
 
                     let use_inline_probe = nargs <= 3 && code_id == 0;
+                    let inline_live_through = if use_inline_probe {
+                        collect_live_through_values(
+                            &mut builder,
+                            &vars,
+                            &first_defined_at,
+                            &last_use,
+                            op_idx,
+                            op.out.as_deref(),
+                        )
+                    } else {
+                        Vec::new()
+                    };
 
                     let res = if use_inline_probe {
                         // --- Inline probe: check tag, type_id, closure, arity ---
@@ -24394,6 +24486,7 @@ impl SimpleBackend {
 
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        append_live_through_params(&mut builder, merge_block, &inline_live_through);
                         let slow_block = builder.create_block();
 
                         // Step 1: Check TAG_PTR
@@ -24528,7 +24621,9 @@ impl SimpleBackend {
                         );
                         let raise_call = builder.ins().call(raise_ref, &[]);
                         let err_val = builder.inst_results(raise_call)[0];
-                        jump_block(&mut builder, merge_block, &[err_val]);
+                        let merge_args =
+                            merge_args_with_live_through(err_val, &inline_live_through);
+                        jump_block(&mut builder, merge_block, &merge_args);
 
                         // Direct call via call_indirect
                         switch_to_block_materialized(&mut builder, call_block);
@@ -24551,7 +24646,9 @@ impl SimpleBackend {
                             &[],
                         );
                         builder.ins().call(guard_exit, &[]);
-                        jump_block(&mut builder, merge_block, &[direct_res]);
+                        let merge_args =
+                            merge_args_with_live_through(direct_res, &inline_live_through);
+                        jump_block(&mut builder, merge_block, &merge_args);
 
                         // Slow path: call molt_call_func_fast{N}
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -24578,11 +24675,20 @@ impl SimpleBackend {
                         slow_call_args.extend_from_slice(&args);
                         let slow_call = builder.ins().call(fast_ref, &slow_call_args);
                         let slow_res = builder.inst_results(slow_call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let merge_args =
+                            merge_args_with_live_through(slow_res, &inline_live_through);
+                        jump_block(&mut builder, merge_block, &merge_args);
 
                         switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                        let merge_params = builder.block_params(merge_block).to_vec();
+                        rebind_live_through_values(
+                            &mut builder,
+                            &vars,
+                            &inline_live_through,
+                            &merge_params[1..],
+                        );
+                        merge_params[0]
                     } else {
                         // Fallback: spill to stack + call molt_call_func_dispatch.
                         let slot_size = std::cmp::max(nargs, 1) * 8;
@@ -27989,8 +28095,22 @@ impl SimpleBackend {
                         // TAG_BOOL (0x7ffa...): bit 0 is the boolean value.
                         // TAG_INT  (0x7ff9...): unbox and check payload != 0.
                         // Other tags: fall through to molt_is_truthy call.
+                        let truthy_origin_block = builder.current_block();
+                        let truthy_live_through = collect_live_through_values(
+                            &mut builder,
+                            &vars,
+                            &first_defined_at,
+                            &last_use,
+                            op_idx,
+                            op.out.as_deref(),
+                        );
                         let truthy_merge = builder.create_block();
                         builder.append_block_param(truthy_merge, types::I8);
+                        append_live_through_params(
+                            &mut builder,
+                            truthy_merge,
+                            &truthy_live_through,
+                        );
 
                         // Conditional list-bool carrier: when the source list
                         // is list_bool, branch directly on the raw 0/1 payload;
@@ -28001,6 +28121,7 @@ impl SimpleBackend {
                             &list_is_bool_cache,
                             conditional_list_bool_shadows.get(&args[0]),
                             truthy_merge,
+                            &truthy_live_through,
                         );
 
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
@@ -28020,7 +28141,9 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, bool_block);
                         let bit0 = builder.ins().band_imm(*cond, 1);
                         let bool_truthy = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
-                        jump_block(&mut builder, truthy_merge, &[bool_truthy]);
+                        let merge_args =
+                            merge_args_with_live_through(bool_truthy, &truthy_live_through);
+                        jump_block(&mut builder, truthy_merge, &merge_args);
 
                         // Not-bool: check TAG_INT.
                         switch_to_block_materialized(&mut builder, not_bool_block);
@@ -28037,7 +28160,9 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, int_block);
                         let raw_val = unbox_int(&mut builder, *cond, &nbc);
                         let int_truthy = builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0);
-                        jump_block(&mut builder, truthy_merge, &[int_truthy]);
+                        let merge_args =
+                            merge_args_with_live_through(int_truthy, &truthy_live_through);
+                        jump_block(&mut builder, truthy_merge, &merge_args);
 
                         // Slow path: call molt_is_truthy.
                         switch_to_block_materialized(&mut builder, call_block);
@@ -28054,11 +28179,40 @@ impl SimpleBackend {
                         let call = builder.ins().call(local_callee, &[*cond]);
                         let truthy = builder.inst_results(call)[0];
                         let call_truthy = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
-                        jump_block(&mut builder, truthy_merge, &[call_truthy]);
+                        let merge_args =
+                            merge_args_with_live_through(call_truthy, &truthy_live_through);
+                        jump_block(&mut builder, truthy_merge, &merge_args);
 
                         switch_to_block_materialized(&mut builder, truthy_merge);
                         seal_block_once(&mut builder, &mut sealed_blocks, truthy_merge);
-                        builder.block_params(truthy_merge)[0]
+                        let truthy_params = builder.block_params(truthy_merge).to_vec();
+                        rebind_live_through_values(
+                            &mut builder,
+                            &vars,
+                            &truthy_live_through,
+                            &truthy_params[1..],
+                        );
+                        if let Some(origin_block) = truthy_origin_block
+                            && origin_block != truthy_merge
+                        {
+                            let obj_live =
+                                block_tracked_obj.remove(&origin_block).unwrap_or_default();
+                            if !obj_live.is_empty() {
+                                extend_unique_tracked(
+                                    block_tracked_obj.entry(truthy_merge).or_default(),
+                                    obj_live,
+                                );
+                            }
+                            let ptr_live =
+                                block_tracked_ptr.remove(&origin_block).unwrap_or_default();
+                            if !ptr_live.is_empty() {
+                                extend_unique_tracked(
+                                    block_tracked_ptr.entry(truthy_merge).or_default(),
+                                    ptr_live,
+                                );
+                            }
+                        }
+                        truthy_params[0]
                     };
                     // `if` terminates the current block (brif) into then/else blocks. Any live
                     // tracked values must be carried into both successors; otherwise they leak
@@ -33755,6 +33909,7 @@ impl SimpleBackend {
                             &list_is_bool_cache,
                             conditional_list_bool_shadows.get(cond_name),
                             brif_truthy_merge,
+                            &[],
                         );
 
                         let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
@@ -35619,6 +35774,69 @@ mod tests {
         assert!(
             !preanalyze_for_test(&void_ret, &BTreeMap::new()).has_ret,
             "`ret_void` must not mark the function as value-returning"
+        );
+    }
+
+    #[test]
+    fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
+        let func = FunctionIR {
+            name: "stateful_ready_continuations".to_string(),
+            params: vec!["self".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "state_label".to_string(),
+                    value: Some(216),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_transition".to_string(),
+                    args: Some(vec![
+                        "future".to_string(),
+                        "await_slot".to_string(),
+                        "pending_state".to_string(),
+                    ]),
+                    value: Some(217),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "chan_send_yield".to_string(),
+                    args: Some(vec![
+                        "chan".to_string(),
+                        "value".to_string(),
+                        "pending_state".to_string(),
+                    ]),
+                    value: Some(301),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "chan_recv_yield".to_string(),
+                    args: Some(vec!["chan".to_string(), "pending_state".to_string()]),
+                    value: Some(302),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert!(
+            analysis.resume_states.contains(&216),
+            "textual state labels remain dispatchable resume states",
+        );
+        assert!(
+            analysis.resume_states.contains(&217),
+            "state_transition ready continuations are stored in object state and must dispatch",
+        );
+        assert!(
+            analysis.resume_states.contains(&301),
+            "channel send ready continuations are stored in object state and must dispatch",
+        );
+        assert!(
+            analysis.resume_states.contains(&302),
+            "channel receive ready continuations are stored in object state and must dispatch",
         );
     }
 

@@ -323,6 +323,12 @@ fn debug_current_task() -> bool {
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1"))
 }
 
+#[inline]
+pub(crate) fn trace_task_result() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_TASK_RESULT").as_deref() == Ok("1"))
+}
+
 pub(crate) struct AsyncHangProbe {
     threshold: usize,
     pub(crate) pending_counts: Mutex<HashMap<usize, usize>>,
@@ -3286,6 +3292,9 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;
     }
+    if trace_task_result() {
+        eprintln!("molt task_result mark_done ptr=0x{:x}", task_ptr as usize);
+    }
     if !exception_pending(_py) {
         crate::task_last_exception_drop(_py, task_ptr);
     }
@@ -3304,6 +3313,12 @@ pub(crate) fn task_result_get(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u6
         let guard = runtime_state(_py).task_results.lock().unwrap();
         guard.get(&PtrSlot(task_ptr)).copied()
     }?;
+    if trace_task_result() {
+        eprintln!(
+            "molt task_result get ptr=0x{:x} result=0x{:x}",
+            task_ptr as usize, result
+        );
+    }
     inc_ref_bits(_py, result);
     Some(result)
 }
@@ -3311,6 +3326,12 @@ pub(crate) fn task_result_get(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u6
 pub(crate) fn task_result_store(_py: &PyToken<'_>, task_ptr: *mut u8, result_bits: u64) {
     if task_ptr.is_null() {
         return;
+    }
+    if trace_task_result() {
+        eprintln!(
+            "molt task_result store ptr=0x{:x} result=0x{:x}",
+            task_ptr as usize, result_bits
+        );
     }
     inc_ref_bits(_py, result_bits);
     let old = {
@@ -3325,6 +3346,9 @@ pub(crate) fn task_result_store(_py: &PyToken<'_>, task_ptr: *mut u8, result_bit
 pub(crate) fn task_result_drop(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;
+    }
+    if trace_task_result() {
+        eprintln!("molt task_result drop ptr=0x{:x}", task_ptr as usize);
     }
     let old = {
         let mut guard = runtime_state(_py).task_results.lock().unwrap();

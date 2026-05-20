@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 
 def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
@@ -53,7 +54,7 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
     build_env["UV_CACHE_DIR"] = str(root / ".uv-cache")
     build_env["TMPDIR"] = str(root / "tmp")
     build_env["MOLT_BACKEND_DAEMON"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -146,7 +147,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -183,7 +184,7 @@ def test_browser_host_direct_mode_tensor_linear_uses_webgpu_dispatch(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -282,7 +283,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -320,7 +321,7 @@ def test_browser_host_direct_mode_tinygrad_linear_uses_webgpu_dispatch(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -419,7 +420,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -458,7 +459,7 @@ def test_browser_host_direct_mode_molt_nn_linear_uses_webgpu_dispatch(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -557,7 +558,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -594,7 +595,7 @@ def test_browser_host_direct_mode_tensor_linear_without_webgpu_fails_fast(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -664,7 +665,7 @@ host.run();
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -704,7 +705,7 @@ def test_browser_host_direct_mode_tensor_linear_split_last_dim_uses_webgpu_dispa
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -803,7 +804,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -841,7 +842,7 @@ def test_browser_host_direct_mode_tensor_linear_squared_relu_gate_uses_webgpu_di
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -943,7 +944,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -984,7 +985,7 @@ def test_browser_host_direct_mode_tensor_attention_uses_webgpu_dispatch(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1120,7 +1121,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -1164,7 +1165,7 @@ def test_browser_host_direct_mode_turboquant_attention_uses_webgpu_dispatch(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1308,7 +1309,7 @@ console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,

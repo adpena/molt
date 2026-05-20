@@ -12,11 +12,12 @@ and asserts identical stdout to CPython. This catches:
 """
 
 import os
-import subprocess
 import sys
 import tempfile
 import time
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ARTIFACT_ROOT = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
@@ -48,7 +49,7 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
         }
         build_timeout = int(os.environ.get("MOLT_LUAU_BUILD_TIMEOUT", "900"))
         py_exec = sys.executable or "python3"
-        result = subprocess.run(
+        result = run_native_test_process(
             [
                 py_exec,
                 "-m",
@@ -72,7 +73,7 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
             pytest.skip(f"Compilation failed: {result.stderr[:200]}")
 
         try:
-            result = subprocess.run(
+            result = run_native_test_process(
                 ["lune", "run", luau_path],
                 capture_output=True,
                 text=True,
@@ -91,7 +92,7 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
 
 def _python_output(source: str) -> str:
     """Get CPython reference output."""
-    result = subprocess.run(
+    result = run_native_test_process(
         ["python3", "-c", source],
         capture_output=True,
         text=True,
@@ -625,7 +626,7 @@ class TestPerformance:
                 "PYTHONPATH": os.path.join(MOLT_DIR, "src"),
             }
             t0 = time.perf_counter()
-            result = subprocess.run(
+            result = run_native_test_process(
                 [
                     "uv",
                     "run",
@@ -651,7 +652,7 @@ class TestPerformance:
 
             t0 = time.perf_counter()
             try:
-                result = subprocess.run(
+                result = run_native_test_process(
                     ["lune", "run", luau_path],
                     capture_output=True,
                     text=True,
@@ -669,7 +670,7 @@ class TestPerformance:
     @staticmethod
     def _timed_python(src: str) -> tuple[str, float]:
         t0 = time.perf_counter()
-        result = subprocess.run(
+        result = run_native_test_process(
             ["python3", "-c", src],
             capture_output=True,
             text=True,

@@ -13,6 +13,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from tests.native_process_guard import run_native_test_process
+
 sys.path.insert(0, "src")
 
 MOLT = shutil.which("molt")
@@ -129,7 +131,7 @@ def test_dos_pow_rejected_by_guard():
     This tests the Rust-side guard, not the manifest pipeline.
     The guard works regardless of manifest -- it is always active.
     """
-    result = subprocess.run(
+    result = run_native_test_process(
         [sys.executable, "-c", "x = 2 ** 10_000_000; print(len(str(x)))"],
         capture_output=True,
         text=True,
@@ -147,7 +149,7 @@ def test_dos_pow_rejected_by_guard():
 
 def test_recursion_caught():
     """Deep recursion raises RecursionError."""
-    result = subprocess.run(
+    result = run_native_test_process(
         [
             sys.executable,
             "-c",
@@ -250,7 +252,7 @@ def test_molt_build_with_manifest():
         src = tmpdir / "hello.py"
         src.write_text('print("hello from molt")\n')
 
-        result = subprocess.run(
+        result = run_native_test_process(
             [
                 MOLT,
                 "build",
@@ -276,7 +278,7 @@ def test_molt_build_with_manifest():
 
                 m = load_manifest(str(manifest))
                 env = {**os.environ, **m.to_env_vars()}
-                run_result = subprocess.run(
+                run_result = run_native_test_process(
                     [str(bins[0])],
                     capture_output=True,
                     text=True,
@@ -328,7 +330,7 @@ def test_molt_build_recursion_program():
         )
 
         try:
-            result = subprocess.run(
+            result = run_native_test_process(
                 [
                     MOLT,
                     "build",
@@ -355,7 +357,7 @@ def test_molt_build_recursion_program():
                 m = load_manifest(str(manifest))
                 env = {**os.environ, **m.to_env_vars()}
                 try:
-                    run_result = subprocess.run(
+                    run_result = run_native_test_process(
                         [str(bins[0])],
                         capture_output=True,
                         text=True,
@@ -407,7 +409,7 @@ def test_molt_build_dos_program():
         )
 
         try:
-            result = subprocess.run(
+            result = run_native_test_process(
                 [
                     MOLT,
                     "build",
@@ -434,7 +436,7 @@ def test_molt_build_dos_program():
                 m = load_manifest(str(manifest))
                 env = {**os.environ, **m.to_env_vars()}
                 try:
-                    run_result = subprocess.run(
+                    run_result = run_native_test_process(
                         [str(bins[0])],
                         capture_output=True,
                         text=True,

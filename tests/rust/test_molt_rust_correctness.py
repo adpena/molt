@@ -18,6 +18,8 @@ import tempfile
 
 import pytest
 
+from tests.rust.process_guard import run_rust_test_process
+
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -25,7 +27,7 @@ def _find_rustc() -> str:
     """Return rustc path, preferring the active toolchain."""
     for candidate in ("rustc", os.path.expanduser("~/.cargo/bin/rustc")):
         try:
-            r = subprocess.run(
+            r = run_rust_test_process(
                 [candidate, "--version"], capture_output=True, text=True, timeout=15
             )
             if r.returncode == 0:
@@ -57,7 +59,7 @@ def _find_cpython() -> str:
         ):
             continue
         try:
-            probe = subprocess.run(
+            probe = run_rust_test_process(
                 [candidate, "-c", "import sys; print(sys.version_info[0])"],
                 capture_output=True,
                 text=True,
@@ -145,7 +147,7 @@ def _compile_and_run_rust(
 
         # Step 1: molt build --target rust
         try:
-            result = subprocess.run(
+            result = run_rust_test_process(
                 build_cmd,
                 capture_output=True,
                 text=True,
@@ -172,7 +174,7 @@ def _compile_and_run_rust(
             "dead_code",
             "non_snake_case",
         ]
-        result2 = subprocess.run(
+        result2 = run_rust_test_process(
             [
                 rustc,
                 rs_path,
@@ -191,14 +193,14 @@ def _compile_and_run_rust(
             pytest.fail(f"rustc compilation failed:\n{result2.stderr}")
 
         # Step 3: run binary
-        result3 = subprocess.run([bin_path], capture_output=True, text=True, timeout=30)
+        result3 = run_rust_test_process([bin_path], capture_output=True, text=True, timeout=30)
         return result3.stdout.strip()
 
 
 def _cpython_stdout(python_source: str) -> str:
     """Run Python source with CPython and return stdout."""
     cpython = _find_cpython()
-    r = subprocess.run(
+    r = run_rust_test_process(
         [cpython, "-c", python_source],
         capture_output=True,
         text=True,

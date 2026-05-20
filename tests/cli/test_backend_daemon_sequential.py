@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 import molt.cli as cli
 
+from tests.cli.process_guard import cli_test_popen_kwargs, close_cli_test_process_group
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -138,14 +140,13 @@ def daemon_socket(tmp_path: Path):
             cwd=ROOT,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **cli_test_popen_kwargs(),
         )
 
     deadline = time.monotonic() + _STARTUP_TIMEOUT_S
     ready = _wait_until_ready(socket_path, deadline)
     if not ready:
-        proc.terminate()
-        proc.wait(timeout=5)
+        close_cli_test_process_group(proc)
         log_text = (
             log_path.read_text(errors="replace") if log_path.exists() else "(no log)"
         )
@@ -156,12 +157,7 @@ def daemon_socket(tmp_path: Path):
 
     yield socket_path
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=2)
+    close_cli_test_process_group(proc)
     # Clean up the short-lived socket file.
     try:
         socket_path.unlink()

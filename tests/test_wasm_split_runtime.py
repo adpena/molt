@@ -27,8 +27,9 @@ import pytest
 import urllib.error
 import urllib.request
 import molt.cli as cli
+from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
-from tests.wasm_linked_runner import _read_timeout_seconds
+from tests.wasm_linked_runner import _read_timeout_seconds, _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,6 +84,96 @@ def test_split_runtime_target_dir_defaults_to_repo_pytest_target() -> None:
 
     assert target_dir == ROOT / "target" / "pytest" / "test_wasm_split_runtime"
     assert diff_target_dir == target_dir
+
+
+def test_build_split_uses_wasm_test_memory_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("print(42)\n", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run_wasm_test_process",
+        fake_run,
+    )
+
+    result = _build_split(source, output_dir)
+
+    assert result.returncode == 0
+    args = captured["args"]
+    kwargs = captured["kwargs"]
+    assert isinstance(args, list)
+    assert "-m" in args and "molt.cli" in args
+    assert "--split-runtime" in args
+    assert kwargs["cwd"] == ROOT
+    assert kwargs["timeout"] == _read_timeout_seconds(
+        "MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0
+    )
+
+
+def test_run_split_direct_uses_wasm_test_memory_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "split"
+    output_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = list(args)
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run_wasm_test_process",
+        fake_run,
+    )
+
+    result = _run_split_direct(output_dir, "arg1", timeout=7)
+
+    assert result.returncode == 0
+    assert captured["args"] == [
+        "node",
+        "wasm/run_wasm.js",
+        str(output_dir / "app.wasm"),
+        "arg1",
+    ]
+    kwargs = captured["kwargs"]
+    assert kwargs["cwd"] == ROOT
+    assert kwargs["timeout"] == 7
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["MOLT_WASM_DIRECT_LINK"] == "1"
+    assert env["MOLT_RUNTIME_WASM"] == str(output_dir / "molt_runtime.wasm")
+
+
+def test_split_worker_popen_kwargs_apply_child_rlimit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "posix":
+        return
+    applied: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "_apply_child_resource_limit",
+        lambda limit_kb: applied.append(limit_kb),
+    )
+
+    kwargs = _split_worker_popen_kwargs({"MOLT_WASM_TEST_MAX_PROCESS_RSS_GB": "2"})
+
+    assert kwargs["start_new_session"] is True
+    preexec = kwargs["preexec_fn"]
+    assert callable(preexec)
+    preexec()
+    assert applied == [2 * 1024 * 1024]
 
 
 def test_generate_split_worker_js_lifecycle_contract() -> None:
@@ -154,12 +245,10 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         str(output_dir),
     ]
     build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
-    return subprocess.run(
+    return _run_wasm_test_process(
         cmd,
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=build_timeout,
     )
 
@@ -176,12 +265,10 @@ def _run_split_direct(
     env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
+    return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm"), *argv],
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=timeout,
     )
 
@@ -200,14 +287,19 @@ def _run_split_direct_host_exports(
     env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
+    return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm")],
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=timeout,
     )
+
+
+def _split_worker_popen_kwargs(env: dict[str, str]) -> dict[str, object]:
+    kwargs: dict[str, object] = {"start_new_session": True}
+    limits = harness_memory_guard.limits_from_env("MOLT_WASM_TEST", env)
+    kwargs.update(harness_memory_guard.batch_process_group_kwargs(limits))
+    return kwargs
 
 
 def _run_split_worker_live(
@@ -228,6 +320,7 @@ def _run_split_worker_live(
 
     env = os.environ.copy()
     env.setdefault("MOLT_SESSION_ID", "test-wasm-split-runtime-worker")
+    popen_kwargs = _split_worker_popen_kwargs(env)
     proc = subprocess.Popen(
         [
             wrangler,
@@ -245,7 +338,7 @@ def _run_split_worker_live(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        start_new_session=True,
+        **popen_kwargs,
     )
 
     def _terminate_worker_tree(sig: int) -> None:
@@ -761,7 +854,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env.setdefault("MOLT_SESSION_ID", "test-linked-host-attr-error")
     env.setdefault("CARGO_BUILD_JOBS", "1")
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -776,10 +869,8 @@ def test_linked_host_export_attribute_error_does_not_return_none(
             "--out-dir",
             str(out_dir),
         ],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
@@ -787,12 +878,10 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=run_env,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
@@ -833,7 +922,7 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env.setdefault("MOLT_SESSION_ID", "test-linked-host-tinygrad-dtype")
     env.setdefault("CARGO_BUILD_JOBS", "1")
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -848,10 +937,8 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
             "--out-dir",
             str(out_dir),
         ],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
@@ -859,12 +946,10 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=run_env,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
@@ -908,7 +993,7 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env.setdefault("MOLT_SESSION_ID", "test-linked-host-tinygrad-tensor")
     env.setdefault("CARGO_BUILD_JOBS", "1")
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -923,10 +1008,8 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
             "--out-dir",
             str(out_dir),
         ],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
@@ -934,12 +1017,10 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=run_env,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
@@ -1016,7 +1097,7 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env.setdefault("MOLT_SESSION_ID", "test-linked-host-tensor-scatter-dtype")
     env.setdefault("CARGO_BUILD_JOBS", "1")
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1031,10 +1112,8 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
             "--out-dir",
             str(out_dir),
         ],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
@@ -1042,12 +1121,10 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=run_env,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
@@ -1227,7 +1304,7 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env.setdefault("MOLT_SESSION_ID", "test-linked-falcon-ocr-driver")
     env.setdefault("CARGO_BUILD_JOBS", "1")
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1241,10 +1318,8 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
             "--out-dir",
             str(out_dir),
         ],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
     )
     assert build.returncode == 0, build.stdout + build.stderr
@@ -1252,12 +1327,10 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=run_env,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
@@ -1270,12 +1343,10 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     official_run_env = os.environ.copy()
     official_run_env["MOLT_WASM_PREFER_LINKED"] = "1"
     official_run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(official_prompt_calls_path)
-    official_run = subprocess.run(
+    official_run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
-        cwd=str(ROOT),
+        cwd=ROOT,
         env=official_run_env,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 

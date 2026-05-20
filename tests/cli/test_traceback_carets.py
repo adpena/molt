@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.cli.process_guard import run_cli_test_process
+
 
 ROOT = Path(__file__).resolve().parents[2]
 _WARM_NATIVE_BUILD_LOCK = threading.Lock()
@@ -50,7 +52,7 @@ def _python_executable() -> str:
 def _molt_build_available() -> bool:
     """Return True if ``python3 -m molt build --help`` succeeds."""
     try:
-        result = subprocess.run(
+        result = run_cli_test_process(
             [_python_executable(), "-m", "molt", "build", "--help"],
             capture_output=True,
             text=True,
@@ -114,7 +116,7 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
             f.write(source)
 
         # Build
-        build_result = subprocess.run(
+        build_result = run_cli_test_process(
             [
                 _python_executable(),
                 "-m",
@@ -165,7 +167,7 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                 )
 
         # Run
-        run_result = subprocess.run(
+        run_result = run_cli_test_process(
             [binary],
             capture_output=True,
             text=True,
@@ -190,7 +192,7 @@ def _ensure_native_build_warm() -> None:
             with open(src_file, "w") as f:
                 f.write("print(1)\n")
             try:
-                warm_result = subprocess.run(
+                warm_result = run_cli_test_process(
                     [
                         _python_executable(),
                         "-m",

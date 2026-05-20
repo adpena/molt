@@ -1,11 +1,12 @@
 import os
 import platform
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 def test_native_generator_exception_cleanup(tmp_path: Path) -> None:
@@ -18,7 +19,7 @@ def test_native_generator_exception_cleanup(tmp_path: Path) -> None:
     if shutil.which("cargo") is None:
         pytest.skip("cargo not available")
     if sys.platform == "darwin" and shutil.which("lipo") is not None:
-        info = subprocess.run(
+        info = run_native_test_process(
             ["lipo", "-info", str(runtime_lib)],
             capture_output=True,
             text=True,
@@ -57,7 +58,7 @@ def test_native_generator_exception_cleanup(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
 
-    build = subprocess.run(
+    build = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -79,7 +80,7 @@ def test_native_generator_exception_cleanup(tmp_path: Path) -> None:
             pytest.skip("Backend killed during compilation (stale daemon or timeout)")
         assert build.returncode == 0, stderr
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(output_binary)],
         cwd=root,
         capture_output=True,

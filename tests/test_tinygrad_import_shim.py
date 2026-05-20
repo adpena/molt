@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import ast
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 from tests.helpers.falcon_ocr_paths import FALCON_OCR_ARTIFACT_ROOT
 from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
@@ -110,7 +111,7 @@ def test_tinygrad_import_shim_compiles_in_native_molt(tmp_path: Path) -> None:
 
     env = _native_molt_env(root, hermetic=True)
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -321,7 +322,7 @@ def test_tinygrad_random_surface_compiles_in_native_molt(tmp_path: Path) -> None
         "print(Tensor.glorot_uniform(2, 3).tolist())\n",
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -390,7 +391,7 @@ def test_tinygrad_argmax_compiles_in_native_molt(tmp_path: Path) -> None:
         "print(t.argmax(axis=1, keepdim=True).tolist())\n",
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -426,7 +427,7 @@ def test_tinygrad_norm_layers_compile_in_native_molt(tmp_path: Path) -> None:
         "print(nn.RMSNorm(3)(x).tolist())\n",
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -530,7 +531,7 @@ def test_tinygrad_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
         "print(conv(x).tolist())\n",
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -836,7 +837,7 @@ def test_tinygrad_tensor_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
         "print(x.conv2d(conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding).tolist())\n",
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -918,7 +919,7 @@ def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -
         hermetic=True,
         module_roots=(FALCON_OCR_ARTIFACT_ROOT,),
     )
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -957,7 +958,7 @@ def test_tinygrad_tensor_cat_nonzero_dim_compiles_in_native_molt(
         encoding="utf-8",
     )
     env = _native_molt_env(root, hermetic=True)
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -991,7 +992,7 @@ def test_tinygrad_tensor_stack_nonzero_dim_compiles_in_native_molt(
         encoding="utf-8",
     )
     env = _native_molt_env(root, hermetic=True)
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -1029,7 +1030,7 @@ def test_tinygrad_tensor_randn_and_linear_compile_in_native_molt(
         encoding="utf-8",
     )
     env = _native_molt_env(root, hermetic=True)
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",

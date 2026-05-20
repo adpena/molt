@@ -26,6 +26,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 FORMAL_DIR = ROOT / "formal"
 LEAN_DIR = FORMAL_DIR / "lean"
 QUINT_DIR = FORMAL_DIR / "quint"
@@ -254,13 +259,16 @@ def check_lean_build(*, skip_build: bool = False) -> CheckResult:
 
     print("  Running: lake build (formal/lean/) ...")
     t0 = time.monotonic()
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             [lake, "build"],
+            prefix="MOLT_TEST_SUITE",
             cwd=LEAN_DIR,
             capture_output=True,
             text=True,
             timeout=600,  # 10 minutes
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return CheckResult(
@@ -336,7 +344,8 @@ def check_quint_models() -> list[CheckResult]:
                 f"--max-steps={max_steps} --seed={seed} ..."
             )
             try:
-                proc = subprocess.run(
+                limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
+                proc = harness_memory_guard.guarded_completed_process(
                     [
                         quint,
                         "run",
@@ -347,9 +356,11 @@ def check_quint_models() -> list[CheckResult]:
                         f"--seed={seed}",
                         "--backend=rust",
                     ],
+                    prefix="MOLT_TEST_SUITE",
                     capture_output=True,
                     text=True,
                     timeout=120,
+                    limits=limits,
                 )
             except subprocess.TimeoutExpired:
                 failed = CheckResult(label, False, f"seed {seed} timed out (>120s)")
@@ -400,8 +411,9 @@ def check_known_bad_model() -> CheckResult:
         f"  Running known-bad: quint run {KNOWN_BAD_MODEL}::{KNOWN_BAD_MODULE} --invariant={KNOWN_BAD_INV} ..."
     )
 
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             [
                 quint,
                 "run",
@@ -412,9 +424,11 @@ def check_known_bad_model() -> CheckResult:
                 f"--seed={KNOWN_BAD_SEED}",
                 "--backend=rust",
             ],
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=120,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return CheckResult(

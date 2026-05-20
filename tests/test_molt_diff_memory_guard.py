@@ -187,3 +187,36 @@ def test_memory_guard_sample_interval_env_is_bounded(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_SAMPLE_INTERVAL_SEC", "120")
 
     assert module._diff_memory_guard_sample_interval_sec() == 60.0
+
+
+def test_popen_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
+    module = _load_diff_module()
+    if module.os.name == "nt":
+        return
+    applied: list[int] = []
+    monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", "0.5")
+    monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", "1.0")
+    monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", "2.0")
+    monkeypatch.setattr(
+        module.memory_guard,
+        "_apply_child_resource_limit",
+        lambda limit_kb: applied.append(limit_kb),
+    )
+
+    kwargs = module._popen_group_kwargs()
+
+    assert kwargs["start_new_session"] is True
+    assert callable(kwargs["preexec_fn"])
+    kwargs["preexec_fn"]()
+    assert applied == [512 * 1024]
+
+
+def test_popen_group_kwargs_omits_child_rlimit_when_guard_disabled(monkeypatch) -> None:
+    module = _load_diff_module()
+    if module.os.name == "nt":
+        return
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "0")
+
+    kwargs = module._popen_group_kwargs()
+
+    assert kwargs == {"start_new_session": True}

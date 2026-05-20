@@ -21,6 +21,9 @@ from pathlib import Path
 
 import pytest
 
+from tests.cli.process_guard import run_cli_test_process
+from tests.native_process_guard import run_native_test_process
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
 
@@ -58,7 +61,7 @@ def _molt_cli_available() -> bool:
     try:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(SRC_DIR)
-        result = subprocess.run(
+        result = run_cli_test_process(
             [sys.executable, "-c", "import molt.cli"],
             capture_output=True,
             text=True,
@@ -111,7 +114,7 @@ def _run_molt_build(
             if arg == "--emit-ir":
                 resolved.append(str(out_dir / "ir_output.json"))
         args.extend(resolved)
-    return subprocess.run(
+    return run_cli_test_process(
         args,
         cwd=ROOT,
         env=env,
@@ -284,7 +287,7 @@ class TestBackendOptimizationParity:
                 if backend == "wasm":
                     env.setdefault("MOLT_WASM_LINKED", "0")
                     env.setdefault("MOLT_WASM_MODULE_CHUNK_OPS", "0")
-                result = subprocess.run(
+                result = run_cli_test_process(
                     [
                         sys.executable,
                         "-m",
@@ -378,7 +381,7 @@ class TestBackendOutputParity:
                     binary = out_dir / "output.exe"
                 if binary.exists():
                     try:
-                        run = subprocess.run(
+                        run = run_native_test_process(
                             [str(binary)],
                             capture_output=True,
                             text=True,

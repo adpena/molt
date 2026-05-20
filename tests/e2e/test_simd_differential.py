@@ -16,6 +16,8 @@ import sys
 
 import pytest
 
+from tests.native_process_guard import run_native_test_process
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HARNESS = os.path.join(ROOT, "tests", "e2e", "simd_diff_harness.js")
 RUST_WASM = os.path.join(
@@ -63,7 +65,7 @@ def _check_prerequisites():
 
 def _run_node(script_path: str, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run a Node.js script, returning the completed process."""
-    return subprocess.run(
+    return run_native_test_process(
         ["node", script_path],
         capture_output=True,
         text=True,

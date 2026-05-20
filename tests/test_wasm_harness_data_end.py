@@ -1,10 +1,13 @@
+import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests.wasm_linked_runner import _run_wasm_test_process
 from tests.wasm_harness import BASE_PREAMBLE, IMPORT_HELPERS
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _encode_u32(value: int) -> bytes:
@@ -102,11 +105,11 @@ def test_wasm_harness_data_end_handles_global_get(tmp_path: Path) -> None:
         + "console.log(`dataEnd=${wasmDataEnd}`);\n"
     )
 
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(runner), str(wasm_path)],
-        capture_output=True,
-        text=True,
-        check=False,
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "dataEnd=65536"
@@ -128,11 +131,11 @@ def test_wasm_harness_data_end_handles_const_offset(tmp_path: Path) -> None:
         + "console.log(`dataEnd=${wasmDataEnd}`);\n"
     )
 
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(runner), str(wasm_path)],
-        capture_output=True,
-        text=True,
-        check=False,
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "dataEnd=132"

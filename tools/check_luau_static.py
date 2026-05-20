@@ -98,6 +98,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+REPO_ROOT = _repo_root()
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
+
 def _with_repo_pythonpath(env: dict[str, str], repo_root: Path) -> dict[str, str]:
     updated = env.copy()
     src_dir = str(repo_root / "src")
@@ -211,15 +218,17 @@ def transpile_to_luau(
         "--output",
         str(output_path),
     ]
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             cwd=str(_repo_root()),
             env=env,
             timeout=timeout_s,
-            check=False,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return False, None, "", f"build timed out after {timeout_s}s"
@@ -286,14 +295,16 @@ def run_analyzer(
     luau_file: Path,
     timeout_s: float,
 ) -> tuple[str, int | None, str, str, int, dict[str, int]]:
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE")
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             [analyzer, str(luau_file)],
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             cwd=str(_repo_root()),
             timeout=timeout_s,
-            check=False,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return "timeout", None, "", f"analyzer timed out after {timeout_s}s", 0, {}

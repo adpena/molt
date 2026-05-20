@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,7 +54,7 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
     env["MOLT_WASM_LINKED"] = "0"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         _molt_build_cmd()
         + [
             str(src),
@@ -65,8 +66,6 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
             str(out_dir),
         ],
         cwd=ROOT,
-        capture_output=True,
-        text=True,
         env=env,
         timeout=120,
     )
@@ -106,6 +105,30 @@ def _exported_func_module(export_name: str) -> bytes:
         data.extend(_varuint(len(payload)))
         data.extend(payload)
     return bytes(data)
+
+
+def test_build_wasm_uses_wasm_test_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    src = tmp_path / "hello.py"
+    src.write_text("print(42)\n", encoding="utf-8")
+    out_dir = tmp_path / "wasm"
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "output.wasm").write_bytes(b"\x00asm")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
+
+    wasm_path = _build_wasm(src, out_dir)
+
+    assert wasm_path == out_dir / "output.wasm"
+    assert captured["kwargs"]["cwd"] == ROOT
+    assert captured["kwargs"]["timeout"] == 120
 
 
 # ---------------------------------------------------------------------------

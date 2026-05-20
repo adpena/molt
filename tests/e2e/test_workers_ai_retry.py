@@ -10,8 +10,9 @@ Tests verify:
 """
 
 import json
-import subprocess
 import time
+
+from tests.process_guard_common import run_guarded_test_process
 
 # Tiny valid 2x2 PNG (base64-encoded) for minimal-cost test requests.
 TINY_PNG_B64 = (
@@ -42,7 +43,7 @@ def curl_ocr(image_b64=TINY_PNG_B64, timeout_s=10, extra_headers=None):
     payload = json.dumps({"image": image_b64})
     start = time.monotonic()
 
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             "curl",
             "-s",
@@ -57,6 +58,7 @@ def curl_ocr(image_b64=TINY_PNG_B64, timeout_s=10, extra_headers=None):
             "-d",
             payload,
         ],
+        prefix="MOLT_E2E_TEST",
         capture_output=True,
         text=True,
         timeout=timeout_s + 5,
@@ -86,7 +88,7 @@ def curl_ocr(image_b64=TINY_PNG_B64, timeout_s=10, extra_headers=None):
 
 def curl_health():
     """Issue a GET /health request and return (status_code, parsed_json)."""
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             "curl",
             "-s",
@@ -100,6 +102,7 @@ def curl_health():
             "-H",
             f"Origin: {ORIGIN}",
         ],
+        prefix="MOLT_E2E_TEST",
         capture_output=True,
         text=True,
         timeout=10,
@@ -263,7 +266,7 @@ def test_multiple_sequential_requests():
 def test_batch_endpoint():
     """POST /ocr/batch responses should include model_used-equivalent fields."""
     payload = json.dumps({"images": [TINY_PNG_B64, TINY_PNG_B64]})
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             "curl",
             "-s",
@@ -281,6 +284,7 @@ def test_batch_endpoint():
             "-d",
             payload,
         ],
+        prefix="MOLT_E2E_TEST",
         capture_output=True,
         text=True,
         timeout=20,
@@ -304,7 +308,7 @@ def test_batch_endpoint():
 def test_template_extract_endpoint():
     """POST /template/extract should return structured template."""
     payload = json.dumps({"image": TINY_PNG_B64})
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             "curl",
             "-s",
@@ -322,6 +326,7 @@ def test_template_extract_endpoint():
             "-d",
             payload,
         ],
+        prefix="MOLT_E2E_TEST",
         capture_output=True,
         text=True,
         timeout=15,

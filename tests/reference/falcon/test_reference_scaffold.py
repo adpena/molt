@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+
+from tests.process_guard_common import run_guarded_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -10,9 +11,10 @@ PIN_FILE = REPO_ROOT / "bench/friends/reference/pins.toml"
 MANIFEST_FILE = REPO_ROOT / "bench/results/reference_manifest.json"
 
 
-def _run_tool(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _run_tool(*args: str):
+    return run_guarded_test_process(
         ["python3", *args],
+        prefix="MOLT_BENCH_TEST",
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,

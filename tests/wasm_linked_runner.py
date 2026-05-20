@@ -5,9 +5,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
+from tools import harness_memory_guard
 
 _MIN_NODE_MAJOR = 18
 _NODE_BIN_CACHE: str | None = None
@@ -91,6 +93,46 @@ def _read_timeout_seconds(env_name: str, default: float) -> float:
     return parsed
 
 
+def _run_wasm_test_process(
+    args: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+    capture_output: bool = True,
+    text: bool = True,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    result = harness_memory_guard.guarded_completed_process(
+        list(args),
+        prefix="MOLT_WASM_TEST",
+        cwd=cwd,
+        env=os.environ if env is None else env,
+        capture_output=capture_output,
+        text=text,
+        timeout=timeout,
+    )
+    if (
+        timeout is not None
+        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        and "memory_guard: timeout after" in (result.stderr or "")
+    ):
+        raise subprocess.TimeoutExpired(
+            list(args),
+            timeout,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            list(args),
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
+
+
 def _parse_node_major(version_text: str) -> int | None:
     text = version_text.strip()
     if text.startswith("v"):
@@ -104,12 +146,13 @@ def _parse_node_major(version_text: str) -> int | None:
 
 def _node_major_for_binary(path: str) -> int | None:
     try:
-        res = subprocess.run(
+        res = _run_wasm_test_process(
             [path, "-p", "process.versions.node"],
-            capture_output=True,
-            text=True,
+            cwd=Path.cwd(),
+            env=os.environ,
+            timeout=10,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if res.returncode != 0:
         return None
@@ -242,12 +285,10 @@ def build_wasm_linked(
         args.extend(extra_args)
     build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
     try:
-        build = subprocess.run(
+        build = _run_wasm_test_process(
             args,
             cwd=root,
             env=env,
-            capture_output=True,
-            text=True,
             timeout=build_timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -295,12 +336,10 @@ def run_wasm_linked(
     ]
     run_timeout = _read_timeout_seconds("MOLT_WASM_TEST_RUN_TIMEOUT_SEC", 120.0)
     try:
-        return subprocess.run(
+        return _run_wasm_test_process(
             node_args,
             cwd=root,
             env=env,
-            capture_output=True,
-            text=True,
             timeout=run_timeout,
         )
     except subprocess.TimeoutExpired as exc:

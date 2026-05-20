@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from tests.native_process_guard import run_native_test_process
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BENCH_TOOL_PATH = REPO_ROOT / "tools" / "bench.py"
@@ -19,7 +21,7 @@ BENCH_TOOL_SPEC.loader.exec_module(bench_tool)
 
 
 def _run_bench(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_native_test_process(
         ["python3", "tools/bench.py", *args],
         cwd=REPO_ROOT,
         text=True,
@@ -140,6 +142,98 @@ def test_canonical_bench_env_uses_repo_roots_and_preserves_session() -> None:
     assert env["TMPDIR"] == str(bench_tool.REPO_ROOT / "tmp")
     assert env["PYTHONPATH"] == str(bench_tool.REPO_ROOT / "src")
     assert env["MOLT_SESSION_ID"] == "bench-review"
+
+
+def test_bench_run_cmd_uses_memory_guard_by_default(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_guard(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return subprocess.CompletedProcess(command, 0, "out", "err")
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guard,
+    )
+
+    result = bench_tool._run_cmd(["tool", "arg"], env={}, capture=True, tty=False)
+
+    assert result == bench_tool._RunResult(0, "out", "err")
+    assert calls[0]["command"] == ["tool", "arg"]
+    assert calls[0]["prefix"] == "MOLT_BENCH"
+
+
+def test_measure_runtime_uses_guard_child_elapsed(monkeypatch) -> None:
+    completed = subprocess.CompletedProcess(["tool"], 0, "out", "")
+    completed.elapsed_s = 0.0125
+    limits = bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
+    calls: list[dict[str, object]] = []
+
+    def fake_guard(*args, **kwargs):
+        calls.append(kwargs)
+        return completed
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", fake_guard
+    )
+
+    sample = bench_tool.measure_runtime(["tool"], label="unit", limits=limits)
+
+    assert sample is not None
+    assert sample.elapsed_s == 0.0125
+    assert sample.stdout == "out"
+    assert calls[0]["limits"] is limits
+
+
+def test_measure_molt_run_uses_guard_child_elapsed(monkeypatch, tmp_path: Path) -> None:
+    binary = tmp_path / "molt-bin"
+    binary.write_text("binary", encoding="utf-8")
+    completed = subprocess.CompletedProcess([str(binary)], 0, "out", "")
+    completed.elapsed_s = 0.034
+    limits = bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
+    calls: list[dict[str, object]] = []
+
+    def fake_guard(*args, **kwargs):
+        calls.append(kwargs)
+        return completed
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", fake_guard
+    )
+
+    sample = bench_tool.measure_molt_run(binary, label="unit", limits=limits)
+
+    assert sample is not None
+    assert sample.elapsed_s == 0.034
+    assert sample.stdout == "out"
+    assert calls[0]["limits"] is limits
+
+
+def test_bench_batch_server_starts_in_guarded_process_group(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, cmd, **kwargs) -> None:
+            captured["cmd"] = cmd
+            captured.update(kwargs)
+
+        def close(self, timeout: float = 5.0) -> None:
+            captured["closed"] = timeout
+
+    monkeypatch.setattr(bench_tool, "BatchCompileServerClient", FakeClient)
+
+    server = bench_tool._BenchBatchBuildServer({})
+    server.close()
+
+    process_group_kwargs = captured["process_group_kwargs"]
+    assert process_group_kwargs["start_new_session"] is True
+    assert callable(process_group_kwargs["preexec_fn"])
+    assert (
+        captured["force_close"]
+        is bench_tool.harness_memory_guard.force_close_process_group
+    )
+    assert captured["closed"] == 5.0
 
 
 def test_bench_defaults_baseline_to_canonical_results_path() -> None:

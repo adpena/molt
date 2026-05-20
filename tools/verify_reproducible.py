@@ -24,6 +24,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 # Default test programs to verify reproducibility.
 DEFAULT_PROGRAMS = [
@@ -79,6 +83,7 @@ def build_once(
     env["MOLT_CACHE"] = cache_dir
     if "MOLT_BUILD_CACHE" in env:
         del env["MOLT_BUILD_CACHE"]
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     emit_args = ["--emit", "obj"] if prefer_object else []
     cmd = [
@@ -94,12 +99,14 @@ def build_once(
         source,
     ]
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             env=env,
             timeout=120,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return None, "build timed out (>120s)"

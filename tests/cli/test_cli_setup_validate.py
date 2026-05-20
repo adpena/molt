@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.cli.process_guard import run_cli_test_process
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,7 +33,7 @@ def _python_executable() -> str:
 
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_cli_test_process(
         [_python_executable(), "-m", "molt.cli", *args],
         cwd=ROOT,
         env=_base_env(),
@@ -42,7 +44,7 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _run_dev(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_cli_test_process(
         [_python_executable(), "tools/dev.py", *args],
         cwd=ROOT,
         env=_base_env(),
