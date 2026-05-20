@@ -1,9 +1,9 @@
 use crate::{
     CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
     alloc_object, attr_lookup_ptr_allow_missing, call_callable0, call_callable3, close_payload,
-    dec_ref_bits, exception_pending, exception_trace_bits, file_handle_enter, file_handle_exit,
-    inc_ref_bits, intern_static_name, obj_from_bits, object_type_id, raise_exception,
-    runtime_state, to_i64, type_of_bits,
+    dec_ref_bits, exception_materialize_traceback_bits, exception_pending, file_handle_enter,
+    file_handle_exit, inc_ref_bits, intern_static_name, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, to_i64, type_of_bits,
 };
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -215,7 +215,7 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
         } else {
             let tb_bits = exc_obj
                 .as_ptr()
-                .map(|ptr| exception_trace_bits(ptr))
+                .map(|ptr| exception_materialize_traceback_bits(_py, ptr))
                 .unwrap_or(none_bits);
             (type_of_bits(_py, exc_bits), exc_bits, tb_bits)
         };
@@ -406,7 +406,7 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                     } else {
                         let tb_bits = exc_obj
                             .as_ptr()
-                            .map(|ptr| exception_trace_bits(ptr))
+                            .map(|ptr| exception_materialize_traceback_bits(_py, ptr))
                             .unwrap_or(none_bits);
                         (type_of_bits(_py, exc_bits), exc_bits, tb_bits)
                     };

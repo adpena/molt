@@ -16,12 +16,12 @@ use crate::libc_compat as libc;
 use crate::{
     FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, MoltHeader, PtrSlot, RuntimeState,
     TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE,
-    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs, alloc_instance_for_class_no_pool,
-    alloc_list, alloc_object, alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing,
-    attr_name_bits_from_bytes, builtin_classes, builtin_func_bits, bytes_like_slice,
-    call_callable1, call_class_init_with_args, class_break_cycles, class_dict_bits,
-    class_name_bits, class_name_for_error, code_filename_bits, code_firstlineno,
+    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING,
+    TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs,
+    alloc_instance_for_class_no_pool, alloc_list, alloc_object, alloc_string, alloc_tuple,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, builtin_classes, builtin_func_bits,
+    bytes_like_slice, call_callable1, call_class_init_with_args, class_break_cycles,
+    class_dict_bits, class_name_bits, class_name_for_error, code_filename_bits, code_firstlineno,
     code_linetable_bits, code_name_bits, context_stack_unwind, current_task_key, current_task_ptr,
     current_token_id, dec_ref_bits, dict_find_entry_fast, dict_get_in_place, dict_order,
     dict_set_in_place, dict_table, format_obj, format_obj_str, header_from_obj_ptr, inc_ref_bits,
@@ -595,6 +595,41 @@ pub(crate) unsafe fn exception_suppress_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn exception_trace_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+const TRACEBACK_PAYLOAD_CODE_OFFSET: usize = 0;
+const TRACEBACK_PAYLOAD_LINE_OFFSET: usize = std::mem::size_of::<u64>();
+const TRACEBACK_PAYLOAD_COL_OFFSET: usize = 2 * std::mem::size_of::<u64>();
+const TRACEBACK_PAYLOAD_END_COL_OFFSET: usize = 3 * std::mem::size_of::<u64>();
+const TRACEBACK_PAYLOAD_NEXT_OFFSET: usize = 4 * std::mem::size_of::<u64>();
+const TRACEBACK_PAYLOAD_SIZE: usize =
+    std::mem::size_of::<MoltHeader>() + 5 * std::mem::size_of::<u64>();
+
+pub(crate) unsafe fn traceback_payload_code_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_CODE_OFFSET) as *const u64) }
+}
+
+pub(crate) unsafe fn traceback_payload_line(ptr: *mut u8) -> i64 {
+    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_LINE_OFFSET) as *const i64) }
+}
+
+pub(crate) unsafe fn traceback_payload_col(ptr: *mut u8) -> i64 {
+    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_COL_OFFSET) as *const i64) }
+}
+
+pub(crate) unsafe fn traceback_payload_end_col(ptr: *mut u8) -> i64 {
+    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_END_COL_OFFSET) as *const i64) }
+}
+
+pub(crate) unsafe fn traceback_payload_next_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(TRACEBACK_PAYLOAD_NEXT_OFFSET) as *const u64) }
+}
+
+pub(crate) fn traceback_payload_is_lazy(bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    unsafe { object_type_id(ptr) == TYPE_ID_TRACEBACK_PAYLOAD }
 }
 
 pub(crate) unsafe fn exception_value_bits(ptr: *mut u8) -> u64 {
@@ -1212,6 +1247,10 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 }
 
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
+    record_exception_with_caller_frame(_py, ptr, false);
+}
+
+fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_caller_frame: bool) {
     crate::gil_assert();
     // Stash the frame's col_offset at exception-raise time for caret annotations.
     FRAME_STACK.with(|stack| {
@@ -1359,9 +1398,8 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
         let handler_frame_index = EXCEPTION_STACK.with(|stack| stack.borrow().last().copied());
         // CPython keeps the active traceback chain rooted at the raising frame even for
         // explicit `raise ... from ...`; the cause carries its own traceback separately.
-        let include_caller_frame = false;
         if let Some(new_bits) =
-            frame_stack_trace_bits(_py, handler_frame_index, include_caller_frame)
+            frame_stack_trace_payload_bits(_py, handler_frame_index, include_caller_frame)
         {
             if new_bits != trace_bits {
                 if !obj_from_bits(trace_bits).is_none() {
@@ -3579,6 +3617,15 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
     if obj_from_bits(trace_bits).is_none() {
         return None;
     }
+    if traceback_payload_is_lazy(trace_bits) {
+        let payload = crate::object::ops_sys::traceback_payload_from_source(_py, trace_bits, None);
+        if payload.is_empty() {
+            return None;
+        }
+        let mut out = String::from("Traceback (most recent call last):\n");
+        out.extend(crate::object::ops_sys::traceback_payload_to_formatted_lines(_py, &payload));
+        return Some(out);
+    }
     let mut out = String::from("Traceback (most recent call last):\n");
     let tb_frame_bits =
         intern_static_name(_py, &runtime_state(_py).interned.tb_frame_name, b"tb_frame");
@@ -4244,6 +4291,32 @@ unsafe fn alloc_traceback_obj(
     }
 }
 
+unsafe fn alloc_traceback_payload_obj(
+    _py: &PyToken<'_>,
+    entry: FrameEntry,
+    next_bits: u64,
+) -> Option<u64> {
+    unsafe {
+        if entry.code_bits == 0 {
+            return None;
+        }
+        let line = frame_line_from_entry(entry)?;
+        let ptr = alloc_object(_py, TRACEBACK_PAYLOAD_SIZE, TYPE_ID_TRACEBACK_PAYLOAD);
+        if ptr.is_null() {
+            return None;
+        }
+        *(ptr.add(TRACEBACK_PAYLOAD_CODE_OFFSET) as *mut u64) = entry.code_bits;
+        *(ptr.add(TRACEBACK_PAYLOAD_LINE_OFFSET) as *mut i64) = line;
+        *(ptr.add(TRACEBACK_PAYLOAD_COL_OFFSET) as *mut i64) = entry.col_offset;
+        *(ptr.add(TRACEBACK_PAYLOAD_END_COL_OFFSET) as *mut i64) = entry.end_col_offset;
+        *(ptr.add(TRACEBACK_PAYLOAD_NEXT_OFFSET) as *mut u64) = next_bits;
+        inc_ref_bits(_py, entry.code_bits);
+        inc_ref_bits(_py, next_bits);
+        object_mark_has_ptrs(_py, ptr);
+        Some(MoltObject::from_ptr(ptr).bits())
+    }
+}
+
 unsafe fn build_frame_chain(_py: &PyToken<'_>, entries: &[FrameEntry]) -> Option<Vec<(u64, i64)>> {
     unsafe {
         let mut out: Vec<(u64, i64)> = Vec::with_capacity(entries.len());
@@ -4268,7 +4341,7 @@ unsafe fn build_frame_chain(_py: &PyToken<'_>, entries: &[FrameEntry]) -> Option
     }
 }
 
-pub(crate) fn frame_stack_trace_bits(
+pub(crate) fn frame_stack_trace_payload_bits(
     _py: &PyToken<'_>,
     handler_frame_index: Option<usize>,
     include_caller_frame: bool,
@@ -4292,36 +4365,92 @@ pub(crate) fn frame_stack_trace_bits(
         if active.is_empty() {
             return None;
         }
-        let frames = unsafe {
-            match build_frame_chain(_py, &active) {
-                Some(frames) => frames,
-                None => return None,
-            }
-        };
-        if frames.is_empty() {
-            return None;
-        }
         let mut next_bits = MoltObject::none().bits();
         let mut built_any = false;
-        let mut frames_built: u64 = 0;
-        for (frame_bits, line) in frames.iter().rev().copied() {
+        for entry in active.iter().rev().copied() {
+            if unsafe { frame_line_from_entry(entry) }.is_none() {
+                continue;
+            }
             unsafe {
-                let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits) else {
+                let Some(payload_bits) = alloc_traceback_payload_obj(_py, entry, next_bits) else {
                     if !obj_from_bits(next_bits).is_none() {
                         dec_ref_bits(_py, next_bits);
-                    }
-                    for (bits, _) in frames.iter().copied() {
-                        dec_ref_bits(_py, bits);
                     }
                     return None;
                 };
                 if !obj_from_bits(next_bits).is_none() {
                     dec_ref_bits(_py, next_bits);
                 }
-                next_bits = tb_bits;
+                next_bits = payload_bits;
                 built_any = true;
-                frames_built += 1;
             }
+        }
+        if built_any && !obj_from_bits(next_bits).is_none() {
+            Some(next_bits)
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn traceback_payload_to_traceback_bits(_py: &PyToken<'_>, payload_bits: u64) -> u64 {
+    let mut payload_entries: Vec<(u64, i64)> = Vec::new();
+    let mut current_bits = payload_bits;
+    let mut depth = 0usize;
+    while !obj_from_bits(current_bits).is_none() {
+        if depth > 1024 {
+            break;
+        }
+        let Some(ptr) = obj_from_bits(current_bits).as_ptr() else {
+            break;
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_TRACEBACK_PAYLOAD {
+                break;
+            }
+            payload_entries.push((
+                traceback_payload_code_bits(ptr),
+                traceback_payload_line(ptr),
+            ));
+            current_bits = traceback_payload_next_bits(ptr);
+        }
+        depth += 1;
+    }
+    if payload_entries.is_empty() {
+        return MoltObject::none().bits();
+    }
+    let mut frames: Vec<(u64, i64)> = Vec::with_capacity(payload_entries.len());
+    let mut back_bits = MoltObject::none().bits();
+    unsafe {
+        for (code_bits, line) in payload_entries.iter().copied() {
+            let Some(frame_bits) = alloc_frame_obj(_py, code_bits, line, back_bits) else {
+                for (bits, _) in frames {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            };
+            back_bits = frame_bits;
+            frames.push((frame_bits, line));
+        }
+        let mut next_bits = MoltObject::none().bits();
+        let mut built_any = false;
+        let mut frames_built: u64 = 0;
+        for (frame_bits, line) in frames.iter().rev().copied() {
+            let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits) else {
+                if !obj_from_bits(next_bits).is_none() {
+                    dec_ref_bits(_py, next_bits);
+                }
+                for (bits, _) in frames.iter().copied() {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            };
+            if !obj_from_bits(next_bits).is_none() {
+                dec_ref_bits(_py, next_bits);
+            }
+            next_bits = tb_bits;
+            built_any = true;
+            frames_built += 1;
         }
         for (bits, _) in frames.iter().copied() {
             dec_ref_bits(_py, bits);
@@ -4330,14 +4459,35 @@ pub(crate) fn frame_stack_trace_bits(
             if !obj_from_bits(next_bits).is_none() {
                 dec_ref_bits(_py, next_bits);
             }
-            return None;
+            return MoltObject::none().bits();
         }
         if profile_enabled(_py) {
             TRACEBACK_BUILD_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
             TRACEBACK_BUILD_FRAMES.fetch_add(frames_built, AtomicOrdering::Relaxed);
         }
-        Some(next_bits)
-    })
+        next_bits
+    }
+}
+
+pub(crate) fn exception_materialize_traceback_bits(_py: &PyToken<'_>, exc_ptr: *mut u8) -> u64 {
+    crate::gil_assert();
+    unsafe {
+        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+            return MoltObject::none().bits();
+        }
+        let trace_slot = exc_ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64;
+        let trace_bits = *trace_slot;
+        if !traceback_payload_is_lazy(trace_bits) {
+            return trace_bits;
+        }
+        let materialized_bits = traceback_payload_to_traceback_bits(_py, trace_bits);
+        if obj_from_bits(materialized_bits).is_none() {
+            return MoltObject::none().bits();
+        }
+        *trace_slot = materialized_bits;
+        dec_ref_bits(_py, trace_bits);
+        materialized_bits
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -5434,6 +5584,11 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
                 .unwrap_or_else(|| "<unknown>".to_string());
             let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
             eprintln!("molt exc set_last task=0x{:x} kind={}", task, kind);
+        }
+        let trace_bits = unsafe { exception_trace_bits(ptr) };
+        if obj_from_bits(trace_bits).is_none() {
+            record_exception_with_caller_frame(_py, ptr, true);
+            return MoltObject::none().bits();
         }
         let new_bits = MoltObject::from_ptr(ptr).bits();
         if let Some(task_key) = current_task_key() {

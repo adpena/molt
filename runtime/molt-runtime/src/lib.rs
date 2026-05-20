@@ -437,9 +437,10 @@ pub(crate) use crate::builtins::exceptions::{
     exception_context_align_depth, exception_context_bits, exception_context_fallback_pop,
     exception_context_fallback_push, exception_dict_bits, exception_group_method_bits,
     exception_handler_active, exception_kind_bits, exception_last_bits_noinc,
-    exception_message_from_args, exception_method_bits, exception_msg_bits, exception_pending,
-    exception_set_stop_iteration_value, exception_stack_baseline_get, exception_stack_baseline_set,
-    exception_stack_depth, exception_stack_pop, exception_stack_push, exception_stack_set_depth,
+    exception_materialize_traceback_bits, exception_message_from_args, exception_method_bits,
+    exception_msg_bits, exception_pending, exception_set_stop_iteration_value,
+    exception_stack_baseline_get, exception_stack_baseline_set, exception_stack_depth,
+    exception_stack_pop, exception_stack_push, exception_stack_set_depth,
     exception_store_args_and_message, exception_suppress_bits, exception_trace_bits,
     exception_type_bits, exception_type_bits_from_name, exception_value_bits, format_exception,
     format_exception_message, format_exception_with_traceback, frame_stack_pop, frame_stack_push,
@@ -455,7 +456,9 @@ pub(crate) use crate::builtins::exceptions::{
     task_exception_depth_take, task_exception_handler_stack_drop,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_drop, task_raise_active,
+    task_last_exception_drop, task_raise_active, traceback_payload_code_bits,
+    traceback_payload_col, traceback_payload_end_col, traceback_payload_line,
+    traceback_payload_next_bits,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;
@@ -707,10 +710,10 @@ pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gi
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, RECURSION_DEPTH,
-    RECURSION_LIMIT, REPR_DEPTH, REPR_SET, REPR_STACK, TRACEBACK_SUPPRESS, current_rss_bytes,
-    profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked, recursion_guard_enter,
-    recursion_guard_exit, recursion_limit_get, recursion_limit_set, sample_peak_rss,
-    traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
+    RECURSION_LIMIT, REPR_DEPTH, REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS,
+    current_rss_bytes, profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked,
+    recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
+    sample_peak_rss, traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
 };
 #[cfg(feature = "stdlib_collections")]
 pub use molt_runtime_collections::argparse::*;

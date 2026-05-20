@@ -47,6 +47,7 @@ pub(crate) const TYPE_ID_ELLIPSIS: u32 = 244;
 pub(crate) const TYPE_ID_GENERIC_ALIAS: u32 = 245;
 pub(crate) const TYPE_ID_ASYNC_GENERATOR: u32 = 246;
 pub(crate) const TYPE_ID_UNION: u32 = 247;
+pub(crate) const TYPE_ID_TRACEBACK_PAYLOAD: u32 = 251;
 
 pub(crate) const TYPE_TAG_ANY: i64 = 0;
 pub(crate) const TYPE_TAG_INT: i64 = 1;
@@ -124,7 +125,7 @@ pub(crate) const TYPE_ID_LIST_BOOL: u32 = 250;
 pub(crate) const TYPE_ID_FLOAT: u32 = 249;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_LIST_BOOL;
+pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_TRACEBACK_PAYLOAD;
 
 #[inline]
 pub(crate) fn is_valid_heap_type_id(type_id: u32) -> bool {

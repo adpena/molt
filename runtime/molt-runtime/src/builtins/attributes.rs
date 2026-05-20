@@ -1120,7 +1120,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     return Some(bits);
                 }
                 "__traceback__" => {
-                    let bits = exception_trace_bits(obj_ptr);
+                    let bits = exception_materialize_traceback_bits(_py, obj_ptr);
                     inc_ref_bits(_py, bits);
                     return Some(bits);
                 }
