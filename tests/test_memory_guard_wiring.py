@@ -27,16 +27,81 @@ GUARDED_ENTRYPOINTS = {
         "guarded_completed_process",
         "repo_process_sentinel",
     ),
+    "tools/bench_friends.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "repo_process_sentinel",
+    ),
+    "tools/bench_audit.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
+    ),
+    "tools/bench_backend_incremental.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
+    ),
+    "tools/benchmark_luau_vs_cpython.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "repo_process_sentinel",
+    ),
     "tools/cpython_regrtest.py": (
         "harness_memory_guard",
         "guarded_completed_process",
         "repo_process_sentinel",
         "MOLT_REGRTEST",
     ),
+    "tools/molt_regrtest_shim.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_REGRTEST",
+    ),
+    "tools/profile.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "repo_process_sentinel",
+    ),
+    "tools/throughput_matrix.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
+    ),
     "tools/translation_validate.py": (
         "harness_memory_guard",
         "guarded_completed_process",
         "guarded_harness_scope",
+    ),
+    "tools/wasm_hotspot_profile.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
+    ),
+    "tools/wasm_pipeline.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
+    ),
+    "tools/wasm_profile.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "repo_process_sentinel",
+    ),
+    "tools/wasm_run_matrix.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "repo_process_sentinel",
+    ),
+    "tools/wasm_stub_wasi.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
+    ),
+    "tools/wasm_strip_unused.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
     ),
     "tests/harness/run_molt_conformance.py": (
         "harness_memory_guard",
@@ -47,6 +112,21 @@ GUARDED_ENTRYPOINTS = {
         "harness_memory_guard",
         "guarded_completed_process",
         "repo_process_sentinel",
+    ),
+    "tests/benchmarks/bench_generator.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_BENCH",
+    ),
+    "tests/compliance/process_guard.py": (
+        "harness_memory_guard",
+        "run_guarded_test_process",
+        "MOLT_COMPLIANCE",
+    ),
+    "tests/runtime_compat/test_runtime_compat.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_RUNTIME_COMPAT",
     ),
     "src/molt/harness_layers.py": (
         "harness_memory_guard",
