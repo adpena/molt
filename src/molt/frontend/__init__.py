@@ -1782,6 +1782,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return False
         if func_name == "molt_main" or func_name.startswith("molt_init_"):
             return False
+        if func_name == _MOLT_GLOBALS_BUILTIN or func_name.endswith(
+            f"__{_MOLT_GLOBALS_BUILTIN}"
+        ):
+            return False
         if name is not None and func_name not in self.funcs_map:
             return False
         return True

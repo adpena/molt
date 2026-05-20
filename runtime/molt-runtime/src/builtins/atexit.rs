@@ -3,13 +3,13 @@ use crate::state::runtime_state::{AtexitCallbackEntry, AtexitCallbackKind};
 use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_EXCEPTION, TYPE_ID_FUNCTION, alloc_string,
     alloc_tuple, attr_name_bits_from_bytes, bound_method_func_bits, bound_method_self_bits,
-    clear_exception, clear_exception_state, dec_ref_bits, exception_class_bits, exception_pending,
-    exception_trace_bits, format_exception_with_traceback, function_closure_bits, function_fn_ptr,
-    inc_ref_bits, int_bits_from_i64, is_truthy, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_eq,
-    molt_exception_clear, molt_exception_last, molt_get_attr_name, molt_is_callable,
-    molt_module_import, molt_sys_stderr, obj_from_bits, object_type_id, raise_exception,
-    runtime_state,
+    clear_exception, clear_exception_state, dec_ref_bits, exception_class_bits,
+    exception_materialize_traceback_bits, exception_pending, format_exception_with_traceback,
+    function_closure_bits, function_fn_ptr, inc_ref_bits, int_bits_from_i64, is_truthy,
+    molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
+    molt_callargs_push_pos, molt_eq, molt_exception_clear, molt_exception_last, molt_get_attr_name,
+    molt_is_callable, molt_module_import, molt_sys_stderr, obj_from_bits, object_type_id,
+    raise_exception, runtime_state,
 };
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -189,7 +189,7 @@ fn atexit_build_unraisablehook_args(_py: &PyToken<'_>, callback_bits: u64, exc_b
         if !obj_from_bits(class_bits).is_none() {
             exc_type_bits = class_bits;
         }
-        let tb_bits = unsafe { exception_trace_bits(exc_ptr) };
+        let tb_bits = exception_materialize_traceback_bits(_py, exc_ptr);
         if !obj_from_bits(tb_bits).is_none() {
             trace_bits = tb_bits;
         }

@@ -335,6 +335,7 @@ fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> u64 {
 pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut code_bits = MoltObject::none().bits();
+        let mut pushed = false;
         let func_obj = obj_from_bits(func_bits);
         if let Some(func_ptr) = func_obj.as_ptr() {
             unsafe {
@@ -354,7 +355,15 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
                 }
             }
         }
-        frame_stack_push(_py, code_bits);
+        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+            unsafe {
+                if object_type_id(code_ptr) == TYPE_ID_CODE {
+                    frame_stack_push(_py, code_bits);
+                    pushed = true;
+                }
+            }
+        }
+        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(pushed));
         code_bits
     })
 }
@@ -363,6 +372,7 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
 pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let code_bits = code_slot_acquire(_py, code_id);
+        let mut pushed = false;
         if trace_enter_slot_enabled() {
             let mut name = "<none>".to_string();
             let mut file = "<none>".to_string();
@@ -382,7 +392,18 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
                 code_id, code_bits, name, file
             );
         }
-        frame_stack_push_owned(_py, code_bits);
+        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+            unsafe {
+                if object_type_id(code_ptr) == TYPE_ID_CODE {
+                    frame_stack_push_owned(_py, code_bits);
+                    pushed = true;
+                }
+            }
+        }
+        if !pushed && !obj_from_bits(code_bits).is_none() {
+            dec_ref_bits(_py, code_bits);
+        }
+        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(pushed));
         code_bits
     })
 }
@@ -407,7 +428,11 @@ pub extern "C" fn molt_trace_exit() -> u64 {
                 dec_ref_bits(_py, exc_bits);
             }
         }
-        frame_stack_pop(_py);
+        let should_pop =
+            TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or(false));
+        if should_pop {
+            frame_stack_pop(_py);
+        }
         MoltObject::none().bits()
     })
 }

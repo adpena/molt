@@ -2445,6 +2445,72 @@ pub(crate) fn traceback_payload_from_frame_chain(
     out
 }
 
+pub(crate) fn traceback_payload_from_lazy_chain(
+    _py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
+) -> Vec<TracebackPayloadFrame> {
+    let mut out: Vec<TracebackPayloadFrame> = Vec::new();
+    let mut current_bits = source_bits;
+    let mut depth = 0usize;
+    while !obj_from_bits(current_bits).is_none() {
+        if depth > 1024 {
+            break;
+        }
+        let Some(payload_ptr) = obj_from_bits(current_bits).as_ptr() else {
+            break;
+        };
+        unsafe {
+            if object_type_id(payload_ptr) != TYPE_ID_TRACEBACK_PAYLOAD {
+                break;
+            }
+            let code_bits = traceback_payload_code_bits(payload_ptr);
+            let lineno = traceback_payload_line(payload_ptr);
+            let mut filename = "<unknown>".to_string();
+            let mut name = "<module>".to_string();
+            if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr()
+                && object_type_id(code_ptr) == TYPE_ID_CODE
+            {
+                let filename_bits = code_filename_bits(code_ptr);
+                if let Some(value) = string_obj_to_owned(obj_from_bits(filename_bits)) {
+                    filename = value;
+                }
+                let name_bits = code_name_bits(code_ptr);
+                if let Some(value) = string_obj_to_owned(obj_from_bits(name_bits))
+                    && !value.is_empty()
+                {
+                    name = value;
+                }
+            }
+            let line = traceback_source_line_native(_py, &filename, lineno);
+            let mut colno = traceback_payload_col(payload_ptr);
+            let mut end_colno = traceback_payload_end_col(payload_ptr);
+            if !line.is_empty() && (colno < 0 || end_colno <= colno) {
+                let inferred = traceback_infer_column_offsets(&line);
+                colno = inferred.0;
+                end_colno = inferred.1;
+            }
+            out.push(TracebackPayloadFrame {
+                filename,
+                lineno,
+                end_lineno: lineno,
+                colno,
+                end_colno,
+                name,
+                line,
+            });
+            current_bits = traceback_payload_next_bits(payload_ptr);
+        }
+        depth += 1;
+    }
+    if let Some(max) = limit
+        && out.len() > max
+    {
+        return out[out.len() - max..].to_vec();
+    }
+    out
+}
+
 pub(crate) fn traceback_payload_from_entry(
     _py: &PyToken<'_>,
     entry_bits: u64,
@@ -2686,6 +2752,10 @@ pub(crate) fn traceback_payload_from_source(
 ) -> Vec<TracebackPayloadFrame> {
     if obj_from_bits(source_bits).is_none() {
         return Vec::new();
+    }
+    let from_lazy = traceback_payload_from_lazy_chain(_py, source_bits, limit);
+    if !from_lazy.is_empty() {
+        return from_lazy;
     }
     let from_entries = traceback_payload_from_entries(_py, source_bits, limit);
     if !from_entries.is_empty() {
