@@ -66,6 +66,35 @@ def test_watched_pids_includes_reparented_process_group_members() -> None:
     assert memory_guard.watched_pids(samples, 100) == {100, 101, 102}
 
 
+def test_process_tree_tracker_keeps_reparented_new_session_child_after_seen() -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    first = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=101),
+        102: memory_guard.ProcessSample(102, 101, 30, "grandchild", pgid=102),
+    }
+
+    assert tracker.update(first) == {100, 101, 102}
+
+    reparented = {
+        101: memory_guard.ProcessSample(101, 1, 20, "child", pgid=101),
+        102: memory_guard.ProcessSample(102, 1, 30, "grandchild", pgid=102),
+    }
+
+    assert tracker.update(reparented) == {101, 102}
+    violation = memory_guard.find_rss_violation(
+        reparented,
+        root_pid=100,
+        max_rss_kb=25,
+        tracker=tracker,
+    )
+    assert violation == memory_guard.RssViolation(
+        pid=102,
+        rss_kb=30,
+        command="grandchild",
+    )
+
+
 def test_find_rss_violation_catches_reparented_process_group_member() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
@@ -81,6 +110,43 @@ def test_find_rss_violation_catches_reparented_process_group_member() -> None:
         rss_kb=26_000_000,
         command="reparented",
     )
+
+
+def test_terminate_watched_processes_fans_out_to_tracked_groups(monkeypatch) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 1, 20, "child", pgid=101),
+        102: memory_guard.ProcessSample(102, 1, 30, "grandchild", pgid=102),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+
+    def fake_killpg(pgid, sig):
+        sent_groups.append((pgid, sig))
+        if sig == memory_guard.signal.SIGTERM:
+            raise ProcessLookupError
+
+    def fake_kill(pid, sig):
+        sent_pids.append((pid, sig))
+
+    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
+    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+
+    memory_guard.terminate_watched_processes(
+        100,
+        samples=samples,
+        watched={100, 101, 102},
+        grace=0.001,
+    )
+
+    assert (100, memory_guard.signal.SIGTERM) in sent_groups
+    assert (101, memory_guard.signal.SIGTERM) in sent_groups
+    assert (102, memory_guard.signal.SIGTERM) in sent_groups
+    assert (101, memory_guard.signal.SIGKILL) in sent_pids
+    assert (102, memory_guard.signal.SIGKILL) in sent_pids
 
 
 def test_find_rss_violation_ignores_unrelated_processes() -> None:

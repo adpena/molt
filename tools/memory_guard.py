@@ -60,6 +60,52 @@ class ProcessSample:
     pgid: int | None = None
 
 
+@dataclass(slots=True)
+class ProcessTreeTracker:
+    root_pid: int
+    known_pids: set[int] | None = None
+    known_pgids: set[int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.known_pids is None:
+            self.known_pids = {self.root_pid}
+        else:
+            self.known_pids.add(self.root_pid)
+        if self.known_pgids is None:
+            self.known_pgids = {self.root_pid}
+        else:
+            self.known_pgids.add(self.root_pid)
+
+    def update(self, samples: Mapping[int, ProcessSample]) -> set[int]:
+        """Return currently observed members of this process tree.
+
+        Children can briefly remain visible under the original parent before
+        reparenting or starting a new session. Once observed, keep both their
+        PID and process group in the tracked lineage so later samples do not
+        lose escaped descendants that are still part of the guarded launch.
+        """
+
+        assert self.known_pids is not None
+        assert self.known_pgids is not None
+        changed = True
+        while changed:
+            changed = False
+            for sample in samples.values():
+                sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
+                if (
+                    sample.pid in self.known_pids
+                    or sample.ppid in self.known_pids
+                    or sample_pgid in self.known_pgids
+                ):
+                    if sample.pid not in self.known_pids:
+                        self.known_pids.add(sample.pid)
+                        changed = True
+                    if sample_pgid not in self.known_pgids:
+                        self.known_pgids.add(sample_pgid)
+                        changed = True
+        return {pid for pid in self.known_pids if pid in samples}
+
+
 @dataclass(frozen=True, slots=True)
 class RssViolation:
     pid: int
@@ -489,7 +535,14 @@ def descendant_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[
     return descendants
 
 
-def watched_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[int]:
+def watched_pids(
+    samples: Mapping[int, ProcessSample],
+    root_pid: int,
+    *,
+    tracker: ProcessTreeTracker | None = None,
+) -> set[int]:
+    if tracker is not None:
+        return tracker.update(samples)
     watched = descendant_pids(samples, root_pid)
     for sample in samples.values():
         if sample.pgid == root_pid:
@@ -501,9 +554,13 @@ def peak_rss(
     samples: Mapping[int, ProcessSample],
     *,
     root_pid: int,
+    watched: set[int] | None = None,
+    tracker: ProcessTreeTracker | None = None,
 ) -> RssViolation | None:
-    watched = watched_pids(samples, root_pid)
-    candidates = [sample for pid, sample in samples.items() if pid in watched]
+    observed = watched if watched is not None else watched_pids(
+        samples, root_pid, tracker=tracker
+    )
+    candidates = [sample for pid, sample in samples.items() if pid in observed]
     if not candidates:
         return None
     worst = max(candidates, key=lambda sample: sample.rss_kb)
@@ -518,9 +575,13 @@ def total_rss(
     samples: Mapping[int, ProcessSample],
     *,
     root_pid: int,
+    watched: set[int] | None = None,
+    tracker: ProcessTreeTracker | None = None,
 ) -> RssViolation | None:
-    watched = watched_pids(samples, root_pid)
-    candidates = [sample for pid, sample in samples.items() if pid in watched]
+    observed = watched if watched is not None else watched_pids(
+        samples, root_pid, tracker=tracker
+    )
+    candidates = [sample for pid, sample in samples.items() if pid in observed]
     if not candidates:
         return None
     return RssViolation(
@@ -537,17 +598,21 @@ def find_rss_violation(
     root_pid: int,
     max_rss_kb: int,
     max_total_rss_kb: int | None = None,
+    watched: set[int] | None = None,
+    tracker: ProcessTreeTracker | None = None,
 ) -> RssViolation | None:
-    watched = watched_pids(samples, root_pid)
+    observed = watched if watched is not None else watched_pids(
+        samples, root_pid, tracker=tracker
+    )
     candidates = [
         sample
         for pid, sample in samples.items()
-        if pid in watched and sample.rss_kb > max_rss_kb
+        if pid in observed and sample.rss_kb > max_rss_kb
     ]
     if not candidates:
         if max_total_rss_kb is None:
             return None
-        aggregate = total_rss(samples, root_pid=root_pid)
+        aggregate = total_rss(samples, root_pid=root_pid, watched=observed)
         if aggregate is not None and aggregate.rss_kb > max_total_rss_kb:
             return aggregate
         return None
@@ -728,28 +793,73 @@ def _record_sample(
     _stream_sample_payload(payload, stream)
 
 
-def _terminate_process_group(pid: int) -> None:
+def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
+    if pgid <= 0 or (os.name == "posix" and pgid == os.getpgrp()):
+        return True
     try:
-        os.killpg(pid, signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        return True
     except OSError:
         with contextlib.suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGTERM)
-        return
-    deadline = time.monotonic() + 5.0
+            os.kill(pgid, signal.SIGTERM)
+        return False
+    deadline = time.monotonic() + max(0.0, grace)
     while time.monotonic() < deadline:
         try:
-            os.killpg(pid, 0)
+            os.killpg(pgid, 0)
         except ProcessLookupError:
-            return
+            return True
         except OSError:
-            return
-        time.sleep(0.05)
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def terminate_watched_processes(
+    root_pid: int,
+    *,
+    samples: Mapping[int, ProcessSample] | None = None,
+    watched: set[int] | None = None,
+    tracker: ProcessTreeTracker | None = None,
+    grace: float = 0.25,
+) -> None:
+    if root_pid <= 0:
+        return
+    if os.name != "posix":
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(root_pid, signal.SIGTERM)
+        time.sleep(max(0.0, grace))
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.kill(root_pid, signal.SIGKILL)
+        return
+    observed_samples = sample_processes() if samples is None else samples
+    observed = (
+        watched
+        if watched is not None
+        else watched_pids(observed_samples, root_pid, tracker=tracker)
+    )
+    pgids: set[int] = {root_pid}
+    pids: set[int] = {root_pid}
+    for pid in observed:
+        sample = observed_samples.get(pid)
+        pids.add(pid)
+        if sample is not None:
+            pgids.add(sample.pgid if sample.pgid is not None else sample.pid)
+    remaining_pgids: set[int] = set()
+    for pgid in sorted(pgids):
+        if not _terminate_single_process_group(pgid, grace=grace):
+            remaining_pgids.add(pgid)
+    for pgid in sorted(remaining_pgids):
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(pgid, signal.SIGKILL)
+    for pid in sorted(pids):
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def _terminate_process_group(pid: int) -> None:
+    terminate_watched_processes(pid, grace=5.0)
 
 
 def _load_json_string_list(environ: Mapping[str, str], name: str) -> list[str]:
@@ -980,18 +1090,27 @@ def run_guarded(
     peak: RssViolation | None = None
     peak_total: RssViolation | None = None
     timed_out = False
+    tracker = ProcessTreeTracker(proc.pid)
     while True:
         if timeout is not None and time.monotonic() - start >= timeout:
             timed_out = True
-            _terminate_process_group(proc.pid)
+            samples = sampler()
+            watched = tracker.update(samples)
+            terminate_watched_processes(
+                proc.pid,
+                samples=samples,
+                watched=watched,
+                grace=0.25,
+            )
             break
         samples = sampler()
-        observed_peak = peak_rss(samples, root_pid=proc.pid)
+        watched = tracker.update(samples)
+        observed_peak = peak_rss(samples, root_pid=proc.pid, watched=watched)
         if observed_peak is not None and (
             peak is None or observed_peak.rss_kb > peak.rss_kb
         ):
             peak = observed_peak
-        observed_total = total_rss(samples, root_pid=proc.pid)
+        observed_total = total_rss(samples, root_pid=proc.pid, watched=watched)
         if observed_total is not None and (
             peak_total is None or observed_total.rss_kb > peak_total.rss_kb
         ):
@@ -1009,6 +1128,7 @@ def run_guarded(
             root_pid=proc.pid,
             max_rss_kb=current_limits.max_process_rss_kb,
             max_total_rss_kb=current_limits.max_total_rss_kb,
+            watched=watched,
         )
         if violation is not None:
             limit_at_violation = current_limits
@@ -1022,7 +1142,12 @@ def run_guarded(
                 samples_jsonl_max_bytes=samples_jsonl_max_bytes,
                 stream=stream,
             )
-            _terminate_process_group(proc.pid)
+            terminate_watched_processes(
+                proc.pid,
+                samples=samples,
+                watched=watched,
+                grace=0.25,
+            )
             break
         if samples_jsonl is not None or stream:
             _record_sample(
@@ -1047,7 +1172,18 @@ def run_guarded(
         except subprocess.TimeoutExpired:
             pass
     finished = time.monotonic()
-    stdout, stderr = proc.communicate()
+    try:
+        stdout, stderr = proc.communicate(timeout=max(1.0, poll_interval * 4.0))
+    except subprocess.TimeoutExpired:
+        samples = sampler()
+        watched = tracker.update(samples)
+        terminate_watched_processes(
+            proc.pid,
+            samples=samples,
+            watched=watched,
+            grace=0.25,
+        )
+        stdout, stderr = proc.communicate()
     if stdin_thread is not None:
         stdin_thread.join(timeout=1.0)
     child_started = _read_child_started_at(launch.started_read_fd)
