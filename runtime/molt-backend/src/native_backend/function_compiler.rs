@@ -25746,6 +25746,40 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "exception_match_builtin" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let exc_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[0],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("Exception object not found");
+                    let tag = builder.ins().iconst(
+                        types::I64,
+                        op.value.expect("exception_match_builtin missing tag value"),
+                    );
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_match_builtin",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*exc_bits, tag]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "issubclass" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let sub_bits = var_get_boxed_overflow_safe(
@@ -27309,6 +27343,38 @@ impl SimpleBackend {
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*kind, *args_bits]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
+                "exception_new_builtin" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let tag = op.value.expect("exception_new_builtin missing tag value");
+                    let tag_val = builder.ins().iconst(types::I64, tag);
+                    let args_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[0],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("Args not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_new_builtin",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[tag_val, *args_bits]);
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);

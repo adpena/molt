@@ -1310,7 +1310,7 @@ fn is_hoistable(op: &OpIR) -> bool {
 /// [jump]          val=L_ok
 /// [label]         val=L_raise
 /// [tuple_new]     sval="cannot access local variable ..."
-/// [exception_new] sval="UnboundLocalError"
+/// [exception_new] / [exception_new_builtin] for "UnboundLocalError"
 /// [raise]
 /// [label]         val=L_ok
 /// ```
@@ -1349,6 +1349,17 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         .filter(|op| op.kind == "const_str" && op.s_value.as_deref() == Some("UnboundLocalError"))
         .filter_map(|op| op.out.as_deref())
         .collect();
+    let is_unbound_exception_new = |op: &OpIR| -> bool {
+        if op.kind == "exception_new_builtin" {
+            return op.s_value.as_deref() == Some("UnboundLocalError");
+        }
+        if op.kind != "exception_new" {
+            return false;
+        }
+        op.args
+            .as_ref()
+            .is_some_and(|args| !args.is_empty() && unbound_error_names.contains(args[0].as_str()))
+    };
 
     let mut remove = vec![false; len];
     let mut i = 0;
@@ -1403,13 +1414,11 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
                 while k < max_scan {
                     match ops[k].kind.as_str() {
                         "tuple_new" if !found_tuple_new => found_tuple_new = true,
-                        "exception_new" if found_tuple_new && !found_exc_new => {
-                            if let Some(args) = ops[k].args.as_ref()
-                                && !args.is_empty()
-                                && unbound_error_names.contains(args[0].as_str())
-                            {
-                                found_exc_new = true;
-                            }
+                        _ if found_tuple_new
+                            && !found_exc_new
+                            && is_unbound_exception_new(&ops[k]) =>
+                        {
+                            found_exc_new = true;
                         }
                         "raise" if found_exc_new && !found_raise => found_raise = true,
                         "end_if" | "else" if found_raise => {
@@ -1490,20 +1499,9 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             continue;
         }
 
-        // [7] exception_new with "UnboundLocalError"
+        // [7] exception_new / exception_new_builtin with "UnboundLocalError"
         let j7 = j6 + 1;
-        if j7 >= len || ops[j7].kind != "exception_new" {
-            i = base + 1;
-            continue;
-        }
-        let exc_args = match ops[j7].args.as_ref() {
-            Some(args) if !args.is_empty() => args,
-            _ => {
-                i = base + 1;
-                continue;
-            }
-        };
-        if !unbound_error_names.contains(exc_args[0].as_str()) {
+        if j7 >= len || !is_unbound_exception_new(&ops[j7]) {
             i = base + 1;
             continue;
         }
@@ -1580,6 +1578,127 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             );
         }
     }
+}
+
+fn is_lowered_block_arg_store(op: &OpIR) -> bool {
+    op.kind == "store_var"
+        && op
+            .var
+            .as_deref()
+            .is_some_and(|var| var.starts_with("_bb") && var.contains("_arg"))
+}
+
+fn skip_lowered_block_arg_stores(ops: &[OpIR], mut idx: usize) -> usize {
+    while idx < ops.len() && is_lowered_block_arg_store(&ops[idx]) {
+        idx += 1;
+    }
+    idx
+}
+
+fn lowered_block_arg_store_start(ops: &[OpIR], mut idx: usize) -> usize {
+    while idx > 0 && is_lowered_block_arg_store(&ops[idx - 1]) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn op_first_arg(op: &OpIR) -> Option<&str> {
+    op.args
+        .as_ref()
+        .and_then(|args| args.first())
+        .map(String::as_str)
+}
+
+fn remove_marked_ops(ops: &mut Vec<OpIR>, remove: Vec<bool>) -> bool {
+    if !remove.iter().any(|remove_op| *remove_op) {
+        return false;
+    }
+    *ops = ops
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !remove[*idx])
+        .map(|(_, op)| op.clone())
+        .collect();
+    true
+}
+
+fn raise_flows_directly_to_target(ops: &[OpIR], raise_idx: usize, target: i64) -> bool {
+    let mut idx = skip_lowered_block_arg_stores(ops, raise_idx + 1);
+    if idx < ops.len() && ops[idx].kind == "check_exception" && ops[idx].value == Some(target) {
+        idx = skip_lowered_block_arg_stores(ops, idx + 1);
+    }
+    idx < ops.len() && ops[idx].kind == "jump" && ops[idx].value == Some(target)
+}
+
+/// Canonicalize explicit raise exits after the TIR roundtrip.
+///
+/// Lowering materializes exception-handler block arguments at every
+/// `check_exception` edge. An explicit `raise` followed by an unconditional
+/// jump to the same handler already carries required state on that jump; the
+/// extra `check_exception` edge only duplicates the same block-argument stores.
+/// For canonical builtin exception construction, the constructor is also
+/// non-throwing, so a pre-raise handler poll is redundant.
+pub fn canonicalize_direct_raise_edges(func_ir: &mut FunctionIR) {
+    if !func_ir.ops.iter().any(|op| op.kind == "raise") {
+        return;
+    }
+
+    let mut remove = vec![false; func_ir.ops.len()];
+    for raise_idx in 0..func_ir.ops.len() {
+        if func_ir.ops[raise_idx].kind != "raise" {
+            continue;
+        }
+        let check_idx = skip_lowered_block_arg_stores(&func_ir.ops, raise_idx + 1);
+        if check_idx >= func_ir.ops.len() || func_ir.ops[check_idx].kind != "check_exception" {
+            continue;
+        }
+        let Some(target) = func_ir.ops[check_idx].value else {
+            continue;
+        };
+        let jump_idx = skip_lowered_block_arg_stores(&func_ir.ops, check_idx + 1);
+        if jump_idx >= func_ir.ops.len()
+            || func_ir.ops[jump_idx].kind != "jump"
+            || func_ir.ops[jump_idx].value != Some(target)
+        {
+            continue;
+        }
+        for slot in remove.iter_mut().take(check_idx + 1).skip(raise_idx + 1) {
+            *slot = true;
+        }
+    }
+    remove_marked_ops(&mut func_ir.ops, remove);
+
+    let mut remove = vec![false; func_ir.ops.len()];
+    for check_idx in 0..func_ir.ops.len() {
+        if func_ir.ops[check_idx].kind != "check_exception" {
+            continue;
+        }
+        let Some(target) = func_ir.ops[check_idx].value else {
+            continue;
+        };
+        let raise_idx = check_idx + 1;
+        if raise_idx >= func_ir.ops.len() || func_ir.ops[raise_idx].kind != "raise" {
+            continue;
+        }
+        if !raise_flows_directly_to_target(&func_ir.ops, raise_idx, target) {
+            continue;
+        }
+        let Some(raise_arg) = op_first_arg(&func_ir.ops[raise_idx]) else {
+            continue;
+        };
+        let store_start = lowered_block_arg_store_start(&func_ir.ops, check_idx);
+        let Some(producer_idx) = store_start.checked_sub(1) else {
+            continue;
+        };
+        let producer = &func_ir.ops[producer_idx];
+        if producer.kind != "exception_new_builtin" || producer.out.as_deref() != Some(raise_arg) {
+            continue;
+        }
+        for slot in remove.iter_mut().take(check_idx + 1).skip(store_start) {
+            *slot = true;
+        }
+    }
+    remove_marked_ops(&mut func_ir.ops, remove);
 }
 
 /// Eliminate redundant `guard_tag` ops on typed float/int variables.
@@ -3633,6 +3752,78 @@ mod tests {
             out: Some(out.to_string()),
             ..Default::default()
         }
+    }
+
+    fn make_store_var(var: &str, arg: &str) -> OpIR {
+        OpIR {
+            kind: "store_var".to_string(),
+            var: Some(var.to_string()),
+            args: Some(vec![arg.to_string()]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
+        let mut func = FunctionIR {
+            name: "direct_raise".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "exception_new_builtin".to_string(),
+                    out: Some("exc".to_string()),
+                    value: Some(5),
+                    ..Default::default()
+                },
+                make_store_var("_bb7_arg0", "acc"),
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(100),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "raise".to_string(),
+                    args: Some(vec!["exc".to_string()]),
+                    ..Default::default()
+                },
+                make_store_var("_bb7_arg0", "acc"),
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(100),
+                    ..Default::default()
+                },
+                make_store_var("_bb7_arg0", "acc"),
+                OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(100),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(100),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        canonicalize_direct_raise_edges(&mut func);
+
+        assert!(
+            !func.ops.iter().any(|op| op.kind == "check_exception"),
+            "direct raise-to-handler edge must not keep redundant polls: {:?}",
+            func.ops
+        );
+        let raise_idx = func
+            .ops
+            .iter()
+            .position(|op| op.kind == "raise")
+            .expect("raise must remain");
+        assert_eq!(func.ops[raise_idx + 1].kind, "store_var");
+        assert_eq!(func.ops[raise_idx + 2].kind, "jump");
+        assert_eq!(func.ops[raise_idx + 2].value, Some(100));
     }
 
     fn make_arith(kind: &str, args: &[&str], out: &str) -> OpIR {
