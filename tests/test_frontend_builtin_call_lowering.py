@@ -979,6 +979,94 @@ def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime(
     assert _has_static_call(main_ops, "importlib__import_module")
 
 
+def test_sum_generator_expr_lowers_without_generator_task_or_builtin_call() -> None:
+    ir = compile_to_tir(
+        "def f(data):\n"
+        "    return sum(v for v in data if v % 2 == 0)\n"
+    )
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+
+    assert any(op.get("kind") == "loop_start" for op in func_ops)
+    assert any(op.get("kind") == "add" for op in func_ops)
+    assert all(op.get("kind") != "alloc_task" for op in func_ops)
+    assert not any(
+        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_sum_builtin"
+        for op in func_ops
+    )
+    assert not any(
+        op.get("kind") == "call_func"
+        and any(
+            isinstance(arg, str) and arg.startswith("v") for arg in op.get("args") or []
+        )
+        for op in func_ops
+    )
+
+
+def test_sum_generator_expr_tuple_target_lowers_inline() -> None:
+    ir = compile_to_tir(
+        "def f(pairs):\n"
+        "    return sum(a * b for a, b in pairs if a > 2)\n"
+    )
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+
+    assert any(op.get("kind") == "unpack_sequence" for op in func_ops)
+    assert any(op.get("kind") == "mul" for op in func_ops)
+    assert any(op.get("kind") == "add" for op in func_ops)
+    assert all(op.get("kind") != "alloc_task" for op in func_ops)
+
+
+def test_sum_generator_expr_with_start_stays_on_builtin_path() -> None:
+    ir = compile_to_tir(
+        "def f(data, start):\n"
+        "    return sum((v for v in data), start)\n"
+    )
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+
+    assert any(op.get("kind") == "alloc_task" for op in func_ops)
+    assert any(
+        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_sum_builtin"
+        for op in func_ops
+    )
+
+
+def test_sum_generator_expr_target_shadow_does_not_leak() -> None:
+    ir = compile_to_tir(
+        "def f(data):\n"
+        "    v = 10\n"
+        "    total = sum(v for v in data)\n"
+        "    return v + total\n"
+    )
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+
+    assert all(op.get("kind") != "alloc_task" for op in func_ops)
+    store_vars = [
+        op.get("var")
+        for op in func_ops
+        if op.get("kind") == "store_var" and isinstance(op.get("var"), str)
+    ]
+    assert "v" in store_vars
+
+
+def test_dict_comprehension_result_methods_use_exact_dict_ops() -> None:
+    ir = compile_to_tir(
+        "def f():\n"
+        "    data = {str(i): i for i in range(5)}\n"
+        "    total = sum(v for v in data.values())\n"
+        "    inverted = {v: k for k, v in data.items()}\n"
+        "    return total + len(inverted)\n"
+    )
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+
+    assert any(op.get("kind") == "dict_values" for op in func_ops)
+    assert any(op.get("kind") == "dict_items" for op in func_ops)
+    assert not any(
+        op.get("kind") == "get_attr_generic_obj"
+        and op.get("s_value") in {"values", "items"}
+        for op in func_ops
+    )
+    assert all(op.get("kind") != "call_indirect" for op in func_ops)
+
+
 def test_internal_module_function_import_lowers_via_direct_call() -> None:
     ir = compile_to_tir(
         "from molt.gpu.tensor import tensor_linear\n"
