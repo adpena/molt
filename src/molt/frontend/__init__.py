@@ -32417,9 +32417,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         candidates: dict[str, SplitCandidate] = {}
         alias_to_split: dict[str, tuple[str, int]] = {}
         local_to_split: dict[str, tuple[str, int]] = {}
-        split_locals_crossing_region: dict[str, str] = {}
-        local_to_const_string: dict[str, str] = {}
+        split_locals_crossing_control: dict[str, str] = {}
+        local_to_const_string: dict[str, tuple[str, int]] = {}
         current_region = 0
+        control_depth = 0
         control_boundary_kinds = {
             "if",
             "else",
@@ -32448,16 +32449,35 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             root, region = alias
             return root if region == current_region else None
 
+        def invalidate_branch_locals(depth: int) -> None:
+            for var, (root, assigned_depth) in list(local_to_split.items()):
+                if assigned_depth >= depth:
+                    split_locals_crossing_control[var] = root
+                    local_to_split.pop(var, None)
+            for var, (_value, assigned_depth) in list(local_to_const_string.items()):
+                if assigned_depth >= depth:
+                    local_to_const_string.pop(var, None)
+
+        def invalidate_loop_crossing_locals() -> None:
+            for var, (root, _assigned_depth) in local_to_split.items():
+                split_locals_crossing_control[var] = root
+            local_to_split.clear()
+            local_to_const_string.clear()
+
         for op_index, op in enumerate(json_ops):
             kind = op.get("kind")
             if kind in control_boundary_kinds:
-                for var, (root, region) in local_to_split.items():
-                    if region == current_region:
-                        split_locals_crossing_region[var] = root
                 current_region += 1
                 alias_to_split.clear()
-                local_to_split.clear()
-                local_to_const_string.clear()
+                if kind == "if":
+                    control_depth += 1
+                elif kind == "else":
+                    invalidate_branch_locals(control_depth)
+                elif kind == "end_if":
+                    invalidate_branch_locals(control_depth)
+                    control_depth = max(0, control_depth - 1)
+                else:
+                    invalidate_loop_crossing_locals()
             out = op.get("out")
             if kind == "const" and isinstance(out, str):
                 value = op.get("value")
@@ -32505,12 +32525,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     else None
                 )
                 if root is not None and isinstance(var, str):
-                    local_to_split[var] = (root, current_region)
-                    split_locals_crossing_region.pop(var, None)
+                    local_to_split[var] = (root, control_depth)
+                    split_locals_crossing_control.pop(var, None)
                     candidates[root].alias_op_indexes.add(op_index)
                 elif isinstance(var, str):
                     local_to_split.pop(var, None)
-                    split_locals_crossing_region.pop(var, None)
+                    split_locals_crossing_control.pop(var, None)
                 if (
                     isinstance(var, str)
                     and isinstance(args, list)
@@ -32518,25 +32538,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and isinstance(args[0], str)
                     and args[0] in const_strings
                 ):
-                    local_to_const_string[var] = const_strings[args[0]]
+                    local_to_const_string[var] = (
+                        const_strings[args[0]],
+                        control_depth,
+                    )
                 elif isinstance(var, str):
                     local_to_const_string.pop(var, None)
                 continue
             if kind == "load_var":
                 var = op.get("var")
                 if isinstance(var, str) and isinstance(out, str):
-                    escaped_root = split_locals_crossing_region.get(var)
+                    escaped_root = split_locals_crossing_control.get(var)
                     if escaped_root is not None and escaped_root in candidates:
                         candidates[escaped_root].unsafe = True
                     split_alias = local_to_split.get(var)
                     if split_alias is not None:
-                        root, region = split_alias
-                        if region == current_region:
-                            alias_to_split[out] = (root, current_region)
-                            candidates[root].alias_op_indexes.add(op_index)
+                        root, _assigned_depth = split_alias
+                        alias_to_split[out] = (root, current_region)
+                        candidates[root].alias_op_indexes.add(op_index)
                     const_string = local_to_const_string.get(var)
                     if const_string is not None:
-                        const_strings[out] = const_string
+                        const_strings[out] = const_string[0]
                 continue
 
             args = op.get("args")
