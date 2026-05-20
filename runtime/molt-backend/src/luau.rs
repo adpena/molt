@@ -3118,6 +3118,18 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_int({})", sanitize_ident(val)));
                 }
             }
+            "int_from_str_of_obj" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let val = sanitize_ident(&args[0]);
+                    let base = sanitize_ident(&args[1]);
+                    let has_base = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "local {out} = if molt_bool({has_base}) then math.floor(tonumber(molt_str({val}), molt_int({base})) or 0) else molt_int(molt_str({val}))"
+                    ));
+                }
+            }
             "float_from_obj" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -9171,6 +9183,45 @@ mod tests {
         assert!(output.contains("function molt_main()"));
         // v0 is a single-use constant inlined into the print call.
         assert!(output.contains("print(42)"));
+    }
+
+    #[test]
+    fn test_int_from_str_of_obj_preserves_base_operand() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![
+                    "value".to_string(),
+                    "base".to_string(),
+                    "has_base".to_string(),
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "int_from_str_of_obj".to_string(),
+                        args: Some(vec![
+                            "value".to_string(),
+                            "base".to_string(),
+                            "has_base".to_string(),
+                        ]),
+                        out: Some("out".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("out".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(output.contains("molt_bool(has_base)"));
+        assert!(output.contains("tonumber(molt_str(value), molt_int(base))"));
     }
 
     #[test]

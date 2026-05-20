@@ -500,6 +500,7 @@ def _molt_build_params(
         "trusted": True,
         "json_output": True,
         "out_dir": str(out_dir),
+        "cache": False,
         "env_overrides": env,
         "codec": env.get("MOLT_CODEC", "msgpack"),
     }
@@ -584,6 +585,7 @@ def prepare_molt_binary(
             *_molt_build_cmd(build_profile),
             "--trusted",
             "--json",
+            "--rebuild",
             "--out-dir",
             str(out_dir),
         ]
