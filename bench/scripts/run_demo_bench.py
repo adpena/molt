@@ -7,6 +7,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -321,26 +322,40 @@ def run_k6(
     matchers = extract_proc_matchers(env)
     samples = {label: [] for label in matchers}
     limits = bench_memory_limits(env)
-    with stderr_path.open("w", encoding="utf-8") as handle:
-        proc = subprocess.Popen(
+    stop_sampling = threading.Event()
+
+    def sample_external_processes() -> None:
+        while not stop_sampling.is_set():
+            if matchers:
+                snapshot = sample_processes(matchers)
+                for label, sample in snapshot.items():
+                    samples[label].append(sample)
+            stop_sampling.wait(1.0)
+
+    sampler = threading.Thread(
+        target=sample_external_processes,
+        name=f"demo-bench-{script.stem}-sampler",
+        daemon=True,
+    )
+    sampler.start()
+    try:
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
-            stdout=handle,
-            stderr=handle,
+            prefix=BENCH_MEMORY_PREFIX,
+            capture_output=True,
             text=True,
             env=env,
             cwd=ROOT,
-            **harness_memory_guard.batch_process_group_kwargs(limits),
+            limits=limits,
         )
-        try:
-            while proc.poll() is None:
-                if matchers:
-                    snapshot = sample_processes(matchers)
-                    for label, sample in snapshot.items():
-                        samples[label].append(sample)
-                time.sleep(1.0)
-        except BaseException:
-            harness_memory_guard.force_close_process_group(proc)
-            raise
+    finally:
+        stop_sampling.set()
+        sampler.join(timeout=2.0)
+    with stderr_path.open("w", encoding="utf-8") as handle:
+        if proc.stdout:
+            handle.write(proc.stdout)
+        if proc.stderr:
+            handle.write(proc.stderr)
     if proc.returncode != 0:
         tail = tail_lines(stderr_path)
         detail = tail[-1] if tail else f"exit code {proc.returncode}"

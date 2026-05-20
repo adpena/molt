@@ -1307,13 +1307,21 @@ def _base_env(
 
 
 def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
-    root = (cwd or Path.cwd()).resolve()
-    root_str = str(root)
-    tools_str = str(root / "tools")
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
-    if tools_str not in sys.path:
-        sys.path.insert(0, tools_str)
+    roots = [Path(__file__).resolve().parents[2]]
+    if cwd is not None:
+        roots.append(cwd.resolve())
+    roots.append(Path.cwd().resolve())
+    seen: set[Path] = set()
+    for root in reversed(roots):
+        if root in seen:
+            continue
+        seen.add(root)
+        root_str = str(root)
+        tools_str = str(root / "tools")
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+        if tools_str not in sys.path:
+            sys.path.insert(0, tools_str)
     try:
         from tools import harness_memory_guard
     except ModuleNotFoundError as exc:
@@ -1323,6 +1331,41 @@ def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
     return harness_memory_guard
 
 
+def _with_memory_guard_env(
+    env: dict[str, str] | None, memory_guard_prefix: str
+) -> dict[str, str] | None:
+    if env is None:
+        return None
+    merged = dict(env)
+    normalized = memory_guard_prefix.strip().upper().rstrip("_")
+    suffixes = (
+        "MEMORY_GUARD",
+        "MEMORY_GUARD_POLL_SEC",
+        "MAX_PROCESS_RSS_GB",
+        "MAX_RSS_GB",
+        "MAX_TOTAL_RSS_GB",
+        "MAX_TREE_RSS_GB",
+        "GLOBAL_RSS_LIMIT_GB",
+        "MAX_GLOBAL_RSS_GB",
+        "CHILD_RLIMIT_GB",
+        "MAX_CHILD_RLIMIT_GB",
+        "TOTAL_MEMORY_GB",
+        "MEMORY_TOTAL_GB",
+        "MEM_AVAILABLE_GB",
+        "MEMORY_AVAILABLE_GB",
+        "MEMORY_RESERVE_GB",
+        "MEM_RESERVE_GB",
+    )
+    names: list[str] = []
+    if normalized:
+        names.extend(f"{normalized}_{suffix}" for suffix in suffixes)
+    names.extend(f"MOLT_{suffix}" for suffix in suffixes)
+    for name in dict.fromkeys(names):
+        if name not in merged and name in os.environ:
+            merged[name] = os.environ[name]
+    return merged
+
+
 def _run_completed_command(
     cmd: list[str],
     *,
@@ -1330,7 +1373,13 @@ def _run_completed_command(
     cwd: Path | None,
     capture_output: bool,
     memory_guard_prefix: str | None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    guard_env = (
+        None
+        if memory_guard_prefix is None
+        else _with_memory_guard_env(env, memory_guard_prefix)
+    )
     if memory_guard_prefix is None:
         return subprocess.run(
             cmd,
@@ -1338,17 +1387,19 @@ def _run_completed_command(
             cwd=cwd,
             capture_output=capture_output,
             text=True,
+            timeout=timeout,
         )
     harness_memory_guard = _load_cli_harness_memory_guard(cwd)
-    limits = harness_memory_guard.limits_from_env(memory_guard_prefix, env)
+    limits = harness_memory_guard.limits_from_env(memory_guard_prefix, guard_env)
     return harness_memory_guard.guarded_completed_process(
         cmd,
         prefix=memory_guard_prefix,
-        env=env,
+        env=guard_env,
         cwd=cwd,
         capture_output=capture_output,
         text=True,
         limits=limits,
+        timeout=timeout,
     )
 
 
@@ -29111,12 +29162,12 @@ def lint(json_output: bool = False, verbose: bool = False) -> int:
     for cmd in commands:
         if verbose and not json_output:
             print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
-        result = subprocess.run(
+        result = _run_completed_command(
             [str(part) for part in cmd],
             cwd=root,
             env=env,
             capture_output=json_output,
-            text=True,
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
         result_data: dict[str, Any] = {
             "cmd": cmd,
@@ -29931,11 +29982,12 @@ def update_repo(
     for step in steps:
         if verbose and not json_output:
             print(f"[molt update] {step.name}: {shlex.join(step.cmd)}", file=sys.stderr)
-        proc = subprocess.run(
+        proc = _run_completed_command(
             step.cmd,
             cwd=step.cwd,
             capture_output=True,
-            text=True,
+            env=None,
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
         entry: dict[str, Any] = {
             "name": step.name,
@@ -32724,7 +32776,13 @@ def _ensure_molt_venv(
     ]
     if verbose:
         print(f"[molt install] creating venv: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+    result = _run_completed_command(
+        cmd,
+        cwd=project_root,
+        env=None,
+        capture_output=True,
+        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"uv venv creation failed (exit {result.returncode}):\n{result.stderr}"
@@ -32826,8 +32884,12 @@ def install(
     if verbose and not json_output:
         print(f"[molt install] {' '.join(cmd)}")
 
-    result = subprocess.run(
-        cmd, capture_output=json_output, text=True, cwd=project_root
+    result = _run_completed_command(
+        cmd,
+        cwd=project_root,
+        env=None,
+        capture_output=json_output,
+        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
     )
     if result.returncode != 0:
         msg = f"uv pip install failed (exit {result.returncode})"
@@ -32893,8 +32955,12 @@ def install_add(
     if verbose and not json_output:
         print(f"[molt install add] {' '.join(pip_cmd)}")
 
-    result = subprocess.run(
-        pip_cmd, capture_output=json_output, text=True, cwd=project_root
+    result = _run_completed_command(
+        pip_cmd,
+        cwd=project_root,
+        env=None,
+        capture_output=json_output,
+        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
     )
     if result.returncode != 0:
         msg = f"uv pip install failed (exit {result.returncode})"
@@ -32908,8 +32974,12 @@ def install_add(
         add_cmd = [uv, "add", *packages]
         if verbose and not json_output:
             print(f"[molt install add] {' '.join(add_cmd)}")
-        add_result = subprocess.run(
-            add_cmd, capture_output=json_output, text=True, cwd=project_root
+        add_result = _run_completed_command(
+            add_cmd,
+            cwd=project_root,
+            env=None,
+            capture_output=json_output,
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
         if add_result.returncode != 0 and verbose and not json_output:
             print(
@@ -34223,14 +34293,13 @@ def _run_debug_eval_command(
     env = _debug_eval_base_env(cwd)
     env.update(env_updates)
     try:
-        proc = subprocess.run(
+        proc = _run_completed_command(
             shlex.split(command, posix=os.name != "nt"),
             cwd=cwd,
             env=env,
             capture_output=True,
-            text=True,
-            check=False,
             timeout=max(1, timeout_sec),
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
     except subprocess.TimeoutExpired as exc:
         evaluation.update(
@@ -34248,13 +34317,14 @@ def _run_debug_eval_command(
         return evaluation
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
+    timed_out = proc.returncode == 124 and "memory_guard: timeout" in stderr
     evaluation.update(
         {
             "classification": "nonzero_exit" if proc.returncode else "zero_exit",
             "stdout": stdout,
             "stderr": stderr,
             "returncode": proc.returncode,
-            "timed_out": False,
+            "timed_out": timed_out,
         }
     )
     parsed_stdout: dict[str, Any] | None = None

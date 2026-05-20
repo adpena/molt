@@ -50,24 +50,11 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
     assert call["env"]["TMPDIR"] == str(demo_bench.ROOT / "tmp")
 
 
-def test_demo_bench_run_k6_uses_process_group_guard(
+def test_demo_bench_run_k6_uses_live_tree_guard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    popen_calls: list[dict[str, object]] = []
-    close_calls: list[object] = []
-
-    class FakePopen:
-        returncode = 0
-
-        def __init__(self, cmd, **kwargs):
-            popen_calls.append({"cmd": cmd, **kwargs})
-
-        def poll(self):
-            return 0
-
-    def fake_batch_process_group_kwargs(limits):
-        return {"start_new_session": True}
+    guard_calls: list[dict[str, object]] = []
 
     summary_path = tmp_path / "summary.json"
     summary_path.write_text(
@@ -76,18 +63,22 @@ def test_demo_bench_run_k6_uses_process_group_guard(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(demo_bench.subprocess, "Popen", FakePopen)
+    def fake_guarded_completed_process(cmd, **kwargs):
+        guard_calls.append({"cmd": cmd, **kwargs})
+        return demo_bench.harness_memory_guard.GuardedCompletedProcess(
+            cmd,
+            0,
+            "",
+            "",
+            elapsed_s=0.01,
+        )
+
     monkeypatch.setattr(demo_bench, "extract_proc_matchers", lambda env: {})
     monkeypatch.setattr(demo_bench, "bench_memory_limits", lambda env=None: object())
     monkeypatch.setattr(
         demo_bench.harness_memory_guard,
-        "batch_process_group_kwargs",
-        fake_batch_process_group_kwargs,
-    )
-    monkeypatch.setattr(
-        demo_bench.harness_memory_guard,
-        "force_close_process_group",
-        lambda proc: close_calls.append(proc),
+        "guarded_completed_process",
+        fake_guarded_completed_process,
     )
 
     data, proc_metrics = demo_bench.run_k6(
@@ -97,13 +88,15 @@ def test_demo_bench_run_k6_uses_process_group_guard(
 
     assert data["metrics"]["http_reqs"]["rate"] == 1
     assert proc_metrics == {}
-    call = popen_calls[0]
+    call = guard_calls[0]
     assert call["cmd"] == ["k6", "run", "--quiet", str(tmp_path / "scenario.js")]
+    assert call["prefix"] == demo_bench.BENCH_MEMORY_PREFIX
     assert call["cwd"] == demo_bench.ROOT
+    assert call["capture_output"] is True
+    assert call["text"] is True
     assert call["env"]["K6_SUMMARY_EXPORT"] == str(summary_path)
     assert call["env"]["MOLT_EXT_ROOT"] == str(demo_bench.ROOT)
-    assert call["start_new_session"] is True
-    assert close_calls == []
+    assert call["limits"] is not None
 
 
 def test_demo_bench_main_wraps_scenarios_in_repo_sentinel(
