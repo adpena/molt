@@ -257,7 +257,9 @@ def test_global_monitor_refreshes_limits_from_active_tree_rss(
         module, "_terminate_pid_tree", lambda pid, grace=1.0: killed.append(pid)
     )
     monkeypatch.setattr(
-        module, "_record_memory_guard_sample", lambda payload: sample_payloads.append(payload)
+        module,
+        "_record_memory_guard_sample",
+        lambda payload: sample_payloads.append(payload),
     )
 
     module._DiffGlobalMemoryMonitor(module._diff_memory_guard_config())._sample_once()
@@ -339,14 +341,14 @@ def test_diff_memory_guard_family_overrides_parent_controls(monkeypatch) -> None
     assert config.child_rlimit_gb == pytest.approx(5)
 
 
-def test_diff_memory_guard_global_disable_can_be_overridden(monkeypatch) -> None:
+def test_diff_memory_guard_global_disable_is_ignored(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_MEMORY_GUARD", "0")
     monkeypatch.delenv("MOLT_DIFF_MEMORY_GUARD", raising=False)
 
-    assert module._diff_memory_guard_enabled() is False
+    assert module._diff_memory_guard_enabled() is True
 
-    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "1")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "0")
     assert module._diff_memory_guard_enabled() is True
 
 
@@ -410,7 +412,9 @@ def test_popen_group_kwargs_can_disable_child_rlimit(monkeypatch) -> None:
     assert kwargs == {"start_new_session": True}
 
 
-def test_popen_group_kwargs_omits_child_rlimit_when_guard_disabled(monkeypatch) -> None:
+def test_popen_group_kwargs_keeps_child_rlimit_when_guard_disabled(
+    monkeypatch,
+) -> None:
     module = _load_diff_module()
     if module.os.name == "nt":
         return
@@ -418,4 +422,28 @@ def test_popen_group_kwargs_omits_child_rlimit_when_guard_disabled(monkeypatch) 
 
     kwargs = module._popen_group_kwargs()
 
-    assert kwargs == {"start_new_session": True}
+    assert kwargs["start_new_session"] is True
+    assert callable(kwargs["preexec_fn"])
+
+
+def test_run_subprocess_preserves_signal_diagnostic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "0")
+
+    result = module._run_subprocess(
+        [
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+        env=os.environ.copy(),
+        timeout=5,
+    )
+
+    assert module.memory_guard.exit_signal_payload(result.returncode) is not None
+    assert "memory_guard: command exited with SIGKILL" in result.stderr
