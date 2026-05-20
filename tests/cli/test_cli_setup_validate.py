@@ -193,6 +193,48 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
     assert calls[1]["capture_output"] is True
 
 
+def test_cli_guard_preserves_operator_limits_for_sanitized_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+
+    class FakeMemoryGuard:
+        @staticmethod
+        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
+            calls.append({"method": "limits", "prefix": prefix, "env": env})
+            return object()
+
+        @staticmethod
+        def guarded_completed_process(cmd: list[str], **kwargs: object):
+            calls.append({"method": "run", "cmd": cmd, **kwargs})
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setenv("MOLT_CLI_MAX_PROCESS_RSS_GB", "0.05")
+    monkeypatch.setattr(
+        cli,
+        "_load_cli_harness_memory_guard",
+        lambda cwd: FakeMemoryGuard,
+        raising=True,
+    )
+
+    result = cli._run_completed_command(
+        ["python3", "-c", "pass"],
+        cwd=ROOT,
+        env={"PATH": "/usr/bin"},
+        capture_output=True,
+        memory_guard_prefix="MOLT_CLI",
+    )
+
+    assert result.returncode == 0
+    assert calls[0]["env"] == {
+        "PATH": "/usr/bin",
+        "MOLT_CLI_MAX_PROCESS_RSS_GB": "0.05",
+    }
+    assert calls[1]["env"] == calls[0]["env"]
+
+
 def test_cli_wrapper_build_uses_default_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -309,9 +351,13 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         return cli._TimedResult(0, "ok\n", "", 0.01)
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project, raising=True)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT, raising=True)
+    monkeypatch.setattr(
+        cli, "_find_molt_root", lambda start, cwd=None: ROOT, raising=True
+    )
     monkeypatch.setattr(cli, "_resolve_python_exe", lambda exe: "python3", raising=True)
-    monkeypatch.setattr(cli, "_resolve_binary_output", lambda output: built_binary, raising=True)
+    monkeypatch.setattr(
+        cli, "_resolve_binary_output", lambda output: built_binary, raising=True
+    )
     monkeypatch.setattr(cli, "_run_command_timed", fake_run_command_timed, raising=True)
 
     rc = cli.compare(str(entry), None, "python3", [])
@@ -359,7 +405,9 @@ def test_cli_cross_run_uses_cross_memory_guard(
         return result
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project, raising=True)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT, raising=True)
+    monkeypatch.setattr(
+        cli, "_find_molt_root", lambda start, cwd=None: ROOT, raising=True
+    )
     monkeypatch.setattr(
         cli,
         "_resolve_wrapper_build_entry",
@@ -367,7 +415,9 @@ def test_cli_cross_run_uses_cross_memory_guard(
         raising=True,
     )
     monkeypatch.setattr(cli, "_run_wrapper_build", fake_run_wrapper_build, raising=True)
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command, raising=True)
+    monkeypatch.setattr(
+        cli, "_run_completed_command", fake_run_completed_command, raising=True
+    )
     monkeypatch.setattr(
         cli.shutil,
         "which",
@@ -505,18 +555,122 @@ def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> Non
             assert name == "lint"
             return [["python3", "-m", "ruff", "check", "."]]
 
-    def fake_run(cmd, **kwargs):
+    def fake_run_completed(cmd, **kwargs):
         calls.append(list(cmd))
         assert cmd != [sys.executable, "tools/dev.py", "lint"]
         assert kwargs["cwd"] == ROOT
         assert kwargs["capture_output"] is False
+        assert kwargs["memory_guard_prefix"] == "MOLT_CLI"
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(cli, "DxProject", FakeDxProject, raising=True)
-    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed, raising=True)
 
     assert cli.lint(json_output=False, verbose=False) == 0
     assert calls == [["python3", "-m", "ruff", "check", "."]]
+
+
+def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+    step = cli._MaintenanceStep(
+        "probe",
+        ["python3", "-c", "print('ok')"],
+        ROOT,
+        "toolchain",
+    )
+
+    def fake_run_completed(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), **kwargs})
+        return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+
+    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: ROOT, raising=True)
+    monkeypatch.setattr(
+        cli,
+        "_planned_update_steps",
+        lambda *_args, **_kwargs: ([step], []),
+        raising=True,
+    )
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed, raising=True)
+
+    assert cli.update_repo(json_output=True) == 0
+    assert calls == [
+        {
+            "cmd": ["python3", "-c", "print('ok')"],
+            "cwd": ROOT,
+            "capture_output": True,
+            "env": None,
+            "memory_guard_prefix": "MOLT_CLI",
+        }
+    ]
+
+
+def test_cli_install_uses_memory_guard_for_venv_and_uv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_completed(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), **kwargs})
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_ensure_uv", lambda: "uv", raising=True)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path, raising=True)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed, raising=True)
+
+    assert cli.install(["attrs"], json_output=True) == 0
+
+    assert [call["memory_guard_prefix"] for call in calls] == [
+        "MOLT_CLI",
+        "MOLT_CLI",
+    ]
+    assert calls[0]["cmd"][:2] == ["uv", "venv"]
+    assert calls[0]["cwd"] == tmp_path
+    assert calls[1]["cmd"][:3] == ["uv", "pip", "install"]
+    assert calls[1]["cwd"] == tmp_path
+
+
+def test_cli_debug_eval_command_uses_guarded_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_completed(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), **kwargs})
+        return subprocess.CompletedProcess(
+            cmd,
+            124,
+            "",
+            "memory_guard: timeout after 1.00s\n",
+        )
+
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed, raising=True)
+
+    result = cli._run_debug_eval_command(
+        "python3 -c pass",
+        cwd=tmp_path,
+        env_updates={},
+        default_manifest={"ok": True},
+        timeout_sec=1,
+    )
+
+    assert result["returncode"] == 124
+    assert result["timed_out"] is True
+    assert calls == [
+        {
+            "cmd": ["python3", "-c", "pass"],
+            "cwd": tmp_path,
+            "env": calls[0]["env"],
+            "capture_output": True,
+            "timeout": 1,
+            "memory_guard_prefix": "MOLT_CLI",
+        }
+    ]
 
 
 def test_install_wrappers_delegate_into_setup() -> None:
