@@ -447,6 +447,11 @@ uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec
   request/job/cache state by default; tune with
   `MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES`, `MOLT_BACKEND_DAEMON_MAX_JOBS`,
   and `MOLT_BACKEND_DAEMON_CACHE_MB`.
+- **One-shot backend stdin limit**: non-daemon backend IR reads from stdin are
+  bounded by `MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES` and default to the same
+  512 MiB ceiling as daemon requests. Msgpack and NDJSON stdin paths stream
+  through the limit; JSON and CBOR stdin paths reject oversized input before
+  deserialization rather than buffering unbounded request bodies.
 - **Daemon warm-hit probe path**: when cache keys are present, the build pipeline now lets the daemon send a probe-only request first and only encodes full IR after a daemon-declared miss. This preserves warm daemon hits without paying full IR encode/send cost on every run.
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
 - **Daemon lifecycle**: daemon logs/pid/fingerprints live under `<CARGO_TARGET_DIR>/.molt_state/backend_daemon/` (or `MOLT_BUILD_STATE_DIR`). If an agent sees daemon protocol/connectivity errors, the CLI restarts daemon once under lock before falling back to one-shot compile. Pytest assigns a default `MOLT_SESSION_ID=pytest-<pid>` when the caller has not supplied one, then the session guard drains daemon groups created during that pytest run at session finish.
