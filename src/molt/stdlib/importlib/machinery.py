@@ -102,7 +102,7 @@ def _resolve_platform() -> str:
 
     from _intrinsics import require_intrinsic as _require_intrinsic
 
-    platform_fn = _require_intrinsic("molt_sys_platform", globals())
+    platform_fn = _require_intrinsic("molt_sys_platform")
     platform = platform_fn()
     if not isinstance(platform, str):
         raise RuntimeError("molt_sys_platform returned invalid value")
