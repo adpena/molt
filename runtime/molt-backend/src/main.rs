@@ -35,6 +35,9 @@ const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_BACKEND_BATCH_SIZE: usize = 64;
 const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
 const DEFAULT_STDLIB_BATCH_OP_BUDGET: usize = 12_000;
+const MIB: usize = 1024 * 1024;
+const DEFAULT_DAEMON_REQUEST_LIMIT_BYTES: usize = 512 * MIB;
+const DEFAULT_DAEMON_MAX_JOBS: usize = 512;
 const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
     "MOLT_BACKEND_BATCH_SIZE",
@@ -1021,7 +1024,51 @@ impl DaemonCache {
     }
 }
 
-fn daemon_health(cache: &DaemonCache, stats: &DaemonStats, start: Instant) -> DaemonHealthResponse {
+fn env_usize_limit(name: &str, default: usize, min_value: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value >= min_value)
+        .unwrap_or(default)
+}
+
+fn daemon_request_limit_bytes() -> usize {
+    env_usize_limit(
+        "MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES",
+        DEFAULT_DAEMON_REQUEST_LIMIT_BYTES,
+        1024,
+    )
+}
+
+fn daemon_max_jobs() -> usize {
+    env_usize_limit("MOLT_BACKEND_DAEMON_MAX_JOBS", DEFAULT_DAEMON_MAX_JOBS, 1)
+}
+
+fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u64>) -> usize {
+    let default = bytes
+        .and_then(|raw| usize::try_from(raw / 64).ok())
+        .unwrap_or(512 * MIB);
+    default.clamp(128 * MIB, 2 * 1024 * MIB)
+}
+
+fn daemon_cache_limit_bytes() -> usize {
+    env::var("MOLT_BACKEND_DAEMON_CACHE_MB")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|mb| mb.saturating_mul(MIB))
+        .unwrap_or_else(|| {
+            default_daemon_cache_bytes_from_physical_mem_bytes(detect_physical_memory_bytes())
+        })
+}
+
+fn daemon_health(
+    cache: &DaemonCache,
+    stats: &DaemonStats,
+    start: Instant,
+    request_limit_bytes: usize,
+    max_jobs: usize,
+) -> DaemonHealthResponse {
     let uptime_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     DaemonHealthResponse {
         protocol_version: BACKEND_DAEMON_PROTOCOL_VERSION,
@@ -1030,8 +1077,8 @@ fn daemon_health(cache: &DaemonCache, stats: &DaemonStats, start: Instant) -> Da
         cache_entries: cache.entries.len(),
         cache_bytes: cache.bytes,
         cache_max_bytes: cache.max_bytes,
-        request_limit_bytes: None,
-        max_jobs: None,
+        request_limit_bytes: Some(request_limit_bytes),
+        max_jobs: Some(max_jobs),
         requests_total: stats.requests_total,
         jobs_total: stats.jobs_total,
         cache_hits: stats.cache_hits,
@@ -1472,7 +1519,9 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
     }
 
     let listener = UnixListener::bind(socket)?;
-    let mut cache = DaemonCache::new(None);
+    let request_limit_bytes = daemon_request_limit_bytes();
+    let max_jobs = daemon_max_jobs();
+    let mut cache = DaemonCache::new(Some(daemon_cache_limit_bytes()));
     let mut stats = DaemonStats::default();
     let mut active_config_digest: Option<String> = None;
     let started_at = Instant::now();
@@ -1485,6 +1534,8 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
                     &mut stats,
                     &mut active_config_digest,
                     started_at,
+                    request_limit_bytes,
+                    max_jobs,
                 ) {
                     eprintln!("backend daemon connection error: {err}");
                 }
@@ -1504,9 +1555,12 @@ fn handle_daemon_connection(
     stats: &mut DaemonStats,
     active_config_digest: &mut Option<String>,
     started_at: Instant,
+    request_limit_bytes: usize,
+    max_jobs: usize,
 ) -> io::Result<()> {
+    let mut reader = io::BufReader::new(stream.try_clone()?);
     loop {
-        let raw_bytes = read_daemon_request_bytes(stream)?;
+        let raw_bytes = read_daemon_request_bytes(&mut reader, request_limit_bytes)?;
         if raw_bytes.is_empty() {
             return Ok(());
         }
@@ -1546,7 +1600,9 @@ fn handle_daemon_connection(
                 error: Some(format!(
                     "unsupported protocol version {version}; expected {BACKEND_DAEMON_PROTOCOL_VERSION}"
                 )),
-                health: include_health.then(|| daemon_health(cache, stats, started_at)),
+                health: include_health.then(|| {
+                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                }),
             };
             write_daemon_response(stream, &response)?;
             continue;
@@ -1557,7 +1613,13 @@ fn handle_daemon_connection(
                 pong: true,
                 jobs: Vec::new(),
                 error: None,
-                health: Some(daemon_health(cache, stats, started_at)),
+                health: Some(daemon_health(
+                    cache,
+                    stats,
+                    started_at,
+                    request_limit_bytes,
+                    max_jobs,
+                )),
             };
             write_daemon_response(stream, &response)?;
             continue;
@@ -1580,7 +1642,9 @@ fn handle_daemon_connection(
                 pong: false,
                 jobs: Vec::new(),
                 error: Some("missing jobs in request".to_string()),
-                health: include_health.then(|| daemon_health(cache, stats, started_at)),
+                health: include_health.then(|| {
+                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                }),
             };
             write_daemon_response(stream, &response)?;
             continue;
@@ -1591,7 +1655,26 @@ fn handle_daemon_connection(
                 pong: false,
                 jobs: Vec::new(),
                 error: Some("empty jobs in request".to_string()),
-                health: include_health.then(|| daemon_health(cache, stats, started_at)),
+                health: include_health.then(|| {
+                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                }),
+            };
+            write_daemon_response(stream, &response)?;
+            continue;
+        }
+        if jobs.len() > max_jobs {
+            let response = DaemonResponse {
+                ok: false,
+                pong: false,
+                jobs: Vec::new(),
+                error: Some(format!(
+                    "too many jobs in request: {} exceeds daemon max_jobs {}",
+                    jobs.len(),
+                    max_jobs
+                )),
+                health: include_health.then(|| {
+                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                }),
             };
             write_daemon_response(stream, &response)?;
             continue;
@@ -1613,17 +1696,29 @@ fn handle_daemon_connection(
             pong: false,
             jobs: results,
             error: None,
-            health: include_health.then(|| daemon_health(cache, stats, started_at)),
+            health: include_health
+                .then(|| daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)),
         };
         write_daemon_response(stream, &response)?;
     }
 }
 
 #[cfg(unix)]
-fn read_daemon_request_bytes<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
+fn read_daemon_request_bytes<R: BufRead>(
+    reader: &mut R,
+    request_limit_bytes: usize,
+) -> io::Result<Vec<u8>> {
     let mut raw_bytes = Vec::new();
-    let mut buffered = io::BufReader::new(reader);
-    buffered.read_until(b'\n', &mut raw_bytes)?;
+    let limit = u64::try_from(request_limit_bytes)
+        .unwrap_or(u64::MAX - 1)
+        .saturating_add(1);
+    reader.take(limit).read_until(b'\n', &mut raw_bytes)?;
+    if raw_bytes.len() > request_limit_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("daemon request exceeded {request_limit_bytes} byte limit"),
+        ));
+    }
     Ok(raw_bytes)
 }
 
@@ -2334,17 +2429,16 @@ mod tests {
     use super::{
         BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
         DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse,
-        GIB, compile_single_job, create_backend_output_file, daemon_response_payload,
+        GIB, MIB, compile_single_job, create_backend_output_file, daemon_response_payload,
         default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
-        ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
-        partition_functions_for_batches, prune_and_partition_native_stdlib,
-        read_daemon_request_bytes, relocatable_linker_binary, resolve_backend_output_path,
-        resolved_batch_size_limit, shared_stdlib_cache_matches, write_cached_output,
-        write_shared_stdlib_cache_sidecars,
+        default_daemon_cache_bytes_from_physical_mem_bytes, ensure_output_parent_dir,
+        is_user_owned_symbol, merge_relocatable_objects, partition_functions_for_batches,
+        prune_and_partition_native_stdlib, read_daemon_request_bytes, relocatable_linker_binary,
+        resolve_backend_output_path, resolved_batch_size_limit, shared_stdlib_cache_matches,
+        write_cached_output, write_shared_stdlib_cache_sidecars,
     };
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
-    use std::io::Cursor;
-    use std::io::Write;
+    use std::io::{self, Cursor, Write};
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2378,8 +2472,31 @@ mod tests {
     #[test]
     fn read_daemon_request_bytes_stops_at_protocol_newline() {
         let mut cursor = Cursor::new(b"{\"version\":1}\ntrailing".to_vec());
-        let bytes = read_daemon_request_bytes(&mut cursor).expect("request bytes");
+        let bytes = read_daemon_request_bytes(&mut cursor, 1024).expect("request bytes");
         assert_eq!(bytes, b"{\"version\":1}\n");
+    }
+
+    #[test]
+    fn read_daemon_request_bytes_rejects_oversized_request() {
+        let mut cursor = Cursor::new(b"{\"version\":1}\n".to_vec());
+        let err = read_daemon_request_bytes(&mut cursor, 4).expect_err("oversized request");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("daemon request exceeded 4 byte limit")
+        );
+    }
+
+    #[test]
+    fn daemon_default_cache_limit_scales_with_host_memory() {
+        assert_eq!(
+            default_daemon_cache_bytes_from_physical_mem_bytes(Some(8 * GIB)),
+            128 * MIB
+        );
+        assert_eq!(
+            default_daemon_cache_bytes_from_physical_mem_bytes(Some(128 * GIB)),
+            2 * 1024 * MIB
+        );
     }
 
     #[test]
