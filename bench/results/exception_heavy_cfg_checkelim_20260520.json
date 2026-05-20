@@ -1,0 +1,101 @@
+{
+  "benchmarks": {
+    "bench_exception_heavy.py": {
+      "codon_build_s": null,
+      "codon_ok": false,
+      "codon_samples_s": null,
+      "codon_size_kb": null,
+      "codon_time_s": null,
+      "codon_warmup_samples_s": null,
+      "cpython_samples_s": [
+        0.14365395800268743,
+        0.14406733299256302,
+        0.14151508299983107
+      ],
+      "cpython_time_s": 0.14307879133169385,
+      "cpython_warmup_samples_s": [
+        0.1406477919954341
+      ],
+      "molt_args": [],
+      "molt_build_s": 1.2512155000003986,
+      "molt_codon_ratio": null,
+      "molt_cpython_ratio": 3.625603442055544,
+      "molt_nuitka_ratio": null,
+      "molt_ok": true,
+      "molt_output_parity": {
+        "checked": true,
+        "molt_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "molt_stdout_sha256": "e14df9973038cadf2bbe30e75d63274e05078cd84ee10c6d99d1106b5e2541ee",
+        "ok": true,
+        "reason": "match",
+        "reference_runtime": "cpython",
+        "reference_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "reference_stdout_sha256": "e14df9973038cadf2bbe30e75d63274e05078cd84ee10c6d99d1106b5e2541ee",
+        "stderr_match": true,
+        "stdout_match": true
+      },
+      "molt_pyodide_ratio": null,
+      "molt_pypy_ratio": null,
+      "molt_samples_s": [
+        0.5214675000024727,
+        0.5167665000044508,
+        0.518006875005085
+      ],
+      "molt_size_kb": 8490.9765625,
+      "molt_speedup": 0.27581615474003623,
+      "molt_time_s": 0.5187469583373362,
+      "molt_warmup_samples_s": [
+        0.7937052499910351
+      ],
+      "nuitka_build_s": null,
+      "nuitka_ok": false,
+      "nuitka_samples_s": null,
+      "nuitka_size_kb": null,
+      "nuitka_time_s": null,
+      "nuitka_warmup_samples_s": null,
+      "pyodide_build_s": null,
+      "pyodide_ok": false,
+      "pyodide_samples_s": null,
+      "pyodide_size_kb": null,
+      "pyodide_time_s": null,
+      "pyodide_warmup_samples_s": null,
+      "pypy_ok": false,
+      "pypy_samples_s": null,
+      "pypy_time_s": null,
+      "pypy_warmup_samples_s": null,
+      "reference_reason": "cpython_reference",
+      "reference_runtime": "cpython",
+      "run_args": []
+    }
+  },
+  "created_at": "2026-05-20T15:46:29.054503+00:00",
+  "git_rev": "f8c0f803ddf6c14a4179013a7bdcd72fc1888bb6",
+  "memory_guard": {
+    "child_rlimit_gb": 73.79682501831054,
+    "dynamic_child_rlimit": true,
+    "dynamic_global_rss": true,
+    "dynamic_process_rss": true,
+    "dynamic_total_rss": true,
+    "enabled": true,
+    "max_global_rss_gb": 73.79682501831054,
+    "max_process_rss_gb": 39.8502855098877,
+    "max_total_rss_gb": 44.27809501098633,
+    "poll_interval": 0.1
+  },
+  "samples": 3,
+  "schema_version": 1,
+  "super_run": false,
+  "system": {
+    "cpu_count": 18,
+    "load_avg": [
+      4.7265625,
+      3.41552734375,
+      3.10302734375
+    ],
+    "machine": "arm64",
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "python": "3.12.13"
+  },
+  "timing_mode": "warm_throughput",
+  "warmup": 1
+}
