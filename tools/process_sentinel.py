@@ -303,6 +303,7 @@ def terminate_group(pgid: int, *, grace: float) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
+    budget = memory_guard.adaptive_memory_budget("MOLT_SENTINEL")
     parser = argparse.ArgumentParser(
         description="Repo-scoped sentinel for Molt build/test/bench process groups."
     )
@@ -314,25 +315,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-process-rss-gb",
         type=float,
-        default=DEFAULT_MAX_PROCESS_RSS_GB,
-        help=f"Per-process RSS ceiling (default: {DEFAULT_MAX_PROCESS_RSS_GB}).",
+        default=budget.max_process_rss_gb,
+        help="Per-process RSS ceiling (default: adaptive from live available memory).",
     )
     parser.add_argument(
         "--max-total-rss-gb",
         type=float,
-        default=DEFAULT_MAX_GROUP_RSS_GB,
+        default=budget.max_total_rss_gb,
         help=(
             "Per-process-group RSS ceiling for matched Molt groups "
-            f"(default: {DEFAULT_MAX_GROUP_RSS_GB})."
+            "(default: adaptive from live available memory)."
         ),
     )
     parser.add_argument(
         "--max-global-rss-gb",
         type=float,
-        default=DEFAULT_MAX_GLOBAL_RSS_GB,
+        default=budget.max_global_rss_gb,
         help=(
             "Cumulative RSS ceiling across all matched Molt process groups "
-            f"(default: {DEFAULT_MAX_GLOBAL_RSS_GB})."
+            "(default: adaptive from live available memory)."
         ),
     )
     parser.add_argument(

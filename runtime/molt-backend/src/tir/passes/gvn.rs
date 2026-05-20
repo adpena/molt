@@ -56,6 +56,18 @@ fn is_always_numberable(opcode: OpCode) -> bool {
     matches!(opcode, OpCode::BoxVal | OpCode::UnboxVal)
 }
 
+fn is_const_opcode(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::ConstInt
+            | OpCode::ConstBool
+            | OpCode::ConstNone
+            | OpCode::ConstFloat
+            | OpCode::ConstStr
+            | OpCode::ConstBytes
+    )
+}
+
 /// Returns `true` if the opcode is numberable when operands are proven typed.
 fn is_typed_numberable(opcode: OpCode) -> bool {
     matches!(
@@ -391,6 +403,16 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 // popping this block off the dominator stack.
                 let mut key_undo: Vec<(ValueKey, Option<ValueId>)> = Vec::new();
                 let mut vn_undo: Vec<(ValueId, Option<ValueId>)> = Vec::new();
+                // Constants are intentionally not replaced by Copy ops:
+                // backend-native constant materialization is representation
+                // sensitive, and cross-block constant copies can violate the
+                // stricter post-lowering dominance verifier for exception-only
+                // handler blocks.  We still give same-block duplicate constants
+                // a block-local value number so expressions like two adjacent
+                // `i + 1` computations CSE without emitting a constant Copy or
+                // leaking the constant leader into dominated child blocks.
+                let mut local_const_key_to_leader: HashMap<ValueKey, ValueId> = HashMap::new();
+                let mut local_value_number: HashMap<ValueId, ValueId> = HashMap::new();
 
                 for (i, op) in block.ops.iter().enumerate() {
                     if op.results.is_empty() {
@@ -415,6 +437,22 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     };
 
                     if !numberable {
+                        if is_const_opcode(op.opcode) {
+                            let (const_int_key, const_str_key, const_bytes_key) = const_keys(op);
+                            let key = ValueKey {
+                                opcode: op.opcode,
+                                operands: Vec::new(),
+                                const_int_key,
+                                const_str_key,
+                                const_bytes_key,
+                            };
+                            let leader = local_const_key_to_leader
+                                .get(&key)
+                                .copied()
+                                .unwrap_or(result);
+                            local_const_key_to_leader.entry(key).or_insert(result);
+                            local_value_number.insert(result, leader);
+                        }
                         let prior = value_number.insert(result, result);
                         vn_undo.push((result, prior));
                         continue;
@@ -428,7 +466,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     let numbered_operands: Vec<ValueId> = op
                         .operands
                         .iter()
-                        .map(|v| value_number.get(v).copied().unwrap_or(*v))
+                        .map(|v| {
+                            local_value_number
+                                .get(v)
+                                .copied()
+                                .or_else(|| value_number.get(v).copied())
+                                .unwrap_or(*v)
+                        })
                         .collect();
 
                     let (const_int_key, const_str_key, const_bytes_key) = const_keys(op);
@@ -714,9 +758,10 @@ mod tests {
 
     /// entry: c1 = ConstInt 42; branch body
     /// body:  c2 = ConstInt 42; return c2
-    /// → entry strictly dominates body, so c2 should become Copy(c1).
+    /// → constants stay backend-native constants. GVN must not replace c2
+    ///   with Copy(c1), even though entry strictly dominates body.
     #[test]
-    fn cross_block_redundant_constant() {
+    fn cross_block_redundant_constant_not_folded() {
         let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
         let body = func.fresh_block();
         let c1 = func.fresh_value();
@@ -742,13 +787,13 @@ mod tests {
         );
 
         let stats = run(&mut func);
-        assert!(stats.values_changed > 0);
+        assert_eq!(stats.values_changed, 0);
 
-        // c2 in `body` should now be a Copy of c1 from entry.
+        // c2 in `body` remains a backend-native constant.
         let body_ops = &func.blocks[&body].ops;
-        assert_eq!(body_ops[0].opcode, OpCode::Copy);
-        assert_eq!(body_ops[0].operands[0], c1);
+        assert_eq!(body_ops[0].opcode, OpCode::ConstInt);
         assert_eq!(body_ops[0].results[0], c2);
+        let _ = c1;
     }
 
     /// entry: s1 = p0 + p1; branch body
@@ -1048,16 +1093,16 @@ mod tests {
 
         let _stats = run(&mut func);
 
-        // body's `one_in_body` must be deduped against header's `one`
-        // (header dominates body), but the loop-carried `bumped` must
-        // remain a real Add (its operand `header_arg` is a phi).
-        assert_eq!(func.blocks[&body].ops[0].opcode, OpCode::Copy);
-        assert_eq!(func.blocks[&body].ops[0].operands[0], one);
+        // body constants are not replaced with cross-block copies. The
+        // loop-carried `bumped` must remain a real Add because its operand
+        // `header_arg` is a phi.
+        assert_eq!(func.blocks[&body].ops[0].opcode, OpCode::ConstInt);
         assert_eq!(
             func.blocks[&body].ops[1].opcode,
             OpCode::Add,
             "phi-fed Add must not be folded"
         );
+        let _ = one;
     }
 
     /// Mirrors the `bench_struct` body-block pattern: the loop-carried
@@ -1118,9 +1163,9 @@ mod tests {
         );
 
         // Body computes `i + 1` twice. A real bench_struct lowering has
-        // a fresh ConstInt SSA for each literal `1`. GVN's intra-block
-        // leader table dedups the second ConstInt against the first,
-        // then dedups the second `Add(i, 1)` against the first.
+        // a fresh ConstInt SSA for each literal `1`. GVN must not replace
+        // the second ConstInt with a Copy, but its block-local constant
+        // value number lets the second `Add(i, 1)` dedup against the first.
         func.blocks.insert(
             body,
             TirBlock {
@@ -1164,10 +1209,9 @@ mod tests {
         );
         assert_eq!(
             body_ops[2].opcode,
-            OpCode::Copy,
-            "second ConstInt(1) collapses to the first"
+            OpCode::ConstInt,
+            "second ConstInt(1) stays backend-native"
         );
-        assert_eq!(body_ops[2].operands[0], one_a);
         assert_eq!(
             body_ops[3].opcode,
             OpCode::Copy,
@@ -1250,11 +1294,11 @@ mod tests {
         assert_eq!(func.blocks[&else_b].ops[0].opcode, OpCode::ConstInt);
     }
 
-    /// `make_const_bool` is exercised here to ensure that AttrValue::Bool
-    /// (vs AttrValue::Int) discrimination is preserved across blocks.
-    /// Regression guard for commit 8662b45f.
+    /// `make_const_bool` is exercised here to ensure that constants are not
+    /// replaced across blocks. Bool-vs-int discrimination is still represented
+    /// by the constant opcode and attributes, not by a cross-block Copy.
     #[test]
-    fn cross_block_const_bool_dedup() {
+    fn cross_block_const_bool_not_folded() {
         let mut func = TirFunction::new("f".into(), vec![], TirType::Bool);
         let body = func.fresh_block();
         let b1 = func.fresh_value();
@@ -1280,8 +1324,8 @@ mod tests {
         );
 
         let stats = run(&mut func);
-        assert!(stats.values_changed > 0);
-        assert_eq!(func.blocks[&body].ops[0].opcode, OpCode::Copy);
-        assert_eq!(func.blocks[&body].ops[0].operands[0], b1);
+        assert_eq!(stats.values_changed, 0);
+        assert_eq!(func.blocks[&body].ops[0].opcode, OpCode::ConstBool);
+        let _ = b1;
     }
 }

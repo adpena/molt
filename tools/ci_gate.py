@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 import json
 import os
@@ -122,10 +122,10 @@ class CheckResult:
 
 @dataclass(frozen=True, slots=True)
 class MemoryGuardLimits:
-    max_rss_gb: float = memory_guard.DEFAULT_MAX_RSS_GB
-    max_total_rss_gb: float = memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
-    max_global_rss_gb: float = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
-    poll_interval: float = memory_guard.DEFAULT_POLL_INTERVAL_SEC
+    max_rss_gb: float
+    max_total_rss_gb: float
+    max_global_rss_gb: float
+    poll_interval: float
 
     @property
     def max_rss_kb(self) -> int:
@@ -138,6 +138,36 @@ class MemoryGuardLimits:
     @property
     def max_global_rss_kb(self) -> int:
         return memory_guard.max_global_rss_kb_from_gb(self.max_global_rss_gb)
+
+
+_DEFAULT_MEMORY_LIMITS = object()
+
+
+def default_memory_guard_limits(
+    *,
+    prefix: str = "MOLT_CI_GATE",
+    environ: Mapping[str, str] | None = None,
+    poll_interval: float = memory_guard.DEFAULT_POLL_INTERVAL_SEC,
+) -> MemoryGuardLimits:
+    budget = memory_guard.adaptive_memory_budget(prefix, environ)
+    return MemoryGuardLimits(
+        max_rss_gb=budget.max_process_rss_gb,
+        max_total_rss_gb=budget.max_total_rss_gb,
+        max_global_rss_gb=budget.max_global_rss_gb,
+        poll_interval=poll_interval,
+    )
+
+
+def _resolve_memory_limits(
+    limits: MemoryGuardLimits | None | object,
+) -> MemoryGuardLimits | None:
+    if limits is _DEFAULT_MEMORY_LIMITS:
+        return default_memory_guard_limits()
+    if limits is None or isinstance(limits, MemoryGuardLimits):
+        return limits
+    raise TypeError(
+        "memory limits must be MemoryGuardLimits, None, or the default sentinel"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,7 +541,7 @@ def _status_from_process_result(
 def _run_check(
     check: Check,
     dry_run: bool = False,
-    memory_limits: MemoryGuardLimits | None = MemoryGuardLimits(),
+    memory_limits: MemoryGuardLimits | None | object = _DEFAULT_MEMORY_LIMITS,
 ) -> CheckResult:
     """Execute a single check and return the result."""
     skip = _skip_reason(check)
@@ -531,6 +561,7 @@ def _run_check(
             skip_reason="dry-run",
         )
 
+    resolved_memory_limits = _resolve_memory_limits(memory_limits)
     env = _check_env(check)
     cwd = check.cwd or str(ROOT)
     slot_context = (
@@ -542,7 +573,7 @@ def _run_check(
     start = time.monotonic()
     try:
         with slot_context:
-            if memory_limits is None:
+            if resolved_memory_limits is None:
                 proc = subprocess.run(
                     check.cmd,
                     cwd=cwd,
@@ -558,14 +589,14 @@ def _run_check(
             else:
                 guarded = memory_guard.run_guarded(
                     check.cmd,
-                    max_rss_kb=memory_limits.max_rss_kb,
-                    max_total_rss_kb=memory_limits.max_total_rss_kb,
-                    poll_interval=memory_limits.poll_interval,
+                    max_rss_kb=resolved_memory_limits.max_rss_kb,
+                    max_total_rss_kb=resolved_memory_limits.max_total_rss_kb,
+                    poll_interval=resolved_memory_limits.poll_interval,
                     cwd=cwd,
                     env=env,
                     timeout=check.timeout,
                     capture_output=True,
-                    child_rlimit_kb=memory_limits.max_rss_kb,
+                    child_rlimit_kb=resolved_memory_limits.max_rss_kb,
                 )
                 returncode = guarded.returncode
                 stdout = guarded.stdout
@@ -655,9 +686,10 @@ def run_gate(
     dry_run: bool = False,
     json_out: bool = False,
     verbose: bool = False,
-    memory_limits: MemoryGuardLimits | None = MemoryGuardLimits(),
+    memory_limits: MemoryGuardLimits | None | object = _DEFAULT_MEMORY_LIMITS,
 ) -> list[CheckResult]:
     """Run all checks for the requested tiers and return results."""
+    resolved_memory_limits = _resolve_memory_limits(memory_limits)
     all_checks = _build_checks()
     selected = [c for c in all_checks if c.tier in tiers]
 
@@ -681,19 +713,19 @@ def run_gate(
             requested_workers = min(4, len(tier_checks))
             max_workers = _parallel_workers_for_memory_guard(
                 requested_workers,
-                memory_limits=memory_limits,
+                memory_limits=resolved_memory_limits,
             )
             if (
                 max_workers < requested_workers
                 and not json_out
-                and memory_limits is not None
+                and resolved_memory_limits is not None
             ):
                 print(
                     "[MEMORY-GUARD] "
                     f"Clamping ci_gate workers from {requested_workers} to "
                     f"{max_workers} "
-                    f"(global={memory_limits.max_global_rss_gb:.2f}GB "
-                    f"tree={memory_limits.max_total_rss_gb:.2f}GB)."
+                    f"(global={resolved_memory_limits.max_global_rss_gb:.2f}GB "
+                    f"tree={resolved_memory_limits.max_total_rss_gb:.2f}GB)."
                 )
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
@@ -701,7 +733,7 @@ def run_gate(
                         _run_check,
                         check,
                         dry_run,
-                        memory_limits,
+                        resolved_memory_limits,
                     ): check
                     for check in tier_checks
                 }
@@ -721,7 +753,7 @@ def run_gate(
                         break
         else:
             for check in tier_checks:
-                result = _run_check(check, dry_run, memory_limits)
+                result = _run_check(check, dry_run, resolved_memory_limits)
                 results.append(result)
                 if not json_out:
                     _print_result(result, verbose)
@@ -750,12 +782,13 @@ def _strip_background_flag(argv: Sequence[str]) -> list[str]:
 
 
 def _background_process_kwargs(
-    limits: MemoryGuardLimits | None = MemoryGuardLimits(),
+    limits: MemoryGuardLimits | None | object = _DEFAULT_MEMORY_LIMITS,
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {"start_new_session": True}
-    if limits is None or os.name != "posix":
+    resolved_limits = _resolve_memory_limits(limits)
+    if resolved_limits is None or os.name != "posix":
         return kwargs
-    limit_kb = limits.max_rss_kb
+    limit_kb = resolved_limits.max_rss_kb
 
     def apply_limit() -> None:
         memory_guard._apply_child_resource_limit(limit_kb)
@@ -899,32 +932,32 @@ def main() -> None:
     parser.add_argument(
         "--max-rss-gb",
         type=float,
-        default=memory_guard.DEFAULT_MAX_RSS_GB,
+        default=None,
         help=(
             "Abort a check if any process exceeds this RSS; must be "
             f"<{memory_guard.DEFAULT_HARD_MAX_RSS_GB:g} "
-            f"(default: {memory_guard.DEFAULT_MAX_RSS_GB})."
+            "(default: adaptive from live available memory)."
         ),
     )
     parser.add_argument(
         "--max-total-rss-gb",
         type=float,
-        default=memory_guard.DEFAULT_MAX_TOTAL_RSS_GB,
+        default=None,
         help=(
             "Abort a check if its process tree exceeds this aggregate RSS; must be "
             f"<{memory_guard.DEFAULT_HARD_MAX_RSS_GB:g} "
-            f"(default: {memory_guard.DEFAULT_MAX_TOTAL_RSS_GB})."
+            "(default: adaptive from live available memory)."
         ),
     )
     parser.add_argument(
         "--max-global-rss-gb",
         type=float,
-        default=memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB,
+        default=None,
         help=(
             "Clamp parallel check workers so their process-tree RSS budgets fit "
             f"below this cumulative ceiling; must be "
             f"<{memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB:g} "
-            f"(default: {memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB})."
+            "(default: adaptive from live available memory)."
         ),
     )
     parser.add_argument(
@@ -964,13 +997,26 @@ def main() -> None:
         tiers = list(range(1, tier_num + 1))
 
     try:
+        adaptive_budget = memory_guard.adaptive_memory_budget("MOLT_CI_GATE")
         memory_limits = (
             None
             if args.no_memory_guard
             else MemoryGuardLimits(
-                max_rss_gb=args.max_rss_gb,
-                max_total_rss_gb=args.max_total_rss_gb,
-                max_global_rss_gb=args.max_global_rss_gb,
+                max_rss_gb=(
+                    adaptive_budget.max_process_rss_gb
+                    if args.max_rss_gb is None
+                    else args.max_rss_gb
+                ),
+                max_total_rss_gb=(
+                    adaptive_budget.max_total_rss_gb
+                    if args.max_total_rss_gb is None
+                    else args.max_total_rss_gb
+                ),
+                max_global_rss_gb=(
+                    adaptive_budget.max_global_rss_gb
+                    if args.max_global_rss_gb is None
+                    else args.max_global_rss_gb
+                ),
                 poll_interval=args.memory_poll_interval,
             )
         )

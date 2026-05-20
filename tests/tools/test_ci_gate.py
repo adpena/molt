@@ -73,6 +73,49 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
     assert calls[0]["env"]["PYTHONPATH"] == str(module.ROOT / "src")
 
 
+def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
+    module = _load_ci_gate()
+    calls: list[dict[str, object]] = []
+
+    def fake_adaptive_memory_budget(prefix, environ=None):
+        assert prefix == "MOLT_CI_GATE"
+        assert environ is None
+        return module.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=4.0,
+            max_total_rss_gb=6.0,
+            max_global_rss_gb=10.0,
+            reserve_gb=1.0,
+            physical_gb=16.0,
+            available_gb=12.0,
+            source="test",
+        )
+
+    def fake_run_guarded(command, **kwargs):
+        calls.append({"command": list(command), **kwargs})
+        return module.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="adaptive\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        module.memory_guard, "adaptive_memory_budget", fake_adaptive_memory_budget
+    )
+    monkeypatch.setattr(module.memory_guard, "run_guarded", fake_run_guarded)
+
+    result = module._run_check(
+        module.Check(name="unit", tier=1, cmd=["python3", "-c", "print('ok')"])
+    )
+
+    assert result.status == "pass"
+    assert calls[0]["max_rss_kb"] == 4 * 1024 * 1024
+    assert calls[0]["max_total_rss_kb"] == 6 * 1024 * 1024
+    assert calls[0]["child_rlimit_kb"] == 4 * 1024 * 1024
+
+
 def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
     module = _load_ci_gate()
     for key in (
@@ -220,7 +263,21 @@ def test_launch_background_gate_strips_recursive_background_flag(
         def __init__(self, command, **kwargs) -> None:
             popen_calls.append({"command": list(command), **kwargs})
 
+    def fake_adaptive_memory_budget(prefix, environ=None):
+        return module.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=2.0,
+            max_total_rss_gb=3.0,
+            max_global_rss_gb=4.0,
+            reserve_gb=1.0,
+            physical_gb=8.0,
+            available_gb=6.0,
+            source="test",
+        )
+
     monkeypatch.setattr(module, "LOG_ROOT", tmp_path)
+    monkeypatch.setattr(
+        module.memory_guard, "adaptive_memory_budget", fake_adaptive_memory_budget
+    )
     monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
 
     metadata = module.launch_background_gate(
@@ -270,5 +327,5 @@ def test_ci_gate_help_reports_memory_guard_hard_cap() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "must be <112" in result.stdout
-    assert "must be <58" in result.stdout
+    assert "<4096" in result.stdout
     assert "must be <30" not in result.stdout

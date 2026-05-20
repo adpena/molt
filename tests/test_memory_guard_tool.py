@@ -150,9 +150,25 @@ def test_max_rss_gb_must_leave_margin_below_hard_cap() -> None:
 
 
 def test_max_global_rss_gb_must_leave_workstation_margin() -> None:
-    assert memory_guard.max_global_rss_kb_from_gb(54) == 54 * 1024 * 1024
-    with pytest.raises(ValueError, match="below 58"):
-        memory_guard.max_global_rss_kb_from_gb(58)
+    assert memory_guard.max_global_rss_kb_from_gb(128) == 128 * 1024 * 1024
+    with pytest.raises(ValueError, match="below 4096"):
+        memory_guard.max_global_rss_kb_from_gb(4096)
+
+
+def test_memory_guard_defaults_adapt_to_live_memory_budget() -> None:
+    budget = memory_guard.adaptive_memory_budget(
+        "MOLT_BENCH",
+        {
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "96",
+        },
+    )
+
+    assert budget.reserve_gb == pytest.approx(7.68)
+    assert budget.max_process_rss_gb == pytest.approx(38.55168)
+    assert budget.max_total_rss_gb == pytest.approx(51.40224)
+    assert budget.max_global_rss_gb == pytest.approx(85.6704)
+    assert memory_guard.DEFAULT_POLL_INTERVAL_SEC == 0.10
 
 
 def test_run_command_passes_through_success() -> None:
@@ -264,6 +280,8 @@ def test_main_enforces_timeout_and_writes_summary(
         [
             "--max-rss-gb",
             "1",
+            "--max-total-rss-gb",
+            "18",
             "--poll-interval",
             "0.01",
             "--child-rlimit-gb",
@@ -309,6 +327,8 @@ def test_main_reports_signal_status_without_guard_violation(
         [
             "--max-rss-gb",
             "1",
+            "--max-total-rss-gb",
+            "18",
             "--poll-interval",
             "0.01",
             "--summary-json",
@@ -523,6 +543,8 @@ def test_main_writes_summary_json(tmp_path) -> None:
         [
             "--max-rss-gb",
             "1",
+            "--max-total-rss-gb",
+            "18",
             "--poll-interval",
             "0.01",
             "--child-rlimit-gb",
@@ -544,9 +566,7 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["peak"]["scope"] == "process"
     assert payload["peak_total"]["rss_kb"] >= payload["peak"]["rss_kb"]
     assert payload["peak_total"]["scope"] == "process_tree"
-    assert payload["max_total_rss_gb"] == pytest.approx(
-        memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
-    )
+    assert payload["max_total_rss_gb"] == pytest.approx(18.0)
     assert payload["child_rlimit_gb"] is None
 
 

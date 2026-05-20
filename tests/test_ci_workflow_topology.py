@@ -156,7 +156,7 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "--suite full" in nightly_text
     assert "--build-profile dev" in nightly_text
     assert 'MOLT_DIFF_MEASURE_RSS: "1"' in nightly_text
-    assert 'MOLT_DIFF_RLIMIT_GB: "10"' in nightly_text
+    assert "MOLT_DIFF_RLIMIT_GB" not in nightly_text
     assert "tests/differential/basic" in nightly_text
     assert "tests/differential/stdlib" in nightly_text
     assert 'REPRO_ROOT="$PWD/tmp/repro_sweep"' in nightly_text

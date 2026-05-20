@@ -38,10 +38,10 @@ _DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV = "MOLT_DIFF_MEMORY_GUARD_EVENTS_JSONL"
 _DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV = (
     "MOLT_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL"
 )
-_DIFF_MEMORY_GUARD_HARD_GLOBAL_GB = 58.0
-_DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB = 54.0
-_DIFF_MEMORY_GUARD_DEFAULT_TREE_GB = 24.0
-_DIFF_MEMORY_GUARD_DEFAULT_PROCESS_GB = 20.0
+_DIFF_MEMORY_GUARD_HARD_GLOBAL_GB = memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB
+_DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
+_DIFF_MEMORY_GUARD_DEFAULT_TREE_GB = memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
+_DIFF_MEMORY_GUARD_DEFAULT_PROCESS_GB = memory_guard.DEFAULT_MAX_RSS_GB
 _DIFF_MEMORY_GUARD_DEFAULT_POLL_SEC = 0.10
 _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_INTERVAL_SEC = 1.0
 _DIFF_MEMORY_GUARD_DEFAULT_EVENT_MAX_MB = 1.0
@@ -1085,7 +1085,9 @@ def _diff_trusted_default() -> bool:
 
 def _diff_measure_rss() -> bool:
     raw = os.environ.get("MOLT_DIFF_MEASURE_RSS", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    if not raw:
+        return True
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _diff_glob() -> str:
@@ -1533,32 +1535,26 @@ def _bounded_positive_float_env(
 
 
 def _default_global_memory_guard_gb() -> float:
-    available = _available_memory_bytes()
-    if available is None:
-        return min(
-            _DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB,
-            _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB,
-        )
-    available_gb = available / (1024 * 1024 * 1024)
-    return min(
-        _DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB,
-        _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB,
-        max(2.0, available_gb * 0.70),
-    )
+    return memory_guard.adaptive_memory_budget("MOLT_DIFF").max_global_rss_gb
 
 
 def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
+    adaptive_budget = memory_guard.adaptive_memory_budget("MOLT_DIFF")
     global_gb = _bounded_positive_float_env(
         "MOLT_DIFF_GLOBAL_RSS_LIMIT_GB",
-        default=_default_global_memory_guard_gb(),
-        upper=_DIFF_MEMORY_GUARD_HARD_GLOBAL_GB,
+        default=adaptive_budget.max_global_rss_gb,
+        upper=memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
     )
     legacy_global = _parse_float_env("MOLT_DIFF_MAX_GLOBAL_RSS_GB")
     if legacy_global is not None and legacy_global > 0:
-        global_gb = min(global_gb, legacy_global, _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB)
+        global_gb = min(
+            global_gb,
+            legacy_global,
+            memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
+        )
 
     default_tree_gb = min(
-        _DIFF_MEMORY_GUARD_DEFAULT_TREE_GB,
+        adaptive_budget.max_total_rss_gb,
         max(0.5, global_gb * 0.60),
     )
     tree_gb = _bounded_positive_float_env(
@@ -1571,7 +1567,7 @@ def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
         tree_gb = legacy_tree_gb
 
     default_process_gb = min(
-        _DIFF_MEMORY_GUARD_DEFAULT_PROCESS_GB,
+        adaptive_budget.max_process_rss_gb,
         max(0.25, tree_gb * 0.85),
     )
     process_gb = _bounded_positive_float_env(
@@ -1638,8 +1634,8 @@ def _memory_limit_bytes() -> int | None:
         if mb <= 0:
             return None
         return int(mb * 1024 * 1024)
-    # Default to 10 GB when unset; disable by setting MOLT_DIFF_RLIMIT_GB=0.
-    return 10 * 1024 * 1024 * 1024
+    # Default to the same adaptive per-process budget as the process-tree guard.
+    return _diff_memory_guard_config().max_process_kb * 1024
 
 
 _MEM_LIMIT_APPLIED = False
