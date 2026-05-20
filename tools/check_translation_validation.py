@@ -404,72 +404,83 @@ def main() -> int:
         parser.print_usage(sys.stderr)
         return 2
 
-    # Run validation
-    results: list[ValidationResult] = []
-    total = len(sources)
+    guard_env = _make_env()
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", guard_env)
+    with harness_memory_guard.guarded_harness_scope(
+        prefix="MOLT_CONFORMANCE",
+        repo_root=REPO_ROOT,
+        artifact_root=REPO_ROOT / "tmp" / "translation_validation",
+        label="check_translation_validation",
+        env=guard_env,
+        limits=limits,
+    ) as guard_scope:
+        # Run validation
+        results: list[ValidationResult] = []
+        total = len(sources)
 
-    print(
-        f"Translation validation: {total} file(s), profile={args.build_profile}, timeout={args.timeout}s"
-    )
-    print()
-
-    for i, source in enumerate(sources, 1):
-        label = Path(source).name
-        if args.verbose:
-            print(f"[{i}/{total}] {source}")
-        else:
-            print(f"[{i}/{total}] {label} ... ", end="", flush=True)
-
-        result = validate_file(
-            source,
-            profile=args.build_profile,
-            timeout=args.timeout,
-            verbose=args.verbose,
+        print(
+            f"Translation validation: {total} file(s), profile={args.build_profile}, timeout={args.timeout}s"
         )
-        results.append(result)
-
-        if not args.verbose:
-            if result.status == ValidationResult.PASS:
-                print(f"PASS ({result.elapsed:.1f}s)")
-            elif result.status == ValidationResult.FAIL:
-                print(f"FAIL ({result.elapsed:.1f}s)")
-            elif result.status == ValidationResult.ERROR:
-                print(f"ERROR ({result.elapsed:.1f}s)")
-            else:
-                print(f"SKIP ({result.elapsed:.1f}s)")
-
-        # Show detail for failures and errors in both modes
-        if result.status == ValidationResult.FAIL:
-            for line in result.detail.splitlines():
-                print(f"    {line}")
-        elif result.status == ValidationResult.ERROR and args.verbose:
-            print(f"    {result.detail[:300]}")
-
-    # Summary
-    n_pass = sum(1 for r in results if r.status == ValidationResult.PASS)
-    n_fail = sum(1 for r in results if r.status == ValidationResult.FAIL)
-    n_error = sum(1 for r in results if r.status == ValidationResult.ERROR)
-    n_skip = sum(1 for r in results if r.status == ValidationResult.SKIP)
-    total_time = sum(r.elapsed for r in results)
-
-    print()
-    print(
-        f"Results: {n_pass} pass, {n_fail} fail, {n_error} error, {n_skip} skip  ({total_time:.1f}s)"
-    )
-
-    if n_fail > 0:
+        print(harness_memory_guard.limits_status_line(guard_scope.limits))
         print()
-        print("Failed files:")
-        for r in results:
-            if r.status == ValidationResult.FAIL:
-                print(f"  {r.source}")
-        return 1
 
-    if n_error > 0 and n_pass == 0:
-        # All files errored (build infra issue) -- exit 2
-        return 2
+        for i, source in enumerate(sources, 1):
+            label = Path(source).name
+            if args.verbose:
+                print(f"[{i}/{total}] {source}")
+            else:
+                print(f"[{i}/{total}] {label} ... ", end="", flush=True)
 
-    return 0
+            result = validate_file(
+                source,
+                profile=args.build_profile,
+                timeout=args.timeout,
+                verbose=args.verbose,
+            )
+            results.append(result)
+
+            if not args.verbose:
+                if result.status == ValidationResult.PASS:
+                    print(f"PASS ({result.elapsed:.1f}s)")
+                elif result.status == ValidationResult.FAIL:
+                    print(f"FAIL ({result.elapsed:.1f}s)")
+                elif result.status == ValidationResult.ERROR:
+                    print(f"ERROR ({result.elapsed:.1f}s)")
+                else:
+                    print(f"SKIP ({result.elapsed:.1f}s)")
+
+            # Show detail for failures and errors in both modes
+            if result.status == ValidationResult.FAIL:
+                for line in result.detail.splitlines():
+                    print(f"    {line}")
+            elif result.status == ValidationResult.ERROR and args.verbose:
+                print(f"    {result.detail[:300]}")
+
+        # Summary
+        n_pass = sum(1 for r in results if r.status == ValidationResult.PASS)
+        n_fail = sum(1 for r in results if r.status == ValidationResult.FAIL)
+        n_error = sum(1 for r in results if r.status == ValidationResult.ERROR)
+        n_skip = sum(1 for r in results if r.status == ValidationResult.SKIP)
+        total_time = sum(r.elapsed for r in results)
+
+        print()
+        print(
+            f"Results: {n_pass} pass, {n_fail} fail, {n_error} error, {n_skip} skip  ({total_time:.1f}s)"
+        )
+
+        if n_fail > 0:
+            print()
+            print("Failed files:")
+            for r in results:
+                if r.status == ValidationResult.FAIL:
+                    print(f"  {r.source}")
+            return 1
+
+        if n_error > 0 and n_pass == 0:
+            # All files errored (build infra issue) -- exit 2
+            return 2
+
+        return 0
 
 
 if __name__ == "__main__":

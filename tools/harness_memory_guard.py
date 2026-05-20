@@ -10,7 +10,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 try:
     from tools import memory_guard, process_sentinel
@@ -23,8 +23,14 @@ DEFAULT_POLL_INTERVAL_SEC = 0.10
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 TERMINATED_PGID_TTL_SEC = 60.0
+HARD_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_RSS_GB - 0.001
+HARD_GLOBAL_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB - 0.001
+HARD_CHILD_RLIMIT_GB = memory_guard.DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 _TERMINATED_PGIDS: dict[int, float] = {}
 _TERMINATED_PGIDS_LOCK = threading.Lock()
+_AUTO_SENTINEL_SUPPRESSORS = 0
+_AUTO_SENTINEL_SUPPRESSORS_LOCK = threading.Lock()
 
 
 class GuardedCompletedProcess(subprocess.CompletedProcess[str]):
@@ -59,6 +65,23 @@ def _claim_terminated_pgid(pgid: int) -> bool:
         return True
 
 
+def _note_auto_sentinel_suppressor_entered() -> None:
+    global _AUTO_SENTINEL_SUPPRESSORS
+    with _AUTO_SENTINEL_SUPPRESSORS_LOCK:
+        _AUTO_SENTINEL_SUPPRESSORS += 1
+
+
+def _note_auto_sentinel_suppressor_exited() -> None:
+    global _AUTO_SENTINEL_SUPPRESSORS
+    with _AUTO_SENTINEL_SUPPRESSORS_LOCK:
+        _AUTO_SENTINEL_SUPPRESSORS = max(0, _AUTO_SENTINEL_SUPPRESSORS - 1)
+
+
+def _sentinel_active() -> bool:
+    with _AUTO_SENTINEL_SUPPRESSORS_LOCK:
+        return _AUTO_SENTINEL_SUPPRESSORS > 0
+
+
 @dataclass(frozen=True, slots=True)
 class HarnessMemoryLimits:
     enabled: bool
@@ -71,6 +94,7 @@ class HarnessMemoryLimits:
     dynamic_process_rss: bool = False
     dynamic_total_rss: bool = False
     dynamic_global_rss: bool = False
+    dynamic_child_rlimit: bool = False
     max_process_rss_kb: int = field(init=False, repr=False)
     max_total_rss_kb: int = field(init=False, repr=False)
     max_global_rss_kb: int = field(init=False, repr=False)
@@ -133,9 +157,37 @@ class HarnessMemoryLimits:
             accounted_rss_kb=accounted_rss_kb,
         )
 
+    def current_child_rlimit_kb(
+        self,
+        env: Mapping[str, str] | None = None,
+        *,
+        accounted_rss_kb: int = 0,
+    ) -> int | None:
+        if self.child_rlimit_gb is not None and self.child_rlimit_gb <= 0:
+            return None
+        if not self.dynamic_child_rlimit:
+            return self.child_rlimit_kb
+        current = self.current_memory_limits(
+            env,
+            accounted_rss_kb=accounted_rss_kb,
+        )
+        current_total_gb = current.max_total_rss_gb
+        if current_total_gb is None:
+            current_total_gb = current.max_process_rss_gb
+        child_rlimit_gb = memory_guard.default_child_rlimit_gb(
+            max_process_rss_gb=current.max_process_rss_gb,
+            max_total_rss_gb=current_total_gb,
+        )
+        return memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb)
+
 
 def _normalize_prefix(prefix: str) -> str:
     return prefix.strip().upper().rstrip("_")
+
+
+def _label_from_prefix(prefix: str) -> str:
+    normalized = _normalize_prefix(prefix).lower() or "molt"
+    return "".join(ch if ch.isalnum() else "_" for ch in normalized)
 
 
 def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
@@ -144,6 +196,13 @@ def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     merged = dict(os.environ)
     merged.update(env)
     return merged
+
+
+def _artifact_root_from_env(env: Mapping[str, str] | None) -> Path:
+    source = _effective_env(env)
+    explicit = source.get("MOLT_EXT_ROOT")
+    root = Path(explicit).expanduser() if explicit else _REPO_ROOT
+    return root / "tmp" / "harness_memory_guard"
 
 
 def _env_bool(
@@ -187,6 +246,10 @@ def _env_float_optional(
         except ValueError:
             continue
     return None
+
+
+def _clamp_hard_limit(value: float, hard_limit_gb: float) -> float:
+    return min(value, hard_limit_gb)
 
 
 def enabled_from_env(
@@ -250,6 +313,12 @@ def limits_from_env(
         if global_override is None
         else global_override
     )
+    global_gb = _clamp_hard_limit(
+        global_gb,
+        min(HARD_GLOBAL_RSS_LIMIT_GB, adaptive_budget.max_global_rss_gb),
+    )
+    total_gb = _clamp_hard_limit(total_gb, min(HARD_RSS_LIMIT_GB, global_gb))
+    process_gb = _clamp_hard_limit(process_gb, min(HARD_RSS_LIMIT_GB, total_gb))
     poll_interval = _env_float(
         source,
         [f"{normalized}_MEMORY_GUARD_POLL_SEC", "MOLT_MEMORY_GUARD_POLL_SEC"],
@@ -257,7 +326,7 @@ def limits_from_env(
     )
     if poll_interval <= 0:
         poll_interval = DEFAULT_POLL_INTERVAL_SEC
-    child_rlimit_gb = _env_float(
+    child_rlimit_override = _env_float_optional(
         source,
         [
             f"{normalized}_CHILD_RLIMIT_GB",
@@ -265,11 +334,24 @@ def limits_from_env(
             "MOLT_CHILD_RLIMIT_GB",
             "MOLT_MAX_CHILD_RLIMIT_GB",
         ],
-        default=memory_guard.default_child_rlimit_gb(
+    )
+    child_rlimit_gb = (
+        memory_guard.default_child_rlimit_gb(
             max_process_rss_gb=process_gb,
             max_total_rss_gb=total_gb,
-        ),
+        )
+        if child_rlimit_override is None
+        else child_rlimit_override
     )
+    if child_rlimit_gb > 0:
+        child_rlimit_cap_gb = memory_guard.default_child_rlimit_gb(
+            max_process_rss_gb=process_gb,
+            max_total_rss_gb=total_gb,
+        )
+        child_rlimit_gb = _clamp_hard_limit(
+            child_rlimit_gb,
+            min(HARD_CHILD_RLIMIT_GB, child_rlimit_cap_gb),
+        )
     return HarnessMemoryLimits(
         enabled=enabled,
         max_process_rss_gb=process_gb,
@@ -281,6 +363,7 @@ def limits_from_env(
         dynamic_process_rss=process_override is None,
         dynamic_total_rss=total_override is None,
         dynamic_global_rss=global_override is None,
+        dynamic_child_rlimit=child_rlimit_override is None,
     )
 
 
@@ -295,7 +378,19 @@ def limits_summary(limits: HarnessMemoryLimits) -> dict[str, object]:
         "dynamic_process_rss": limits.dynamic_process_rss,
         "dynamic_total_rss": limits.dynamic_total_rss,
         "dynamic_global_rss": limits.dynamic_global_rss,
+        "dynamic_child_rlimit": limits.dynamic_child_rlimit,
     }
+
+
+def limits_status_line(limits: HarnessMemoryLimits) -> str:
+    return (
+        "Memory guard: "
+        f"enabled={limits.enabled} "
+        f"process={limits.max_process_rss_gb:.2f}GB "
+        f"tree={limits.max_total_rss_gb:.2f}GB "
+        f"global={limits.max_global_rss_gb:.2f}GB "
+        f"dynamic={limits.dynamic_global_rss}"
+    )
 
 
 def timeout_from_env(
@@ -369,6 +464,30 @@ def _guard_exit_signal_message(returncode: int) -> str:
     )
 
 
+@contextlib.contextmanager
+def _auto_repo_sentinel(
+    *,
+    prefix: str,
+    env: Mapping[str, str] | None,
+    limits: HarnessMemoryLimits,
+) -> Iterator[RepoProcessMemorySentinel | None]:
+    if not limits.enabled or _sentinel_active():
+        yield None
+        return
+    label = f"{_label_from_prefix(prefix)}_command"
+    with repo_process_sentinel(
+        repo_root=_REPO_ROOT,
+        artifact_root=_artifact_root_from_env(env),
+        label=label,
+        limits=limits,
+        drain_on_exit=True,
+        drain_until_clean_sec=0.1,
+        drain_max_runtime_sec=2.0,
+        suppress_auto_guard=False,
+    ) as sentinel:
+        yield sentinel
+
+
 def guarded_completed_process(
     command: Sequence[str],
     *,
@@ -402,28 +521,33 @@ def guarded_completed_process(
             completed.stderr,
             elapsed_s=time.perf_counter() - started,
         )
-    guarded = memory_guard.run_guarded(
-        list(command),
-        max_rss_kb=resolved_limits.max_process_rss_kb,
-        max_total_rss_kb=resolved_limits.max_total_rss_kb,
-        poll_interval=resolved_limits.poll_interval,
-        cwd=cwd,
+    with _auto_repo_sentinel(
+        prefix=prefix,
         env=env,
-        timeout=timeout,
-        capture_output=capture_output,
-        child_rlimit_kb=resolved_limits.child_rlimit_kb,
-        input=input,
-        stream=stream,
-        adaptive_budget_provider=(
-            lambda accounted: memory_guard.adaptive_memory_budget(
-                resolved_limits.adaptive_prefix,
-                _effective_env(env),
-                accounted_rss_kb=accounted,
-            )
-        ),
-        dynamic_process_rss=resolved_limits.dynamic_process_rss,
-        dynamic_total_rss=resolved_limits.dynamic_total_rss,
-    )
+        limits=resolved_limits,
+    ):
+        guarded = memory_guard.run_guarded(
+            list(command),
+            max_rss_kb=resolved_limits.max_process_rss_kb,
+            max_total_rss_kb=resolved_limits.max_total_rss_kb,
+            poll_interval=resolved_limits.poll_interval,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            capture_output=capture_output,
+            child_rlimit_kb=resolved_limits.current_child_rlimit_kb(env),
+            input=input,
+            stream=stream,
+            adaptive_budget_provider=(
+                lambda accounted: memory_guard.adaptive_memory_budget(
+                    resolved_limits.adaptive_prefix,
+                    _effective_env(env),
+                    accounted_rss_kb=accounted,
+                )
+            ),
+            dynamic_process_rss=resolved_limits.dynamic_process_rss,
+            dynamic_total_rss=resolved_limits.dynamic_total_rss,
+        )
     stderr = guarded.stderr or ""
     if guarded.violation is not None:
         stderr += _guard_stderr_message(
@@ -449,9 +573,10 @@ def batch_process_group_kwargs(
     if not resolved_limits.enabled or os.name != "posix":
         return {}
     kwargs: dict[str, object] = {"start_new_session": True}
-    if resolved_limits.child_rlimit_kb is not None:
+    child_rlimit_kb = resolved_limits.current_child_rlimit_kb()
+    if child_rlimit_kb is not None:
         kwargs["preexec_fn"] = _child_resource_limit_preexec(
-            resolved_limits.child_rlimit_kb
+            child_rlimit_kb
         )
     return kwargs
 
@@ -500,6 +625,7 @@ class RepoProcessMemorySentinel:
         drain_grace_sec: float = 0.25,
         drain_until_clean_sec: float = 0.3,
         drain_max_runtime_sec: float = 5.0,
+        suppress_auto_guard: bool = True,
     ) -> None:
         self._repo_root = repo_root
         self._artifact_root = artifact_root
@@ -509,6 +635,7 @@ class RepoProcessMemorySentinel:
         self._drain_grace_sec = max(0.0, drain_grace_sec)
         self._drain_until_clean_sec = max(0.0, drain_until_clean_sec)
         self._drain_max_runtime_sec = max(0.0, drain_max_runtime_sec)
+        self._suppress_auto_guard = suppress_auto_guard
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._baseline_pgids: set[int] = set()
@@ -519,21 +646,32 @@ class RepoProcessMemorySentinel:
     def __enter__(self) -> "RepoProcessMemorySentinel":
         if not self._limits.enabled:
             return self
-        self._baseline_pgids = self._current_group_pgids()
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"{self._label}-memory-sentinel",
-            daemon=True,
-        )
-        self._thread.start()
-        return self
+        if self._suppress_auto_guard:
+            _note_auto_sentinel_suppressor_entered()
+        try:
+            self._baseline_pgids = self._current_group_pgids()
+            self._thread = threading.Thread(
+                target=self._run,
+                name=f"{self._label}-memory-sentinel",
+                daemon=True,
+            )
+            self._thread.start()
+            return self
+        except Exception:
+            if self._suppress_auto_guard:
+                _note_auto_sentinel_suppressor_exited()
+            raise
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=max(0.5, self._limits.poll_interval * 2))
-        if self._limits.enabled and self._drain_on_exit:
-            self.drain_new_processes()
+        try:
+            self._stop.set()
+            if self._thread is not None:
+                self._thread.join(timeout=max(0.5, self._limits.poll_interval * 2))
+            if self._limits.enabled and self._drain_on_exit:
+                self.drain_new_processes()
+        finally:
+            if self._limits.enabled and self._suppress_auto_guard:
+                _note_auto_sentinel_suppressor_exited()
 
     def _record(self, payload: dict[str, object]) -> None:
         payload.setdefault("label", self._label)
@@ -685,6 +823,7 @@ def repo_process_sentinel(
     drain_grace_sec: float = 0.25,
     drain_until_clean_sec: float = 0.3,
     drain_max_runtime_sec: float = 5.0,
+    suppress_auto_guard: bool = True,
 ) -> RepoProcessMemorySentinel:
     return RepoProcessMemorySentinel(
         repo_root=repo_root,
@@ -695,4 +834,43 @@ def repo_process_sentinel(
         drain_grace_sec=drain_grace_sec,
         drain_until_clean_sec=drain_until_clean_sec,
         drain_max_runtime_sec=drain_max_runtime_sec,
+        suppress_auto_guard=suppress_auto_guard,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessGuardScope:
+    limits: HarnessMemoryLimits
+    sentinel: RepoProcessMemorySentinel
+
+    @property
+    def memory_guard(self) -> dict[str, object]:
+        return limits_summary(self.limits)
+
+
+@contextlib.contextmanager
+def guarded_harness_scope(
+    *,
+    prefix: str,
+    repo_root: Path,
+    artifact_root: Path,
+    label: str,
+    env: Mapping[str, str] | None = None,
+    limits: HarnessMemoryLimits | None = None,
+    drain_on_exit: bool = True,
+    drain_grace_sec: float = 0.25,
+    drain_until_clean_sec: float = 0.3,
+    drain_max_runtime_sec: float = 5.0,
+) -> Iterator[HarnessGuardScope]:
+    resolved_limits = limits or limits_from_env(prefix, env)
+    with repo_process_sentinel(
+        repo_root=repo_root,
+        artifact_root=artifact_root,
+        label=label,
+        limits=resolved_limits,
+        drain_on_exit=drain_on_exit,
+        drain_grace_sec=drain_grace_sec,
+        drain_until_clean_sec=drain_until_clean_sec,
+        drain_max_runtime_sec=drain_max_runtime_sec,
+    ) as sentinel:
+        yield HarnessGuardScope(limits=resolved_limits, sentinel=sentinel)

@@ -582,7 +582,11 @@ def print_summary(summary: ValidationSummary, *, verbose: bool = False) -> None:
         )
 
 
-def summary_to_json(summary: ValidationSummary) -> dict[str, Any]:
+def summary_to_json(
+    summary: ValidationSummary,
+    *,
+    memory_guard: dict[str, object] | None = None,
+) -> dict[str, Any]:
     """Convert summary to JSON-serializable dict."""
     results_json: list[dict[str, Any]] = []
     for r in summary.results:
@@ -611,7 +615,7 @@ def summary_to_json(summary: ValidationSummary) -> dict[str, Any]:
                 }
         results_json.append(entry)
 
-    return {
+    payload: dict[str, Any] = {
         "total": summary.total,
         "passed": summary.passed,
         "mismatches": summary.mismatches,
@@ -621,6 +625,9 @@ def summary_to_json(summary: ValidationSummary) -> dict[str, Any]:
         "elapsed_ms": summary.elapsed_ms,
         "results": results_json,
     }
+    if memory_guard is not None:
+        payload["memory_guard"] = memory_guard
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -705,47 +712,70 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    all_summary = ValidationSummary()
-    t0 = time.perf_counter()
+    guard_env = os.environ.copy()
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", guard_env)
+    with harness_memory_guard.guarded_harness_scope(
+        prefix="MOLT_CONFORMANCE",
+        repo_root=_REPO_ROOT,
+        artifact_root=_artifact_root(guard_env) / "tmp" / "translation_validate",
+        label="translation_validate",
+        env=guard_env,
+        limits=limits,
+    ) as guard_scope:
+        all_summary = ValidationSummary()
+        t0 = time.perf_counter()
 
-    for target in args.targets:
-        p = Path(target)
-        if p.is_file():
-            result = validate_file(
-                str(p),
-                timeout=args.timeout,
-                build_profile=args.build_profile,
-                include_cpython=not args.no_cpython,
-                verbose=args.verbose,
-            )
-            all_summary.results.append(result)
-            if args.verbose and not args.json_output:
-                _print_result_line(result)
-        elif p.is_dir():
-            sub = validate_directory(
-                str(p),
-                timeout=args.timeout,
-                build_profile=args.build_profile,
-                include_cpython=not args.no_cpython,
-                verbose=args.verbose,
-                jobs=args.jobs,
-                glob_pattern=args.glob,
-            )
-            all_summary.results.extend(sub.results)
-        else:
-            print(f"WARNING: {target} not found, skipping", file=sys.stderr)
+        for target in args.targets:
+            p = Path(target)
+            if p.is_file():
+                result = validate_file(
+                    str(p),
+                    timeout=args.timeout,
+                    build_profile=args.build_profile,
+                    include_cpython=not args.no_cpython,
+                    verbose=args.verbose,
+                )
+                all_summary.results.append(result)
+                if args.verbose and not args.json_output:
+                    _print_result_line(result)
+            elif p.is_dir():
+                sub = validate_directory(
+                    str(p),
+                    timeout=args.timeout,
+                    build_profile=args.build_profile,
+                    include_cpython=not args.no_cpython,
+                    verbose=args.verbose,
+                    jobs=args.jobs,
+                    glob_pattern=args.glob,
+                )
+                all_summary.results.extend(sub.results)
+            else:
+                print(f"WARNING: {target} not found, skipping", file=sys.stderr)
 
-    all_summary.results.sort(key=lambda r: r.source_path)
-    all_summary.elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 3)
+        all_summary.results.sort(key=lambda r: r.source_path)
+        all_summary.elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 3)
+        memory_guard_summary = guard_scope.memory_guard
+        memory_guard_status = harness_memory_guard.limits_status_line(
+            guard_scope.limits
+        )
 
     if args.json_output:
-        print(json.dumps(summary_to_json(all_summary), indent=2))
+        print(
+            json.dumps(
+                summary_to_json(
+                    all_summary,
+                    memory_guard=memory_guard_summary,
+                ),
+                indent=2,
+            )
+        )
     else:
         if not args.verbose:
             # Print compact result line for each non-skipped file
             for r in all_summary.results:
                 if not r.skipped:
                     _print_result_line(r)
+        print(memory_guard_status)
         print_summary(all_summary, verbose=args.verbose)
 
     # Exit code: 0 if no midend mismatches, 1 otherwise
