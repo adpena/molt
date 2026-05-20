@@ -303,7 +303,6 @@ def terminate_group(pgid: int, *, grace: float) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    budget = memory_guard.adaptive_memory_budget("MOLT_SENTINEL")
     parser = argparse.ArgumentParser(
         description="Repo-scoped sentinel for Molt build/test/bench process groups."
     )
@@ -315,13 +314,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-process-rss-gb",
         type=float,
-        default=budget.max_process_rss_gb,
+        default=None,
         help="Per-process RSS ceiling (default: adaptive from live available memory).",
     )
     parser.add_argument(
         "--max-total-rss-gb",
         type=float,
-        default=budget.max_total_rss_gb,
+        default=None,
         help=(
             "Per-process-group RSS ceiling for matched Molt groups "
             "(default: adaptive from live available memory)."
@@ -330,7 +329,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-global-rss-gb",
         type=float,
-        default=budget.max_global_rss_gb,
+        default=None,
         help=(
             "Cumulative RSS ceiling across all matched Molt process groups "
             "(default: adaptive from live available memory)."
@@ -389,13 +388,50 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolved_limits_from_args(
+    args: argparse.Namespace,
+    *,
+    accounted_rss_kb: int,
+) -> memory_guard.ResolvedMemoryLimits:
+    initial_budget = memory_guard.adaptive_memory_budget(
+        "MOLT_SENTINEL",
+        accounted_rss_kb=accounted_rss_kb,
+    )
+    max_process_gb = (
+        initial_budget.max_process_rss_gb
+        if args.max_process_rss_gb is None
+        else args.max_process_rss_gb
+    )
+    max_group_gb = (
+        initial_budget.max_total_rss_gb
+        if args.max_total_rss_gb is None
+        else args.max_total_rss_gb
+    )
+    max_global_gb = (
+        initial_budget.max_global_rss_gb
+        if args.max_global_rss_gb is None
+        else args.max_global_rss_gb
+    )
+    return memory_guard.resolve_memory_limits(
+        max_process_rss_kb=memory_guard.max_rss_kb_from_gb(max_process_gb),
+        max_total_rss_kb=memory_guard.max_rss_kb_from_gb(max_group_gb),
+        max_global_rss_kb=memory_guard.max_global_rss_kb_from_gb(max_global_gb),
+        adaptive_budget_provider=lambda accounted: memory_guard.adaptive_memory_budget(
+            "MOLT_SENTINEL",
+            accounted_rss_kb=accounted,
+        ),
+        dynamic_process_rss=args.max_process_rss_gb is None,
+        dynamic_total_rss=args.max_total_rss_gb is None,
+        dynamic_global_rss=args.max_global_rss_gb is None,
+        accounted_rss_kb=accounted_rss_kb,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
-        max_process_kb = memory_guard.max_rss_kb_from_gb(args.max_process_rss_gb)
-        max_group_kb = memory_guard.max_rss_kb_from_gb(args.max_total_rss_gb)
-        max_global_kb = memory_guard.max_global_rss_kb_from_gb(args.max_global_rss_gb)
+        _resolved_limits_from_args(args, accounted_rss_kb=0)
         if args.poll_interval <= 0:
             raise ValueError("poll interval must be greater than 0")
         if args.grace_sec < 0:
@@ -421,11 +457,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
         )
+        current_limits = _resolved_limits_from_args(
+            args,
+            accounted_rss_kb=sum(group.total_rss_kb for group in groups),
+        )
         violations = find_violations(
             groups,
-            max_process_kb=max_process_kb,
-            max_group_kb=max_group_kb,
-            max_global_kb=max_global_kb,
+            max_process_kb=current_limits.max_process_rss_kb,
+            max_group_kb=current_limits.max_total_rss_kb
+            if current_limits.max_total_rss_kb is not None
+            else 0,
+            max_global_kb=current_limits.max_global_rss_kb
+            if current_limits.max_global_rss_kb is not None
+            else 0,
             kill_all=args.kill_all,
         )
         emit_violations(violations, json_mode=args.json, stream=stream)

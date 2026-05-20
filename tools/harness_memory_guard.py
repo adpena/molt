@@ -67,6 +67,10 @@ class HarnessMemoryLimits:
     max_global_rss_gb: float
     poll_interval: float
     child_rlimit_gb: float | None = None
+    adaptive_prefix: str = "MOLT"
+    dynamic_process_rss: bool = False
+    dynamic_total_rss: bool = False
+    dynamic_global_rss: bool = False
     max_process_rss_kb: int = field(init=False, repr=False)
     max_total_rss_kb: int = field(init=False, repr=False)
     max_global_rss_kb: int = field(init=False, repr=False)
@@ -101,6 +105,32 @@ class HarnessMemoryLimits:
             None
             if child_rlimit_gb <= 0
             else memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb),
+        )
+
+    def current_memory_limits(
+        self,
+        env: Mapping[str, str] | None = None,
+        *,
+        accounted_rss_kb: int = 0,
+    ) -> memory_guard.ResolvedMemoryLimits:
+        source = _effective_env(env)
+
+        def provider(accounted: int) -> memory_guard.AdaptiveMemoryBudget:
+            return memory_guard.adaptive_memory_budget(
+                self.adaptive_prefix,
+                source,
+                accounted_rss_kb=accounted,
+            )
+
+        return memory_guard.resolve_memory_limits(
+            max_process_rss_kb=self.max_process_rss_kb,
+            max_total_rss_kb=self.max_total_rss_kb,
+            max_global_rss_kb=self.max_global_rss_kb,
+            adaptive_budget_provider=provider,
+            dynamic_process_rss=self.dynamic_process_rss,
+            dynamic_total_rss=self.dynamic_total_rss,
+            dynamic_global_rss=self.dynamic_global_rss,
+            accounted_rss_kb=accounted_rss_kb,
         )
 
 
@@ -140,6 +170,14 @@ def _env_float(
     *,
     default: float,
 ) -> float:
+    value = _env_float_optional(env, names)
+    return default if value is None else value
+
+
+def _env_float_optional(
+    env: Mapping[str, str],
+    names: Sequence[str],
+) -> float | None:
     for name in names:
         raw = env.get(name)
         if raw is None or not raw.strip():
@@ -148,7 +186,7 @@ def _env_float(
             return float(raw)
         except ValueError:
             continue
-    return default
+    return None
 
 
 def enabled_from_env(
@@ -172,7 +210,7 @@ def limits_from_env(
     normalized = _normalize_prefix(prefix)
     adaptive_budget = memory_guard.adaptive_memory_budget(normalized, source)
     enabled = enabled_from_env(normalized, source)
-    process_gb = _env_float(
+    process_override = _env_float_optional(
         source,
         [
             f"{normalized}_MAX_PROCESS_RSS_GB",
@@ -180,9 +218,13 @@ def limits_from_env(
             "MOLT_MAX_PROCESS_RSS_GB",
             "MOLT_MAX_RSS_GB",
         ],
-        default=adaptive_budget.max_process_rss_gb,
     )
-    total_gb = _env_float(
+    process_gb = (
+        adaptive_budget.max_process_rss_gb
+        if process_override is None
+        else process_override
+    )
+    total_override = _env_float_optional(
         source,
         [
             f"{normalized}_MAX_TOTAL_RSS_GB",
@@ -190,9 +232,11 @@ def limits_from_env(
             "MOLT_MAX_TOTAL_RSS_GB",
             "MOLT_MAX_TREE_RSS_GB",
         ],
-        default=adaptive_budget.max_total_rss_gb,
     )
-    global_gb = _env_float(
+    total_gb = (
+        adaptive_budget.max_total_rss_gb if total_override is None else total_override
+    )
+    global_override = _env_float_optional(
         source,
         [
             f"{normalized}_GLOBAL_RSS_LIMIT_GB",
@@ -200,7 +244,11 @@ def limits_from_env(
             "MOLT_GLOBAL_RSS_LIMIT_GB",
             "MOLT_MAX_GLOBAL_RSS_GB",
         ],
-        default=adaptive_budget.max_global_rss_gb,
+    )
+    global_gb = (
+        adaptive_budget.max_global_rss_gb
+        if global_override is None
+        else global_override
     )
     poll_interval = _env_float(
         source,
@@ -229,6 +277,10 @@ def limits_from_env(
         max_global_rss_gb=global_gb,
         poll_interval=poll_interval,
         child_rlimit_gb=child_rlimit_gb,
+        adaptive_prefix=normalized,
+        dynamic_process_rss=process_override is None,
+        dynamic_total_rss=total_override is None,
+        dynamic_global_rss=global_override is None,
     )
 
 
@@ -240,6 +292,9 @@ def limits_summary(limits: HarnessMemoryLimits) -> dict[str, object]:
         "max_global_rss_gb": limits.max_global_rss_gb,
         "child_rlimit_gb": limits.child_rlimit_gb,
         "poll_interval": limits.poll_interval,
+        "dynamic_process_rss": limits.dynamic_process_rss,
+        "dynamic_total_rss": limits.dynamic_total_rss,
+        "dynamic_global_rss": limits.dynamic_global_rss,
     }
 
 
@@ -278,13 +333,22 @@ def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
 def _guard_stderr_message(
     violation: memory_guard.RssViolation | None,
     limits: HarnessMemoryLimits,
+    effective_limits: memory_guard.ResolvedMemoryLimits | None = None,
 ) -> str:
     if violation is None:
         return ""
     limit_gb = (
-        limits.max_total_rss_gb
+        (
+            effective_limits.max_total_rss_gb
+            if effective_limits is not None
+            else limits.max_total_rss_gb
+        )
         if violation.scope == "process_tree"
-        else limits.max_process_rss_gb
+        else (
+            effective_limits.max_process_rss_gb
+            if effective_limits is not None
+            else limits.max_process_rss_gb
+        )
     )
     return (
         "memory_guard: RSS limit exceeded: "
@@ -350,10 +414,23 @@ def guarded_completed_process(
         child_rlimit_kb=resolved_limits.child_rlimit_kb,
         input=input,
         stream=stream,
+        adaptive_budget_provider=(
+            lambda accounted: memory_guard.adaptive_memory_budget(
+                resolved_limits.adaptive_prefix,
+                _effective_env(env),
+                accounted_rss_kb=accounted,
+            )
+        ),
+        dynamic_process_rss=resolved_limits.dynamic_process_rss,
+        dynamic_total_rss=resolved_limits.dynamic_total_rss,
     )
     stderr = guarded.stderr or ""
     if guarded.violation is not None:
-        stderr += _guard_stderr_message(guarded.violation, resolved_limits)
+        stderr += _guard_stderr_message(
+            guarded.violation,
+            resolved_limits,
+            guarded.limit_at_violation,
+        )
     elif not guarded.timed_out:
         stderr += _guard_exit_signal_message(guarded.returncode)
     return GuardedCompletedProcess(
@@ -490,11 +567,18 @@ class RepoProcessMemorySentinel:
     def scan_once(self) -> None:
         try:
             groups = self._current_groups()
+            current_limits = self._limits.current_memory_limits(
+                accounted_rss_kb=sum(group.total_rss_kb for group in groups),
+            )
             violations = process_sentinel.find_violations(
                 groups,
-                max_process_kb=self._limits.max_process_rss_kb,
-                max_group_kb=self._limits.max_total_rss_kb,
-                max_global_kb=self._limits.max_global_rss_kb,
+                max_process_kb=current_limits.max_process_rss_kb,
+                max_group_kb=current_limits.max_total_rss_kb
+                if current_limits.max_total_rss_kb is not None
+                else self._limits.max_total_rss_kb,
+                max_global_kb=current_limits.max_global_rss_kb
+                if current_limits.max_global_rss_kb is not None
+                else self._limits.max_global_rss_kb,
             )
             if not violations:
                 return
@@ -504,6 +588,7 @@ class RepoProcessMemorySentinel:
                     {
                         "event": "repo_process_guard_tripped",
                         "violation": process_sentinel.violation_payload(violation),
+                        "limits": memory_guard.memory_limits_payload(current_limits),
                     }
                 )
                 if (
