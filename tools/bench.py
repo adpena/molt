@@ -117,42 +117,6 @@ def _enable_line_buffering() -> None:
             continue
 
 
-def _run_with_pty(cmd: list[str], env: dict[str, str]) -> _RunResult:
-    import os
-    import pty
-
-    master_fd, slave_fd = pty.openpty()
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-        )
-    finally:
-        os.close(slave_fd)
-
-    try:
-        while True:
-            data = os.read(master_fd, 1024)
-            if not data:
-                break
-            if hasattr(sys.stdout, "buffer"):
-                sys.stdout.buffer.write(data)
-                sys.stdout.buffer.flush()
-            else:
-                sys.stdout.write(data.decode(errors="replace"))
-                sys.stdout.flush()
-    except KeyboardInterrupt:
-        proc.terminate()
-        raise
-    finally:
-        os.close(master_fd)
-
-    return _RunResult(returncode=proc.wait())
-
-
 def _run_cmd(
     cmd: list[str],
     env: dict[str, str],
@@ -162,18 +126,18 @@ def _run_cmd(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> _RunResult:
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
-    if resolved_limits.enabled:
-        res = harness_memory_guard.guarded_completed_process(
-            cmd,
-            prefix="MOLT_BENCH",
-            env=env,
-            capture_output=capture,
-            limits=resolved_limits,
+    if tty and not capture:
+        print(
+            "TTY mode requested; using guarded subprocess mode.",
+            file=sys.stderr,
         )
-        return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
-    if tty and not capture and os.name == "posix":
-        return _run_with_pty(cmd, env)
-    res = subprocess.run(cmd, capture_output=capture, text=True, env=env)
+    res = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_BENCH",
+        env=env,
+        capture_output=capture,
+        limits=resolved_limits,
+    )
     return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
 
 
