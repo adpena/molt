@@ -6,12 +6,12 @@
 //! intervening ops cannot raise — pure arithmetic, constants, variable
 //! load/store, comparisons on known types, etc.
 //!
-//! This pass walks each block linearly and removes any `CheckException`
-//! op that follows only non-raising ops since the previous check (or
-//! since block entry).  At block boundaries the analysis is
-//! conservative: the first `CheckException` in each block is always
-//! kept, since the predecessor block may have left an exception
-//! pending.
+//! This pass runs a small forward dataflow analysis and removes any
+//! `CheckException` op that follows only non-raising ops since the
+//! previous observed/cleared exception state, including across normal
+//! CFG edges.  Exception-handler targets stay conservatively seeded as
+//! pending-possible, so handler entry semantics are preserved while
+//! normal fallthrough blocks do not pay an unconditional first-poll tax.
 //!
 //! Targets bench_exception_heavy and other try-block-bearing loops
 //! where the per-iter check_exception count drives noticeable
@@ -27,8 +27,11 @@
 //! preserving potentially-raising ops inside try regions, ensuring the
 //! two passes share a single source of truth for raising semantics.
 
+use std::collections::{HashMap, HashSet};
+
 use super::PassStats;
 use super::dce::is_potentially_throwing;
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 
@@ -131,19 +134,132 @@ fn op_may_raise(op: &TirOp) -> bool {
     false
 }
 
+fn op_clears_pending_exception(op: &TirOp) -> bool {
+    if op.opcode != OpCode::Copy {
+        return false;
+    }
+    matches!(
+        op.attrs.get("_original_kind"),
+        Some(AttrValue::Str(orig)) if orig == "exception_clear"
+    )
+}
+
+fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
+    match term {
+        Terminator::Branch { target, .. } => vec![*target],
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => vec![*then_block, *else_block],
+        Terminator::Switch { cases, default, .. } => {
+            let mut successors = Vec::with_capacity(cases.len() + 1);
+            successors.push(*default);
+            successors.extend(cases.iter().map(|(_, target, _)| *target));
+            successors
+        }
+        Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
+    }
+}
+
+fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
+    let label_to_block: HashMap<i64, BlockId> = func
+        .label_id_map
+        .iter()
+        .map(|(&bid, &label)| (label, BlockId(bid)))
+        .collect();
+    let mut targets = HashSet::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if matches!(
+                op.opcode,
+                OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
+            ) && let Some(AttrValue::Int(label)) = op.attrs.get("value")
+                && let Some(&target) = label_to_block.get(label)
+            {
+                targets.insert(target);
+            }
+        }
+    }
+    targets
+}
+
+fn transfer_block_pending(block: &crate::tir::blocks::TirBlock, mut pending: bool) -> bool {
+    for op in &block.ops {
+        if op.opcode == OpCode::CheckException {
+            if pending {
+                pending = false;
+            }
+            continue;
+        }
+        if op_clears_pending_exception(op) {
+            pending = false;
+        } else if op_may_raise(op) {
+            pending = true;
+        }
+    }
+    pending
+}
+
+fn compute_block_entry_pending(func: &TirFunction) -> HashMap<BlockId, bool> {
+    let exception_targets = exception_target_blocks(func);
+    let mut entry_pending: HashMap<BlockId, bool> = func
+        .blocks
+        .keys()
+        .copied()
+        .map(|bid| (bid, false))
+        .collect();
+    entry_pending.insert(func.entry_block, true);
+    for target in &exception_targets {
+        entry_pending.insert(*target, true);
+    }
+
+    loop {
+        let mut next: HashMap<BlockId, bool> = func
+            .blocks
+            .keys()
+            .copied()
+            .map(|bid| (bid, false))
+            .collect();
+        next.insert(func.entry_block, true);
+        for target in &exception_targets {
+            next.insert(*target, true);
+        }
+
+        for (bid, block) in &func.blocks {
+            let starts_pending = entry_pending.get(bid).copied().unwrap_or(false);
+            let exits_pending = transfer_block_pending(block, starts_pending);
+            if !exits_pending {
+                continue;
+            }
+            for succ in terminator_successors(&block.terminator) {
+                if func.blocks.contains_key(&succ) {
+                    next.insert(succ, true);
+                }
+            }
+        }
+
+        if next == entry_pending {
+            return entry_pending;
+        }
+        entry_pending = next;
+    }
+}
+
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "check_exception_elim",
         ..Default::default()
     };
 
+    let entry_pending = compute_block_entry_pending(func);
+
     for block in func.blocks.values_mut() {
-        // `pending_exception_possible` is true at block entry (the
-        // predecessor may have left one) and after any
-        // potentially-throwing op.  When false, a `CheckException`
-        // can be elided — there is provably no exception state to
-        // observe since the last clear.
-        let mut pending_exception_possible = true;
+        // `pending_exception_possible` is true when an entry edge may
+        // carry pending exception state, after any potentially throwing
+        // op, and false after an observed check or explicit clear.
+        // When false, a `CheckException` can be elided.
+        let mut pending_exception_possible = entry_pending.get(&block.id).copied().unwrap_or(false);
         let mut new_ops = Vec::with_capacity(block.ops.len());
         for op in block.ops.drain(..) {
             match op.opcode {
@@ -159,7 +275,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     }
                 }
                 _ => {
-                    if op_may_raise(&op) {
+                    if op_clears_pending_exception(&op) {
+                        pending_exception_possible = false;
+                    } else if op_may_raise(&op) {
                         pending_exception_possible = true;
                     }
                     new_ops.push(op);
@@ -225,6 +343,19 @@ mod tests {
         }
     }
 
+    fn make_original_kind(kind: &str) -> TirOp {
+        let mut attrs = AttrDict::new();
+        attrs.insert("_original_kind".into(), AttrValue::Str(kind.to_string()));
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![],
+            results: vec![],
+            attrs,
+            source_span: None,
+        }
+    }
+
     fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
         let entry_id = BlockId(0);
         let block = TirBlock {
@@ -245,6 +376,40 @@ mod tests {
             next_value: 100,
             next_block: 1,
             ..TirFunction::new("test".into(), vec![], TirType::None)
+        }
+    }
+
+    fn make_two_block_func(entry_ops: Vec<TirOp>, successor_ops: Vec<TirOp>) -> TirFunction {
+        let entry_id = BlockId(0);
+        let successor_id = BlockId(1);
+        let entry = TirBlock {
+            id: entry_id,
+            args: vec![],
+            ops: entry_ops,
+            terminator: Terminator::Branch {
+                target: successor_id,
+                args: vec![],
+            },
+        };
+        let successor = TirBlock {
+            id: successor_id,
+            args: vec![],
+            ops: successor_ops,
+            terminator: Terminator::Return { values: vec![] },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, entry);
+        blocks.insert(successor_id, successor);
+        TirFunction {
+            name: "two_block_test".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::None,
+            blocks,
+            entry_block: entry_id,
+            next_value: 100,
+            next_block: 2,
+            ..TirFunction::new("two_block_test".into(), vec![], TirType::None)
         }
     }
 
@@ -302,5 +467,54 @@ mod tests {
         assert_eq!(stats.ops_removed, 4);
         // Original 10 ops, removed 4, leaves 6.
         assert_eq!(func.blocks[&BlockId(0)].ops.len(), 6);
+    }
+
+    #[test]
+    fn first_check_in_normal_successor_dropped_after_checked_predecessor() {
+        let mut func = make_two_block_func(
+            vec![make_check_exception()],
+            vec![make_const_int(2, ValueId(1)), make_check_exception()],
+        );
+        let stats = run(&mut func);
+        assert_eq!(stats.ops_removed, 1);
+        assert_eq!(func.blocks[&BlockId(0)].ops.len(), 1);
+        assert_eq!(func.blocks[&BlockId(1)].ops.len(), 1);
+    }
+
+    #[test]
+    fn first_check_in_successor_kept_when_predecessor_may_raise() {
+        let mut func = make_two_block_func(
+            vec![make_call("foo", ValueId(1))],
+            vec![make_check_exception()],
+        );
+        let stats = run(&mut func);
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(func.blocks[&BlockId(1)].ops.len(), 1);
+    }
+
+    #[test]
+    fn exception_target_entry_remains_conservative() {
+        let mut func = make_two_block_func(
+            vec![make_check_exception()],
+            vec![make_const_int(2, ValueId(1)), make_check_exception()],
+        );
+        func.label_id_map.insert(1, 100);
+        let stats = run(&mut func);
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(func.blocks[&BlockId(1)].ops.len(), 2);
+    }
+
+    #[test]
+    fn explicit_exception_clear_feeds_successor_elision() {
+        let mut func = make_two_block_func(
+            vec![
+                make_check_exception(),
+                make_original_kind("exception_clear"),
+            ],
+            vec![make_check_exception()],
+        );
+        let stats = run(&mut func);
+        assert_eq!(stats.ops_removed, 1);
+        assert_eq!(func.blocks[&BlockId(1)].ops.len(), 0);
     }
 }
