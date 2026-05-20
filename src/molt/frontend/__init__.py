@@ -21753,6 +21753,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if func_id == "ord":
                 if node.keywords or len(node.args) != 1:
                     raise NotImplementedError("ord expects 1 argument")
+                raw_arg = node.args[0]
+                if isinstance(raw_arg, ast.Subscript) and not isinstance(
+                    raw_arg.slice, ast.Slice
+                ):
+                    target = self.visit(raw_arg.value)
+                    index_val = self.visit(raw_arg.slice)
+                    if target is None or index_val is None:
+                        raise NotImplementedError("Unsupported ord subscript argument")
+                    res = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="ORD_AT", args=[target, index_val], result=res))
+                    return res
                 arg = self.visit(node.args[0])
                 if arg is None:
                     raise NotImplementedError("Unsupported ord argument")
@@ -33809,6 +33820,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "ord",
+                        "args": [
+                            arg.name if hasattr(arg, "name") else str(arg)
+                            for arg in op.args
+                        ],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "ORD_AT":
+                json_ops.append(
+                    {
+                        "kind": "ord_at",
                         "args": [
                             arg.name if hasattr(arg, "name") else str(arg)
                             for arg in op.args

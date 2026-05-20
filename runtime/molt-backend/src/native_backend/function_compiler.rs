@@ -8888,6 +8888,50 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "ord_at" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let obj = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[0],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("Ord-at object not found");
+                    let index = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[1],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("Ord-at index not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_ord_at",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*obj, *index]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "chr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get_boxed_overflow_safe(

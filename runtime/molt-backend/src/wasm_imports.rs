@@ -359,6 +359,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("int_from_str_of_obj", 5),
     ("oct_builtin", 2),
     ("ord", 2),
+    ("ord_at", 3),
     ("str_from_obj", 2),
     // ── INTERNAL: Builtins (misc) ──
     ("aiter", 2),
@@ -1192,6 +1193,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("repr_builtin", &["repr_builtin"]),
     ("repr_from_obj", &["repr_from_obj"]),
     ("int_from_str_of_obj", &["int_from_str_of_obj"]),
+    ("ord_at", &["ord_at"]),
     ("str_from_obj", &["str_from_obj"]),
     ("format_builtin", &["format_builtin"]),
     ("string_eq", &["string_eq"]),
