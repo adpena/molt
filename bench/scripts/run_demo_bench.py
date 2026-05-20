@@ -28,16 +28,23 @@ BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 
 def base_env(env: dict[str, str] | None = None) -> dict[str, str]:
     run_env = os.environ.copy()
+    overrides = env or {}
     if env:
         run_env.update(env)
-    run_env.setdefault("MOLT_EXT_ROOT", str(ROOT))
-    run_env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
-    run_env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", run_env["CARGO_TARGET_DIR"])
-    run_env.setdefault("MOLT_CACHE", str(ROOT / ".molt_cache"))
-    run_env.setdefault("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff"))
-    run_env.setdefault("MOLT_DIFF_TMPDIR", str(ROOT / "tmp"))
-    run_env.setdefault("UV_CACHE_DIR", str(ROOT / ".uv-cache"))
-    run_env.setdefault("TMPDIR", str(ROOT / "tmp"))
+    defaults = {
+        "MOLT_EXT_ROOT": str(ROOT),
+        "CARGO_TARGET_DIR": str(ROOT / "target"),
+        "MOLT_CACHE": str(ROOT / ".molt_cache"),
+        "MOLT_DIFF_ROOT": str(ROOT / "tmp" / "diff"),
+        "MOLT_DIFF_TMPDIR": str(ROOT / "tmp"),
+        "UV_CACHE_DIR": str(ROOT / ".uv-cache"),
+        "TMPDIR": str(ROOT / "tmp"),
+    }
+    for key, value in defaults.items():
+        if key not in overrides:
+            run_env[key] = value
+    if "MOLT_DIFF_CARGO_TARGET_DIR" not in overrides:
+        run_env["MOLT_DIFF_CARGO_TARGET_DIR"] = run_env["CARGO_TARGET_DIR"]
     return run_env
 
 
