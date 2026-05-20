@@ -5,32 +5,61 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use crate::object::{HEADER_FLAG_ARENA, HEADER_FLAG_RAW_ALLOC};
 use crate::{MoltHeader, MoltObject, TYPE_ID_OBJECT, usize_from_bits};
 
+fn release_tracked_bytes(size: usize) {
+    let _ = crate::resource::try_with_tracker(|tracker| tracker.on_free(size));
+}
+
 pub struct TempArena {
     chunk_size: usize,
     chunks: Vec<Vec<u8>>,
     offset: usize,
+    charged_bytes: usize,
 }
 
 impl TempArena {
     pub fn new(chunk_size: usize) -> Self {
         let size = chunk_size.max(1024);
+        let mut chunks = Vec::new();
+        let mut charged_bytes = 0;
+        if let Some(chunk) = Self::try_alloc_chunk(size) {
+            if chunks.try_reserve(1).is_ok() {
+                charged_bytes = chunk.capacity();
+                chunks.push(chunk);
+            } else {
+                release_tracked_bytes(chunk.capacity());
+            }
+        }
         Self {
             chunk_size: size,
-            chunks: vec![vec![0u8; size]],
+            chunks,
             offset: 0,
+            charged_bytes,
         }
     }
 
     pub fn reset(&mut self) {
         if self.chunks.is_empty() {
-            self.chunks.push(vec![0u8; self.chunk_size]);
+            if let Some(chunk) = Self::try_alloc_chunk(self.chunk_size) {
+                if self.chunks.try_reserve(1).is_ok() {
+                    self.charged_bytes = self.charged_bytes.saturating_add(chunk.capacity());
+                    self.chunks.push(chunk);
+                } else {
+                    release_tracked_bytes(chunk.capacity());
+                }
+            }
         } else {
-            self.chunks.truncate(1);
+            while self.chunks.len() > 1 {
+                if let Some(chunk) = self.chunks.pop() {
+                    self.charged_bytes = self.charged_bytes.saturating_sub(chunk.capacity());
+                    release_tracked_bytes(chunk.capacity());
+                }
+            }
         }
         self.offset = 0;
     }
 
     pub fn clear(&mut self) {
+        self.release_all_chunks();
         self.chunks.clear();
         self.offset = 0;
     }
@@ -38,6 +67,7 @@ impl TempArena {
     /// Release ALL heap memory, including the outer Vec's buffer.
     /// After this call, dropping `self` will not invoke the allocator.
     pub fn drain(&mut self) {
+        self.release_all_chunks();
         self.chunks = Vec::new();
         self.offset = 0;
     }
@@ -51,17 +81,79 @@ impl TempArena {
             Some(val) => val,
             None => return std::ptr::null_mut(),
         };
-        let aligned = (self.offset + (align - 1)) & !(align - 1);
-        let needed = aligned.saturating_add(size);
-        if needed > self.chunks.last().unwrap().len() {
+        if self.chunks.is_empty() {
             let new_size = self.chunk_size.max(size);
-            self.chunks.push(vec![0u8; new_size]);
+            let Some(chunk) = Self::try_alloc_chunk(new_size) else {
+                return std::ptr::null_mut();
+            };
+            if self.chunks.try_reserve(1).is_err() {
+                release_tracked_bytes(chunk.capacity());
+                return std::ptr::null_mut();
+            }
+            self.charged_bytes = self.charged_bytes.saturating_add(chunk.capacity());
+            self.chunks.push(chunk);
+            self.offset = 0;
+        }
+        let Some(aligned) = self
+            .offset
+            .checked_add(align - 1)
+            .map(|val| val & !(align - 1))
+        else {
+            return std::ptr::null_mut();
+        };
+        let Some(needed) = aligned.checked_add(size) else {
+            return std::ptr::null_mut();
+        };
+        if needed > self.chunks.last().map(|chunk| chunk.len()).unwrap_or(0) {
+            let new_size = self.chunk_size.max(size);
+            let Some(chunk) = Self::try_alloc_chunk(new_size) else {
+                return std::ptr::null_mut();
+            };
+            if self.chunks.try_reserve(1).is_err() {
+                release_tracked_bytes(chunk.capacity());
+                return std::ptr::null_mut();
+            }
+            self.charged_bytes = self.charged_bytes.saturating_add(chunk.capacity());
+            self.chunks.push(chunk);
             self.offset = 0;
             return self.alloc_slice::<T>(len);
         }
         let ptr = unsafe { self.chunks.last_mut().unwrap().as_mut_ptr().add(aligned) };
         self.offset = needed;
         ptr as *mut T
+    }
+
+    fn try_alloc_chunk(size: usize) -> Option<Vec<u8>> {
+        if crate::resource::with_tracker(|tracker| tracker.on_allocate(size)).is_err() {
+            return None;
+        }
+        let mut chunk = Vec::new();
+        if chunk.try_reserve_exact(size).is_err() {
+            release_tracked_bytes(size);
+            return None;
+        }
+        chunk.resize(size, 0);
+        let capacity = chunk.capacity();
+        if capacity > size
+            && crate::resource::with_tracker(|tracker| tracker.on_grow(capacity - size)).is_err()
+        {
+            release_tracked_bytes(size);
+            return None;
+        }
+        Some(chunk)
+    }
+
+    fn release_all_chunks(&mut self) {
+        for chunk in &self.chunks {
+            release_tracked_bytes(chunk.capacity());
+        }
+        self.charged_bytes = 0;
+    }
+}
+
+impl Drop for TempArena {
+    fn drop(&mut self) {
+        self.release_all_chunks();
     }
 }
 
@@ -92,19 +184,17 @@ struct ArenaChunk {
 }
 
 impl ArenaChunk {
-    fn new(capacity: usize) -> Self {
-        // Layout panics on overflow / zero alignment; both are precluded
-        // here: `capacity > 0` (callers pass `>= SCOPE_ARENA_CHUNK_SIZE`)
-        // and `SCOPE_ARENA_ALIGN` is a non-zero power of two.
-        let layout = Layout::from_size_align(capacity, SCOPE_ARENA_ALIGN)
-            .expect("arena chunk layout must be valid");
-        // SAFETY: `layout.size() > 0`.  Returns a non-null, aligned,
-        // zeroed pointer or `handle_alloc_error` aborts.
+    fn try_new(capacity: usize) -> Option<Self> {
+        let layout = Layout::from_size_align(capacity, SCOPE_ARENA_ALIGN).ok()?;
+        if crate::resource::with_tracker(|tracker| tracker.on_allocate(capacity)).is_err() {
+            return None;
+        }
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
         if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
+            release_tracked_bytes(capacity);
+            return None;
         }
-        Self { ptr, capacity }
+        Some(Self { ptr, capacity })
     }
 
     fn as_mut_ptr(&mut self) -> *mut u8 {
@@ -116,6 +206,7 @@ impl Drop for ArenaChunk {
     fn drop(&mut self) {
         let layout = Layout::from_size_align(self.capacity, SCOPE_ARENA_ALIGN)
             .expect("arena chunk layout must be valid");
+        release_tracked_bytes(self.capacity);
         // SAFETY: `ptr` was returned by `alloc_zeroed` with this exact
         // `layout` and has not been freed.
         unsafe {
@@ -146,14 +237,14 @@ pub struct ScopeArena {
 }
 
 impl ScopeArena {
-    pub fn new() -> Self {
-        let mut chunk = ArenaChunk::new(SCOPE_ARENA_CHUNK_SIZE);
+    pub fn new() -> Option<Self> {
+        let mut chunk = ArenaChunk::try_new(SCOPE_ARENA_CHUNK_SIZE)?;
         let ptr = chunk.as_mut_ptr();
-        Self {
+        Some(Self {
             chunks: vec![chunk],
             current: ptr,
             remaining: SCOPE_ARENA_CHUNK_SIZE,
-        }
+        })
     }
 
     /// Bump-allocate `size` bytes with `SCOPE_ARENA_ALIGN`-byte alignment.
@@ -164,7 +255,12 @@ impl ScopeArena {
         if size == 0 {
             return std::ptr::null_mut();
         }
-        let aligned_size = (size + SCOPE_ARENA_ALIGN - 1) & !(SCOPE_ARENA_ALIGN - 1);
+        let Some(aligned_size) = size
+            .checked_add(SCOPE_ARENA_ALIGN - 1)
+            .map(|val| val & !(SCOPE_ARENA_ALIGN - 1))
+        else {
+            return std::ptr::null_mut();
+        };
         if aligned_size <= self.remaining {
             let ptr = self.current;
             // SAFETY: `current` points into the active chunk's allocation
@@ -180,7 +276,12 @@ impl ScopeArena {
     #[cold]
     fn alloc_slow(&mut self, aligned_size: usize) -> *mut u8 {
         let chunk_cap = aligned_size.max(SCOPE_ARENA_CHUNK_SIZE);
-        let mut chunk = ArenaChunk::new(chunk_cap);
+        if self.chunks.try_reserve(1).is_err() {
+            return std::ptr::null_mut();
+        }
+        let Some(mut chunk) = ArenaChunk::try_new(chunk_cap) else {
+            return std::ptr::null_mut();
+        };
         let ptr = chunk.as_mut_ptr();
         // SAFETY: `aligned_size <= chunk_cap` by construction above.
         self.current = unsafe { ptr.add(aligned_size) };
@@ -210,7 +311,10 @@ impl ScopeArena {
 /// The caller must pair this with `molt_arena_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_arena_new() -> *mut ScopeArena {
-    Box::into_raw(Box::new(ScopeArena::new()))
+    let Some(arena) = ScopeArena::new() else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(arena))
 }
 
 /// Bump-allocate `size` bytes from the arena.
@@ -307,6 +411,15 @@ pub extern "C" fn molt_arena_free(arena: *mut ScopeArena) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+    struct TrackerReset;
+
+    impl Drop for TrackerReset {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
 
     #[test]
     fn arena_alloc_object_returns_nan_boxed_pointer() {
@@ -345,6 +458,89 @@ mod tests {
         // Null arena must return MoltObject::none().bits() rather than panic.
         let bits = molt_arena_alloc_object(std::ptr::null_mut(), 16);
         assert_eq!(bits, MoltObject::none().bits());
+    }
+
+    #[test]
+    fn arena_new_respects_resource_limit_without_aborting() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(SCOPE_ARENA_CHUNK_SIZE - 1),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+
+        let arena = molt_arena_new();
+        assert!(
+            arena.is_null(),
+            "arena creation must fail closed when the first chunk exceeds the resource cap"
+        );
+    }
+
+    #[test]
+    fn temp_arena_respects_initial_resource_limit_without_aborting() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(1023),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+
+        let mut arena = TempArena::new(1024);
+        assert!(arena.chunks.is_empty());
+        let ptr = arena.alloc_slice::<u8>(1);
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn denied_temp_arena_growth_does_not_poison_existing_chunk() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(1024),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+
+        let mut arena = TempArena::new(1024);
+        assert_eq!(arena.chunks.len(), 1);
+        let denied = arena.alloc_slice::<u8>(2048);
+        assert!(denied.is_null());
+
+        let allowed = arena.alloc_slice::<u8>(8);
+        assert!(
+            !allowed.is_null(),
+            "denied TempArena growth must leave the current chunk usable"
+        );
+    }
+
+    #[test]
+    fn denied_arena_slow_chunk_does_not_poison_existing_chunk() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(SCOPE_ARENA_CHUNK_SIZE),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+
+        let arena = molt_arena_new();
+        assert!(!arena.is_null());
+
+        let denied = molt_arena_alloc(arena, (SCOPE_ARENA_CHUNK_SIZE + 8) as u64);
+        assert!(denied.is_null());
+
+        let allowed = molt_arena_alloc(arena, 8);
+        assert!(
+            !allowed.is_null(),
+            "denied slow-path chunk allocation must leave the existing chunk usable"
+        );
+        molt_arena_free(arena);
     }
 
     #[test]

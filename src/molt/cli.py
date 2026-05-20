@@ -11547,11 +11547,7 @@ export default {
           : `molt_${entry.name}`;
         let fn = runtimeInstance.exports[exportName];
         if (typeof fn !== "function") {
-          if (entry.name === "resource_on_allocate") {
-            fn = () => 0;
-          } else if (entry.name === "resource_on_free") {
-            fn = () => {};
-          } else if (entry.name === "fast_list_append") {
+          if (entry.name === "fast_list_append") {
             fn = makeCallBindFallback(1);
           } else if (entry.name === "fast_str_join") {
             fn = makeCallBindFallback(1);
