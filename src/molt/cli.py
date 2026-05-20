@@ -1298,6 +1298,52 @@ def _base_env(
     return env
 
 
+def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
+    root = (cwd or Path.cwd()).resolve()
+    root_str = str(root)
+    tools_str = str(root / "tools")
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+    if tools_str not in sys.path:
+        sys.path.insert(0, tools_str)
+    try:
+        from tools import harness_memory_guard
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            f"memory guard helper is required for guarded CLI subprocesses: {exc}"
+        ) from exc
+    return harness_memory_guard
+
+
+def _run_completed_command(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None,
+    cwd: Path | None,
+    capture_output: bool,
+    memory_guard_prefix: str | None,
+) -> subprocess.CompletedProcess[str]:
+    if memory_guard_prefix is None:
+        return subprocess.run(
+            cmd,
+            env=env,
+            cwd=cwd,
+            capture_output=capture_output,
+            text=True,
+        )
+    harness_memory_guard = _load_cli_harness_memory_guard(cwd)
+    limits = harness_memory_guard.limits_from_env(memory_guard_prefix, env)
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix=memory_guard_prefix,
+        env=env,
+        cwd=cwd,
+        capture_output=capture_output,
+        text=True,
+        limits=limits,
+    )
+
+
 def _run_command(
     cmd: list[str],
     *,
@@ -1307,17 +1353,18 @@ def _run_command(
     verbose: bool = False,
     label: str | None = None,
     warnings: list[str] | None = None,
+    memory_guard_prefix: str | None = None,
 ) -> int:
     cmd = [str(part) for part in cmd]
     if verbose and not json_output:
         print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
     capture = json_output
-    result = subprocess.run(
+    result = _run_completed_command(
         cmd,
         env=env,
         cwd=cwd,
         capture_output=capture,
-        text=True,
+        memory_guard_prefix=memory_guard_prefix,
     )
     if json_output:
         data: dict[str, Any] = {"returncode": result.returncode}
@@ -29030,6 +29077,7 @@ def test(
         json_output=json_output,
         verbose=verbose,
         label="test",
+        memory_guard_prefix="MOLT_DIFF" if suite == "diff" else "MOLT_TEST_SUITE",
     )
 
 
@@ -29055,6 +29103,7 @@ def bench(
         json_output=json_output,
         verbose=verbose,
         label="bench",
+        memory_guard_prefix="MOLT_BENCH",
     )
 
 
@@ -29074,6 +29123,7 @@ def profile(
         json_output=json_output,
         verbose=verbose,
         label="profile",
+        memory_guard_prefix="MOLT_BENCH",
     )
 
 
@@ -30243,13 +30293,20 @@ def validate(
                 f"[molt validate] {step.name}: {shlex.join(step.cmd)}",
                 file=sys.stderr,
             )
+        guard_prefix = (
+            "MOLT_BENCH"
+            if step.category == "benchmark"
+            else "MOLT_CONFORMANCE"
+            if step.category == "conformance"
+            else "MOLT_TEST_SUITE"
+        )
         start = time.perf_counter()
-        proc = subprocess.run(
-            step.cmd,
+        proc = _run_completed_command(
+            [str(part) for part in step.cmd],
             cwd=step.cwd,
             env=env,
             capture_output=True,
-            text=True,
+            memory_guard_prefix=guard_prefix,
         )
         duration_s = round(time.perf_counter() - start, 6)
         entry: dict[str, Any] = {
