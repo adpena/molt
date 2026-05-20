@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,34 @@ ROOT = Path(__file__).resolve().parents[2]
 BENCH_DIR = ROOT / "bench"
 RESULTS_DIR = BENCH_DIR / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+TOOLS_ROOT = ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
+
+BENCH_MEMORY_PREFIX = "MOLT_BENCH"
+
+
+def base_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+    run_env.setdefault("MOLT_EXT_ROOT", str(ROOT))
+    run_env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
+    run_env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", run_env["CARGO_TARGET_DIR"])
+    run_env.setdefault("MOLT_CACHE", str(ROOT / ".molt_cache"))
+    run_env.setdefault("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff"))
+    run_env.setdefault("MOLT_DIFF_TMPDIR", str(ROOT / "tmp"))
+    run_env.setdefault("UV_CACHE_DIR", str(ROOT / ".uv-cache"))
+    run_env.setdefault("TMPDIR", str(ROOT / "tmp"))
+    return run_env
+
+
+def bench_memory_limits(
+    env: dict[str, str] | None = None,
+) -> harness_memory_guard.HarnessMemoryLimits:
+    return harness_memory_guard.limits_from_env(BENCH_MEMORY_PREFIX, base_env(env))
 
 
 @dataclass
@@ -66,8 +95,18 @@ def read_process_table() -> list[tuple[int, int, float, int, str]]:
 
 
 def run_cmd(cmd: list[str]) -> str | None:
+    env = base_env()
+    limits = bench_memory_limits(env)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix=BENCH_MEMORY_PREFIX,
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+            limits=limits,
+        )
     except OSError:
         return None
     if proc.returncode != 0:
@@ -111,7 +150,16 @@ def extract_proc_matchers(env: dict[str, str]) -> dict[str, dict[str, object]]:
         if not shutil.which("lsof"):
             return []
         cmd = ["lsof", "-n", "-i", f"tcp:{port}", "-sTCP:LISTEN", "-t"]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        limits = bench_memory_limits(env)
+        proc = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix=BENCH_MEMORY_PREFIX,
+            capture_output=True,
+            text=True,
+            env=base_env(env),
+            cwd=ROOT,
+            limits=limits,
+        )
         if proc.returncode != 0:
             return []
         pids: list[int] = []
@@ -258,21 +306,34 @@ def tail_lines(path: Path, limit: int = 20) -> list[str]:
 def run_k6(
     script: Path, env: dict[str, str]
 ) -> tuple[dict[str, Any], dict[str, dict[str, float]]]:
-    env = dict(env)
+    env = base_env(env)
     env.setdefault("K6_SUMMARY_TREND_STATS", "med,p(95),p(99),p(99.9)")
     env.setdefault("K6_LOG_LEVEL", "error")
     cmd = ["k6", "run", "--quiet", str(script)]
     stderr_path = RESULTS_DIR / f"k6_{script.stem}_stderr.log"
     matchers = extract_proc_matchers(env)
     samples = {label: [] for label in matchers}
+    limits = bench_memory_limits(env)
     with stderr_path.open("w", encoding="utf-8") as handle:
-        proc = subprocess.Popen(cmd, stdout=handle, stderr=handle, text=True, env=env)
-        while proc.poll() is None:
-            if matchers:
-                snapshot = sample_processes(matchers)
-                for label, sample in snapshot.items():
-                    samples[label].append(sample)
-            time.sleep(1.0)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=handle,
+            stderr=handle,
+            text=True,
+            env=env,
+            cwd=ROOT,
+            **harness_memory_guard.batch_process_group_kwargs(limits),
+        )
+        try:
+            while proc.poll() is None:
+                if matchers:
+                    snapshot = sample_processes(matchers)
+                    for label, sample in snapshot.items():
+                        samples[label].append(sample)
+                time.sleep(1.0)
+        except BaseException:
+            harness_memory_guard.force_close_process_group(proc)
+            raise
     if proc.returncode != 0:
         tail = tail_lines(stderr_path)
         detail = tail[-1] if tail else f"exit code {proc.returncode}"
@@ -406,16 +467,23 @@ def summarize_worker_metrics(path: Path) -> dict[str, dict[str, float]]:
 
 
 def main() -> None:
-    env = os.environ.copy()
-    baseline = run_scenario("baseline", "bench/k6/baseline.js", env)
-    offload = run_scenario("offload", "bench/k6/offload.js", env)
-    offload_table = run_scenario("offload_table", "bench/k6/offload_table.js", env)
+    env = base_env()
+    limits = bench_memory_limits(env)
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=ROOT,
+        artifact_root=ROOT / "tmp" / "bench" / "demo",
+        label="demo_bench",
+        limits=limits,
+    ):
+        baseline = run_scenario("baseline", "bench/k6/baseline.js", env)
+        offload = run_scenario("offload", "bench/k6/offload.js", env)
+        offload_table = run_scenario("offload_table", "bench/k6/offload_table.js", env)
     results = [baseline, offload, offload_table]
 
     timestamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     artifact = {
         "timestamp": timestamp,
-        "git": os.popen("git rev-parse HEAD").read().strip(),
+        "git": run_cmd(["git", "rev-parse", "HEAD"]) or "",
         "machine": collect_machine_info(),
         "tool_versions": collect_tool_versions(),
         "baseline": baseline.raw,
