@@ -8261,20 +8261,60 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._record(outer._collect_free_vars_expr_raw(node))
                 return
 
+            def visit_Call(self, node: ast.Call) -> None:
+                if (
+                    isinstance(node.func, ast.Name)
+                    and len(node.args) == 1
+                    and not node.keywords
+                    and isinstance(node.args[0], ast.GeneratorExp)
+                    and (
+                        (
+                            node.func.id == "sum"
+                            and outer._can_inline_sum_genexpr(node.args[0])
+                        )
+                        or (
+                            node.func.id in {"any", "all"}
+                            and outer._can_inline_any_all_genexpr(node.args[0])
+                        )
+                    )
+                ):
+                    genexpr = node.args[0]
+                    for comp in genexpr.generators:
+                        self.visit(comp.iter)
+                        for if_node in comp.ifs:
+                            self.visit(if_node)
+                    self.visit(genexpr.elt)
+                    return
+                self.generic_visit(node)
+
             def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
                 self._record(outer._collect_free_vars_comprehension(node))
                 self.generic_visit(node)
 
             def visit_ListComp(self, node: ast.ListComp) -> None:
-                self._record(outer._collect_free_vars_comprehension(node))
+                if not (
+                    not outer._comprehension_requires_async(node.generators, [node.elt])
+                    and outer._can_inline_list_comp(node)
+                ):
+                    self._record(outer._collect_free_vars_comprehension(node))
                 self.generic_visit(node)
 
             def visit_SetComp(self, node: ast.SetComp) -> None:
-                self._record(outer._collect_free_vars_comprehension(node))
+                if not (
+                    not outer._comprehension_requires_async(node.generators, [node.elt])
+                    and outer._can_inline_set_comp(node)
+                ):
+                    self._record(outer._collect_free_vars_comprehension(node))
                 self.generic_visit(node)
 
             def visit_DictComp(self, node: ast.DictComp) -> None:
-                self._record(outer._collect_free_vars_comprehension(node))
+                if not (
+                    not outer._comprehension_requires_async(
+                        node.generators, [node.key, node.value]
+                    )
+                    and outer._can_inline_dict_comp(node)
+                ):
+                    self._record(outer._collect_free_vars_comprehension(node))
                 self.generic_visit(node)
 
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -8770,11 +8810,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def _builtin_exact_type_from_expr(self, value: ast.AST | None) -> str | None:
-        if isinstance(value, ast.Dict):
+        if isinstance(value, (ast.Dict, ast.DictComp)):
             return "dict"
-        if isinstance(value, ast.List):
+        if isinstance(value, (ast.List, ast.ListComp)):
             return "list"
-        if isinstance(value, ast.Set):
+        if isinstance(value, (ast.Set, ast.SetComp)):
             return "set"
         if isinstance(value, ast.Tuple):
             return "tuple"
@@ -13633,6 +13673,162 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             temp_prefix="__molt_dictcomp_unpack",
             emit_result_values=emit_dict_item,
         )
+
+    def _can_inline_sum_genexpr(self, node: ast.GeneratorExp) -> bool:
+        if self.is_async():
+            return False
+        if not self._can_inline_simple_comp(node.generators, [node.elt]):
+            return False
+        comp = node.generators[0]
+        if self._collect_inline_comp_walrus_names([node.elt], comp.ifs):
+            return False
+        target_names = self._collect_target_names(comp.target)
+        lambda_free_vars = self._collect_inline_comp_lambda_free_vars(
+            [node.elt], comp.ifs
+        )
+        return not bool(target_names & lambda_free_vars)
+
+    @staticmethod
+    def _can_inline_any_all_genexpr(node: ast.GeneratorExp) -> bool:
+        return (
+            len(node.generators) == 1
+            and not node.generators[0].is_async
+            and isinstance(node.generators[0].target, ast.Name)
+        )
+
+    @staticmethod
+    def _sum_add_result_hint(acc: MoltValue, value: MoltValue) -> str:
+        if acc.type_hint == "float" or value.type_hint == "float":
+            return "float"
+        if acc.type_hint in {"bool", "int"} and value.type_hint in {"bool", "int"}:
+            return "int"
+        return "Any"
+
+    def _try_emit_inline_sum_genexpr(self, node: ast.Call) -> MoltValue | None:
+        if (
+            len(node.args) != 1
+            or node.keywords
+            or not isinstance(node.args[0], ast.GeneratorExp)
+        ):
+            return None
+        genexpr = node.args[0]
+        if not self._can_inline_sum_genexpr(genexpr):
+            return None
+
+        comp = genexpr.generators[0]
+        target_name, tuple_target_names = self._inline_simple_comp_target(
+            comp, "__molt_sum_genexpr_unpack"
+        )
+        user_target_names = (
+            [target_name] if tuple_target_names is None else list(tuple_target_names)
+        )
+        saved_locals = {name: self.locals.get(name) for name in user_target_names}
+        saved_boxed = {
+            name: self.boxed_locals.pop(name, None) for name in user_target_names
+        }
+        saved_boxed_hints = {
+            name: self.boxed_local_hints.pop(name, None) for name in user_target_names
+        }
+        outer_comp_shadow_locals = set(self.comp_shadow_locals)
+        self.comp_shadow_locals.add(target_name)
+        if tuple_target_names is not None:
+            self.comp_shadow_locals.update(tuple_target_names)
+
+        iterable_val = self.visit(comp.iter)
+        if iterable_val is None:
+            self.comp_shadow_locals = outer_comp_shadow_locals
+            for name, boxed in saved_boxed.items():
+                if boxed is not None:
+                    self.boxed_locals[name] = boxed
+            for name, hint in saved_boxed_hints.items():
+                if hint is not None:
+                    self.boxed_local_hints[name] = hint
+            return None
+        iter_obj = self._emit_iter_new(iterable_val)
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        one = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[1], result=one))
+
+        start_val = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=start_val))
+        acc_cell = MoltValue(self.next_var(), type_hint="list")
+        self.emit(MoltOp(kind="LIST_NEW", args=[start_val], result=acc_cell))
+
+        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
+        pair = self._emit_iter_next_checked(iter_obj)
+        done = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
+        self.emit(
+            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
+        )
+        iter_elem_hint = self._iterable_element_hint(iterable_val) or "Any"
+        item = MoltValue(self.next_var(), type_hint=iter_elem_hint)
+        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
+        self.locals[target_name] = item
+        self._store_comprehension_local_value(target_name, item)
+        if tuple_target_names is not None:
+            item_vals = [
+                MoltValue(self.next_var(), type_hint="Any") for _ in tuple_target_names
+            ]
+            self.emit(
+                MoltOp(
+                    kind="UNPACK_SEQUENCE",
+                    args=[item] + item_vals,
+                    result=MoltValue("none"),
+                    metadata={"expected_count": len(tuple_target_names)},
+                )
+            )
+            for tname, item_val in zip(tuple_target_names, item_vals):
+                self._store_comprehension_local_value(tname, item_val)
+        for if_node in comp.ifs:
+            cond_val = self.visit(if_node)
+            not_cond = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="NOT", args=[cond_val], result=not_cond))
+            self.emit(MoltOp(kind="IF", args=[not_cond], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        value = self.visit(genexpr.elt)
+        if value is None:
+            raise NotImplementedError("Unsupported sum generator expression")
+        acc_val = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="INDEX", args=[acc_cell, zero], result=acc_val))
+        acc_next = MoltValue(
+            self.next_var(),
+            type_hint=self._sum_add_result_hint(acc_val, cast(MoltValue, value)),
+        )
+        self.emit(MoltOp(kind="ADD", args=[acc_val, value], result=acc_next))
+        self.emit(
+            MoltOp(
+                kind="STORE_INDEX",
+                args=[acc_cell, zero, acc_next],
+                result=MoltValue("none"),
+            )
+        )
+        for name in user_target_names:
+            prior = saved_locals.get(name)
+            if prior is not None:
+                self.locals[name] = prior
+            else:
+                self.locals.pop(name, None)
+        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+
+        result = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(MoltOp(kind="INDEX", args=[acc_cell, zero], result=result))
+        for name in user_target_names:
+            boxed = saved_boxed.get(name)
+            hint = saved_boxed_hints.get(name)
+            if boxed is not None:
+                self.boxed_locals[name] = boxed
+            else:
+                self.boxed_locals.pop(name, None)
+            if hint is not None:
+                self.boxed_local_hints[name] = hint
+            else:
+                self.boxed_local_hints.pop(name, None)
+        self.comp_shadow_locals = outer_comp_shadow_locals
+        return result
 
     def visit_ListComp(self, node: ast.ListComp) -> Any:
         async_needed = self._comprehension_requires_async(node.generators, [node.elt])
@@ -22570,7 +22766,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         args = self._emit_call_args(node.args)
                         self.emit(
                             MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
-                        )
+                    )
                     return res
                 if not node.args:
                     return self._emit_type_error_value(
@@ -22580,6 +22776,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return self._emit_type_error_value(
                         f"sum expected at most 2 arguments, got {len(node.args)}"
                     )
+                if len(node.args) == 1 and not node.keywords:
+                    inline_sum = self._try_emit_inline_sum_genexpr(node)
+                    if inline_sum is not None:
+                        return inline_sum
                 start_expr = None
                 has_start = False
                 if len(node.args) == 2:
