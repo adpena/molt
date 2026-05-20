@@ -1669,67 +1669,10 @@ def _apply_memory_limit() -> None:
     _MEM_LIMIT_APPLIED = True
 
 
-def _available_memory_bytes() -> int | None:
-    override = _parse_float_env("MOLT_DIFF_MEM_AVAILABLE_GB")
-    if override is not None and override > 0:
-        return int(override * 1024 * 1024 * 1024)
-    system = sys.platform
-    if system.startswith("linux"):
-        try:
-            text = Path("/proc/meminfo").read_text()
-        except OSError:
-            text = ""
-        for line in text.splitlines():
-            if line.startswith("MemAvailable:"):
-                parts = line.split()
-                if len(parts) >= 2 and parts[1].isdigit():
-                    return int(parts[1]) * 1024
-        for line in text.splitlines():
-            if line.startswith("MemTotal:"):
-                parts = line.split()
-                if len(parts) >= 2 and parts[1].isdigit():
-                    return int(parts[1]) * 1024
-    if system == "darwin":
-        try:
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            pages = os.sysconf("SC_PHYS_PAGES")
-            return int(page_size * pages * 0.6)
-        except (OSError, ValueError):
-            return None
-    if system.startswith("win"):
-        try:
-            import ctypes
-
-            class MemoryStatus(ctypes.Structure):
-                _fields_ = [
-                    ("length", ctypes.c_uint32),
-                    ("memory_load", ctypes.c_uint32),
-                    ("total_phys", ctypes.c_uint64),
-                    ("avail_phys", ctypes.c_uint64),
-                    ("total_page_file", ctypes.c_uint64),
-                    ("avail_page_file", ctypes.c_uint64),
-                    ("total_virtual", ctypes.c_uint64),
-                    ("avail_virtual", ctypes.c_uint64),
-                    ("avail_extended_virtual", ctypes.c_uint64),
-                ]
-
-            status = MemoryStatus()
-            status.length = ctypes.sizeof(MemoryStatus)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-            return int(status.avail_phys)
-        except Exception:
-            return None
-    return None
-
-
 def _default_jobs() -> int:
     count = os.cpu_count() or 1
     guard = _diff_memory_guard_config()
-    per_job_gb = _memory_guard_scheduler_per_job_gb(guard)
-    available = _available_memory_bytes()
-    if available is not None:
-        mem_jobs = int(available / (per_job_gb * 1024 * 1024 * 1024))
-        count = min(count, max(1, mem_jobs))
+    count = min(count, _memory_guard_max_jobs(guard))
     max_jobs = os.environ.get("MOLT_DIFF_MAX_JOBS", "").strip()
     if max_jobs.isdigit():
         count = min(count, max(1, int(max_jobs)))
