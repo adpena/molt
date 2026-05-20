@@ -459,6 +459,9 @@ molt_c_api_version = "0.1"
 | `MOLT_BACKEND_DAEMON` | Set to `0` to disable the backend daemon. |
 | `MOLT_BACKEND_DAEMON_SOCKET` | Override the daemon socket path. |
 | `MOLT_BACKEND_DAEMON_START_TIMEOUT` | Timeout for daemon startup. |
+| `MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES` | Max daemon request payload bytes. |
+| `MOLT_BACKEND_DAEMON_MAX_JOBS` | Max jobs accepted in one daemon request. |
+| `MOLT_BACKEND_DAEMON_CACHE_MB` | Max in-daemon object cache size in MiB. |
 | `MOLT_DISABLE_STRUCT_ELIDE` | Set to `1` to disable struct elision optimization. |
 | `MOLT_DEV_LINKER` | Override the linker selection (`auto`, `mold`, `lld`). |
 | `MOLT_USE_SCCACHE` | sccache mode (`auto`, `0`, `1`). |
