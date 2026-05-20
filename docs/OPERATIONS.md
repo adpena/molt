@@ -440,7 +440,12 @@ uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec
   freshness, daemon staleness checks, and native link inputs must use these
   aliases, including target-triple-specific aliases, so `micro` and `full`
   builds cannot overwrite or stale-check each other through the scratch name.
-- **Backend daemon**: native backend compiles use a persistent daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift cold-start. Tune startup with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and in-daemon object cache size with `MOLT_BACKEND_DAEMON_CACHE_MB`.
+- **Backend daemon**: native backend compiles use a persistent daemon by
+  default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift cold-start. Tune
+  startup with `MOLT_BACKEND_DAEMON_START_TIMEOUT`. The daemon enforces bounded
+  request/job/cache state by default; tune with
+  `MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES`, `MOLT_BACKEND_DAEMON_MAX_JOBS`,
+  and `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - **Daemon warm-hit probe path**: when cache keys are present, the build pipeline now lets the daemon send a probe-only request first and only encodes full IR after a daemon-declared miss. This preserves warm daemon hits without paying full IR encode/send cost on every run.
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
 - **Daemon lifecycle**: daemon logs/pid/fingerprints live under `<CARGO_TARGET_DIR>/.molt_state/backend_daemon/` (or `MOLT_BUILD_STATE_DIR`). If an agent sees daemon protocol/connectivity errors, the CLI restarts daemon once under lock before falling back to one-shot compile. Pytest assigns a default `MOLT_SESSION_ID=pytest-<pid>` when the caller has not supplied one, then the session guard drains daemon groups created during that pytest run at session finish.
