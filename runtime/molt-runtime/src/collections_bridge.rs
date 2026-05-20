@@ -115,6 +115,61 @@ pub extern "C" fn __molt_collections_string_obj_to_owned(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn __molt_collections_string_data(
+    ptr: *mut u8,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    unsafe {
+        if ptr.is_null() || object_type_id(ptr) != TYPE_ID_STRING {
+            return 0;
+        }
+        *out_ptr = string_bytes(ptr);
+        *out_len = string_len(ptr);
+        1
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_collections_attr_name_bits_from_bytes(
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut u64,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let name = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+        match attr_name_bits_from_bytes(_py, name) {
+            Some(bits) => {
+                unsafe {
+                    *out = bits;
+                }
+                1
+            }
+            None => 0,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_collections_attr_lookup_ptr_allow_missing(
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+    out: *mut u64,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        match unsafe { attr_lookup_ptr_allow_missing(_py, obj_ptr, attr_bits) } {
+            Some(bits) => {
+                unsafe {
+                    *out = bits;
+                }
+                1
+            }
+            None => 0,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn __molt_collections_is_truthy(bits: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(bits);
@@ -244,6 +299,24 @@ pub extern "C" fn __molt_collections_dict_del_in_place(dict_ptr: *mut u8, key_bi
             1
         } else {
             0
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_collections_dict_like_bits_from_ptr(
+    obj_ptr: *mut u8,
+    out: *mut u64,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        match unsafe { dict_like_bits_from_ptr(_py, obj_ptr) } {
+            Some(bits) => {
+                unsafe {
+                    *out = bits;
+                }
+                1
+            }
+            None => 0,
         }
     })
 }

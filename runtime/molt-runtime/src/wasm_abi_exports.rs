@@ -11,7 +11,7 @@ use crate::{
     TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
     TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, bound_method_self_bits, molt_dict_get,
     molt_index, molt_list_append, molt_store_index, molt_string_join, obj_from_bits,
-    object_type_id, raise_exception,
+    object_is_exact_builtin_dict, object_type_id, raise_exception,
 };
 use std::alloc::{Layout, alloc, dealloc};
 
@@ -23,17 +23,18 @@ pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
         let obj = obj_from_bits(dict_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                // Skip type_id check — backend already proved TYPE_ID_DICT.
-                if let Some(val) = crate::dict_get_in_place(_py, ptr, key_bits) {
+                if object_is_exact_builtin_dict(_py, ptr)
+                    && let Some(val) = crate::dict_get_in_place(_py, ptr, key_bits)
+                {
                     // inc_ref only needed for heap-pointer values; inline
                     // int/float/bool/none values have no refcount.
                     crate::inc_ref_bits(_py, val);
                     return val;
                 }
-                return crate::raise_key_error_with_key(_py, key_bits);
             }
         }
-        // Fallback for non-dict (shouldn't happen if backend proved dict).
+        // Fallback preserves mapping semantics for dict subclasses, including
+        // __missing__, when the backend only proved dict-like storage.
         molt_index(dict_bits, key_bits)
     })
 }

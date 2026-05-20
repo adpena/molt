@@ -6486,6 +6486,30 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "neg" | "unary_neg" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        emit_call(func, reloc_enabled, import_ids["neg"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "pos" | "unary_pos" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        emit_call(func, reloc_enabled, import_ids["pos"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "inplace_bit_or" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];

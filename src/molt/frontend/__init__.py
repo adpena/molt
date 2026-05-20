@@ -100,6 +100,8 @@ _FAST_ARITH_OPS = frozenset(
         "ADD",
         "SUB",
         "MUL",
+        "NEG",
+        "POS",
         "INPLACE_ADD",
         "INPLACE_SUB",
         "INPLACE_MUL",
@@ -2326,6 +2328,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _should_fast_int(self, op: MoltOp) -> bool:
         if op.kind not in _FAST_ARITH_OPS:
             return False
+        if op.kind in {"NEG", "POS"}:
+            return all(
+                isinstance(arg, MoltValue) and arg.type_hint == "int"
+                for arg in op.args
+            )
         # Bitwise ops on bools must NOT use the fast_int path because the
         # backend's inline band/bor/bxor + box_int_value always returns an
         # int, losing the bool type.  CPython preserves bool: True & False
@@ -4364,6 +4371,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for name in mro_names:
             min_size = max(min_size, BUILTIN_LAYOUT_MIN.get(name, 0))
         return min_size
+
+    def _class_reserved_tail_size(self, mro_names: list[str]) -> int:
+        return 16 if "dict" in mro_names else 8
 
     def _async_local_offset(self, name: str) -> int:
         if name not in self.async_locals:
@@ -14400,7 +14410,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         collector.visit(stmt)
 
             min_layout = self._builtin_min_layout(mro_names)
-            base_size = (len(field_order) * 8 + 8) if not dynamic else 8
+            reserved_tail = self._class_reserved_tail_size(mro_names)
+            base_size = (
+                (len(field_order) * 8 + reserved_tail) if not dynamic else reserved_tail
+            )
             size = max(base_size, min_layout)
             self.classes[node.name] = ClassInfo(
                 fields=fields,
@@ -25210,25 +25223,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if operand is None:
             raise NotImplementedError("Unsupported unary operand")
         if isinstance(node.op, ast.UAdd):
-            return operand
+            type_hint = (
+                "int"
+                if operand.type_hint in {"int", "bool"}
+                else operand.type_hint
+                if operand.type_hint in {"float", "complex"}
+                else "Any"
+            )
+            res = MoltValue(self.next_var(), type_hint=type_hint)
+            self.emit(MoltOp(kind="POS", args=[operand], result=res))
+            return res
         if isinstance(node.op, ast.USub):
-            if operand.type_hint == "float":
-                neg_one = MoltValue(self.next_var(), type_hint="float")
-                self.emit(MoltOp(kind="CONST_FLOAT", args=[-1.0], result=neg_one))
-                res = MoltValue(self.next_var(), type_hint="float")
-                self.emit(MoltOp(kind="MUL", args=[neg_one, operand], result=res))
-                return res
-            if operand.type_hint == "complex":
-                neg_one = MoltValue(self.next_var(), type_hint="float")
-                self.emit(MoltOp(kind="CONST_FLOAT", args=[-1.0], result=neg_one))
-                res = MoltValue(self.next_var(), type_hint="complex")
-                self.emit(MoltOp(kind="MUL", args=[neg_one, operand], result=res))
-                return res
-            else:
-                zero = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                res = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="SUB", args=[zero, operand], result=res))
+            type_hint = (
+                "int"
+                if operand.type_hint in {"int", "bool"}
+                else operand.type_hint
+                if operand.type_hint in {"float", "complex"}
+                else "Any"
+            )
+            res = MoltValue(self.next_var(), type_hint=type_hint)
+            self.emit(MoltOp(kind="NEG", args=[operand], result=res))
             return res
         if isinstance(node.op, ast.Not):
             return self._emit_not(operand)
@@ -32278,6 +32292,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "NEG":
+                entry = {
+                    "kind": "neg",
+                    "args": [op.args[0].name],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    entry["fast_float"] = True
+                json_ops.append(entry)
+            elif op.kind == "POS":
+                entry = {
+                    "kind": "pos",
+                    "args": [op.args[0].name],
+                    "out": op.result.name,
+                }
+                if self._should_fast_int(op):
+                    entry["fast_int"] = True
+                elif self._should_fast_float(op):
+                    entry["fast_float"] = True
+                json_ops.append(entry)
             elif op.kind == "NOT":
                 json_ops.append(
                     {

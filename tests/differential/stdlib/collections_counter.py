@@ -27,6 +27,10 @@ show("sub", c - c2)
 show("or", c | c2)
 show("and", c & c2)
 
+c_unary = collections.Counter({"a": 2, "b": -1, "c": 0})
+show("pos", +c_unary)
+show("neg", -c_unary)
+
 c3 = collections.Counter("abbb")
 c3 += collections.Counter("bcc")
 show("iadd", c3)

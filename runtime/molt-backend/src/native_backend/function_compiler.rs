@@ -19903,6 +19903,101 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "pos" | "unary_pos" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let res = if op_prefers_float_lane(&op) {
+                        let src_f =
+                            float_value_for(&mut builder, &vars, &float_primary_vars, &args[0])
+                                .unwrap_or_else(|| {
+                                    let val = var_get_boxed_overflow_safe(
+                                        &mut self.module,
+                                        &mut self.import_ids,
+                                        &mut builder,
+                                        &mut import_refs,
+                                        &mut sealed_blocks,
+                                        &vars,
+                                        &args[0],
+                                        &int_primary_vars,
+                                        &float_primary_vars,
+                                        box_int_mask_var,
+                                        box_int_tag_var,
+                                    )
+                                    .expect("Value not found");
+                                    builder.ins().bitcast(types::F64, MemFlags::new(), *val)
+                                });
+                        if op
+                            .out
+                            .as_ref()
+                            .is_some_and(|o| float_primary_vars.contains(o))
+                        {
+                            src_f
+                        } else {
+                            box_float_value_unchecked(&mut builder, src_f)
+                        }
+                    } else if op_prefers_int_lane(&op) {
+                        let src_name = &args[0];
+                        if let Some(src_raw) =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, src_name)
+                        {
+                            if let Some(ref out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, src_raw);
+                            }
+                            continue;
+                        }
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("Value not found");
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_pos",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        builder.inst_results(call)[0]
+                    } else {
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("Value not found");
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_pos",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*val]);
+                        builder.inst_results(call)[0]
+                    };
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "abs" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if op_prefers_int_lane(&op) {
