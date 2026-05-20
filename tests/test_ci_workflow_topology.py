@@ -92,11 +92,13 @@ def test_ci_clippy_failures_are_not_swallowed() -> None:
     clippy_lines = [
         line.strip()
         for line in ci_text.splitlines()
-        if line.strip().startswith("run: cargo clippy")
+        if "cargo clippy -p molt-backend --features native-backend -- -D warnings"
+        in line
     ]
 
     assert clippy_lines == [
-        "run: cargo clippy -p molt-backend --features native-backend -- -D warnings"
+        "run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- "
+        "cargo clippy -p molt-backend --features native-backend -- -D warnings"
     ]
 
 
@@ -112,6 +114,27 @@ def test_ci_warning_check_reuses_primary_build_output() -> None:
     )
     assert "WARNING_COUNT=$(cargo build" not in ci_text
     assert "cargo build 2>&1 | grep 'warning\\['" not in ci_text
+
+
+def test_ci_memory_intensive_steps_use_memory_guard() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+
+    assert (
+        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \\\n"
+        "            uv run python3 -m pytest -q"
+    ) in ci_text
+    assert (
+        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo build"
+        in ci_text
+    )
+    assert (
+        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo test -p molt-backend"
+        in ci_text
+    )
+    assert (
+        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo clippy"
+        in ci_text
+    )
 
 
 def test_kani_intrinsic_contracts_avoid_symbolic_std_sort() -> None:
