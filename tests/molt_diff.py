@@ -1503,8 +1503,12 @@ class _DiffMemoryGuardConfig:
     max_process_kb: int
     max_tree_kb: int
     global_kb: int
-    child_rlimit_kb: int | None
     poll_interval: float
+    child_rlimit_kb: int | None = None
+    dynamic_process_rss: bool = False
+    dynamic_tree_rss: bool = False
+    dynamic_global_rss: bool = False
+    dynamic_child_rlimit: bool = False
 
     @property
     def max_process_gb(self) -> float:
@@ -1536,17 +1540,37 @@ def _bounded_positive_float_env(
     return max(0.001, value)
 
 
-def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
+def _diff_memory_guard_config(
+    *, accounted_rss_kb: int = 0
+) -> _DiffMemoryGuardConfig:
     limits = harness_memory_guard.limits_from_env("MOLT_DIFF")
-    global_kb = min(limits.max_global_rss_kb, _DIFF_MEMORY_GUARD_HARD_GLOBAL_KB)
-    tree_kb = min(limits.max_total_rss_kb, global_kb)
-    process_kb = min(limits.max_process_rss_kb, tree_kb)
+    accounted_rss_kb = max(0, accounted_rss_kb)
+    current_limits = limits.current_memory_limits(accounted_rss_kb=accounted_rss_kb)
+    global_limit_kb = (
+        limits.max_global_rss_kb
+        if current_limits.max_global_rss_kb is None
+        else current_limits.max_global_rss_kb
+    )
+    tree_limit_kb = (
+        limits.max_total_rss_kb
+        if current_limits.max_total_rss_kb is None
+        else current_limits.max_total_rss_kb
+    )
+    global_kb = min(global_limit_kb, _DIFF_MEMORY_GUARD_HARD_GLOBAL_KB)
+    tree_kb = min(tree_limit_kb, global_kb)
+    process_kb = min(current_limits.max_process_rss_kb, tree_kb)
     return _DiffMemoryGuardConfig(
         max_process_kb=process_kb,
         max_tree_kb=tree_kb,
         global_kb=global_kb,
-        child_rlimit_kb=limits.child_rlimit_kb,
+        child_rlimit_kb=limits.current_child_rlimit_kb(
+            accounted_rss_kb=accounted_rss_kb
+        ),
         poll_interval=min(2.0, max(0.01, limits.poll_interval)),
+        dynamic_process_rss=limits.dynamic_process_rss,
+        dynamic_tree_rss=limits.dynamic_total_rss,
+        dynamic_global_rss=limits.dynamic_global_rss,
+        dynamic_child_rlimit=limits.dynamic_child_rlimit,
     )
 
 
@@ -1701,7 +1725,7 @@ def _available_memory_bytes() -> int | None:
 def _default_jobs() -> int:
     count = os.cpu_count() or 1
     guard = _diff_memory_guard_config()
-    per_job_gb = _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB") or guard.max_tree_gb
+    per_job_gb = _memory_guard_scheduler_per_job_gb(guard)
     available = _available_memory_bytes()
     if available is not None:
         mem_jobs = int(available / (per_job_gb * 1024 * 1024 * 1024))
@@ -1712,8 +1736,53 @@ def _default_jobs() -> int:
     return max(1, count)
 
 
+def _memory_guard_scheduler_per_job_gb(config: _DiffMemoryGuardConfig) -> float:
+    explicit = _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB")
+    if explicit is not None and explicit > 0:
+        return max(0.001, min(explicit, config.max_tree_gb))
+    cpu_count = max(1, os.cpu_count() or 1)
+    per_cpu_global_gb = config.global_gb / cpu_count
+    floor_gb = min(config.max_tree_gb, 1.0)
+    return max(
+        0.001,
+        min(config.max_tree_gb, max(floor_gb, min(8.0, per_cpu_global_gb))),
+    )
+
+
 def _memory_guard_max_jobs(config: _DiffMemoryGuardConfig) -> int:
-    return max(1, config.global_kb // max(1, config.max_tree_kb))
+    per_job_kb = max(
+        1,
+        int(_memory_guard_scheduler_per_job_gb(config) * 1024 * 1024),
+    )
+    return max(1, config.global_kb // per_job_kb)
+
+
+def _config_payload(config: _DiffMemoryGuardConfig) -> dict[str, object]:
+    return {
+        "max_process_gb": config.max_process_gb,
+        "max_tree_gb": config.max_tree_gb,
+        "global_gb": config.global_gb,
+        "child_rlimit_gb": config.child_rlimit_gb,
+        "poll_interval": config.poll_interval,
+        "scheduler_per_job_gb": _memory_guard_scheduler_per_job_gb(config),
+        "dynamic_process_rss": config.dynamic_process_rss,
+        "dynamic_tree_rss": config.dynamic_tree_rss,
+        "dynamic_global_rss": config.dynamic_global_rss,
+        "dynamic_child_rlimit": config.dynamic_child_rlimit,
+    }
+
+
+def _refresh_memory_guard_config(
+    config: _DiffMemoryGuardConfig, *, accounted_rss_kb: int
+) -> _DiffMemoryGuardConfig:
+    if not (
+        config.dynamic_process_rss
+        or config.dynamic_tree_rss
+        or config.dynamic_global_rss
+        or config.dynamic_child_rlimit
+    ):
+        return config
+    return _diff_memory_guard_config(accounted_rss_kb=accounted_rss_kb)
 
 
 def _constrain_jobs_for_memory_guard(
@@ -1726,7 +1795,8 @@ def _constrain_jobs_for_memory_guard(
         print(
             "[MEMORY-GUARD] "
             f"Clamping molt_diff jobs from {jobs} to {safe_jobs} "
-            f"(global={config.global_gb:.2f}GB tree={config.max_tree_gb:.2f}GB)."
+            f"(global={config.global_gb:.2f}GB "
+            f"per_job={_memory_guard_scheduler_per_job_gb(config):.2f}GB)."
         )
     return safe_jobs
 
@@ -2353,11 +2423,7 @@ def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
     _record_memory_guard_event(
         {
             "event": "run_started",
-            "max_process_gb": config.max_process_gb,
-            "max_tree_gb": config.max_tree_gb,
-            "global_gb": config.global_gb,
-            "child_rlimit_gb": config.child_rlimit_gb,
-            "poll_interval": config.poll_interval,
+            **_config_payload(config),
             "sample_interval": _diff_memory_guard_sample_interval_sec(),
             "write_samples": _diff_memory_guard_write_samples(),
             "stream_mode": _diff_memory_guard_stream_mode(),
@@ -2410,8 +2476,13 @@ class _DiffGlobalMemoryMonitor:
         samples = memory_guard.sample_processes()
         active_roots: list[int] = []
         unique_watched: set[int] = set()
-        tree_records: list[dict[str, object]] = []
-        tree_violation: tuple[int, memory_guard.RssViolation, float] | None = None
+        tree_samples: list[
+            tuple[
+                int,
+                memory_guard.RssViolation | None,
+                memory_guard.RssViolation | None,
+            ]
+        ] = []
         for entry in entries:
             root_pid = int(entry["pid"])
             watched = memory_guard.watched_pids(samples, root_pid)
@@ -2425,6 +2496,18 @@ class _DiffGlobalMemoryMonitor:
             unique_watched.update(watched)
             peak = memory_guard.peak_rss(samples, root_pid=root_pid)
             total = memory_guard.total_rss(samples, root_pid=root_pid)
+            tree_samples.append((root_pid, peak, total))
+        if not active_roots:
+            return
+        total_kb = sum(
+            sample.rss_kb for pid, sample in samples.items() if pid in unique_watched
+        )
+        current_config = _refresh_memory_guard_config(
+            self._config, accounted_rss_kb=total_kb
+        )
+        tree_records: list[dict[str, object]] = []
+        tree_violation: tuple[int, memory_guard.RssViolation, float] | None = None
+        for root_pid, peak, total in tree_samples:
             tree_records.append(
                 {
                     "root_pid": root_pid,
@@ -2432,15 +2515,10 @@ class _DiffGlobalMemoryMonitor:
                     "total": _memory_guard_record(total),
                 }
             )
-            if peak is not None and peak.rss_kb > self._config.max_process_kb:
-                tree_violation = (root_pid, peak, self._config.max_process_gb)
-            if total is not None and total.rss_kb > self._config.max_tree_kb:
-                tree_violation = (root_pid, total, self._config.max_tree_gb)
-        if not active_roots:
-            return
-        total_kb = sum(
-            sample.rss_kb for pid, sample in samples.items() if pid in unique_watched
-        )
+            if peak is not None and peak.rss_kb > current_config.max_process_kb:
+                tree_violation = (root_pid, peak, current_config.max_process_gb)
+            if total is not None and total.rss_kb > current_config.max_tree_kb:
+                tree_violation = (root_pid, total, current_config.max_tree_gb)
         now = time.monotonic()
         if (
             now - self._last_sample_write >= _diff_memory_guard_sample_interval_sec()
@@ -2453,6 +2531,7 @@ class _DiffGlobalMemoryMonitor:
                     "active_roots": active_roots,
                     "total_kb": total_kb,
                     "total_gb": total_kb / (1024 * 1024),
+                    "limits": _config_payload(current_config),
                     "trees": tree_records,
                 }
             )
@@ -2468,7 +2547,7 @@ class _DiffGlobalMemoryMonitor:
                 total_kb=total_kb,
             )
             return
-        if total_kb > self._config.global_kb:
+        if total_kb > current_config.global_kb:
             violation = memory_guard.RssViolation(
                 pid=0,
                 rss_kb=total_kb,
@@ -2480,7 +2559,7 @@ class _DiffGlobalMemoryMonitor:
                 reason="global memory guard tripped",
                 message=_memory_guard_message(
                     violation,
-                    limit_gb=self._config.global_gb,
+                    limit_gb=current_config.global_gb,
                     phase="global",
                 ),
                 violation=violation,
@@ -2663,6 +2742,12 @@ def _run_subprocess(
                         peak_total is None or observed_total.rss_kb > peak_total.rss_kb
                     ):
                         peak_total = observed_total
+                    config = _refresh_memory_guard_config(
+                        config,
+                        accounted_rss_kb=(
+                            0 if observed_total is None else observed_total.rss_kb
+                        ),
+                    )
                     violation = memory_guard.find_rss_violation(
                         samples,
                         root_pid=proc.pid,
@@ -4254,8 +4339,7 @@ def run_diff(
         "config": {
             "measure_rss": _diff_measure_rss(),
             "mem_limit_bytes": _memory_limit_bytes(),
-            "mem_per_job_gb": _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB")
-            or guard_config.max_tree_gb,
+            "mem_per_job_gb": _memory_guard_scheduler_per_job_gb(guard_config),
             "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
             "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
             "build_profile": build_profile,
@@ -4265,11 +4349,7 @@ def run_diff(
             "batch_compile_server_strict": _diff_batch_compile_server_strict(),
             "memory_guard": {
                 "enabled": guard_enabled,
-                "max_process_gb": guard_config.max_process_gb,
-                "max_tree_gb": guard_config.max_tree_gb,
-                "global_gb": guard_config.global_gb,
-                "child_rlimit_gb": guard_config.child_rlimit_gb,
-                "poll_interval": guard_config.poll_interval,
+                **_config_payload(guard_config),
                 "sample_interval": _diff_memory_guard_sample_interval_sec(),
                 "write_samples": _diff_memory_guard_write_samples(),
                 "stream_mode": _diff_memory_guard_stream_mode(),
