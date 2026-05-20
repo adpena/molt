@@ -30,6 +30,7 @@ Examples:
 import argparse
 import fnmatch
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -50,6 +51,14 @@ DIFF_DIR = REPO_ROOT / "tests" / "differential" / "basic"
 DEFAULT_RESULTS_DIR = BENCH_DIR / "results"
 DEFAULT_OUTPUT = DEFAULT_RESULTS_DIR / "harness.json"
 DEFAULT_BASELINE = DEFAULT_RESULTS_DIR / "harness-baseline.json"
+TOOLS_ROOT = REPO_ROOT / "tools"
+
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
+
+BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -147,15 +156,29 @@ class Colors:
 def run_cmd(cmd: list, timeout_s: float, cwd: Optional[Path] = None):
     """Run a command, capture output. Returns (stdout, stderr, rc, elapsed_s)."""
     start = time.monotonic()
+    env = _base_env()
+    limits = harness_memory_guard.limits_from_env(BENCH_MEMORY_PREFIX, env)
+    timeout = harness_memory_guard.timeout_from_env(
+        BENCH_MEMORY_PREFIX,
+        env,
+        explicit=timeout_s,
+    )
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix=BENCH_MEMORY_PREFIX,
             capture_output=True,
             text=True,
-            timeout=timeout_s,
+            timeout=timeout,
             cwd=cwd or REPO_ROOT,
+            env=env,
+            limits=limits,
         )
         elapsed = time.monotonic() - start
+        if proc.elapsed_s is not None:
+            elapsed = proc.elapsed_s
+        if proc.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
+            return "", f"TIMEOUT after {timeout_s}s", -1, elapsed
         return proc.stdout, proc.stderr, proc.returncode, elapsed
     except subprocess.TimeoutExpired:
         elapsed = time.monotonic() - start
@@ -163,6 +186,26 @@ def run_cmd(cmd: list, timeout_s: float, cwd: Optional[Path] = None):
     except FileNotFoundError as e:
         elapsed = time.monotonic() - start
         return "", str(e), -2, elapsed
+
+
+def _base_env() -> dict[str, str]:
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH")
+    src_root = str(REPO_ROOT / "src")
+    env["PYTHONPATH"] = (
+        f"{src_root}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else src_root
+    )
+    env.setdefault("MOLT_EXT_ROOT", str(REPO_ROOT))
+    env.setdefault("CARGO_TARGET_DIR", str(REPO_ROOT / "target"))
+    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+    env.setdefault("MOLT_CACHE", str(REPO_ROOT / ".molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(REPO_ROOT / "tmp" / "diff"))
+    env.setdefault("MOLT_DIFF_TMPDIR", str(REPO_ROOT / "tmp"))
+    env.setdefault("UV_CACHE_DIR", str(REPO_ROOT / ".uv-cache"))
+    env.setdefault("TMPDIR", str(REPO_ROOT / "tmp"))
+    return env
 
 
 def resolve_molt_cli(explicit_path: str | None) -> str:
@@ -442,7 +485,13 @@ def print_summary_table(c: Colors, summaries: list, regressions: list):
     print()
 
 
-def build_json_report(all_results: list, summaries: list, regressions: list) -> dict:
+def build_json_report(
+    all_results: list,
+    summaries: list,
+    regressions: list,
+    *,
+    memory_guard: dict[str, object] | None = None,
+) -> dict:
     report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "summaries": {},
@@ -481,6 +530,8 @@ def build_json_report(all_results: list, summaries: list, regressions: list) -> 
             }
     if bench_baseline:
         report["benchmarks"] = bench_baseline
+    if memory_guard is not None:
+        report["memory_guard"] = memory_guard
 
     return report
 
@@ -608,6 +659,8 @@ def main():
         args.bench = args.parity = args.diff = True
 
     colors = Colors(enabled=not args.no_color)
+    run_env = _base_env()
+    limits = harness_memory_guard.limits_from_env(BENCH_MEMORY_PREFIX, run_env)
 
     # Resolve molt command
     molt_bin = resolve_molt_cli(args.molt)
@@ -624,53 +677,59 @@ def main():
     all_results = []
     summaries = []
 
-    # --- Benchmark suite ---
-    if args.bench:
-        scripts = collect_bench_scripts(args.filter)
-        results, summary = run_suite(
-            "bench",
-            scripts,
-            molt_cmd,
-            args.python,
-            args.timeout,
-            args.parallel,
-            colors,
-            args.verbose,
-        )
-        all_results.extend(results)
-        summaries.append(summary)
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=REPO_ROOT / "tmp" / "bench" / "harness",
+        label="bench_harness",
+        limits=limits,
+    ):
+        # --- Benchmark suite ---
+        if args.bench:
+            scripts = collect_bench_scripts(args.filter)
+            results, summary = run_suite(
+                "bench",
+                scripts,
+                molt_cmd,
+                args.python,
+                args.timeout,
+                args.parallel,
+                colors,
+                args.verbose,
+            )
+            all_results.extend(results)
+            summaries.append(summary)
 
-    # --- Parity suite ---
-    if args.parity:
-        scripts = collect_parity_scripts(args.filter)
-        results, summary = run_suite(
-            "parity",
-            scripts,
-            molt_cmd,
-            args.python,
-            args.timeout,
-            args.parallel,
-            colors,
-            args.verbose,
-        )
-        all_results.extend(results)
-        summaries.append(summary)
+        # --- Parity suite ---
+        if args.parity:
+            scripts = collect_parity_scripts(args.filter)
+            results, summary = run_suite(
+                "parity",
+                scripts,
+                molt_cmd,
+                args.python,
+                args.timeout,
+                args.parallel,
+                colors,
+                args.verbose,
+            )
+            all_results.extend(results)
+            summaries.append(summary)
 
-    # --- Differential suite ---
-    if args.diff:
-        scripts = collect_diff_scripts(args.filter)
-        results, summary = run_suite(
-            "diff",
-            scripts,
-            molt_cmd,
-            args.python,
-            args.timeout,
-            args.parallel,
-            colors,
-            args.verbose,
-        )
-        all_results.extend(results)
-        summaries.append(summary)
+        # --- Differential suite ---
+        if args.diff:
+            scripts = collect_diff_scripts(args.filter)
+            results, summary = run_suite(
+                "diff",
+                scripts,
+                molt_cmd,
+                args.python,
+                args.timeout,
+                args.parallel,
+                colors,
+                args.verbose,
+            )
+            all_results.extend(results)
+            summaries.append(summary)
 
     # --- Regression detection ---
     baseline_path = Path(args.baseline)
@@ -680,7 +739,12 @@ def main():
     print_summary_table(colors, summaries, regressions)
 
     # --- JSON output ---
-    report = build_json_report(all_results, summaries, regressions)
+    report = build_json_report(
+        all_results,
+        summaries,
+        regressions,
+        memory_guard=harness_memory_guard.limits_summary(limits),
+    )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
