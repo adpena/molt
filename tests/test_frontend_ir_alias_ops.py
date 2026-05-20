@@ -137,6 +137,12 @@ def _raw_kinds(source: str, **kwargs: object) -> set[str]:
     return {op.kind for data in gen.funcs_map.values() for op in data["ops"]}
 
 
+def _raw_ops(source: str, **kwargs: object) -> list[MoltOp]:
+    gen = SimpleTIRGenerator(**kwargs)
+    gen.visit(ast.parse(source))
+    return [op for data in gen.funcs_map.values() for op in data["ops"]]
+
+
 def _lowered_kinds(source: str, **kwargs: object) -> set[str]:
     ir = compile_to_tir(source, **kwargs)
     return {op["kind"] for fn in ir["functions"] for op in fn["ops"]}
@@ -157,6 +163,21 @@ def test_raw_guard_tag_emitted_for_type_hints() -> None:
 def test_raw_guard_dict_shape_emitted_for_dict_increment() -> None:
     kinds = _raw_kinds('d = {}\nd["k"] = d.get("k", 0) + 1\n', fallback_policy="bridge")
     assert "GUARD_DICT_SHAPE" in kinds
+
+
+def test_raw_guard_dict_shape_uses_runtime_dict_layout_version() -> None:
+    ops = _raw_ops('d = {}\nd["k"] = d.get("k", 0) + 1\n', fallback_policy="bridge")
+    guard = next(op for op in ops if op.kind == "GUARD_DICT_SHAPE")
+    dict_type_value = guard.args[1]
+    version_value = guard.args[2]
+    assert isinstance(dict_type_value, MoltValue)
+    assert isinstance(version_value, MoltValue)
+    version_op = next(
+        op
+        for op in ops
+        if op.kind == "CLASS_VERSION" and op.result.name == version_value.name
+    )
+    assert version_op.args == [dict_type_value]
 
 
 def test_raw_call_indirect_emitted_for_bridge_attr_call() -> None:
@@ -181,10 +202,18 @@ def test_lowered_call_indirect_lane_is_used_for_dynamic_noncallable_attr_call() 
 
 
 def test_lowered_guard_dict_shape_lane_is_used_for_dict_increment() -> None:
-    kinds = _lowered_kinds(
-        'd = {}\nd["k"] = d.get("k", 0) + 1\n', fallback_policy="bridge"
+    lowered = _map_single(
+        MoltOp(
+            kind="GUARD_DICT_SHAPE",
+            args=[MoltValue("obj"), MoltValue("dict_type"), MoltValue("shape_ver")],
+            result=MoltValue("guard"),
+        )
     )
-    assert "guard_dict_shape" in kinds
+    assert lowered == {
+        "kind": "guard_dict_shape",
+        "args": ["obj", "dict_type", "shape_ver"],
+        "out": "guard",
+    }
 
 
 def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:
