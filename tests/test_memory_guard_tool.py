@@ -171,6 +171,35 @@ def test_memory_guard_defaults_adapt_to_live_memory_budget() -> None:
     assert memory_guard.DEFAULT_POLL_INTERVAL_SEC == 0.10
 
 
+def test_adaptive_budget_scales_up_and_down_with_live_available_memory() -> None:
+    high = memory_guard.adaptive_memory_budget(
+        "MOLT_BENCH",
+        {
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "120",
+        },
+    )
+    pressured = memory_guard.adaptive_memory_budget(
+        "MOLT_BENCH",
+        {
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "32",
+        },
+    )
+
+    assert high.reserve_gb == pytest.approx(7.68)
+    assert high.max_global_rss_gb == pytest.approx(108.9504)
+    assert high.max_total_rss_gb == pytest.approx(65.37024)
+    assert high.max_process_rss_gb == pytest.approx(58.833216)
+    assert pressured.reserve_gb == pytest.approx(high.reserve_gb)
+    assert pressured.max_global_rss_gb == pytest.approx(23.5904)
+    assert pressured.max_total_rss_gb == pytest.approx(14.15424)
+    assert pressured.max_process_rss_gb == pytest.approx(12.738816)
+    assert high.max_global_rss_gb > pressured.max_global_rss_gb
+    assert high.available_gb - high.max_global_rss_gb > high.reserve_gb
+    assert pressured.available_gb - pressured.max_global_rss_gb > pressured.reserve_gb
+
+
 def test_adaptive_budget_accounts_guarded_tree_rss_without_self_tightening() -> None:
     budget = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
@@ -186,6 +215,25 @@ def test_adaptive_budget_accounts_guarded_tree_rss_without_self_tightening() -> 
     assert budget.max_process_rss_gb == pytest.approx(46.262016)
     assert budget.max_total_rss_gb == pytest.approx(51.40224)
     assert budget.max_global_rss_gb == pytest.approx(85.6704)
+
+
+def test_adaptive_budget_clamps_large_hosts_below_rss_conversion_cap() -> None:
+    budget = memory_guard.adaptive_memory_budget(
+        "MOLT_BENCH",
+        {
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "512",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "500",
+        },
+    )
+
+    assert budget.reserve_gb == pytest.approx(12.0)
+    assert budget.max_global_rss_gb == pytest.approx(473.36)
+    assert budget.max_total_rss_gb == pytest.approx(
+        memory_guard.DEFAULT_HARD_MAX_RSS_GB - 0.001
+    )
+    assert budget.max_process_rss_gb == pytest.approx(100.7991)
+    assert memory_guard.max_rss_kb_from_gb(budget.max_total_rss_gb) > 0
+    assert memory_guard.max_rss_kb_from_gb(budget.max_process_rss_gb) > 0
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
@@ -241,6 +289,16 @@ def test_default_child_rlimit_is_decoupled_from_rss_budget() -> None:
         max_process_rss_gb=2.0,
         max_total_rss_gb=3.0,
     ) == pytest.approx(8.0)
+    assert memory_guard.default_child_rlimit_gb(
+        max_process_rss_gb=2.0,
+        max_total_rss_gb=3.0,
+        max_global_rss_gb=4.0,
+    ) == pytest.approx(4.0)
+    assert memory_guard.default_child_rlimit_gb(
+        max_process_rss_gb=46.0,
+        max_total_rss_gb=51.0,
+        max_global_rss_gb=85.0,
+    ) == pytest.approx(85.0)
     assert memory_guard.default_child_rlimit_gb(
         max_process_rss_gb=46.0,
         max_total_rss_gb=51.0,

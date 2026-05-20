@@ -113,7 +113,7 @@ def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
     assert result.status == "pass"
     assert calls[0]["max_rss_kb"] == 4 * 1024 * 1024
     assert calls[0]["max_total_rss_kb"] == 6 * 1024 * 1024
-    assert calls[0]["child_rlimit_kb"] == 12 * 1024 * 1024
+    assert calls[0]["child_rlimit_kb"] == 10 * 1024 * 1024
 
 
 def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:

@@ -121,6 +121,7 @@ class HarnessMemoryLimits:
             child_rlimit_gb = memory_guard.default_child_rlimit_gb(
                 max_process_rss_gb=self.max_process_rss_gb,
                 max_total_rss_gb=self.max_total_rss_gb,
+                max_global_rss_gb=self.max_global_rss_gb,
             )
             object.__setattr__(self, "child_rlimit_gb", child_rlimit_gb)
         object.__setattr__(
@@ -177,6 +178,7 @@ class HarnessMemoryLimits:
         child_rlimit_gb = memory_guard.default_child_rlimit_gb(
             max_process_rss_gb=current.max_process_rss_gb,
             max_total_rss_gb=current_total_gb,
+            max_global_rss_gb=current.max_global_rss_gb,
         )
         return memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb)
 
@@ -339,6 +341,7 @@ def limits_from_env(
         memory_guard.default_child_rlimit_gb(
             max_process_rss_gb=process_gb,
             max_total_rss_gb=total_gb,
+            max_global_rss_gb=global_gb,
         )
         if child_rlimit_override is None
         else child_rlimit_override
@@ -347,6 +350,7 @@ def limits_from_env(
         child_rlimit_cap_gb = memory_guard.default_child_rlimit_gb(
             max_process_rss_gb=process_gb,
             max_total_rss_gb=total_gb,
+            max_global_rss_gb=global_gb,
         )
         child_rlimit_gb = _clamp_hard_limit(
             child_rlimit_gb,
