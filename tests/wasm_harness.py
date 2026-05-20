@@ -12067,6 +12067,52 @@ BASE_IMPORTS = """\
     }
     return boxPtr({ type: 'str', value: parts[target] });
   },
+  string_split_field_len: (hayBits, needleBits, indexBits) => {
+    const hay = getStrObj(hayBits);
+    if (hay === null) return boxNone();
+    const needle = getStrObj(needleBits);
+    if (needle === null) return boxNone();
+    if (Array.from(needle).length === 0) {
+      throw new Error('ValueError: empty separator');
+    }
+    const errMsg = `list indices must be integers or slices, not ${typeName(indexBits)}`;
+    const index = indexBigIntFromBits(indexBits, errMsg);
+    if (index === null) return boxNone();
+    if (index < 0n) {
+      throw new Error('IndexError: list index out of range');
+    }
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    const target = index > maxSafe ? Number.MAX_SAFE_INTEGER : Number(index);
+    const parts = stringSplitSepMax(hay, needle, -1);
+    if (target >= parts.length) {
+      throw new Error('IndexError: list index out of range');
+    }
+    return boxInt(BigInt(Array.from(parts[target]).length));
+  },
+  string_split_field_eq: (hayBits, needleBits, indexBits, expectedBits) => {
+    const hay = getStrObj(hayBits);
+    if (hay === null) return boxNone();
+    const needle = getStrObj(needleBits);
+    if (needle === null) return boxNone();
+    if (Array.from(needle).length === 0) {
+      throw new Error('ValueError: empty separator');
+    }
+    const expected = getStrObj(expectedBits);
+    if (expected === null) return boxBool(false);
+    const errMsg = `list indices must be integers or slices, not ${typeName(indexBits)}`;
+    const index = indexBigIntFromBits(indexBits, errMsg);
+    if (index === null) return boxNone();
+    if (index < 0n) {
+      throw new Error('IndexError: list index out of range');
+    }
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    const target = index > maxSafe ? Number.MAX_SAFE_INTEGER : Number(index);
+    const parts = stringSplitSepMax(hay, needle, -1);
+    if (target >= parts.length) {
+      throw new Error('IndexError: list index out of range');
+    }
+    return boxBool(parts[target] === expected);
+  },
   string_split_max: (hayBits, needleBits, maxsplitBits) => {
     const hay = getStrObj(hayBits);
     if (hay === null) return boxNone();

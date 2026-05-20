@@ -32649,6 +32649,109 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             rewritten.append(op)
         return rewritten
 
+    @staticmethod
+    def _fuse_string_split_field_consumers_json(
+        json_ops: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        const_strings: dict[str, str] = {}
+        use_counts: dict[str, int] = {}
+        split_fields_by_out: dict[str, tuple[int, list[str]]] = {}
+
+        for op_index, op in enumerate(json_ops):
+            out = op.get("out")
+            if op.get("kind") == "const_str" and isinstance(out, str):
+                s_value = op.get("s_value")
+                if isinstance(s_value, str):
+                    const_strings[out] = s_value
+            args = op.get("args")
+            if isinstance(args, list):
+                for arg in args:
+                    if isinstance(arg, str):
+                        use_counts[arg] = use_counts.get(arg, 0) + 1
+            if op.get("kind") == "string_split_field" and isinstance(out, str):
+                if (
+                    isinstance(args, list)
+                    and len(args) == 3
+                    and all(isinstance(arg, str) for arg in args)
+                ):
+                    split_fields_by_out[out] = (op_index, list(args))
+
+        remove_indexes: set[int] = set()
+        replace_ops: dict[int, dict[str, Any]] = {}
+
+        def copy_source_span(src: dict[str, Any], dst: dict[str, Any]) -> None:
+            if "col_offset" in src:
+                dst["col_offset"] = src["col_offset"]
+            if "end_col_offset" in src:
+                dst["end_col_offset"] = src["end_col_offset"]
+
+        for op_index, op in enumerate(json_ops):
+            args = op.get("args")
+            if not isinstance(args, list):
+                continue
+            kind = op.get("kind")
+            if (
+                kind == "len"
+                and len(args) == 1
+                and isinstance(args[0], str)
+                and use_counts.get(args[0], 0) == 1
+            ):
+                field = split_fields_by_out.get(args[0])
+                if field is not None:
+                    field_op_index, field_args = field
+                    rewritten = {
+                        "kind": "string_split_field_len",
+                        "args": field_args,
+                        "out": op.get("out"),
+                    }
+                    copy_source_span(op, rewritten)
+                    replace_ops[op_index] = rewritten
+                    remove_indexes.add(field_op_index)
+                continue
+            if kind == "eq" and len(args) == 2:
+                left, right = args
+                field_var: str | None = None
+                expected_var: str | None = None
+                if (
+                    isinstance(left, str)
+                    and isinstance(right, str)
+                    and right in const_strings
+                    and use_counts.get(left, 0) == 1
+                    and left in split_fields_by_out
+                ):
+                    field_var = left
+                    expected_var = right
+                elif (
+                    isinstance(left, str)
+                    and isinstance(right, str)
+                    and left in const_strings
+                    and use_counts.get(right, 0) == 1
+                    and right in split_fields_by_out
+                ):
+                    field_var = right
+                    expected_var = left
+                if field_var is not None and expected_var is not None:
+                    field_op_index, field_args = split_fields_by_out[field_var]
+                    rewritten = {
+                        "kind": "string_split_field_eq",
+                        "args": [*field_args, expected_var],
+                        "out": op.get("out"),
+                    }
+                    copy_source_span(op, rewritten)
+                    replace_ops[op_index] = rewritten
+                    remove_indexes.add(field_op_index)
+
+        if not remove_indexes and not replace_ops:
+            return json_ops
+
+        rewritten_ops: list[dict[str, Any]] = []
+        for op_index, op in enumerate(json_ops):
+            if op_index in remove_indexes:
+                continue
+            replacement = replace_ops.get(op_index)
+            rewritten_ops.append(replacement if replacement is not None else op)
+        return rewritten_ops
+
     def map_ops_to_json(
         self, ops: list[MoltOp], *, function_name: str | None = None
     ) -> list[dict[str, Any]]:
@@ -36461,6 +36564,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         last_entry["end_col_offset"] = mop.end_col_offset
 
         json_ops = self._scalarize_string_split_fields_json(json_ops)
+        json_ops = self._fuse_string_split_field_consumers_json(json_ops)
         return json_ops
 
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
