@@ -398,6 +398,14 @@ pub mod ffi {
         /// `args_bits`: NaN-boxed tuple of arguments.
         pub fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64;
 
+        /// Create a new exception object from a canonical builtin exception tag.
+        /// `tag`: frontend/runtime agreed builtin-exception constructor tag.
+        /// `args_bits`: NaN-boxed tuple of arguments.
+        pub fn molt_exception_new_builtin(tag: u64, args_bits: u64) -> u64;
+
+        /// Match an exception object against a canonical builtin exception tag.
+        pub fn molt_exception_match_builtin(exc_bits: u64, tag: u64) -> u64;
+
         /// Raise an already-constructed exception object.
         /// Records it into the current exception slot. Returns None bits.
         pub fn molt_raise(exc_bits: u64) -> u64;
@@ -453,7 +461,7 @@ pub mod ffi {
 
         /// GIL-free list[int] setitem (NaN-boxed interface).
         pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64)
-            -> u64;
+        -> u64;
 
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
         pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
@@ -704,8 +712,8 @@ pub mod prelude {
     pub use crate::with_core_gil;
     pub use crate::with_gil_entry;
     pub use crate::{
-        bits_from_ptr, obj_from_bits, ptr_from_bits, CoreGilGuard, CoreGilToken, GilReleaseGuard,
-        MoltObject, PyToken,
+        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken, bits_from_ptr,
+        obj_from_bits, ptr_from_bits,
     };
 
     // Safe runtime wrappers

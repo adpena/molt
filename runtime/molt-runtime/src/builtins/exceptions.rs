@@ -1994,6 +1994,123 @@ pub(crate) fn exception_type_bits(_py: &PyToken<'_>, kind_bits: u64) -> u64 {
     exception_type_bits_from_name(_py, &name)
 }
 
+fn builtin_exception_name_for_tag(tag: u64) -> Option<&'static str> {
+    match tag {
+        1 => Some("BaseException"),
+        2 => Some("Exception"),
+        3 => Some("KeyError"),
+        4 => Some("IndexError"),
+        5 => Some("ValueError"),
+        6 => Some("TypeError"),
+        7 => Some("RuntimeError"),
+        8 => Some("StopIteration"),
+        9 => Some("StopAsyncIteration"),
+        10 => Some("AssertionError"),
+        11 => Some("ImportError"),
+        12 => Some("NameError"),
+        13 => Some("UnboundLocalError"),
+        14 => Some("NotImplementedError"),
+        _ => None,
+    }
+}
+
+static BASE_EXCEPTION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static EXCEPTION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static KEY_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static INDEX_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static VALUE_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static TYPE_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static STOP_ITERATION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static STOP_ASYNC_ITERATION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static ASSERTION_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static IMPORT_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static NAME_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static UNBOUND_LOCAL_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+static NOT_IMPLEMENTED_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
+
+fn builtin_exception_class_cache_for_tag(tag: u64) -> Option<(&'static AtomicU64, &'static str)> {
+    match tag {
+        1 => Some((&BASE_EXCEPTION_CLASS_CACHE, "BaseException")),
+        2 => Some((&EXCEPTION_CLASS_CACHE, "Exception")),
+        3 => Some((&KEY_ERROR_CLASS_CACHE, "KeyError")),
+        4 => Some((&INDEX_ERROR_CLASS_CACHE, "IndexError")),
+        5 => Some((&VALUE_ERROR_CLASS_CACHE, "ValueError")),
+        6 => Some((&TYPE_ERROR_CLASS_CACHE, "TypeError")),
+        7 => Some((&RUNTIME_ERROR_CLASS_CACHE, "RuntimeError")),
+        8 => Some((&STOP_ITERATION_CLASS_CACHE, "StopIteration")),
+        9 => Some((&STOP_ASYNC_ITERATION_CLASS_CACHE, "StopAsyncIteration")),
+        10 => Some((&ASSERTION_ERROR_CLASS_CACHE, "AssertionError")),
+        11 => Some((&IMPORT_ERROR_CLASS_CACHE, "ImportError")),
+        12 => Some((&NAME_ERROR_CLASS_CACHE, "NameError")),
+        13 => Some((&UNBOUND_LOCAL_ERROR_CLASS_CACHE, "UnboundLocalError")),
+        14 => Some((&NOT_IMPLEMENTED_ERROR_CLASS_CACHE, "NotImplementedError")),
+        _ => None,
+    }
+}
+
+fn builtin_exception_class_bits_for_tag(_py: &PyToken<'_>, tag: u64) -> Option<u64> {
+    let (cache, name) = builtin_exception_class_cache_for_tag(tag)?;
+    let cached = cache.load(AtomicOrdering::Acquire);
+    if cached != 0 {
+        return Some(cached);
+    }
+    let class_bits = exception_type_bits_from_name(_py, name);
+    if class_bits != 0 {
+        cache.store(class_bits, AtomicOrdering::Release);
+        Some(class_bits)
+    } else {
+        None
+    }
+}
+
+fn exception_message_for_builtin_tag_storage(
+    _py: &PyToken<'_>,
+    tag: u64,
+    class_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    if tag != 3
+        && unsafe {
+            crate::object::ops_format::exception_class_bits_uses_cached_message_str(_py, class_bits)
+        }
+    {
+        exception_lazy_message_bits()
+    } else {
+        exception_message_from_args(_py, args_bits)
+    }
+}
+
+fn alloc_builtin_exception_from_tag(_py: &PyToken<'_>, tag: u64, args_bits: u64) -> *mut u8 {
+    let Some(class_bits) = builtin_exception_class_bits_for_tag(_py, tag) else {
+        return std::ptr::null_mut();
+    };
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return std::ptr::null_mut();
+    };
+    let kind_bits = unsafe { class_name_bits(class_ptr) };
+    let args_bits = exception_normalize_args(_py, args_bits);
+    if obj_from_bits(args_bits).is_none() {
+        return std::ptr::null_mut();
+    }
+    let msg_bits = exception_message_for_builtin_tag_storage(_py, tag, class_bits, args_bits);
+    if obj_from_bits(msg_bits).is_none() {
+        dec_ref_bits(_py, args_bits);
+        return std::ptr::null_mut();
+    }
+    let none_bits = MoltObject::none().bits();
+    let ptr = alloc_exception_obj(_py, kind_bits, msg_bits, class_bits, args_bits, none_bits);
+    if !ptr.is_null() {
+        unsafe {
+            exception_set_stop_iteration_value(_py, ptr, args_bits);
+            exception_set_system_exit_code(_py, ptr, args_bits);
+        }
+    }
+    dec_ref_bits(_py, args_bits);
+    dec_ref_bits(_py, msg_bits);
+    ptr
+}
+
 pub(crate) fn exception_normalize_args(_py: &PyToken<'_>, args_bits: u64) -> u64 {
     let args_obj = obj_from_bits(args_bits);
     if args_obj.is_none() || args_bits == 0 {
@@ -4808,6 +4925,43 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64 {
         dec_ref_bits(_py, args_bits);
         dec_ref_bits(_py, msg_bits);
         out
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_new_builtin(tag: u64, args_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if builtin_exception_name_for_tag(tag).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "unknown builtin exception tag");
+        }
+        let ptr = alloc_builtin_exception_from_tag(_py, tag, args_bits);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_match_builtin(exc_bits: u64, tag: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(target_class_bits) = builtin_exception_class_bits_for_tag(_py, tag) else {
+            return raise_exception::<u64>(_py, "RuntimeError", "unknown builtin exception tag");
+        };
+        let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) else {
+            return MoltObject::from_bool(false).bits();
+        };
+        unsafe {
+            if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+                return MoltObject::from_bool(false).bits();
+            }
+            MoltObject::from_bool(issubclass_bits(
+                exception_class_bits(exc_ptr),
+                target_class_bits,
+            ))
+            .bits()
+        }
     })
 }
 

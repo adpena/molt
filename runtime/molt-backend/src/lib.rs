@@ -51,12 +51,12 @@ pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir
 #[cfg(feature = "native-backend")]
 use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
-    apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
-    elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_imports,
-    eliminate_dead_ops, eliminate_redundant_guard_tags, eliminate_unbound_local_checks,
-    escape_analysis, fold_constants, fold_constants_cross_block, hoist_loop_invariants,
-    inject_runtime_exit, inline_functions, rc_coalescing, rewrite_stateful_loops,
-    split_megafunctions,
+    apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
+    elide_dead_struct_allocs, elide_safe_exception_checks, eliminate_dead_functions,
+    eliminate_dead_imports, eliminate_dead_ops, eliminate_redundant_guard_tags,
+    eliminate_unbound_local_checks, escape_analysis, fold_constants, fold_constants_cross_block,
+    hoist_loop_invariants, inject_runtime_exit, inline_functions, rc_coalescing,
+    rewrite_stateful_loops, split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -3465,6 +3465,7 @@ impl SimpleBackend {
         rewrite_annotate_stubs(&mut ir);
         for func in &mut ir.functions {
             rewrite_copy_aliases(&mut func.ops);
+            canonicalize_direct_raise_edges(func);
             if std::env::var("MOLT_DUMP_REWRITTEN_FUNC").as_deref() == Ok(func.name.as_str()) {
                 let mut dump = String::new();
                 for (idx, op) in func.ops.iter().enumerate() {

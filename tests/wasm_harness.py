@@ -3258,6 +3258,22 @@ const exceptionBaseSpecs = new Map([
   ['ResourceWarning', ['Warning']],
   ['EncodingWarning', ['Warning']],
 ]);
+const exceptionBuiltinNamesByTag = new Map([
+  [1, 'BaseException'],
+  [2, 'Exception'],
+  [3, 'KeyError'],
+  [4, 'IndexError'],
+  [5, 'ValueError'],
+  [6, 'TypeError'],
+  [7, 'RuntimeError'],
+  [8, 'StopIteration'],
+  [9, 'StopAsyncIteration'],
+  [10, 'AssertionError'],
+  [11, 'ImportError'],
+  [12, 'NameError'],
+  [13, 'UnboundLocalError'],
+  [14, 'NotImplementedError'],
+]);
 const makeExceptionClass = (name, baseBits) => {
   const clsBits = boxPtr({
     type: 'class',
@@ -4053,6 +4069,23 @@ const exceptionNewFromClass = (classBits, argsBits) => {
   };
   exceptionSetValueFromArgs(exc, normArgsBits);
   return boxPtr(exc);
+};
+const exceptionNewBuiltin = (tagBits, argsBits) => {
+  const name = exceptionBuiltinNamesByTag.get(Number(tagBits));
+  if (!name) {
+    throw new Error('RuntimeError: unknown builtin exception tag');
+  }
+  return exceptionNewFromClass(getExceptionClassForName(name), argsBits);
+};
+const exceptionMatchBuiltin = (excBits, tagBits) => {
+  const name = exceptionBuiltinNamesByTag.get(Number(tagBits));
+  if (!name) {
+    throw new Error('RuntimeError: unknown builtin exception tag');
+  }
+  if (!getException(excBits)) {
+    return boxBool(false);
+  }
+  return boxBool(isSubclass(typeOfBits(excBits), getExceptionClassForName(name)));
 };
 const exceptionSetCause = (excBits, causeBits) => {
   const exc = getException(excBits);
@@ -13886,6 +13919,8 @@ BASE_IMPORTS = """\
   exception_last: () => exceptionLast(),
   exception_active: () => exceptionActive(),
   exception_new: (kind, args) => exceptionNew(kind, args),
+  exception_new_builtin: (tag, args) => exceptionNewBuiltin(tag, args),
+  exception_match_builtin: (exc, tag) => exceptionMatchBuiltin(exc, tag),
   exception_new_from_class: (cls, args) => exceptionNewFromClass(cls, args),
   exception_class: (kind) => exceptionClass(kind),
   exception_clear: () => exceptionClear(),

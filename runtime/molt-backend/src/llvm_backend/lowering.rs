@@ -124,8 +124,10 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
         | TirType::Bytes
         | TirType::List(_)
         | TirType::Dict(_, _)
+        | TirType::Iterator(_)
         | TirType::Set(_)
         | TirType::Tuple(_)
+        | TirType::UserClass(_)
         | TirType::Ptr(_)
         | TirType::Func(_)
         | TirType::Box(_)
@@ -3844,6 +3846,44 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.value_types.insert(done_id, TirType::DynBox);
                 }
             }
+            OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack => {
+                let Some(&class_id) = op.operands.first() else {
+                    panic!("{:?} requires class operand", op.opcode);
+                };
+                let class_bits = self.materialize_dynbox_operand(class_id);
+                let result = if let Some(AttrValue::Int(payload_size)) = op.attrs.get("value")
+                    && *payload_size > 0
+                {
+                    let new_fn = self.ensure_runtime_i64_fn("molt_object_new_bound_sized", 2);
+                    let size_bits = self
+                        .backend
+                        .context
+                        .i64_type()
+                        .const_int(*payload_size as u64, false);
+                    self.backend
+                        .builder
+                        .build_call(
+                            new_fn,
+                            &[class_bits.into(), size_bits.into()],
+                            "object_new_bound_sized",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
+                } else {
+                    let new_fn = self.ensure_runtime_i64_fn("molt_object_new_bound", 1);
+                    self.backend
+                        .builder
+                        .build_call(new_fn, &[class_bits.into()], "object_new_bound")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
+                };
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
             OpCode::StateBlockStart | OpCode::StateBlockEnd => {}
         }
     }
@@ -4443,8 +4483,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             | TirType::Bytes
             | TirType::List(_)
             | TirType::Dict(_, _)
+            | TirType::Iterator(_)
             | TirType::Set(_)
             | TirType::Tuple(_)
+            | TirType::UserClass(_)
             | TirType::Ptr(_)
             | TirType::Func(_)
             | TirType::Box(_)
@@ -7124,6 +7166,37 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "exception_new_builtin" => {
+                let Some(&args_id) = op.operands.first() else {
+                    return false;
+                };
+                let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
+                    return false;
+                };
+                let new_fn = self.ensure_runtime_i64_fn("molt_exception_new_builtin", 2);
+                let tag_val = self
+                    .backend
+                    .context
+                    .i64_type()
+                    .const_int(*tag as u64, false);
+                let args_bits = self.ensure_i64(self.resolve(args_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        new_fn,
+                        &[tag_val.into(), args_bits.into()],
+                        "exception_new_builtin",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "exception_push" => {
                 let push_fn = self.ensure_runtime_i64_fn("molt_exception_push", 0);
                 let result = self
@@ -7610,6 +7683,37 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         isinstance_fn,
                         &[obj_bits.into(), class_bits.into()],
                         "isinstance",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_match_builtin" => {
+                let Some(&exc_id) = op.operands.first() else {
+                    return false;
+                };
+                let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
+                    return false;
+                };
+                let match_fn = self.ensure_runtime_i64_fn("molt_exception_match_builtin", 2);
+                let exc_bits = self.ensure_i64(self.resolve(exc_id));
+                let tag_val = self
+                    .backend
+                    .context
+                    .i64_type()
+                    .const_int(*tag as u64, false);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        match_fn,
+                        &[exc_bits.into(), tag_val.into()],
+                        "exception_match_builtin",
                     )
                     .unwrap()
                     .try_as_basic_value()
