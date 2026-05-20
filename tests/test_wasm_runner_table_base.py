@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -17,13 +18,13 @@ def _wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
     wat_path = tmp_path / f"{name}.wat"
     wasm_path = tmp_path / f"{name}.wasm"
     wat_path.write_text(wat, encoding="utf-8")
-    subprocess.run(
+    result = _run_wasm_test_process(
         [wasm_tools, "parse", str(wat_path), "-o", str(wasm_path)],
-        cwd=str(ROOT),
-        check=True,
-        capture_output=True,
-        text=True,
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
     )
+    assert result.returncode == 0, result.stderr
     return wasm_path
 
 
@@ -34,13 +35,13 @@ def _extract_table_base(wasm_path: Path) -> int | None:
         "const value = runner.extractWasmTableBase(fs.readFileSync(process.argv[1]));"
         "process.stdout.write(JSON.stringify(value));"
     )
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         ["node", "-e", script, str(wasm_path)],
-        cwd=str(ROOT),
-        check=True,
-        capture_output=True,
-        text=True,
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
     )
+    assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
 

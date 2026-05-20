@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.surface_process_guard import run_surface_test_process
 
 import pytest
 
@@ -78,7 +79,7 @@ print("CHECK|" + str("molt_capabilities_has" not in module.__dict__))
 
 
 def _run_probe(module_name: str, module_path: Path) -> tuple[list[str], bool]:
-    proc = subprocess.run(
+    proc = run_surface_test_process(
         [sys.executable, "-c", _probe_source(module_name, module_path)],
         cwd=REPO_ROOT,
         text=True,

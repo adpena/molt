@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 import json
-import subprocess
+import os
 import sys
 import tarfile
 from pathlib import Path
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,7 +60,7 @@ def test_wasm_build_with_bundle(tmp_path):
 
     # Build
     output = tmp_path / "output.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -71,9 +72,8 @@ def test_wasm_build_with_bundle(tmp_path):
             "--output",
             str(output),
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=180,
     )
     # The build should succeed (bundle integration is env-var based)
@@ -89,7 +89,7 @@ def test_wasm_build_with_profile_cloudflare(tmp_path):
     (src / "app.py").write_text("x = 1\n")
 
     output = tmp_path / "output.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -103,9 +103,8 @@ def test_wasm_build_with_profile_cloudflare(tmp_path):
             "--output",
             str(output),
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=180,
     )
     assert result.returncode == 0, f"Build failed: {result.stderr}"
@@ -119,7 +118,7 @@ def test_snapshot_generation(tmp_path):
     (src / "app.py").write_text("x = 1\n")
 
     output = tmp_path / "output.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -132,9 +131,8 @@ def test_snapshot_generation(tmp_path):
             "--output",
             str(output),
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=180,
     )
     assert result.returncode == 0, f"Build failed: {result.stderr}"
@@ -163,7 +161,7 @@ def test_wasm_default_build_emits_linked_artifact(tmp_path):
     src.write_text('print("hello, wasm")\n')
 
     output = tmp_path / "output.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -175,9 +173,8 @@ def test_wasm_default_build_emits_linked_artifact(tmp_path):
             "--output",
             str(output),
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=900,
     )
     assert result.returncode == 0, (

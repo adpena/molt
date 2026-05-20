@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 WASM_MAGIC = b"\x00asm"
@@ -419,11 +424,14 @@ def validate_wasm(wasm_bytes: bytes) -> tuple[bool, str]:
         f.flush()
         tmp_path = f.name
     try:
-        result = subprocess.run(
+        limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+        result = harness_memory_guard.guarded_completed_process(
             [exe, tmp_path],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=30,
+            limits=limits,
         )
         if result.returncode == 0:
             return True, ""

@@ -3,11 +3,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
-import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from tests.process_guard_common import run_guarded_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,15 @@ DEPLOY_PY = DRIVER_DIR / "deploy.py"
 BENCH_PY = DRIVER_DIR / "bench_hostfed.py"
 BROWSER_JS = DRIVER_DIR / "browser.js"
 VERIFY_PY = DRIVER_DIR / "verify.py"
+
+
+def _run_test_process(args, **kwargs):
+    return run_guarded_test_process(
+        args,
+        prefix="MOLT_FALCON_TEST",
+        default_timeout=900.0,
+        **kwargs,
+    )
 
 
 def _load_module(path: Path, name: str):
@@ -186,7 +196,7 @@ def test_falcon_driver_deploy_script_emits_json(tmp_path: Path) -> None:
         '{"model":{"vocab":{}}}\n', encoding="utf-8"
     )
 
-    res = subprocess.run(
+    res = _run_test_process(
         [sys.executable, str(DEPLOY_PY), "--target-root", str(target_root)],
         cwd=ROOT,
         text=True,
@@ -255,7 +265,7 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert wrangler["assets"]["binding"] == "ASSETS"
     assert wrangler["assets"]["run_worker_first"] == ["/driver-manifest.json"]
     if shutil.which("wrangler") is not None:
-        check = subprocess.run(
+        check = _run_test_process(
             ["wrangler", "check", "--config", str(bundle_root / "wrangler.jsonc")],
             cwd=bundle_root,
             text=True,
@@ -301,7 +311,7 @@ def test_falcon_driver_materialize_bundle_allows_same_origin_weights(
 
 
 def test_falcon_driver_bench_script_help() -> None:
-    res = subprocess.run(
+    res = _run_test_process(
         [sys.executable, str(BENCH_PY), "--help"],
         cwd=ROOT,
         text=True,
@@ -326,7 +336,7 @@ def test_falcon_driver_verify_wrapper_emits_json(tmp_path: Path) -> None:
         '{"model":{"vocab":{}}}\n', encoding="utf-8"
     )
 
-    res = subprocess.run(
+    res = _run_test_process(
         [
             sys.executable,
             str(VERIFY_PY),
@@ -369,7 +379,7 @@ def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(
         '{"model":{"vocab":{}}}\n', encoding="utf-8"
     )
 
-    res = subprocess.run(
+    res = _run_test_process(
         [
             sys.executable,
             str(VERIFY_PY),
@@ -428,7 +438,7 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
         "PYTHONPATH": str(ROOT / "src"),
         "MOLT_WASM_LINKED": "0",
     }
-    build = subprocess.run(
+    build = _run_test_process(
         [
             sys.executable,
             "-m",
@@ -547,7 +557,7 @@ console.error(JSON.stringify({{ tokenizerUrl: session.tokenizerUrl }}));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_test_process(
             ["node", str(script)],
             cwd=ROOT,
             text=True,
@@ -586,7 +596,7 @@ def test_falcon_browser_driver_reuses_cached_weights_on_second_init(
         "PYTHONPATH": str(ROOT / "src"),
         "MOLT_WASM_LINKED": "0",
     }
-    build = subprocess.run(
+    build = _run_test_process(
         [
             sys.executable,
             "-m",
@@ -714,7 +724,7 @@ console.log("done");
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_test_process(
             ["node", str(script)],
             cwd=ROOT,
             text=True,
@@ -745,7 +755,7 @@ def test_falcon_browser_driver_init_from_manifest_roundtrip(tmp_path: Path) -> N
         "PYTHONPATH": str(ROOT / "src"),
         "MOLT_WASM_LINKED": "0",
     }
-    build = subprocess.run(
+    build = _run_test_process(
         [
             sys.executable,
             "-m",
@@ -858,7 +868,7 @@ console.log(JSON.stringify(tokens));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_test_process(
             ["node", str(script)],
             cwd=ROOT,
             text=True,
@@ -922,7 +932,7 @@ try {{
 """.lstrip(),
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = _run_test_process(
         ["node", str(script)],
         cwd=ROOT,
         text=True,
@@ -947,7 +957,7 @@ try {{
 """.lstrip(),
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = _run_test_process(
         ["node", str(script)],
         cwd=ROOT,
         text=True,
@@ -976,7 +986,7 @@ try {{
 """.lstrip(),
         encoding="utf-8",
     )
-    run = subprocess.run(
+    run = _run_test_process(
         ["node", str(script)],
         cwd=ROOT,
         text=True,

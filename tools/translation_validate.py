@@ -48,6 +48,11 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 _SRC_DIR = _REPO_ROOT / "src"
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
@@ -201,13 +206,16 @@ def _run_subprocess(
     env: dict[str, str] | None = None,
 ) -> tuple[str, str, int]:
     """Run a subprocess safely with timeout. Returns (stdout, stderr, rc)."""
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
+            limits=limits,
         )
         return proc.stdout, proc.stderr, proc.returncode
     except subprocess.TimeoutExpired:

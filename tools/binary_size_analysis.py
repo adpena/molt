@@ -31,6 +31,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -257,12 +263,15 @@ def _parse_symbols_from_addresses(nm_output: str) -> list[SymbolInfo]:
 
 def _parse_macho_segments(path: Path) -> list[dict]:
     """Parse ``size -m`` output for Mach-O segment/section breakdown."""
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             ["size", "-m", str(path)],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=30,
+            limits=limits,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return []
@@ -308,12 +317,15 @@ def analyse_native(path: Path) -> dict:
 
     # First try GNU nm with --print-size (works on Linux).
     symbols: list[SymbolInfo] = []
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             ["nm", "--print-size", "--size-sort", "--reverse-sort", str(path)],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=60,
+            limits=limits,
         )
         # Check if sizes are actually non-zero (macOS always gives 0).
         symbols = _parse_symbols_gnu(result.stdout)
@@ -323,11 +335,13 @@ def analyse_native(path: Path) -> dict:
     # If GNU nm yielded no sized symbols, fall back to address-delta method.
     if not symbols:
         try:
-            result = subprocess.run(
+            result = harness_memory_guard.guarded_completed_process(
                 ["nm", "-n", str(path)],
+                prefix="MOLT_BENCH",
                 capture_output=True,
                 text=True,
                 timeout=60,
+                limits=limits,
             )
             symbols = _parse_symbols_from_addresses(result.stdout)
         except (FileNotFoundError, subprocess.TimeoutExpired):

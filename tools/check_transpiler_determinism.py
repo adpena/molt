@@ -33,6 +33,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+REPO_ROOT = _repo_root()
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
+
 def _artifact_root() -> Path:
     configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
     if configured:
@@ -140,14 +147,17 @@ def _build_once(
         str(out_path),
     ]
     started = time.perf_counter()
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout,
             cwd=str(_repo_root()),
             env=env,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         elapsed = time.perf_counter() - started
@@ -157,7 +167,11 @@ def _build_once(
             pass
         return None, f"build timed out after {timeout}s", elapsed
 
-    elapsed = time.perf_counter() - started
+    elapsed = (
+        result.elapsed_s
+        if result.elapsed_s is not None
+        else time.perf_counter() - started
+    )
     if result.returncode != 0:
         detail = (result.stderr.strip() or result.stdout.strip())[:600]
         try:

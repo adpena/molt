@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.process_guard_common import run_guarded_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def _run_ocr_api_script(script: str) -> dict[str, object]:
     if shutil.which("node") is None:
         pytest.skip("node is required for Cloudflare OCR API contract tests")
-    run = subprocess.run(
+    run = run_guarded_test_process(
         ["node", "--input-type=module", "-e", script],
+        prefix="MOLT_NODE_TEST",
         cwd=str(ROOT),
         check=True,
         capture_output=True,

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import ast
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 def _native_molt_env(root: Path) -> dict[str, str]:
@@ -648,7 +649,7 @@ def test_native_turboquant_intrinsic_does_not_call_python_reference(
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -704,7 +705,7 @@ def test_native_turboquant_intrinsic_uses_runtime_shadow_rows(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -763,7 +764,7 @@ def test_native_turboquant_intrinsic_uses_runtime_shadow_metadata(
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -815,7 +816,7 @@ def test_native_turboquant_attention_uses_metal_backend(tmp_path: Path) -> None:
     env["MOLT_TRACE_GPU_BACKEND"] = "1"
     env["MOLT_RUNTIME_GPU_METAL"] = "1"
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -866,7 +867,7 @@ def test_native_turboquant_attention_uses_webgpu_backend(tmp_path: Path) -> None
     env["MOLT_RUNTIME_GPU_WEBGPU"] = "1"
     env["MOLT_TRACE_GPU_BACKEND"] = "1"
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -917,7 +918,7 @@ def test_native_turboquant_attention_cuda_fails_without_runtime_feature(
 
     env = _native_molt_env(root)
     env["MOLT_GPU_BACKEND"] = "cuda"
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -966,7 +967,7 @@ def test_native_turboquant_attention_cuda_reports_not_implemented_when_feature_e
     env = _native_molt_env(root)
     env["MOLT_GPU_BACKEND"] = "cuda"
     env["MOLT_RUNTIME_GPU_CUDA"] = "1"
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -1014,7 +1015,7 @@ def test_native_turboquant_attention_hip_fails_without_runtime_feature(
 
     env = _native_molt_env(root)
     env["MOLT_GPU_BACKEND"] = "hip"
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -1063,7 +1064,7 @@ def test_native_turboquant_attention_hip_reports_not_implemented_when_feature_en
     env = _native_molt_env(root)
     env["MOLT_GPU_BACKEND"] = "hip"
     env["MOLT_RUNTIME_GPU_HIP"] = "1"
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -1607,7 +1608,7 @@ def test_dense_kv_cache_compiles_in_native_molt(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",

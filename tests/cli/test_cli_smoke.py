@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 import molt.cli as cli
 
+from tests.cli.process_guard import run_cli_test_process
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -73,7 +75,7 @@ def _cli_timeout() -> float | None:
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
     cmd = [_python_executable(), "-m", "molt.cli", *args]
-    return subprocess.run(
+    return run_cli_test_process(
         cmd,
         cwd=ROOT,
         env=_base_env(),
@@ -87,7 +89,7 @@ def _run_cli_with_timeout(
     args: list[str], timeout: float
 ) -> subprocess.CompletedProcess[str]:
     cmd = [_python_executable(), "-m", "molt.cli", *args]
-    return subprocess.run(
+    return run_cli_test_process(
         cmd,
         cwd=ROOT,
         env=_base_env(),
@@ -550,7 +552,7 @@ def test_cli_build_json_binary_executes_for_native_profiles(
     output = Path(payload["data"]["output"])
     assert output.exists()
 
-    run = subprocess.run(
+    run = run_cli_test_process(
         [str(output)],
         cwd=ROOT,
         env=_base_env(),
@@ -1472,7 +1474,7 @@ def test_cli_build_json_diagnostics_include_midend_policy_config(
     env = _base_env()
     env["MOLT_BUILD_DIAGNOSTICS"] = "1"
     env["MOLT_MIDEND_BUDGET_SCALE"] = "1.5"
-    res = subprocess.run(
+    res = run_cli_test_process(
         [
             _python_executable(),
             "-m",

@@ -5,10 +5,11 @@ timeout when the daemon binary needs to cold-start.
 """
 
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from tests.rust.process_guard import run_rust_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,7 +43,7 @@ def pytest_configure(config):
             warmup_out = f.name
         # Run a trivial transpilation to ensure daemon is up before tests start.
         # Generous timeout covers daemon cold-start + optional cargo rebuild.
-        subprocess.run(
+        run_rust_test_process(
             [
                 (sys.executable or "python3"),
                 "-m",

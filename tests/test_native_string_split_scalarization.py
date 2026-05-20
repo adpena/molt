@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
+
+from tests.native_process_guard import run_native_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +37,7 @@ def test_native_string_split_constant_field_scalarization_runs(tmp_path: Path) -
     env.setdefault("MOLT_SESSION_ID", "test-native-string-split-scalarization")
     env.setdefault("CARGO_BUILD_JOBS", "1")
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -81,7 +82,7 @@ def test_native_string_split_scalarization_preserves_split_point_exceptions(
     env.setdefault("MOLT_SESSION_ID", "test-native-string-split-scalarization")
     env.setdefault("CARGO_BUILD_JOBS", "1")
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -127,7 +128,7 @@ def test_native_string_split_scalarization_preserves_field_index_error(
     env.setdefault("MOLT_SESSION_ID", "test-native-string-split-scalarization")
     env.setdefault("CARGO_BUILD_JOBS", "1")
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",

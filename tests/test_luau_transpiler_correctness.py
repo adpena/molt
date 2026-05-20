@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.native_process_guard import run_native_test_process
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
 
@@ -33,7 +35,7 @@ def _molt_cli_available() -> bool:
     try:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(SRC_DIR)
-        result = subprocess.run(
+        result = run_native_test_process(
             [sys.executable, "-c", "import molt.cli"],
             capture_output=True,
             text=True,
@@ -53,7 +55,7 @@ def _build_luau(src_path: Path, out_dir: Path) -> str | None:
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     try:
-        result = subprocess.run(
+        result = run_native_test_process(
             [
                 sys.executable,
                 "-m",

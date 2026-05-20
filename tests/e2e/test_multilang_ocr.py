@@ -7,10 +7,11 @@ OCR endpoint.
 """
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.process_guard_common import run_guarded_test_process
 
 # ---------------------------------------------------------------------------
 # Test data: invoice text in 10 languages
@@ -180,7 +181,7 @@ class TestMultilangWorkersAI:
                 "prompt": prompt,
             }
         )
-        result = subprocess.run(
+        result = run_guarded_test_process(
             [
                 "curl",
                 "-s",
@@ -196,6 +197,7 @@ class TestMultilangWorkersAI:
                 "-d",
                 payload,
             ],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             text=True,
             timeout=30,
@@ -217,7 +219,7 @@ class TestMultilangWorkersAI:
                 "images": [TINY_PNG_B64, TINY_PNG_B64],
             }
         )
-        result = subprocess.run(
+        result = run_guarded_test_process(
             [
                 "curl",
                 "-s",
@@ -231,6 +233,7 @@ class TestMultilangWorkersAI:
                 "-d",
                 payload,
             ],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             text=True,
             timeout=30,

@@ -1,12 +1,34 @@
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import textwrap
 from pathlib import Path
 
 from tests.wasm_harness import write_wasm_runner
+
+ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
+
+
+def _run_guarded(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None):
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_WASM_TEST",
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=harness_memory_guard.timeout_from_env(
+            "MOLT_WASM_TEST",
+            env or os.environ,
+            default=300.0,
+        ),
+    )
 
 
 def main() -> int:
@@ -17,8 +39,10 @@ def main() -> int:
         print("skip: cargo is required for wasm open parity")
         return 0
 
-    root = Path(__file__).resolve().parents[1]
-    tmpdir = Path(tempfile.mkdtemp(prefix="molt_wasm_open_"))
+    root = ROOT
+    tmp_root = root / "tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmpdir = Path(tempfile.mkdtemp(prefix="molt_wasm_open_", dir=tmp_root))
     src = tmpdir / "open_parity.py"
     src.write_text(
         textwrap.dedent(
@@ -54,7 +78,7 @@ def main() -> int:
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
-    build = subprocess.run(
+    build = _run_guarded(
         [
             sys.executable,
             "-m",
@@ -68,18 +92,14 @@ def main() -> int:
         ],
         cwd=root,
         env=env,
-        capture_output=True,
-        text=True,
     )
     if build.returncode != 0:
         print(build.stderr, file=sys.stderr)
         return build.returncode
 
-    run = subprocess.run(
+    run = _run_guarded(
         ["node", str(runner), str(output_wasm)],
         cwd=root,
-        capture_output=True,
-        text=True,
     )
     if run.returncode != 0:
         print(run.stderr, file=sys.stderr)

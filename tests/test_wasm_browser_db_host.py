@@ -2,7 +2,6 @@ import base64
 import json
 import os
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 
 ARROW_BYTES = b"ARROW1"
@@ -99,7 +100,7 @@ def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -166,7 +167,7 @@ const host = await loadMoltWasm({{
 host.run();
 """.lstrip()
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -195,7 +196,7 @@ def test_browser_host_direct_mode_run_bootstraps_split_runtime_once(
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -263,7 +264,7 @@ host.run();
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -293,7 +294,7 @@ def test_browser_host_direct_mode_import_stat_constants(tmp_path: Path) -> None:
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -360,7 +361,7 @@ const host = await loadMoltWasm({{
 host.run();
 """.lstrip()
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -396,7 +397,7 @@ def test_browser_host_direct_mode_can_invoke_export_with_host_args(
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -470,7 +471,7 @@ console.log(JSON.stringify(result));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -506,7 +507,7 @@ def test_browser_host_direct_mode_can_invoke_export_with_host_args_split_runtime
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -582,7 +583,7 @@ console.log(JSON.stringify(result));
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -619,7 +620,7 @@ def test_browser_host_direct_mode_scalar_and_none_results_do_not_poison_next_exp
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -694,7 +695,7 @@ console.log(JSON.stringify({{
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -720,7 +721,7 @@ def test_browser_host_direct_mode_import_asyncio_iov_max(tmp_path: Path) -> None
     src.write_text("import asyncio\nprint(asyncio.selector_events.SC_IOV_MAX)\n")
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -787,7 +788,7 @@ const host = await loadMoltWasm({{
 host.run();
 """.lstrip()
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -812,7 +813,7 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
     src.write_text("import os\nprint(os.name)\n")
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -843,7 +844,7 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -873,7 +874,7 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -905,7 +906,7 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
     run_env["MOLT_CAPABILITY_TIER"] = "full"
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -936,7 +937,7 @@ def test_browser_direct_run_wasm_namedtuple_replace(tmp_path: Path) -> None:
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -967,7 +968,7 @@ def test_browser_direct_run_wasm_namedtuple_replace(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -1008,7 +1009,7 @@ def test_browser_direct_run_wasm_slots_function_field_roundtrip(
     )
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1039,7 +1040,7 @@ def test_browser_direct_run_wasm_slots_function_field_roundtrip(
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -1065,7 +1066,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
     src.write_text("print(list(enumerate(('a', 'b'))))\n")
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1096,7 +1097,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -1121,7 +1122,7 @@ def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
     src.write_text("d = {'a': 3}\nprint(d.get('a', 2))\nprint(d.get('b', 2))\n")
 
     build_env = _browser_wasm_build_env(root)
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1152,7 +1153,7 @@ def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -1186,7 +1187,7 @@ def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> N
 
     build_env = _browser_wasm_build_env(root)
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1217,7 +1218,7 @@ def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> N
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -1246,7 +1247,7 @@ def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> 
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1277,7 +1278,7 @@ def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> 
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -1304,7 +1305,7 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1335,7 +1336,7 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
     run_env = os.environ.copy()
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
         cwd=root,
         env=run_env,
@@ -1377,7 +1378,7 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
 
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
-    build = subprocess.run(
+    build = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -1433,7 +1434,7 @@ const host = await loadMoltWasm({{
 host.run();
 """.lstrip()
         )
-        run = subprocess.run(
+        run = _run_wasm_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,
@@ -1468,7 +1469,7 @@ console.log(JSON.stringify({{ canonical, explicit }}));
 """.lstrip()
     )
 
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(script)],
         cwd=root,
         capture_output=True,

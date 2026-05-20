@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+
+from tests.native_process_guard import run_native_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_throughput_env_exports_short_backend_daemon_socket_dir() -> None:
-    result = subprocess.run(
+    result = run_native_test_process(
         ["bash", "tools/throughput_env.sh", "--print"],
         cwd=REPO_ROOT,
         text=True,

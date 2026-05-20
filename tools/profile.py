@@ -20,6 +20,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 from bench_suites import molt_args_for_benchmark  # noqa: E402
+import harness_memory_guard  # noqa: E402
 
 TOP_BENCHES = [
     "bench_deeply_nested_loop.py",
@@ -107,18 +108,27 @@ def _list_all_benches() -> list[Path]:
 
 
 def _run_command(
-    command: list[str], *, env: dict[str, str], log_path: Path
+    command: list[str],
+    *,
+    env: dict[str, str],
+    log_path: Path,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> tuple[int, float]:
     start = time.perf_counter()
+    res = harness_memory_guard.guarded_completed_process(
+        command,
+        prefix="MOLT_BENCH",
+        env=env,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        limits=limits,
+    )
     with log_path.open("w", encoding="utf-8") as log_file:
-        res = subprocess.run(
-            command,
-            env=env,
-            cwd=ROOT,
-            text=True,
-            stdout=log_file,
-            stderr=log_file,
-        )
+        if res.stdout:
+            log_file.write(res.stdout)
+        if res.stderr:
+            log_file.write(res.stderr)
     end = time.perf_counter()
     return res.returncode, end - start
 
@@ -429,11 +439,14 @@ def _run_with_time(
     name: str,
     tool: str,
     collect_profile: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> ToolRunResult:
     time_bin = _time_binary()
     log_path = out_dir / f"{name}_{tool}.log"
     command = [time_bin, *_time_flags(), *cmd]
-    returncode, duration = _run_command(command, env=env, log_path=log_path)
+    returncode, duration = _run_command(
+        command, env=env, log_path=log_path, limits=limits
+    )
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
     metrics = _parse_time_metrics(log_text)
     metrics = _merge_profile_metrics(metrics, log_path, collect_profile)
@@ -455,6 +468,7 @@ def _run_with_perf(
     out_dir: Path,
     name: str,
     collect_profile: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> ToolRunResult:
     perf_bin = shutil.which("perf")
     if not perf_bin:
@@ -462,7 +476,9 @@ def _run_with_perf(
     perf_out = out_dir / f"{name}.perf.data"
     log_path = out_dir / f"{name}_perf.log"
     command = [perf_bin, "record", "-F", "99", "-g", "-o", str(perf_out), "--", *cmd]
-    returncode, duration = _run_command(command, env=env, log_path=log_path)
+    returncode, duration = _run_command(
+        command, env=env, log_path=log_path, limits=limits
+    )
     metrics = _merge_profile_metrics({}, log_path, collect_profile)
     return ToolRunResult(
         tool="perf",
@@ -483,6 +499,7 @@ def _run_with_perf_stat(
     name: str,
     events: str,
     collect_profile: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> ToolRunResult:
     perf_bin = shutil.which("perf")
     if not perf_bin:
@@ -498,7 +515,9 @@ def _run_with_perf_stat(
         "--",
         *cmd,
     ]
-    returncode, duration = _run_command(command, env=env, log_path=log_path)
+    returncode, duration = _run_command(
+        command, env=env, log_path=log_path, limits=limits
+    )
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
     metrics = _parse_perf_stat(log_text)
     metrics = _merge_profile_metrics(metrics, log_path, collect_profile)
@@ -520,6 +539,7 @@ def _run_with_heaptrack(
     out_dir: Path,
     name: str,
     collect_profile: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> ToolRunResult:
     heaptrack_bin = shutil.which("heaptrack")
     if not heaptrack_bin:
@@ -527,7 +547,9 @@ def _run_with_heaptrack(
     heap_out = out_dir / f"{name}.heaptrack"
     log_path = out_dir / f"{name}_heaptrack.log"
     command = [heaptrack_bin, "-o", str(heap_out), "--", *cmd]
-    returncode, duration = _run_command(command, env=env, log_path=log_path)
+    returncode, duration = _run_command(
+        command, env=env, log_path=log_path, limits=limits
+    )
     metrics = _merge_profile_metrics({}, log_path, collect_profile)
     return ToolRunResult(
         tool="heaptrack",
@@ -547,6 +569,7 @@ def _run_with_massif(
     out_dir: Path,
     name: str,
     collect_profile: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> ToolRunResult:
     valgrind_bin = shutil.which("valgrind")
     if not valgrind_bin:
@@ -560,7 +583,9 @@ def _run_with_massif(
         "--",
         *cmd,
     ]
-    returncode, duration = _run_command(command, env=env, log_path=log_path)
+    returncode, duration = _run_command(
+        command, env=env, log_path=log_path, limits=limits
+    )
     metrics = _merge_profile_metrics({}, log_path, collect_profile)
     return ToolRunResult(
         tool="massif",
@@ -573,7 +598,13 @@ def _run_with_massif(
     )
 
 
-def _build_molt(bench: Path, extra_args: list[str], env: dict[str, str]) -> None:
+def _build_molt(
+    bench: Path,
+    extra_args: list[str],
+    env: dict[str, str],
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+) -> None:
     binary = ROOT / "hello_molt"
     if binary.exists():
         binary.unlink()
@@ -587,7 +618,15 @@ def _build_molt(bench: Path, extra_args: list[str], env: dict[str, str]) -> None
         *extra_args,
         str(bench),
     ]
-    res = subprocess.run(command, env=env, cwd=ROOT, capture_output=True, text=True)
+    res = harness_memory_guard.guarded_completed_process(
+        command,
+        prefix="MOLT_BENCH",
+        env=env,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        limits=limits,
+    )
     if res.returncode != 0:
         stderr = res.stderr.strip() or res.stdout.strip()
         raise RuntimeError(f"molt build failed: {stderr}")
@@ -630,12 +669,18 @@ def _run_tool(
     name: str,
     collect_profile: bool,
     perf_stat_events: str,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> ToolRunResult | None:
     if tool == "none":
         return None
     if tool == "perf":
         return _run_with_perf(
-            cmd, env=env, out_dir=out_dir, name=name, collect_profile=collect_profile
+            cmd,
+            env=env,
+            out_dir=out_dir,
+            name=name,
+            collect_profile=collect_profile,
+            limits=limits,
         )
     if tool == "perf-stat":
         return _run_with_perf_stat(
@@ -645,14 +690,25 @@ def _run_tool(
             name=name,
             events=perf_stat_events,
             collect_profile=collect_profile,
+            limits=limits,
         )
     if tool == "heaptrack":
         return _run_with_heaptrack(
-            cmd, env=env, out_dir=out_dir, name=name, collect_profile=collect_profile
+            cmd,
+            env=env,
+            out_dir=out_dir,
+            name=name,
+            collect_profile=collect_profile,
+            limits=limits,
         )
     if tool == "massif":
         return _run_with_massif(
-            cmd, env=env, out_dir=out_dir, name=name, collect_profile=collect_profile
+            cmd,
+            env=env,
+            out_dir=out_dir,
+            name=name,
+            collect_profile=collect_profile,
+            limits=limits,
         )
     if tool == "time":
         return _run_with_time(
@@ -662,6 +718,7 @@ def _run_tool(
             name=name,
             tool=tool,
             collect_profile=collect_profile,
+            limits=limits,
         )
     raise ValueError(f"Unknown tool: {tool}")
 
@@ -679,6 +736,7 @@ def _profile_bench(
     collect_alloc_sites: bool,
     alloc_sites_limit: int | None,
     perf_stat_events: str,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> dict[str, object]:
     bench_name = bench.stem
     bench_dir = out_dir / bench_name
@@ -694,7 +752,7 @@ def _profile_bench(
         )
         if alloc_sites_limit is not None:
             env["MOLT_PROFILE_ALLOC_SITES_LIMIT"] = str(alloc_sites_limit)
-    _build_molt(bench, extra, env)
+    _build_molt(bench, extra, env, limits=limits)
     cmd = ["./hello_molt"]
 
     results: list[ToolRunResult] = []
@@ -708,6 +766,7 @@ def _profile_bench(
             name=suffix,
             collect_profile=collect_profile,
             perf_stat_events=perf_stat_events,
+            limits=limits,
         )
         if cpu_result:
             results.append(cpu_result)
@@ -728,6 +787,7 @@ def _profile_bench(
                 name=suffix,
                 collect_profile=collect_profile,
                 perf_stat_events=perf_stat_events,
+                limits=limits,
             )
             if alloc_result:
                 alloc_results.append(alloc_result)
@@ -749,6 +809,7 @@ def _profile_compiler(
     extra_args: list[str],
     runs: int,
     env_overrides: list[str],
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> dict[str, object]:
     bench_name = bench.stem
     bench_dir = out_dir / bench_name
@@ -777,7 +838,9 @@ def _profile_compiler(
             *extra,
             str(bench),
         ]
-        returncode, duration = _run_command(command, env=env, log_path=log_path)
+        returncode, duration = _run_command(
+            command, env=env, log_path=log_path, limits=limits
+        )
         results.append(
             ToolRunResult(
                 tool="cProfile",
@@ -885,6 +948,7 @@ def main() -> None:
         else ROOT / "logs" / "benchmarks" / f"profile_{stamp}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     cpu_tool = _pick_cpu_tool(args.cpu_tool)
     alloc_tool = _pick_alloc_tool(args.alloc_tool)
@@ -908,36 +972,45 @@ def main() -> None:
         "env_overrides": args.env,
         "summary_enabled": args.summary,
         "summary_top_n": args.summary_top,
+        "memory_guard": harness_memory_guard.limits_summary(limits),
         "benchmarks": [],
         "compiler_profiles": [],
     }
 
-    for bench in benches:
-        metadata["benchmarks"].append(
-            _profile_bench(
-                bench,
-                cpu_tool=cpu_tool,
-                alloc_tool=alloc_tool,
-                out_dir=out_dir,
-                extra_args=args.molt_arg,
-                runs=args.runs,
-                env_overrides=args.env,
-                collect_profile=collect_profile,
-                collect_alloc_sites=args.molt_profile_alloc_sites,
-                alloc_sites_limit=args.molt_profile_alloc_sites_limit,
-                perf_stat_events=args.perf_stat_events,
-            )
-        )
-        if args.profile_compiler:
-            metadata["compiler_profiles"].append(
-                _profile_compiler(
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=ROOT,
+        artifact_root=out_dir,
+        label="profile",
+        limits=limits,
+    ):
+        for bench in benches:
+            metadata["benchmarks"].append(
+                _profile_bench(
                     bench,
+                    cpu_tool=cpu_tool,
+                    alloc_tool=alloc_tool,
                     out_dir=out_dir,
                     extra_args=args.molt_arg,
                     runs=args.runs,
                     env_overrides=args.env,
+                    collect_profile=collect_profile,
+                    collect_alloc_sites=args.molt_profile_alloc_sites,
+                    alloc_sites_limit=args.molt_profile_alloc_sites_limit,
+                    perf_stat_events=args.perf_stat_events,
+                    limits=limits,
                 )
             )
+            if args.profile_compiler:
+                metadata["compiler_profiles"].append(
+                    _profile_compiler(
+                        bench,
+                        out_dir=out_dir,
+                        extra_args=args.molt_arg,
+                        runs=args.runs,
+                        env_overrides=args.env,
+                        limits=limits,
+                    )
+                )
 
     manifest_path = out_dir / "profile_manifest.json"
     manifest_path.write_text(json.dumps(metadata, indent=2) + "\n")

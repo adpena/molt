@@ -2,10 +2,11 @@
 
 import os
 import sys
-import subprocess
 import tempfile
 import pathlib
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = pathlib.Path(__file__).resolve().parents[2]
 TARGET_ROOT = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(MOLT_DIR / "target")))
@@ -24,7 +25,7 @@ def build_backend():
     """Build the backend binary once for all tests."""
     if BACKEND_BIN.exists():
         return
-    subprocess.run(
+    run_native_test_process(
         [
             "cargo",
             "build",
@@ -41,7 +42,7 @@ def build_backend():
 def _compile_and_run_luau(source: str) -> str:
     """Compile Python source to Luau via simple IR path, run through Lune."""
     # Step 1: Compile to IR
-    ir_proc = subprocess.run(
+    ir_proc = run_native_test_process(
         [
             sys.executable,
             "-c",
@@ -67,7 +68,7 @@ json.dump(data, sys.stdout)
     luau_path = ir_path.replace(".json", ".luau")
     try:
         # Step 2: Transpile to Luau
-        result = subprocess.run(
+        result = run_native_test_process(
             [
                 str(BACKEND_BIN),
                 "--ir-file",
@@ -86,7 +87,7 @@ json.dump(data, sys.stdout)
 
         # Step 3: Run through Lune
         try:
-            lune = subprocess.run(
+            lune = run_native_test_process(
                 ["lune", "run", luau_path], capture_output=True, text=True, timeout=10
             )
         except FileNotFoundError:
@@ -125,7 +126,7 @@ def test_differential(test_file):
             pytest.skip(f"Uses unsupported feature: {marker.strip()}")
 
     # Run CPython
-    cpython = subprocess.run(
+    cpython = run_native_test_process(
         [sys.executable, str(test_file)], capture_output=True, text=True, timeout=10
     )
     if cpython.returncode != 0:

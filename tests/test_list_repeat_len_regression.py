@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 SCRIPT = (
@@ -72,7 +73,7 @@ def test_list_repeat_len_regression_native(tmp_path: Path) -> None:
     src = tmp_path / "list_repeat_len_native.py"
     src.write_text(SCRIPT, encoding="utf-8")
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -103,7 +104,7 @@ def test_list_repeat_len_regression_split_browser_host(tmp_path: Path) -> None:
     src = tmp_path / "list_repeat_len_browser.py"
     src.write_text(SCRIPT, encoding="utf-8")
 
-    build = subprocess.run(
+    build = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -173,7 +174,7 @@ host.run();
 """.lstrip(),
             encoding="utf-8",
         )
-        run = subprocess.run(
+        run = run_native_test_process(
             ["node", str(script)],
             cwd=root,
             capture_output=True,

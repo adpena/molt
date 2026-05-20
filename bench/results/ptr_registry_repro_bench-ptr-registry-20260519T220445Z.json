@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-05-19T22:07:33.915711+00:00",
+  "git_rev": "1306ac0236131fa48f149b8936234ab41e0a3a81",
+  "super_run": false,
+  "samples": 1,
+  "warmup": 0,
+  "timing_mode": "cold_first_run",
+  "system": {
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "python": "3.12.13",
+    "machine": "arm64",
+    "cpu_count": 18,
+    "load_avg": [
+      7.416015625,
+      6.80224609375,
+      5.9228515625
+    ]
+  },
+  "benchmarks": {
+    "bench_ptr_registry.py": {
+      "reference_runtime": "molt",
+      "reference_reason": "molt_runtime_intrinsics_without_external_reference",
+      "build_ok": true,
+      "build_time_s": 167.9641,
+      "run_ok": true,
+      "molt_time_s": 0.456952,
+      "cpython_time_s": null,
+      "molt_samples_s": [
+        0.45695154200075194
+      ],
+      "molt_warmup_samples_s": [],
+      "cpython_samples_s": null,
+      "cpython_warmup_samples_s": null,
+      "molt_build_s": 167.9641,
+      "molt_speedup": null,
+      "molt_cpython_ratio": null,
+      "molt_ok": true,
+      "speedup": null,
+      "output_match": null,
+      "molt_output": "100000",
+      "cpython_output": null,
+      "molt_failure_detail": null,
+      "cpython_failure_detail": null,
+      "error": null
+    }
+  }
+}

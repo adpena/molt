@@ -60,6 +60,11 @@ from typing import Any, Literal
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 SRC_ROOT = REPO_ROOT / "src"
 DEFAULT_TARGET_DIR = SRC_ROOT / "molt"
 DEFAULT_TEST_SUBSET = REPO_ROOT / "tests" / "differential" / "basic"
@@ -883,6 +888,7 @@ def run_diff_against_mutant(
     env["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
     if not env.get("CARGO_TARGET_DIR", "").strip():
         env["CARGO_TARGET_DIR"] = str(_default_cargo_target_dir())
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     cmd = [
         sys.executable,
@@ -897,15 +903,19 @@ def run_diff_against_mutant(
 
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout,
             cwd=str(REPO_ROOT),
             env=env,
+            limits=limits,
         )
-        elapsed = time.monotonic() - t0
+        elapsed = (
+            proc.elapsed_s if proc.elapsed_s is not None else time.monotonic() - t0
+        )
         # Any non-zero exit means mutation was killed.
         killed = proc.returncode != 0
         snippet = (proc.stderr or proc.stdout or "")[-500:]
@@ -1357,13 +1367,16 @@ def _build_and_run(
         "--json",
         source_path,
     ]
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     try:
-        build_result = subprocess.run(
+        build_result = harness_memory_guard.guarded_completed_process(
             build_cmd,
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             env=env,
             timeout=timeout,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return "", "", None, "build timeout"
@@ -1400,12 +1413,14 @@ def _build_and_run(
         return "", "", None, f"binary not found: {binary}"
 
     try:
-        run_result = subprocess.run(
+        run_result = harness_memory_guard.guarded_completed_process(
             [binary],
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             env=env,
             timeout=timeout,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return "", "", None, "run timeout"

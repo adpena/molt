@@ -10,6 +10,7 @@ import pytest
 
 from tests.wasm_linked_runner import (
     _read_timeout_seconds,
+    _run_wasm_test_process,
     build_wasm_linked,
     require_wasm_toolchain,
     run_wasm_linked,
@@ -76,12 +77,10 @@ def _build_file_wasm(
 
     build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
     try:
-        return subprocess.run(
+        return _run_wasm_test_process(
             cmd,
             cwd=root,
             env=env,
-            capture_output=True,
-            text=True,
             timeout=build_timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -141,6 +140,39 @@ def test_wasm_importlib_package_bootstrap_target_dir_defaults_to_repo_pytest_tar
         == root / "target" / "pytest" / "test_wasm_importlib_package_bootstrap"
     )
     assert diff_target_dir == target_dir
+
+
+def test_build_file_wasm_uses_wasm_test_memory_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "pkg_main.py"
+    source.write_text("print('ok')\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run_wasm_test_process",
+        fake_run,
+    )
+
+    result = _build_file_wasm(tmp_path, source, out_dir, split_runtime=True)
+
+    assert result.returncode == 0
+    cmd = captured["cmd"]
+    kwargs = captured["kwargs"]
+    assert isinstance(cmd, list)
+    assert "--split-runtime" in cmd
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["timeout"] == _read_timeout_seconds(
+        "MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0
+    )
 
 
 def _write_probe_package(root: Path) -> Path:

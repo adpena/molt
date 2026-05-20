@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import textwrap
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -661,7 +662,7 @@ def _run_live_smoke(expected_platform: str) -> None:
         "--output",
         str(output),
     ]
-    build = subprocess.run(
+    build = run_native_test_process(
         build_cmd,
         cwd=ROOT,
         env=env,
@@ -674,7 +675,7 @@ def _run_live_smoke(expected_platform: str) -> None:
         f"stdout:\n{build.stdout}\n\nstderr:\n{build.stderr}"
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(output)],
         cwd=ROOT,
         env=env,
@@ -860,7 +861,7 @@ def _run_live_filehandler_smoke(expected_platform: str) -> None:
         "--output",
         str(output),
     ]
-    build = subprocess.run(
+    build = run_native_test_process(
         build_cmd,
         cwd=ROOT,
         env=env,
@@ -873,7 +874,7 @@ def _run_live_filehandler_smoke(expected_platform: str) -> None:
         f"stdout:\n{build.stdout}\n\nstderr:\n{build.stderr}"
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(output)],
         cwd=ROOT,
         env=env,

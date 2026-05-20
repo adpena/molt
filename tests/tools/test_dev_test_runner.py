@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 
@@ -72,3 +73,26 @@ def test_dev_test_runner_generates_seed_when_random_order_enabled(monkeypatch) -
         "--molt-random-seed",
         "1234",
     ]
+
+
+def test_dev_test_runner_run_uses_memory_guard(monkeypatch) -> None:
+    module = _load_dev_test_runner()
+    captured: dict[str, object] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout=None, stderr=None)
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    module._run(["pytest", "-q"])
+
+    assert captured["cmd"] == ["pytest", "-q"]
+    assert captured["kwargs"]["prefix"] == "MOLT_DEV_TEST"
+    assert captured["kwargs"]["cwd"] == module.ROOT
+    assert captured["kwargs"]["capture_output"] is False

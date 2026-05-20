@@ -46,6 +46,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+REPO_ROOT = _repo_root()
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
+
 def _make_env() -> dict[str, str]:
     """Build a clean environment for both CPython and Molt runs.
 
@@ -97,14 +104,17 @@ def run_cpython(
     cmd = [sys.executable, source]
     if verbose:
         print(f"  CPython: {' '.join(cmd)}")
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             cwd=str(_repo_root()),
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return "", f"CPython timed out after {timeout}s", -1
@@ -136,14 +146,17 @@ def build_molt(
     ]
     if verbose:
         print(f"  Build: {' '.join(cmd)}")
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             cwd=str(_repo_root()),
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return None, f"Molt build timed out after {timeout}s"
@@ -191,14 +204,17 @@ def run_molt(
     cmd = [binary]
     if verbose:
         print(f"  Molt run: {binary}")
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_CONFORMANCE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             cwd=str(_repo_root()),
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return "", f"Molt binary timed out after {timeout}s", -1

@@ -20,6 +20,11 @@ import molt.cli as cli
 import pytest
 from molt.frontend import MoltValue
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
+from tests.cli.process_guard import (
+    cli_test_popen_kwargs,
+    close_cli_test_process_group,
+    run_cli_test_process,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,7 +49,7 @@ def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
     src = tmp_path / f"{name}.c"
     obj = tmp_path / f"{name}.o"
     src.write_text(source, encoding="utf-8")
-    subprocess.run(
+    run_cli_test_process(
         ["clang", "-c", str(src), "-o", str(obj)],
         check=True,
         capture_output=True,
@@ -13282,7 +13287,7 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     empty_c = tmp_path / "empty.c"
     empty_c.write_text("", encoding="utf-8")
     empty_object = tmp_path / "empty-object.o"
-    subprocess.run(
+    run_cli_test_process(
         ["clang", "-c", str(empty_c), "-o", str(empty_object)],
         check=True,
         capture_output=True,
@@ -13293,7 +13298,7 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     native_c = tmp_path / "native.c"
     native_c.write_text("int foo(void){return 0;}\n", encoding="utf-8")
     native_nonempty = tmp_path / "nonempty.o"
-    subprocess.run(
+    run_cli_test_process(
         ["clang", "-c", str(native_c), "-o", str(native_nonempty)],
         check=True,
         capture_output=True,
@@ -13438,21 +13443,25 @@ def test_internal_batch_build_server_ping_shutdown_roundtrip() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        **cli_test_popen_kwargs(env),
     )
-    assert proc.stdin is not None
-    assert proc.stdout is not None
-    proc.stdin.write(json.dumps({"id": 1, "op": "ping"}) + "\n")
-    proc.stdin.flush()
-    ping_response = json.loads(proc.stdout.readline())
-    assert ping_response["ok"] is True
-    assert ping_response["pong"] is True
-    proc.stdin.write(json.dumps({"id": 2, "op": "shutdown"}) + "\n")
-    proc.stdin.flush()
-    shutdown_response = json.loads(proc.stdout.readline())
-    assert shutdown_response["ok"] is True
-    assert shutdown_response["shutdown"] is True
-    proc.wait(timeout=5)
-    assert proc.returncode == 0
+    try:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        proc.stdin.write(json.dumps({"id": 1, "op": "ping"}) + "\n")
+        proc.stdin.flush()
+        ping_response = json.loads(proc.stdout.readline())
+        assert ping_response["ok"] is True
+        assert ping_response["pong"] is True
+        proc.stdin.write(json.dumps({"id": 2, "op": "shutdown"}) + "\n")
+        proc.stdin.flush()
+        shutdown_response = json.loads(proc.stdout.readline())
+        assert shutdown_response["ok"] is True
+        assert shutdown_response["shutdown"] is True
+        proc.wait(timeout=5)
+        assert proc.returncode == 0
+    finally:
+        close_cli_test_process_group(proc)
 
 
 # ---------------------------------------------------------------------------

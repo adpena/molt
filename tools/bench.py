@@ -34,6 +34,7 @@ if str(SRC_ROOT) not in sys.path:
 from batch_compile_client import BatchCompileServerClient  # noqa: E402
 from bench_evidence import comparable_run_metadata_errors  # noqa: E402
 from bench_metadata import benchmark_reference_contract  # noqa: E402
+import harness_memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
 
 from molt.harness_conformance import (  # noqa: E402
@@ -153,8 +154,23 @@ def _run_with_pty(cmd: list[str], env: dict[str, str]) -> _RunResult:
 
 
 def _run_cmd(
-    cmd: list[str], env: dict[str, str], *, capture: bool, tty: bool
+    cmd: list[str],
+    env: dict[str, str],
+    *,
+    capture: bool,
+    tty: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> _RunResult:
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    if resolved_limits.enabled:
+        res = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_BENCH",
+            env=env,
+            capture_output=capture,
+            limits=resolved_limits,
+        )
+        return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
     if tty and not capture and os.name == "posix":
         return _run_with_pty(cmd, env)
     res = subprocess.run(cmd, capture_output=capture, text=True, env=env)
@@ -354,28 +370,33 @@ def measure_runtime(
     run_args=None,
     timeout_s: float | None = None,
     label: str | None = None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> RunSample | None:
-    start = time.perf_counter()
     full_cmd = cmd_args + ([script] if script else [])
     if run_args:
         full_cmd.extend(run_args)
+    start = time.perf_counter()
     try:
-        res = subprocess.run(
+        res = harness_memory_guard.guarded_completed_process(
             full_cmd,
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             env=env,
             timeout=timeout_s,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         msg = f" timed out after {timeout_s:.1f}s" if timeout_s is not None else ""
         bench_label = f" for {label}" if label else ""
         print(f"Benchmark run{bench_label}{msg}.", file=sys.stderr)
         return None
-    end = time.perf_counter()
+    elapsed_s = getattr(res, "elapsed_s", None)
+    if elapsed_s is None:
+        elapsed_s = time.perf_counter() - start
     if res.returncode != 0:
         return None
-    return RunSample(end - start, res.stdout, res.stderr)
+    return RunSample(elapsed_s, res.stdout, res.stderr)
 
 
 def _resolve_molt_output(payload: dict) -> Path | None:
@@ -430,6 +451,7 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
 
 class _BenchBatchBuildServer:
     def __init__(self, env: dict[str, str]) -> None:
+        self._limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
         self._client = BatchCompileServerClient(
             [
                 "uv",
@@ -443,6 +465,14 @@ class _BenchBatchBuildServer:
             ],
             cwd=REPO_ROOT,
             env=env,
+            process_group_kwargs=harness_memory_guard.batch_process_group_kwargs(
+                self._limits
+            ),
+            force_close=(
+                harness_memory_guard.force_close_process_group
+                if self._limits.enabled
+                else None
+            ),
             reader_name="molt-bench-batch-server-reader",
         )
 
@@ -541,9 +571,11 @@ def prepare_molt_binary(
     build_profile: str = "release",
     batch_server: _BenchBatchBuildServer | None = None,
     build_timeout_s: float = DEFAULT_BATCH_BUILD_TIMEOUT_S,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> MoltBinary | None:
     _prune_backend_daemons()
     env = _canonical_bench_env(env)
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
 
     def _attempt_build() -> MoltBinary | None:
         temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-", dir=BENCH_TMP_ROOT)
@@ -560,12 +592,14 @@ def prepare_molt_binary(
         start = time.perf_counter()
         try:
             if batch_server is None:
-                res = subprocess.run(
+                res = harness_memory_guard.guarded_completed_process(
                     args,
+                    prefix="MOLT_BENCH",
                     env=env,
                     capture_output=True,
                     text=True,
                     timeout=build_timeout_s,
+                    limits=resolved_limits,
                 )
             else:
                 params = _molt_build_params(
@@ -629,18 +663,21 @@ def measure_molt_run(
     label: str | None = None,
     run_args: list[str] | None = None,
     timeout_s: float | None = None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> RunSample | None:
-    start = time.perf_counter()
     cmd = [str(binary)]
     if run_args:
         cmd.extend(run_args)
+    start = time.perf_counter()
     try:
-        res = subprocess.run(
+        res = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             env=env,
             timeout=timeout_s,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         msg = f" timed out after {timeout_s:.1f}s" if timeout_s is not None else ""
@@ -649,14 +686,16 @@ def measure_molt_run(
         else:
             print(f"Molt run timed out{msg}.", file=sys.stderr)
         return None
-    end = time.perf_counter()
+    elapsed_s = getattr(res, "elapsed_s", None)
+    if elapsed_s is None:
+        elapsed_s = time.perf_counter() - start
     if res.returncode != 0:
         err = (res.stderr or res.stdout).strip()
         if err:
             prefix = f"Molt run failed for {label}: " if label else "Molt run failed: "
             print(f"{prefix}{err}", file=sys.stderr)
         return None
-    return RunSample(end - start, res.stdout, res.stderr)
+    return RunSample(elapsed_s, res.stdout, res.stderr)
 
 
 def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
@@ -860,6 +899,7 @@ def _prepare_nuitka_runner(
     *,
     tty: bool,
     nuitka_cmd: list[str] | None,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> BenchRunner | None:
     if nuitka_cmd is None:
         return None
@@ -879,6 +919,7 @@ def _prepare_nuitka_runner(
         env=base_env,
         capture=not tty,
         tty=tty,
+        limits=limits,
     )
     build_s = time.perf_counter() - build_start
     if build.returncode != 0:
@@ -915,7 +956,12 @@ def _prepare_pyodide_runner(
 
 
 def _prepare_codon_runner(
-    script_path: Path, build_root: Path, base_env: dict[str, str], *, tty: bool
+    script_path: Path,
+    build_root: Path,
+    base_env: dict[str, str],
+    *,
+    tty: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> BenchRunner | None:
     codon = shutil.which("codon")
     if not codon:
@@ -944,6 +990,7 @@ def _prepare_codon_runner(
         env=env,
         capture=not tty,
         tty=tty,
+        limits=limits,
     )
     build_s = time.perf_counter() - build_start
     if build.returncode != 0:
@@ -959,11 +1006,13 @@ def _prepare_codon_runner(
     )
 
 
-def _pypy_command() -> list[str] | None:
+def _pypy_command(
+    env: dict[str, str], limits: harness_memory_guard.HarnessMemoryLimits
+) -> list[str] | None:
     if not shutil.which("uv"):
         print("Skipping PyPy: uv not found.", file=sys.stderr)
         return None
-    probe = subprocess.run(
+    probe = harness_memory_guard.guarded_completed_process(
         [
             "uv",
             "run",
@@ -974,8 +1023,11 @@ def _pypy_command() -> list[str] | None:
             "-c",
             "print('ok')",
         ],
+        prefix="MOLT_BENCH",
+        env=env,
         capture_output=True,
         text=True,
+        limits=limits,
     )
     if probe.returncode != 0:
         msg = (probe.stderr or probe.stdout).strip().splitlines()
@@ -1002,11 +1054,13 @@ def bench_results(
     nuitka_cmd: str | None,
     pyodide_cmd: str | None,
 ):
+    base_env = _canonical_bench_env(_base_python_env())
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
     runtimes = {}
     if use_cpython:
         runtimes["cpython"] = [sys.executable]
     if use_pypy:
-        pypy_cmd = _pypy_command()
+        pypy_cmd = _pypy_command(base_env, limits)
         if pypy_cmd:
             runtimes["pypy"] = pypy_cmd
 
@@ -1038,37 +1092,43 @@ def bench_results(
     print(header)
     print("-" * len(header))
 
-    base_env = _canonical_bench_env(_base_python_env())
     codon_root = REPO_ROOT / "bench" / "codon"
     nuitka_root = REPO_ROOT / "bench" / "nuitka"
 
     data = {}
-    batch_server = _BenchBatchBuildServer(base_env)
-    try:
-        for script in benchmarks:
-            data.update(
-                _bench_one(
-                    script,
-                    samples,
-                    warmup,
-                    runtimes,
-                    use_codon,
-                    use_nuitka,
-                    use_pyodide,
-                    super_run,
-                    runtime_timeout_s,
-                    molt_build_profile,
-                    tty=tty,
-                    base_env=base_env,
-                    codon_root=codon_root,
-                    nuitka_root=nuitka_root,
-                    resolved_nuitka_cmd=resolved_nuitka_cmd,
-                    resolved_pyodide_cmd=resolved_pyodide_cmd,
-                    batch_server=batch_server,
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=BENCH_TMP_ROOT,
+        label="bench",
+        limits=limits,
+    ):
+        batch_server = _BenchBatchBuildServer(base_env)
+        try:
+            for script in benchmarks:
+                data.update(
+                    _bench_one(
+                        script,
+                        samples,
+                        warmup,
+                        runtimes,
+                        use_codon,
+                        use_nuitka,
+                        use_pyodide,
+                        super_run,
+                        runtime_timeout_s,
+                        molt_build_profile,
+                        tty=tty,
+                        base_env=base_env,
+                        codon_root=codon_root,
+                        nuitka_root=nuitka_root,
+                        resolved_nuitka_cmd=resolved_nuitka_cmd,
+                        resolved_pyodide_cmd=resolved_pyodide_cmd,
+                        batch_server=batch_server,
+                        limits=limits,
+                    )
                 )
-            )
-    finally:
-        batch_server.close()
+        finally:
+            batch_server.close()
 
     return data
 
@@ -1092,6 +1152,7 @@ def _bench_one(
     resolved_nuitka_cmd: list[str] | None,
     resolved_pyodide_cmd: list[str] | None,
     batch_server: _BenchBatchBuildServer,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ):
     results = {}
     runtime_ok = {}
@@ -1112,6 +1173,7 @@ def _bench_one(
                 run_args=run_args,
                 timeout_s=runtime_timeout_s,
                 label=f"{name} [{rt_name}]",
+                limits=limits,
             ),
             samples,
             warmup=warmup,
@@ -1129,7 +1191,13 @@ def _bench_one(
     codon_ok = False
     codon_batch: SampleBatch | None = None
     if use_codon and reference_contract.external_baselines:
-        runner = _prepare_codon_runner(Path(script), codon_root, base_env, tty=tty)
+        runner = _prepare_codon_runner(
+            Path(script),
+            codon_root,
+            base_env,
+            tty=tty,
+            limits=limits,
+        )
         if runner is not None:
             codon_build = runner.build_s
             codon_size = runner.size_kb
@@ -1141,6 +1209,7 @@ def _bench_one(
                     run_args=run_args,
                     timeout_s=runtime_timeout_s,
                     label=f"{name} [codon]",
+                    limits=limits,
                 ),
                 samples,
                 warmup=warmup,
@@ -1166,6 +1235,7 @@ def _bench_one(
             base_env,
             tty=tty,
             nuitka_cmd=resolved_nuitka_cmd,
+            limits=limits,
         )
         if runner is not None:
             nuitka_build = runner.build_s
@@ -1178,6 +1248,7 @@ def _bench_one(
                     run_args=run_args,
                     timeout_s=runtime_timeout_s,
                     label=f"{name} [nuitka]",
+                    limits=limits,
                 ),
                 samples,
                 warmup=warmup,
@@ -1209,6 +1280,7 @@ def _bench_one(
                     run_args=run_args,
                     timeout_s=runtime_timeout_s,
                     label=f"{name} [pyodide]",
+                    limits=limits,
                 ),
                 samples,
                 warmup=warmup,
@@ -1234,6 +1306,7 @@ def _bench_one(
         env=base_env,
         build_profile=molt_build_profile,
         batch_server=batch_server,
+        limits=limits,
     )
     if molt_runner is not None:
         try:
@@ -1244,6 +1317,7 @@ def _bench_one(
                     label=name,
                     run_args=run_args,
                     timeout_s=runtime_timeout_s,
+                    limits=limits,
                 ),
                 samples,
                 warmup=warmup,
@@ -1594,6 +1668,9 @@ def main():
             "cpu_count": os.cpu_count(),
             "load_avg": load_avg,
         },
+        "memory_guard": harness_memory_guard.limits_summary(
+            harness_memory_guard.limits_from_env("MOLT_BENCH")
+        ),
         "benchmarks": results,
     }
 

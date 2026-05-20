@@ -120,8 +120,17 @@ impl ScalarRepresentationPlan {
                 plan.insert_lir_value(names.block_arg_slot(block.id, index), arg);
             }
             for op in &block.ops {
-                for result in &op.result_values {
-                    plan.insert_lir_value(names.value_name(result.id), result);
+                let checked_i64_arithmetic = matches!(
+                    op.tir_op.attrs.get("lir.checked_overflow"),
+                    Some(AttrValue::Bool(true))
+                );
+                for (index, result) in op.result_values.iter().enumerate() {
+                    let name = if checked_i64_arithmetic && index == 0 {
+                        SimpleValueNames::canonical_value_name(result.id)
+                    } else {
+                        names.value_name(result.id)
+                    };
+                    plan.insert_lir_value(name, result);
                 }
                 if op.result_values.len() == 1
                     && let Some(AttrValue::Str(simple_out)) = op.tir_op.attrs.get("_simple_out")

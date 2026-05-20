@@ -14,6 +14,11 @@ RUNTIME_DIR = ROOT / "runtime/molt-runtime"
 ROOT_FUZZ_DIR = ROOT / "fuzz"
 RUNTIME_FUZZ_DIR = RUNTIME_DIR / "fuzz"
 
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    import harness_memory_guard  # type: ignore
+
 SANITIZERS = {
     "asan": "address",
     "tsan": "thread",
@@ -39,27 +44,44 @@ def _run(
 ) -> None:
     run_env = env or os.environ.copy()
     if log_path is None:
-        subprocess.check_call(cmd, cwd=cwd or ROOT, env=run_env)
+        result = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_RUNTIME_SAFETY",
+            cwd=cwd or ROOT,
+            env=run_env,
+            capture_output=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                cmd,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
         return
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    result = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_RUNTIME_SAFETY",
+        cwd=cwd or ROOT,
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
     with log_path.open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(
+        if output:
+            sys.stdout.write(output)
+            log.write(output)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
             cmd,
-            cwd=cwd or ROOT,
-            env=run_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            output=result.stdout,
+            stderr=result.stderr,
         )
-        assert process.stdout is not None
-        for line in process.stdout:
-            sys.stdout.write(line)
-            log.write(line)
-        retcode = process.wait()
-        if retcode != 0:
-            raise subprocess.CalledProcessError(retcode, cmd)
 
 
 def _require_tool(name: str) -> None:

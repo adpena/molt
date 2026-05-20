@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 from tests.wasm_linked_runner import (
     build_wasm_linked,
@@ -83,7 +84,7 @@ def test_list_bool_storage_regression_native(tmp_path: Path) -> None:
     src = tmp_path / "list_bool_storage_native.py"
     src.write_text(SCRIPT, encoding="utf-8")
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -112,7 +113,7 @@ def test_list_int_storage_regression_native(tmp_path: Path) -> None:
     src = tmp_path / "list_int_storage_native.py"
     src.write_text(INT_SCRIPT, encoding="utf-8")
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",

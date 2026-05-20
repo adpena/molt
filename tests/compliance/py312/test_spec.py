@@ -5,12 +5,13 @@ Tests cover version-specific semantics introduced in CPython 3.12.
 """
 
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests.compliance.process_guard import run_compliance_process
 
 MOLT_DIR = Path(__file__).resolve().parents[3]
 ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
@@ -33,7 +34,7 @@ def _compile_and_run(python_source: str) -> str:
             "PYTHONPATH": str(MOLT_DIR / "src"),
         }
 
-        build = subprocess.run(
+        build = run_compliance_process(
             [
                 sys.executable,
                 "-m",
@@ -55,7 +56,7 @@ def _compile_and_run(python_source: str) -> str:
         if not binary_path.exists():
             pytest.skip(f"Binary not produced at {binary_path}")
 
-        run = subprocess.run(
+        run = run_compliance_process(
             [str(binary_path)],
             capture_output=True,
             text=True,
@@ -72,7 +73,7 @@ def _compile_and_run(python_source: str) -> str:
 
 def _python_output(source: str) -> str:
     """Get CPython reference output."""
-    result = subprocess.run(
+    result = run_compliance_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,

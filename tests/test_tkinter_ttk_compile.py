@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +75,7 @@ def test_tkinter_ttk_script_compiles_via_cli_build() -> None:
             encoding="utf-8",
         )
 
-        build = subprocess.run(
+        build = run_native_test_process(
             [
                 python,
                 "-m",

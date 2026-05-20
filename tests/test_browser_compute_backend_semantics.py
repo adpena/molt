@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _run_compute_engine_script(script: str) -> dict[str, object]:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser compute-engine tests")
-    run = subprocess.run(
+    run = run_native_test_process(
         ["node", "--input-type=module", "-e", script],
         cwd=str(ROOT),
         check=True,

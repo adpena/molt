@@ -10,6 +10,8 @@ from pathlib import Path
 import molt.cli as cli
 import pytest
 
+from tests.cli.process_guard import run_cli_test_process
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -831,7 +833,7 @@ def test_python_header_parse_tuple_and_keywords_smoke(tmp_path: Path) -> None:
             ]
         )
     )
-    result = subprocess.run(
+    result = run_cli_test_process(
         [
             clang,
             "-std=c11",
@@ -951,7 +953,7 @@ def test_python_header_type_module_wrappers_smoke(tmp_path: Path) -> None:
             ]
         )
     )
-    result = subprocess.run(
+    result = run_cli_test_process(
         [
             clang,
             "-std=c11",
@@ -1007,7 +1009,7 @@ def test_numpy_header_arrayobject_smoke(tmp_path: Path) -> None:
             ]
         )
     )
-    result = subprocess.run(
+    result = run_cli_test_process(
         [
             clang,
             "-std=c11",
@@ -1048,7 +1050,7 @@ def test_datetime_header_smoke(tmp_path: Path) -> None:
             ]
         )
     )
-    result = subprocess.run(
+    result = run_cli_test_process(
         [
             clang,
             "-std=c11",

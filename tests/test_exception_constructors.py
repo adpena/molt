@@ -1,12 +1,12 @@
 import os
 import shutil
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from tests.native_process_guard import run_native_test_process
 from tests.wasm_linked_runner import (
     build_wasm_linked,
     require_wasm_toolchain,
@@ -69,7 +69,7 @@ def test_native_exception_constructor_keywords(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
 
-    build = subprocess.run(
+    build = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -86,7 +86,7 @@ def test_native_exception_constructor_keywords(tmp_path: Path) -> None:
     )
     assert build.returncode == 0, build.stderr
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(output_binary)],
         cwd=root,
         env=env,

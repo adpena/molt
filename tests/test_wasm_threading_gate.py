@@ -12,9 +12,11 @@ specific behavior is tested indirectly through the intrinsic signatures
 and conditionally when a WASM runner is available.
 """
 
+import os
 import shutil
-import subprocess
 from pathlib import Path
+
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,11 +98,10 @@ def test_threading_available_wasm_returns_false() -> None:
 
 def test_cargo_check_passes() -> None:
     """cargo check -p molt-runtime passes after our changes."""
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         ["cargo", "check", "-p", "molt-runtime"],
         cwd=ROOT,
-        capture_output=True,
-        text=True,
+        env=os.environ,
         timeout=180,
     )
     assert result.returncode == 0, f"cargo check failed:\n{result.stderr}"

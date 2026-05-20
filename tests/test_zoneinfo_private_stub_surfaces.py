@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.surface_process_guard import run_surface_test_process
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +67,7 @@ for module_name, path_text in (
 
 
 def test_zoneinfo_private_stub_surfaces_hide_capability_anchor() -> None:
-    proc = subprocess.run(
+    proc = run_surface_test_process(
         [sys.executable, "-c", _PROBE],
         cwd=REPO_ROOT,
         text=True,

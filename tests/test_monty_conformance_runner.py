@@ -250,6 +250,62 @@ def test_batch_build_params_are_native_error_fallback_and_canonical_env():
     }
 
 
+def test_conformance_batch_server_starts_in_guarded_process_group(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, cmd, **kwargs) -> None:
+            captured["cmd"] = cmd
+            captured.update(kwargs)
+
+        def request(self, op: str, *, timeout: float, params=None):
+            return {"ok": True, "pong": True, "id": 1, "op": op}
+
+        def close(self, *, force: bool = False, timeout: float = 60.0) -> None:
+            captured["closed"] = (force, timeout)
+
+    monkeypatch.setattr(run_molt_conformance, "BatchCompileServerClient", FakeClient)
+    compiler = run_molt_conformance.ConformanceBatchCompiler(
+        ["molt"], {}, repo_root=Path("/tmp/repo")
+    )
+
+    compiler.start()
+    compiler.close()
+
+    process_group_kwargs = captured["process_group_kwargs"]
+    assert process_group_kwargs["start_new_session"] is True
+    assert callable(process_group_kwargs["preexec_fn"])
+    assert (
+        captured["force_close"]
+        is run_molt_conformance.harness_memory_guard.force_close_process_group
+    )
+
+
+def test_run_binary_reports_guard_timeout_as_timeout(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "molt-bin"
+    binary.write_text("binary", encoding="utf-8")
+
+    def fake_guard(command, **kwargs):
+        return run_molt_conformance.subprocess.CompletedProcess(
+            command,
+            run_molt_conformance.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            "",
+            "memory_guard: timeout\n",
+        )
+
+    monkeypatch.setattr(
+        run_molt_conformance.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guard,
+    )
+
+    rc, stdout, stderr = run_molt_conformance.run_binary(binary)
+
+    assert rc is None
+    assert stdout == ""
+    assert "timeout" in stderr
+
+
 def test_compile_file_uses_batch_compiler_response(tmp_path: Path):
     src = tmp_path / "alpha.py"
     src.write_text("print('ok')\n", encoding="utf-8")

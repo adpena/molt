@@ -23,11 +23,60 @@ from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 # Timeouts in seconds
 CPYTHON_TIMEOUT = 30
 MOLT_BUILD_TIMEOUT = 120
 MOLT_RUN_TIMEOUT = 30
+
+
+def _run_runtime_compat_process(
+    args: list[str],
+    *,
+    cwd: str | None = None,
+    timeout: float | None = None,
+    capture_output: bool = True,
+    text: bool = True,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    resolved_timeout = harness_memory_guard.timeout_from_env(
+        "MOLT_RUNTIME_COMPAT",
+        os.environ,
+        explicit=timeout,
+        default=300.0,
+    )
+    result = harness_memory_guard.guarded_completed_process(
+        args,
+        prefix="MOLT_RUNTIME_COMPAT",
+        cwd=cwd,
+        env=os.environ,
+        capture_output=capture_output,
+        text=text,
+        timeout=resolved_timeout,
+    )
+    if (
+        resolved_timeout is not None
+        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        and "memory_guard: timeout after" in (result.stderr or "")
+    ):
+        raise subprocess.TimeoutExpired(
+            args,
+            resolved_timeout,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            args,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
 
 
 def discover_libraries() -> list[str]:
@@ -59,7 +108,7 @@ def find_site_packages() -> str:
 def run_cpython(script: Path, timeout: float = CPYTHON_TIMEOUT) -> tuple[str, int]:
     """Run a script under CPython, return (output, exit_code)."""
     try:
-        result = subprocess.run(
+        result = _run_runtime_compat_process(
             [sys.executable, str(script)],
             capture_output=True,
             text=True,
@@ -110,7 +159,7 @@ def run_molt(
             build_cmd.extend(["--target", target])
 
         try:
-            build_result = subprocess.run(
+            build_result = _run_runtime_compat_process(
                 build_cmd,
                 capture_output=True,
                 text=True,
@@ -160,7 +209,7 @@ def run_molt(
 
         # Run
         try:
-            run_result = subprocess.run(
+            run_result = _run_runtime_compat_process(
                 run_cmd,
                 capture_output=True,
                 text=True,
@@ -175,7 +224,7 @@ def run_molt(
             # Try making it executable
             os.chmod(str(output_path), 0o755)
             try:
-                run_result = subprocess.run(
+                run_result = _run_runtime_compat_process(
                     run_cmd,
                     capture_output=True,
                     text=True,

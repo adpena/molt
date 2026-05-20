@@ -18,12 +18,14 @@ Run: python -m pytest tests/e2e/test_falcon_ocr_targets.py -v
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import time
+from subprocess import TimeoutExpired
 
 import pytest
+
+from tests.process_guard_common import run_guarded_test_process
 
 _project_root = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -68,39 +70,42 @@ def _metal_compiler_available() -> bool:
     if not _is_macos():
         return False
     try:
-        result = subprocess.run(
+        result = run_guarded_test_process(
             ["xcrun", "--find", "metal"],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             timeout=10,
         )
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, TimeoutExpired):
         return False
 
 
 def _wgsl_validator_available() -> bool:
     """Check if a WGSL validator (naga) is available."""
     try:
-        result = subprocess.run(
+        result = run_guarded_test_process(
             ["naga", "--version"],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             timeout=10,
         )
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, TimeoutExpired):
         return False
 
 
 def _nvcc_available() -> bool:
     """Check if CUDA compiler (nvcc) is available."""
     try:
-        result = subprocess.run(
+        result = run_guarded_test_process(
             ["nvcc", "--version"],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             timeout=10,
         )
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, TimeoutExpired):
         return False
 
 
@@ -337,8 +342,9 @@ kernel void sdpa_single_head(
             msl_path = f.name
 
         try:
-            result = subprocess.run(
+            result = run_guarded_test_process(
                 ["xcrun", "metal", "-c", msl_path, "-o", "/dev/null"],
+                prefix="MOLT_E2E_TEST",
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -398,8 +404,9 @@ fn rms_norm(@builtin(global_invocation_id) gid: vec3<u32>) {
             wgsl_path = f.name
 
         try:
-            result = subprocess.run(
+            result = run_guarded_test_process(
                 ["naga", wgsl_path],
+                prefix="MOLT_E2E_TEST",
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -500,8 +507,9 @@ __global__ void rope_1d(
             cu_path = f.name
 
         try:
-            result = subprocess.run(
+            result = run_guarded_test_process(
                 ["nvcc", "--ptx", cu_path, "-o", "/dev/null"],
+                prefix="MOLT_E2E_TEST",
                 capture_output=True,
                 text=True,
                 timeout=60,

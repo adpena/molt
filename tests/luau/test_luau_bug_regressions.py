@@ -17,10 +17,11 @@ Bug references:
 
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ARTIFACT_ROOT = os.environ.get("MOLT_EXT_ROOT", MOLT_DIR)
@@ -61,7 +62,7 @@ def _compile_to_luau(python_source: str) -> str:
         }
         build_timeout = int(os.environ.get("MOLT_LUAU_BUILD_TIMEOUT", "900"))
         py_exec = sys.executable or "python3"
-        result = subprocess.run(
+        result = run_native_test_process(
             [
                 py_exec,
                 "-m",
@@ -117,7 +118,7 @@ def _run_luau(python_source: str) -> str:
         }
         build_timeout = int(os.environ.get("MOLT_LUAU_BUILD_TIMEOUT", "900"))
         py_exec = sys.executable or "python3"
-        result = subprocess.run(
+        result = run_native_test_process(
             [
                 py_exec,
                 "-m",
@@ -139,7 +140,7 @@ def _run_luau(python_source: str) -> str:
             pytest.skip(f"Compilation failed: {result.stderr[:300]}")
 
         try:
-            result = subprocess.run(
+            result = run_native_test_process(
                 ["lune", "run", luau_path],
                 capture_output=True,
                 text=True,
@@ -158,7 +159,7 @@ def _run_luau(python_source: str) -> str:
 
 def _python_output(source: str) -> str:
     """Get CPython reference output."""
-    result = subprocess.run(
+    result = run_native_test_process(
         ["python3", "-c", source],
         capture_output=True,
         text=True,

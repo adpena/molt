@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.wasm_linked_runner import _run_wasm_test_process
+
 ROOT = Path(__file__).resolve().parents[1]
 SPLIT_RUNTIME_TARGET_DIR = ROOT / "target" / "pytest" / "split_runtime_imported_module"
 
@@ -54,6 +56,30 @@ def test_split_runtime_imported_module_target_dir_prefers_explicit_arg() -> None
     assert diff_target_dir == explicit
 
 
+def test_split_runtime_imported_module_build_uses_wasm_test_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("print('ok')\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
+
+    result = _build_split(source, out_dir)
+
+    assert result.returncode == 0
+    assert "--split-runtime" in captured["cmd"]
+    assert captured["kwargs"]["cwd"] == ROOT
+    assert captured["kwargs"]["timeout"] == 300
+
+
 def _build_split(
     source_file: Path,
     output_dir: Path,
@@ -97,12 +123,10 @@ def _build_split(
         "--out-dir",
         str(output_dir),
     ]
-    return subprocess.run(
+    return _run_wasm_test_process(
         cmd,
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=300,
     )
 
@@ -112,12 +136,10 @@ def _run_split_direct(output_dir: Path) -> subprocess.CompletedProcess[str]:
     env["MOLT_WASM_DIRECT_LINK"] = "1"
     env["MOLT_WASM_PREFER_LINKED"] = "0"
     env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
-    return subprocess.run(
+    return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm")],
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=300,
     )
 
@@ -313,12 +335,10 @@ def test_split_runtime_import_typing_direct_mode(tmp_path: Path) -> None:
     env["MOLT_WASM_DIRECT_LINK"] = "1"
     env["MOLT_WASM_PREFER_LINKED"] = "0"
     env["MOLT_RUNTIME_WASM"] = str(out_dir / "molt_runtime.wasm")
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "app.wasm")],
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=30,
     )
     assert run.returncode == 0, (

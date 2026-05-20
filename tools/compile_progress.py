@@ -9,6 +9,7 @@ import shlex
 import signal
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -16,6 +17,12 @@ from typing import Any
 
 
 DEFAULT_EXTERNAL_ROOT = None
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 def _repo_root() -> Path:
@@ -221,33 +228,6 @@ def _base_env(
     return env
 
 
-def _terminate_process_group(
-    proc: subprocess.Popen[str], *, grace_sec: float = 5.0
-) -> None:
-    if proc.poll() is not None:
-        return
-    if os.name != "nt":
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=grace_sec)
-            return
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return
-    else:
-        proc.terminate()
-    try:
-        proc.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-
-
 def _kill_run_scoped_processes(marker: str, *, include_daemon: bool) -> list[int]:
     if not marker or os.name == "nt":
         return []
@@ -317,7 +297,6 @@ def _run_case(
     retry_backoff_sec: float,
     build_lock_timeout_sec: float | None,
 ) -> CaseResult:
-    heartbeat_sec = 15.0
     target_marker = env_base.get("CARGO_TARGET_DIR", "")
     diagnostics_path: Path | None = None
     if diagnostics:
@@ -368,71 +347,47 @@ def _run_case(
 
     def _execute(label: str) -> tuple[int, bool, str, str, float]:
         started = time.perf_counter()
-        timed_out = False
-        stdout = ""
-        stderr = ""
-        returncode = 124
         try:
-            proc = subprocess.Popen(
+            result = harness_memory_guard.guarded_completed_process(
                 wrapped_cmd,
+                prefix="MOLT_COMPILE_PROGRESS",
                 cwd=repo_root,
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
-                start_new_session=(os.name != "nt"),
+                timeout=timeout_sec,
             )
-            deadline = started + timeout_sec
-            next_heartbeat = started + heartbeat_sec
-            while proc.poll() is None:
-                now = time.perf_counter()
-                if now >= deadline:
-                    timed_out = True
-                    _terminate_process_group(proc)
-                    killed = _kill_run_scoped_processes(
-                        target_marker,
-                        include_daemon=False,
-                    )
-                    if killed:
-                        stderr = (
-                            stderr
-                            + "\n[kill-timeout] pids="
-                            + ",".join(str(pid) for pid in killed)
-                        )
-                    break
-                if now >= next_heartbeat:
-                    print(
-                        (
-                            f"[compile-progress] heartbeat case={case.name} "
-                            f"label={label} elapsed={now - started:.1f}s"
-                        ),
-                        flush=True,
-                    )
-                    next_heartbeat = now + heartbeat_sec
-                sleep_sec = min(
-                    1.0,
-                    max(0.01, deadline - now),
-                    max(0.01, next_heartbeat - now),
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+            returncode = result.returncode
+            timed_out = (
+                returncode
+                == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+            )
+            elapsed_value = getattr(result, "elapsed_s", None)
+            if elapsed_value is None:
+                elapsed_value = time.perf_counter() - started
+            elapsed = round(float(elapsed_value), 3)
+            guard_killed = (
+                returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
+            )
+            if timed_out or guard_killed:
+                killed = _kill_run_scoped_processes(
+                    target_marker,
+                    include_daemon=False,
                 )
-                time.sleep(sleep_sec)
-            if timed_out:
-                try:
-                    flushed_stdout, flushed_stderr = proc.communicate(timeout=2.0)
-                    stdout = stdout + (flushed_stdout or "")
-                    stderr = stderr + (flushed_stderr or "")
-                except subprocess.TimeoutExpired:
-                    pass
-            else:
-                stdout, stderr = proc.communicate()
-                returncode = proc.returncode
+                if killed:
+                    stderr = (
+                        stderr
+                        + "\n[kill-guarded] pids="
+                        + ",".join(str(pid) for pid in killed)
+                    )
         except OSError as exc:
             stderr = str(exc)
             returncode = 1
-        if "proc" in locals() and proc.returncode is not None:
-            returncode = proc.returncode
-        elif timed_out:
-            returncode = 124
-        elapsed = round(time.perf_counter() - started, 3)
+            timed_out = False
+            stdout = ""
+            elapsed = round(time.perf_counter() - started, 3)
         (logs_root / f"{case.name}.{label}.stdout.log").write_text(stdout)
         (logs_root / f"{case.name}.{label}.stderr.log").write_text(stderr)
         return returncode, timed_out, stdout, stderr, elapsed

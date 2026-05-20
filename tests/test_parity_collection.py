@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +17,7 @@ def test_parity_scripts_are_not_collected_as_pytest_modules() -> None:
         pythonpath = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
     env["PYTHONPATH"] = pythonpath
 
-    result = subprocess.run(
+    result = run_cli_test_process(
         [
             sys.executable,
             "-m",

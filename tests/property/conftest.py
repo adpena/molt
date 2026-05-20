@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 from hypothesis import settings as hypothesis_settings
 
+from tools import harness_memory_guard
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIR = _REPO_ROOT / "src"
 
@@ -26,6 +28,33 @@ def _artifact_root() -> Path:
     if configured:
         return Path(configured).expanduser()
     return _REPO_ROOT
+
+
+def _run_property_process(
+    args: list[str],
+    *,
+    timeout: float,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    result = harness_memory_guard.guarded_completed_process(
+        args,
+        prefix="MOLT_PROPERTY",
+        env=os.environ if env is None else env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if (
+        result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        and "memory_guard: timeout after" in (result.stderr or "")
+    ):
+        raise subprocess.TimeoutExpired(
+            args,
+            timeout,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +79,7 @@ def _molt_cli_available() -> bool:
         )
         env.setdefault("CARGO_TARGET_DIR", cargo_target)
 
-        result = subprocess.run(
+        result = _run_property_process(
             [
                 sys.executable,
                 "-m",
@@ -150,7 +179,7 @@ def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
         env.setdefault("CARGO_TARGET_DIR", cargo_target)
 
         # Build
-        build_result = subprocess.run(
+        build_result = _run_property_process(
             [
                 sys.executable,
                 "-m",
@@ -204,7 +233,7 @@ def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
             )
 
         # Run
-        run_result = subprocess.run(
+        run_result = _run_property_process(
             [binary_path],
             capture_output=True,
             text=True,
@@ -225,7 +254,7 @@ def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
 
 def run_via_cpython(code: str, *, timeout: float = 30.0) -> str:
     """Run *code* through CPython and return its stdout."""
-    result = subprocess.run(
+    result = _run_property_process(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,

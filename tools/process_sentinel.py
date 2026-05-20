@@ -23,7 +23,7 @@ from tools import memory_guard  # noqa: E402
 DEFAULT_MAX_PROCESS_RSS_GB = memory_guard.DEFAULT_MAX_RSS_GB
 DEFAULT_MAX_GROUP_RSS_GB = memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
 DEFAULT_MAX_GLOBAL_RSS_GB = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
-DEFAULT_POLL_INTERVAL_SEC = 0.2
+DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_GRACE_SEC = 0.5
 DEFAULT_MAX_RUNTIME_SEC = 120.0
 
@@ -31,15 +31,28 @@ MOLT_PROCESS_TOKENS = (
     "/tools/memory_guard.py",
     "/tests/molt_diff.py",
     "/tools/bench.py",
+    "/tools/bench_individual.py",
+    "/tools/bench_wasm.py",
     "/tools/cpython_regrtest.py",
+    "/tools/nightly_test_suite.py",
+    "/tools/profile.py",
+    "/tests/harness/adapt_monty_tests.py",
+    "/tests/harness/run_molt_conformance.py",
+    "/tests/harness/run_monty_conformance.py",
     "/src/molt/cli.py",
     "python -m molt",
     "molt.cli",
     "molt-backend",
     "molt_diff.py",
+    "bench_individual.py",
+    "bench_wasm.py",
     "bench_exception_heavy",
     "exception-repro",
     "cpython_regrtest",
+    "nightly_test_suite.py",
+    "adapt_monty_tests.py",
+    "run_molt_conformance.py",
+    "run_monty_conformance.py",
     "cargo build --package molt-backend",
     "cargo build -p molt-backend",
     "cargo test -p molt-backend",
@@ -54,7 +67,14 @@ REPO_SCOPED_PROCESS_TOKENS = (
     "/src/molt/cli.py",
     "/tests/molt_diff.py",
     "/tools/bench.py",
+    "/tools/bench_individual.py",
+    "/tools/bench_wasm.py",
     "/tools/cpython_regrtest.py",
+    "/tools/nightly_test_suite.py",
+    "/tools/profile.py",
+    "/tests/harness/adapt_monty_tests.py",
+    "/tests/harness/run_molt_conformance.py",
+    "/tests/harness/run_monty_conformance.py",
 )
 
 INSPECTION_COMMAND_TOKENS = (
@@ -231,6 +251,10 @@ def _violation_payload(violation: SentinelViolation) -> dict[str, object]:
         "pids": list(violation.pids),
         "command": violation.command,
     }
+
+
+def violation_payload(violation: SentinelViolation) -> dict[str, object]:
+    return _violation_payload(violation)
 
 
 def _format_violation(violation: SentinelViolation) -> str:

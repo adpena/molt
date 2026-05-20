@@ -20,9 +20,14 @@ Usage:
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 CORPUS_DIR = Path(__file__).resolve().parent / "corpus" / "monty_compat"
 
@@ -79,14 +84,14 @@ def run_test(
     if kind == "skip":
         return (None, expected)
 
-    try:
-        result = subprocess.run(
-            [*runner, str(filepath)],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
+    result = harness_memory_guard.guarded_completed_process(
+        [*runner, str(filepath)],
+        prefix="MOLT_CONFORMANCE",
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
         return (False, "timeout (10s)")
 
     if kind == "raise":
@@ -143,22 +148,30 @@ def main() -> int:
     failed = 0
     skipped = 0
     errors: list[tuple[str, str]] = []
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE")
+    artifact_root = REPO_ROOT / "tmp" / "conformance"
 
-    for filepath in test_files:
-        ok, detail = run_test(filepath, runner)
-        if ok is None:
-            skipped += 1
-            if verbose:
-                print(f"  SKIP  {filepath.name}: {detail}")
-        elif ok:
-            passed += 1
-            if verbose:
-                print(f"  PASS  {filepath.name}: {detail}")
-        else:
-            failed += 1
-            errors.append((filepath.name, detail))
-            if verbose:
-                print(f"  FAIL  {filepath.name}: {detail}")
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=artifact_root,
+        label="monty_conformance",
+        limits=limits,
+    ):
+        for filepath in test_files:
+            ok, detail = run_test(filepath, runner)
+            if ok is None:
+                skipped += 1
+                if verbose:
+                    print(f"  SKIP  {filepath.name}: {detail}")
+            elif ok:
+                passed += 1
+                if verbose:
+                    print(f"  PASS  {filepath.name}: {detail}")
+            else:
+                failed += 1
+                errors.append((filepath.name, detail))
+                if verbose:
+                    print(f"  FAIL  {filepath.name}: {detail}")
 
     total = passed + failed
     pct = (passed / total * 100) if total > 0 else 0

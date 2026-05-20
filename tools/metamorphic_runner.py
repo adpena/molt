@@ -20,6 +20,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 
 @dataclass
 class CompareResult:
@@ -61,6 +67,7 @@ class MetamorphicRunner:
         self.env.setdefault("PYTHONPATH", "src")
         self.env["PYTHONHASHSEED"] = "0"
         self.env["MOLT_DETERMINISTIC"] = "1"
+        self.limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", self.env)
 
     def _build_and_run(
         self,
@@ -96,12 +103,14 @@ class MetamorphicRunner:
                 "--json",
                 src_path,
             ]
-            build_result = subprocess.run(
+            build_result = harness_memory_guard.guarded_completed_process(
                 build_cmd,
+                prefix="MOLT_TEST_SUITE",
                 capture_output=True,
                 text=True,
                 env=self.env,
                 timeout=self.timeout,
+                limits=self.limits,
             )
             if build_result.returncode != 0:
                 return (
@@ -155,12 +164,14 @@ class MetamorphicRunner:
                 return "", "", None, f"Binary not found at {binary_path} for {label}"
 
             # Run
-            run_result = subprocess.run(
+            run_result = harness_memory_guard.guarded_completed_process(
                 [binary_path],
+                prefix="MOLT_TEST_SUITE",
                 capture_output=True,
                 text=True,
                 env=self.env,
                 timeout=self.timeout,
+                limits=self.limits,
             )
             return run_result.stdout, run_result.stderr, run_result.returncode, None
 

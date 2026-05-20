@@ -9,10 +9,12 @@ Validates:
 """
 
 import re
-import subprocess
+from subprocess import TimeoutExpired
 from pathlib import Path
 
 import pytest
+
+from tests.process_guard_common import run_guarded_test_process
 
 DEPLOY_BROWSER = Path(__file__).resolve().parent.parent.parent / "deploy" / "browser"
 WEBGPU_ENGINE = DEPLOY_BROWSER / "webgpu-engine.js"
@@ -142,9 +144,14 @@ class TestWebGPUMatmulPoC:
 def _curl_available() -> bool:
     """Check if curl is available on the system."""
     try:
-        subprocess.run(["curl", "--version"], capture_output=True, timeout=5)
+        run_guarded_test_process(
+            ["curl", "--version"],
+            prefix="MOLT_E2E_TEST",
+            capture_output=True,
+            timeout=5,
+        )
         return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, TimeoutExpired):
         return False
 
 
@@ -157,7 +164,7 @@ class TestBrowserTestPageDeployment:
     )
     def test_test_page_accessible(self):
         """GET /test should return 200 with HTML content."""
-        result = subprocess.run(
+        result = run_guarded_test_process(
             [
                 "curl",
                 "-s",
@@ -167,6 +174,7 @@ class TestBrowserTestPageDeployment:
                 "/dev/null",
                 f"{WORKER_URL}/test",
             ],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             text=True,
             timeout=10,
@@ -179,7 +187,7 @@ class TestBrowserTestPageDeployment:
     )
     def test_browser_js_accessible(self):
         """GET /browser/compute-engine.js should return 200."""
-        result = subprocess.run(
+        result = run_guarded_test_process(
             [
                 "curl",
                 "-s",
@@ -189,6 +197,7 @@ class TestBrowserTestPageDeployment:
                 "/dev/null",
                 f"{WORKER_URL}/browser/compute-engine.js",
             ],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             text=True,
             timeout=10,
@@ -201,7 +210,7 @@ class TestBrowserTestPageDeployment:
     )
     def test_webgpu_engine_js_accessible(self):
         """GET /browser/webgpu-engine.js should return 200."""
-        result = subprocess.run(
+        result = run_guarded_test_process(
             [
                 "curl",
                 "-s",
@@ -211,6 +220,7 @@ class TestBrowserTestPageDeployment:
                 "/dev/null",
                 f"{WORKER_URL}/browser/webgpu-engine.js",
             ],
+            prefix="MOLT_E2E_TEST",
             capture_output=True,
             text=True,
             timeout=10,

@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import ast
 import os
-import subprocess
 import sys
 import tempfile
 import textwrap
 from pathlib import Path
 
 import pytest
+
+from tests.mutation.process_guard import run_mutation_process
 
 # Ensure tools/ is importable.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -125,7 +126,7 @@ def _run_code(code: str) -> tuple[str, int]:
     try:
         os.write(fd, code.encode())
         os.close(fd)
-        result = subprocess.run(
+        result = run_mutation_process(
             [sys.executable, path],
             capture_output=True,
             text=True,

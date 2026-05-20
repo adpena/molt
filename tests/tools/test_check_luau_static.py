@@ -87,7 +87,7 @@ def test_batch_runs_and_writes_json_report(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/luau-analyze")
 
-    def _fake_run(cmd, *args, **kwargs):
+    def _fake_run(cmd, **kwargs):
         if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "molt.cli":
             output_idx = cmd.index("--output") + 1
             Path(cmd[output_idx]).write_text("--!strict\n", encoding="utf-8")
@@ -104,7 +104,7 @@ def test_batch_runs_and_writes_json_report(tmp_path: Path, monkeypatch) -> None:
 
         raise AssertionError(f"Unexpected subprocess command: {cmd}")
 
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(mod.harness_memory_guard, "guarded_completed_process", _fake_run)
 
     rc = mod.main(
         [
@@ -138,14 +138,14 @@ def test_missing_analyzer_is_nonfatal_without_requirement(
 
     monkeypatch.setattr(mod.shutil, "which", lambda name: None)
 
-    def _fake_run(cmd, *args, **kwargs):
+    def _fake_run(cmd, **kwargs):
         if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "molt.cli":
             output_idx = cmd.index("--output") + 1
             Path(cmd[output_idx]).write_text("--!strict\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="build ok", stderr="")
         raise AssertionError(f"Unexpected subprocess command: {cmd}")
 
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(mod.harness_memory_guard, "guarded_completed_process", _fake_run)
 
     rc = mod.main([str(source), "--json-out", str(json_out)])
 
