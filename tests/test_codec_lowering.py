@@ -361,6 +361,27 @@ main()
     assert kinds.count("string_split_field") == 2
 
 
+def test_string_split_scalarization_keeps_local_across_nested_control():
+    src = """
+def main(flag: bool) -> None:
+    line = "1|NA|2|tail"
+    parts = line.split("|")
+    first = parts[0]
+    if flag:
+        print(parts[1])
+    else:
+        print(parts[2])
+    print(first, parts[3])
+main(True)
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    kinds = [op["kind"] for op in ops]
+    assert "string_split" not in kinds
+    assert kinds.count("string_split_validate") == 1
+    assert kinds.count("string_split_field") == 4
+
+
 def test_string_split_scalarization_keeps_escaping_and_dynamic_uses_on_list_path():
     cases = [
         """
