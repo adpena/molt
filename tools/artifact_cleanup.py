@@ -74,6 +74,44 @@ def stateful_pathspecs() -> tuple[str, ...]:
     return STATEFUL_PATHS
 
 
+def validate_repo_root(repo_root: Path) -> None:
+    expected_tool = repo_root / "tools" / "artifact_cleanup.py"
+    try:
+        same_tool = expected_tool.resolve() == Path(__file__).resolve()
+    except OSError:
+        same_tool = False
+    if not same_tool or not (repo_root / "pyproject.toml").is_file():
+        raise ValueError(f"{repo_root} is not this Molt checkout")
+
+
+def _literal_pathspec_key(pathspec: str) -> str:
+    raw = pathspec.strip()
+    if not raw:
+        raise ValueError("extra cleanup pathspec must not be empty")
+    if raw.startswith("/") or raw.startswith(":"):
+        raise ValueError(f"extra cleanup pathspec must be repo-relative: {pathspec!r}")
+    if any(ch in raw for ch in "*?["):
+        raise ValueError(f"extra cleanup pathspec must be a literal path: {pathspec!r}")
+    parts = [part for part in raw.strip("/").split("/") if part not in {"", "."}]
+    if any(part == ".." for part in parts):
+        raise ValueError(
+            f"extra cleanup pathspec must stay inside the repo: {pathspec!r}"
+        )
+    return "/".join(parts)
+
+
+def validate_extra_pathspecs(pathspecs: Sequence[str]) -> None:
+    stateful = tuple(
+        _literal_pathspec_key(pathspec) for pathspec in stateful_pathspecs()
+    )
+    for pathspec in pathspecs:
+        key = _literal_pathspec_key(pathspec)
+        if any(key == blocked or key.startswith(f"{blocked}/") for blocked in stateful):
+            raise ValueError(
+                f"extra cleanup pathspec targets stateful data: {pathspec!r}"
+            )
+
+
 def build_git_clean_command(*, apply: bool, pathspecs: Sequence[str]) -> list[str]:
     mode = "-fdX" if apply else "-ndX"
     return ["git", "clean", mode, "--", *pathspecs]
@@ -138,6 +176,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     repo_root = args.repo_root.expanduser().resolve()
+    try:
+        validate_repo_root(repo_root)
+        validate_extra_pathspecs(args.extra_path)
+    except ValueError as exc:
+        print(f"artifact_cleanup: {exc}", file=sys.stderr)
+        return 2
     pathspecs = [*default_pathspecs(), *args.extra_path]
 
     if args.list_paths:
