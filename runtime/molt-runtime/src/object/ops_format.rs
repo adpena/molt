@@ -515,6 +515,88 @@ fn call_bits_is_default_object_str(call_bits: u64) -> bool {
     }
 }
 
+unsafe fn exception_class_can_use_cached_message_str(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    class_ptr: *mut u8,
+) -> bool {
+    unsafe {
+        let builtins = builtin_classes(_py);
+        if !issubclass_bits(class_bits, builtins.base_exception) {
+            return false;
+        }
+        if builtins.base_exception_group != 0
+            && issubclass_bits(class_bits, builtins.base_exception_group)
+        {
+            return false;
+        }
+        let class_name =
+            string_obj_to_owned(obj_from_bits(class_name_bits(class_ptr))).unwrap_or_default();
+        if matches!(
+            class_name.as_str(),
+            "KeyError"
+                | "UnicodeDecodeError"
+                | "UnicodeEncodeError"
+                | "HTTPError"
+                | "URLError"
+                | "ContentTooShortError"
+        ) {
+            return false;
+        }
+        let str_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
+        let raw_str = class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits);
+        match raw_str {
+            Some(bits) => {
+                call_bits_is_default_object_str(bits) || call_bits_is_default_object_repr(bits)
+            }
+            None => true,
+        }
+    }
+}
+
+pub(crate) unsafe fn exception_cached_message_str_bits(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+) -> Option<u64> {
+    unsafe {
+        let class_bits = exception_class_bits(ptr);
+        let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        let class_version = class_layout_version_bits(class_ptr);
+        let cached = runtime_state(_py)
+            .exception_str_cache
+            .lock()
+            .unwrap()
+            .get(&class_bits)
+            .copied();
+        let can_use_cached_message = match cached {
+            Some((version, value)) if version == class_version => value,
+            _ => {
+                let value = exception_class_can_use_cached_message_str(_py, class_bits, class_ptr);
+                runtime_state(_py)
+                    .exception_str_cache
+                    .lock()
+                    .unwrap()
+                    .insert(class_bits, (class_version, value));
+                value
+            }
+        };
+        if !can_use_cached_message {
+            return None;
+        }
+        let msg_bits = exception_msg_bits(ptr);
+        let msg_ptr = obj_from_bits(msg_bits).as_ptr()?;
+        if object_type_id(msg_ptr) != TYPE_ID_STRING {
+            return None;
+        }
+        inc_ref_bits(_py, msg_bits);
+        Some(msg_bits)
+    }
+}
+
 pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
     if let Some(ptr) = maybe_ptr_from_bits(obj.bits()) {
         unsafe {
@@ -559,6 +641,11 @@ pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return format_obj(_py, obj);
             }
             if type_id == TYPE_ID_EXCEPTION {
+                if let Some(bits) = exception_cached_message_str_bits(_py, ptr) {
+                    let rendered = string_obj_to_owned(obj_from_bits(bits)).unwrap_or_default();
+                    dec_ref_bits(_py, bits);
+                    return rendered;
+                }
                 // Check for a custom __str__ on the exception class before
                 // falling back to the default format_exception_message path.
                 let str_name_exc =
