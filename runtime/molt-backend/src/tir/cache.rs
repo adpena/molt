@@ -27,7 +27,7 @@ const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v1";
 
 /// Content-addressed cache for compiled TIR functions.
 ///
-/// Key: hex-encoded hash of (function name + body bytes).
+/// Key: hex-encoded hash of (cache namespace + function signature + body bytes).
 /// Value: cached compilation artifact stored both in-memory and on disk.
 pub struct CompilationCache {
     /// Cache root directory (e.g. `.molt_cache/`).
@@ -90,6 +90,7 @@ impl CompilationCache {
         body: &[u8],
     ) -> String {
         let mut h = DefaultHasher::new();
+        BACKEND_CACHE_NAMESPACE_VERSION.hash(&mut h);
         func_name.hash(&mut h);
         params.hash(&mut h);
         param_types.hash(&mut h);
@@ -323,6 +324,8 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -496,6 +499,24 @@ mod tests {
         assert_ne!(
             typed, typed_changed,
             "type metadata changes must invalidate cache"
+        );
+    }
+
+    #[test]
+    fn test_compute_hash_includes_backend_namespace() {
+        let params: Vec<String> = Vec::new();
+        let mut legacy = DefaultHasher::new();
+        "func".hash(&mut legacy);
+        params.hash(&mut legacy);
+        Option::<&[String]>::None.hash(&mut legacy);
+        b"body".hash(&mut legacy);
+
+        let namespaced =
+            CompilationCache::compute_hash_with_signature("func", &params, None, b"body");
+        assert_ne!(
+            namespaced,
+            format!("{:016x}", legacy.finish()),
+            "backend cache namespace must invalidate stale body-only TIR artifacts"
         );
     }
 
