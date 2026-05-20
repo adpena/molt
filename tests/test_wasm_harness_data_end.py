@@ -154,3 +154,8 @@ def test_wasm_harness_exposes_string_split_field_imports() -> None:
     text = source.read_text()
     assert "string_split_validate: (hayBits, needleBits) => {" in text
     assert "string_split_field: (hayBits, needleBits, indexBits) => {" in text
+    assert "string_split_field_len: (hayBits, needleBits, indexBits) => {" in text
+    assert (
+        "string_split_field_eq: (hayBits, needleBits, indexBits, expectedBits) => {"
+        in text
+    )

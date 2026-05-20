@@ -703,7 +703,11 @@ impl LuauBackend {
                 "\t\tlocal pos = 1\n\t\tlocal field = 0\n\t\twhile true do\n",
                 "\t\t\tlocal i, j = string.find(s, sep, pos, true)\n",
                 "\t\t\tif i then\n\t\t\t\tif field == idx then return string.sub(s, pos, i - 1) end\n\t\t\t\tpos = j + 1\n\t\t\t\tfield += 1\n\t\t\telse\n\t\t\t\tif field == idx then return string.sub(s, pos) end\n\t\t\t\tbreak\n\t\t\tend\n\t\tend\n",
-                "\t\terror({__type=\"IndexError\", __msg=\"list index out of range\"})\n\tend,\n}\n\n",
+                "\t\terror({__type=\"IndexError\", __msg=\"list index out of range\"})\n\tend,\n",
+                "\tsplit_field_len = function(s: string, sep: string, idx: number): number\n",
+                "\t\treturn string.len(molt_string.split_field(s, sep, idx))\n\tend,\n",
+                "\tsplit_field_eq = function(s: string, sep: string, idx: number, expected: string): boolean\n",
+                "\t\treturn molt_string.split_field(s, sep, idx) == expected\n\tend,\n}\n\n",
             ));
         }
     }
@@ -4267,6 +4271,31 @@ impl LuauBackend {
                     let idx = sanitize_ident(&args[2]);
                     self.emit_line(&format!(
                         "local {out} = molt_string.split_field({s}, {sep}, {idx})"
+                    ));
+                }
+            }
+            "string_split_field_len" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let s = sanitize_ident(&args[0]);
+                    let sep = sanitize_ident(&args[1]);
+                    let idx = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_string.split_field_len({s}, {sep}, {idx})"
+                    ));
+                }
+            }
+            "string_split_field_eq" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 4 {
+                    let s = sanitize_ident(&args[0]);
+                    let sep = sanitize_ident(&args[1]);
+                    let idx = sanitize_ident(&args[2]);
+                    let expected = sanitize_ident(&args[3]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_string.split_field_eq({s}, {sep}, {idx}, {expected})"
                     ));
                 }
             }
