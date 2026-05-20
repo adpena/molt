@@ -147,6 +147,7 @@ class MemoryGuardLimits:
             child_rlimit_gb = memory_guard.default_child_rlimit_gb(
                 max_process_rss_gb=self.max_rss_gb,
                 max_total_rss_gb=self.max_total_rss_gb,
+                max_global_rss_gb=self.max_global_rss_gb,
             )
         if child_rlimit_gb <= 0:
             return None
@@ -171,6 +172,7 @@ def default_memory_guard_limits(
         child_rlimit_gb=memory_guard.default_child_rlimit_gb(
             max_process_rss_gb=budget.max_process_rss_gb,
             max_total_rss_gb=budget.max_total_rss_gb,
+            max_global_rss_gb=budget.max_global_rss_gb,
         ),
     )
 
@@ -1054,6 +1056,9 @@ def main() -> None:
                         max_total_rss_gb=adaptive_budget.max_total_rss_gb
                         if args.max_total_rss_gb is None
                         else args.max_total_rss_gb,
+                        max_global_rss_gb=adaptive_budget.max_global_rss_gb
+                        if args.max_global_rss_gb is None
+                        else args.max_global_rss_gb,
                     )
                     if args.child_rlimit_gb is None
                     else args.child_rlimit_gb

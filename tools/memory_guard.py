@@ -32,6 +32,7 @@ DEFAULT_TOTAL_FRACTION_OF_GLOBAL = 0.60
 DEFAULT_PROCESS_FRACTION_OF_TOTAL = 0.90
 DEFAULT_CHILD_RLIMIT_MIN_GB = 8.0
 DEFAULT_CHILD_RLIMIT_TREE_MULTIPLIER = 2.0
+_RSS_HARD_MARGIN_GB = 0.001
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
@@ -159,6 +160,10 @@ def _float_env(environ: Mapping[str, str], names: Sequence[str]) -> float | None
         if value > 0:
             return value
     return None
+
+
+def _below_hard_memory_cap(value_gb: float, hard_gb: float) -> float:
+    return min(value_gb, hard_gb - _RSS_HARD_MARGIN_GB)
 
 
 def _gb_from_bytes(value: int | None) -> float | None:
@@ -342,14 +347,20 @@ def adaptive_memory_budget(
     global_gb = max(0.25, usable_gb * DEFAULT_GLOBAL_FRACTION_OF_USABLE)
     if physical_gb is not None:
         global_gb = min(global_gb, max(0.25, physical_gb - reserve_gb))
+    global_gb = _below_hard_memory_cap(
+        global_gb,
+        DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
+    )
     total_gb = min(
         global_gb,
         max(0.25, global_gb * DEFAULT_TOTAL_FRACTION_OF_GLOBAL),
     )
+    total_gb = _below_hard_memory_cap(total_gb, DEFAULT_HARD_MAX_RSS_GB)
     process_gb = min(
         total_gb,
         max(0.25, total_gb * DEFAULT_PROCESS_FRACTION_OF_TOTAL),
     )
+    process_gb = _below_hard_memory_cap(process_gb, DEFAULT_HARD_MAX_RSS_GB)
     return AdaptiveMemoryBudget(
         max_process_rss_gb=process_gb,
         max_total_rss_gb=total_gb,
@@ -581,8 +592,9 @@ def default_child_rlimit_gb(
     *,
     max_process_rss_gb: float,
     max_total_rss_gb: float,
+    max_global_rss_gb: float | None = None,
 ) -> float:
-    return min(
+    limit_gb = min(
         DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001,
         max(
             max_process_rss_gb,
@@ -590,6 +602,9 @@ def default_child_rlimit_gb(
             DEFAULT_CHILD_RLIMIT_MIN_GB,
         ),
     )
+    if max_global_rss_gb is not None:
+        limit_gb = min(limit_gb, max_global_rss_gb)
+    return limit_gb
 
 
 def _samples_max_bytes_from_mb(value: float | None) -> int | None:
@@ -1332,6 +1347,7 @@ def main(
             default_child_rlimit_gb(
                 max_process_rss_gb=max_rss_gb,
                 max_total_rss_gb=max_total_rss_gb,
+                max_global_rss_gb=budget.max_global_rss_gb,
             )
             if args.child_rlimit_gb is None
             else float(args.child_rlimit_gb)
