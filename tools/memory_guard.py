@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -28,12 +29,14 @@ INTERNAL_WORKER_ENV = "MOLT_MEMORY_GUARD_INTERNAL"
 INTERNAL_CHILD_RUNNER_ENV = "MOLT_MEMORY_GUARD_CHILD_RUNNER"
 INTERNAL_CHILD_COMMAND_ENV = "MOLT_MEMORY_GUARD_CHILD_COMMAND_JSON"
 INTERNAL_CHILD_RLIMIT_KB_ENV = "MOLT_MEMORY_GUARD_CHILD_RLIMIT_KB"
+INTERNAL_CHILD_STARTED_FD_ENV = "MOLT_MEMORY_GUARD_CHILD_STARTED_FD"
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
     INTERNAL_WORKER_ENV,
     INTERNAL_CHILD_RUNNER_ENV,
     INTERNAL_CHILD_COMMAND_ENV,
     INTERNAL_CHILD_RLIMIT_KB_ENV,
+    INTERNAL_CHILD_STARTED_FD_ENV,
 )
 
 
@@ -67,6 +70,16 @@ class GuardResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    elapsed_s: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GuardedLaunch:
+    command: list[str]
+    env: Mapping[str, str] | None
+    pass_fds: tuple[int, ...] = ()
+    close_fds: tuple[int, ...] = ()
+    started_read_fd: int | None = None
 
 
 def parse_process_table(text: str) -> dict[int, ProcessSample]:
@@ -437,6 +450,7 @@ def _run_child_runner(environ: Mapping[str, str]) -> int:
         return 2
     _apply_child_resource_limit(limit_kb)
     child_env = _child_env_without_internal_keys(environ)
+    _write_child_started_timestamp(environ)
     try:
         os.execvpe(command[0], command, child_env)
     except OSError as exc:
@@ -445,16 +459,35 @@ def _run_child_runner(environ: Mapping[str, str]) -> int:
     return 127
 
 
+def _write_child_started_timestamp(environ: Mapping[str, str]) -> None:
+    raw_fd = environ.get(INTERNAL_CHILD_STARTED_FD_ENV)
+    if not raw_fd:
+        return
+    try:
+        fd = int(raw_fd)
+    except ValueError:
+        return
+    try:
+        os.write(fd, f"{time.monotonic_ns()}\n".encode("ascii"))
+    except OSError:
+        pass
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
 def _child_runner_env(
     environ: Mapping[str, str],
     command: Sequence[str],
     *,
     child_rlimit_kb: int,
+    child_started_fd: int | None = None,
 ) -> dict[str, str]:
     runner_env = dict(environ)
     runner_env[INTERNAL_CHILD_RUNNER_ENV] = "1"
     runner_env[INTERNAL_CHILD_COMMAND_ENV] = json.dumps(list(command))
     runner_env[INTERNAL_CHILD_RLIMIT_KB_ENV] = str(child_rlimit_kb)
+    if child_started_fd is not None:
+        runner_env[INTERNAL_CHILD_STARTED_FD_ENV] = str(child_started_fd)
     return runner_env
 
 
@@ -463,14 +496,54 @@ def _guarded_launch(
     env: Mapping[str, str] | None,
     *,
     child_rlimit_kb: int | None,
-) -> tuple[list[str], Mapping[str, str] | None]:
+) -> GuardedLaunch:
     if child_rlimit_kb is None or child_rlimit_kb <= 0:
-        return list(command), env
+        return GuardedLaunch(command=list(command), env=env)
     base_env = os.environ if env is None else env
-    return (
-        [sys.executable, str(Path(__file__).resolve())],
-        _child_runner_env(base_env, command, child_rlimit_kb=child_rlimit_kb),
+    started_read_fd: int | None = None
+    started_write_fd: int | None = None
+    pass_fds: tuple[int, ...] = ()
+    close_fds: tuple[int, ...] = ()
+    if os.name == "posix":
+        started_read_fd, started_write_fd = os.pipe()
+        pass_fds = (started_write_fd,)
+        close_fds = (started_write_fd,)
+    return GuardedLaunch(
+        command=[sys.executable, str(Path(__file__).resolve())],
+        env=_child_runner_env(
+            base_env,
+            command,
+            child_rlimit_kb=child_rlimit_kb,
+            child_started_fd=started_write_fd,
+        ),
+        pass_fds=pass_fds,
+        close_fds=close_fds,
+        started_read_fd=started_read_fd,
     )
+
+
+def _close_fds(fds: Sequence[int | None]) -> None:
+    for fd in fds:
+        if fd is None:
+            continue
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _read_child_started_at(fd: int | None) -> float | None:
+    if fd is None:
+        return None
+    try:
+        raw = os.read(fd, 64)
+    except OSError:
+        return None
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+    try:
+        return int(raw.strip()) / 1_000_000_000
+    except ValueError:
+        return None
 
 
 def run_guarded(
@@ -488,6 +561,7 @@ def run_guarded(
     samples_jsonl_max_bytes: int | None = None,
     stream: str = "",
     child_rlimit_kb: int | None = None,
+    input: str | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -496,20 +570,47 @@ def run_guarded(
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout must be greater than 0")
     start = time.monotonic()
-    launch_command, launch_env = _guarded_launch(
+    launch = _guarded_launch(
         command,
         dict(env) if env is not None else None,
         child_rlimit_kb=child_rlimit_kb,
     )
-    proc = subprocess.Popen(
-        launch_command,
-        cwd=cwd,
-        env=dict(launch_env) if launch_env is not None else None,
-        stdout=subprocess.PIPE if capture_output else None,
-        stderr=subprocess.PIPE if capture_output else None,
-        text=True,
-        start_new_session=True,
-    )
+    popen_kwargs: dict[str, object] = {
+        "cwd": cwd,
+        "env": dict(launch.env) if launch.env is not None else None,
+        "stdout": subprocess.PIPE if capture_output else None,
+        "stderr": subprocess.PIPE if capture_output else None,
+        "stdin": subprocess.PIPE if input is not None else None,
+        "text": True,
+        "start_new_session": True,
+    }
+    if launch.pass_fds:
+        popen_kwargs["pass_fds"] = launch.pass_fds
+    try:
+        proc = subprocess.Popen(launch.command, **popen_kwargs)
+    except Exception:
+        _close_fds((*launch.close_fds, launch.started_read_fd))
+        raise
+    _close_fds(launch.close_fds)
+    stdin_thread: threading.Thread | None = None
+    if input is not None and proc.stdin is not None:
+        stdin_handle = proc.stdin
+        proc.stdin = None
+
+        def _feed_stdin() -> None:
+            try:
+                stdin_handle.write(input)
+                stdin_handle.close()
+            except (BrokenPipeError, OSError, ValueError):
+                with contextlib.suppress(OSError, ValueError):
+                    stdin_handle.close()
+
+        stdin_thread = threading.Thread(
+            target=_feed_stdin,
+            name="memory-guard-stdin-feeder",
+            daemon=True,
+        )
+        stdin_thread.start()
     violation: RssViolation | None = None
     peak: RssViolation | None = None
     peak_total: RssViolation | None = None
@@ -560,8 +661,22 @@ def run_guarded(
             )
         if proc.poll() is not None:
             break
-        time.sleep(poll_interval)
+        wait_timeout = poll_interval
+        if timeout is not None:
+            remaining = timeout - (time.monotonic() - start)
+            wait_timeout = max(0.0, min(wait_timeout, remaining))
+        try:
+            proc.wait(timeout=wait_timeout)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+    finished = time.monotonic()
     stdout, stderr = proc.communicate()
+    if stdin_thread is not None:
+        stdin_thread.join(timeout=1.0)
+    child_started = _read_child_started_at(launch.started_read_fd)
+    elapsed_start = child_started if child_started is not None else start
+    elapsed_s = max(0.0, finished - elapsed_start)
     returncode = proc.returncode
     if violation is not None:
         returncode = GUARD_RETURN_CODE
@@ -577,6 +692,7 @@ def run_guarded(
         stdout=stdout or "",
         stderr=stderr or "",
         timed_out=timed_out,
+        elapsed_s=elapsed_s,
     )
 
 
@@ -592,7 +708,7 @@ def _rss_record_payload(record: RssViolation | None) -> dict[str, object] | None
     }
 
 
-def _exit_signal_payload(returncode: int) -> dict[str, object] | None:
+def exit_signal_payload(returncode: int) -> dict[str, object] | None:
     conventional_shell_status = False
     if returncode < 0:
         signo = -returncode
@@ -615,6 +731,9 @@ def _exit_signal_payload(returncode: int) -> dict[str, object] | None:
     }
 
 
+_exit_signal_payload = exit_signal_payload
+
+
 def _write_summary_json(
     path: str,
     *,
@@ -630,6 +749,7 @@ def _write_summary_json(
     payload = {
         "command": list(command),
         "returncode": result.returncode,
+        "elapsed_s": result.elapsed_s,
         "max_rss_kb": max_rss_kb,
         "max_rss_gb": max_rss_kb / (1024 * 1024),
         "max_total_rss_kb": max_total_rss_kb,

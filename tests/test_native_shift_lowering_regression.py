@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+from tests.native_process_guard import run_native_test_process
 
 
 def _native_env(root: Path) -> dict[str, str]:
@@ -34,7 +35,7 @@ def test_native_shift_ops_survive_simple_lowering_chain(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",

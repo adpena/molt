@@ -7,6 +7,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    import harness_memory_guard  # type: ignore
+
 CONTRACT: dict[str, object] = {
     "python_version_min": "3.12",
     "differential_suites": [
@@ -45,10 +51,21 @@ def validate_manifest(manifest: dict) -> int:
 def run_differential_suites(manifest: dict) -> None:
     suites = manifest.get("differential_suites", [])
     for suite in suites:
-        subprocess.check_call(
-            [sys.executable, str(ROOT / "tests/molt_diff.py"), suite],
+        cmd = [sys.executable, str(ROOT / "tests/molt_diff.py"), suite]
+        result = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_VERIFIED_SUBSET",
             cwd=ROOT,
+            capture_output=False,
+            text=True,
         )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                cmd,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
 
 
 def main() -> int:

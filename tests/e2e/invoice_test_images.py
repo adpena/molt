@@ -17,10 +17,16 @@ from pathlib import Path
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError:
-    import subprocess
     import sys
 
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
+    from tests.process_guard_common import run_guarded_test_process
+
+    run_guarded_test_process(
+        [sys.executable, "-m", "pip", "install", "Pillow"],
+        prefix="MOLT_E2E_TEST",
+        check=True,
+        capture_output=False,
+    )
     from PIL import Image, ImageDraw, ImageFont
 
 OUTPUT_DIR = Path(__file__).parent / "test_images"

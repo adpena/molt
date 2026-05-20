@@ -39,6 +39,10 @@ from typing import Any
 MOLT_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = MOLT_ROOT / "tools"
 SRC_DIR = MOLT_ROOT / "src"
+if str(MOLT_ROOT) not in sys.path:
+    sys.path.insert(0, str(MOLT_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 def _wasm_runtime_root() -> Path:
@@ -229,15 +233,18 @@ def stage_compile(
     if verbose:
         cmd.append("--verbose")
 
-    proc = subprocess.run(
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    proc = harness_memory_guard.guarded_completed_process(
         cmd,
+        prefix="MOLT_BENCH",
         capture_output=True,
         text=True,
         timeout=300,
         cwd=MOLT_ROOT,
         env=env,
+        limits=limits,
     )
-    elapsed = time.monotonic() - t0
+    elapsed = proc.elapsed_s if proc.elapsed_s is not None else time.monotonic() - t0
 
     output_wasm = out_dir / "output.wasm"
     linked_wasm = out_dir / "output_linked.wasm"
@@ -302,7 +309,8 @@ def stage_link(
         )
 
     t0 = time.monotonic()
-    proc = subprocess.run(
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+    proc = harness_memory_guard.guarded_completed_process(
         [
             sys.executable,
             str(link_tool),
@@ -313,12 +321,14 @@ def stage_link(
             "--output",
             str(output_wasm),
         ],
+        prefix="MOLT_BENCH",
         capture_output=True,
         text=True,
         timeout=300,
         cwd=MOLT_ROOT,
+        limits=limits,
     )
-    elapsed = time.monotonic() - t0
+    elapsed = proc.elapsed_s if proc.elapsed_s is not None else time.monotonic() - t0
 
     if proc.returncode != 0:
         err = proc.stderr.strip() or proc.stdout.strip()
@@ -372,7 +382,8 @@ def stage_optimize(
         )
 
     t0 = time.monotonic()
-    proc = subprocess.run(
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+    proc = harness_memory_guard.guarded_completed_process(
         [
             wasm_opt,
             f"-{level}",
@@ -393,11 +404,13 @@ def stage_optimize(
             "-o",
             str(output_wasm),
         ],
+        prefix="MOLT_BENCH",
         capture_output=True,
         text=True,
         timeout=300,
+        limits=limits,
     )
-    elapsed = time.monotonic() - t0
+    elapsed = proc.elapsed_s if proc.elapsed_s is not None else time.monotonic() - t0
 
     if proc.returncode != 0:
         err = proc.stderr.strip() or proc.stdout.strip()
@@ -433,11 +446,14 @@ def stage_run(wasm_path: Path, *, timeout: int = 30) -> tuple[bool, str]:
         return False, "wasmtime not found (brew install wasmtime)"
 
     try:
-        proc = subprocess.run(
+        limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+        proc = harness_memory_guard.guarded_completed_process(
             [wasmtime, str(wasm_path)],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=timeout,
+            limits=limits,
         )
         output = proc.stdout.strip()
         if proc.returncode != 0:

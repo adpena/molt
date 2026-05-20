@@ -20,6 +20,12 @@ import re
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 
 def parse_expectation(filepath: Path) -> tuple[str, str]:
     """Parse expectation from test file comments and docstrings."""
@@ -163,10 +169,9 @@ def adapt_file(src: Path, dst: Path) -> bool:
         # This handles edge cases like KeyError (uses repr of key) and other
         # exceptions where str(e) differs from the Raise= comment's message.
         try:
-            import subprocess
-
-            cp_result = subprocess.run(
+            cp_result = harness_memory_guard.guarded_completed_process(
                 [sys.executable, str(dst)],
+                prefix="MOLT_CONFORMANCE",
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -205,10 +210,9 @@ def adapt_file(src: Path, dst: Path) -> bool:
         dst.write_text(adapted)
         # Generate expected by running through CPython (same as raise handler)
         try:
-            import subprocess
-
-            cp_result = subprocess.run(
+            cp_result = harness_memory_guard.guarded_completed_process(
                 [sys.executable, str(dst)],
+                prefix="MOLT_CONFORMANCE",
                 capture_output=True,
                 text=True,
                 timeout=10,

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import textwrap
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -42,7 +43,7 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
             "MOLT_SESSION_ID": f"test-loop-join-{profile}-{tmp_path.name}",
         }
 
-        build = subprocess.run(
+        build = run_native_test_process(
             [
                 sys.executable,
                 "-m",
@@ -64,7 +65,7 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
         assert build.returncode == 0, build.stderr
         assert binary_path.exists(), f"expected binary at {binary_path}"
 
-        run = subprocess.run(
+        run = run_native_test_process(
             [str(binary_path)],
             capture_output=True,
             text=True,
@@ -103,7 +104,7 @@ def test_native_loop_join_semantics_match_cpython(profile: str) -> None:
         f()
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -266,7 +267,7 @@ def test_native_loop_join_semantics_match_cpython(profile: str) -> None:
     ],
 )
 def test_native_runtime_regressions_match_cpython(profile: str, source: str) -> None:
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -303,7 +304,7 @@ def test_native_bool_primary_loop_and_list_paths_match_cpython(profile: str) -> 
         print(flip(False))
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -337,7 +338,7 @@ def test_native_exception_loop_with_prints_matches_cpython(profile: str) -> None
         f()
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -372,7 +373,7 @@ def test_native_exception_loop_raise_accumulator_preserves_int_carrier(
         f()
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -399,7 +400,7 @@ def test_native_release_llvm_simple_exception_catch_matches_cpython() -> None:
         f()
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -433,7 +434,7 @@ def test_native_release_llvm_exception_loop_matches_cpython() -> None:
         f()
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -455,7 +456,7 @@ def test_native_llvm_generator_expression_list_matches_cpython(profile: str) -> 
         print(list(x for x in [1]))
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -478,7 +479,7 @@ def test_native_llvm_generator_expression_next_matches_cpython(profile: str) -> 
         print(next(g))
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -518,7 +519,7 @@ def test_native_llvm_call_result_or_tuple_fallback_matches_cpython(
         f()
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -546,7 +547,7 @@ def test_native_llvm_dynamic_getattr_matches_cpython(profile: str) -> None:
         print(getattr(p, name))
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -574,7 +575,7 @@ def test_native_llvm_dynamic_hasattr_matches_cpython(profile: str) -> None:
         print(hasattr(p, "foo"))
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -598,7 +599,7 @@ def test_native_llvm_import_pathlib_matches_cpython(profile: str) -> None:
         print(pathlib)
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
@@ -627,7 +628,7 @@ def test_native_llvm_bool_or_matches_cpython(profile: str) -> None:
         print(3 or 4)
         """
     )
-    expected = subprocess.run(
+    expected = run_native_test_process(
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,

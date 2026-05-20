@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +15,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import tools.linear_seed_backlog as linear_seed_backlog  # noqa: E402
 import tools.linear_workspace as linear_workspace  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 
 try:  # pragma: no cover - optional dependency
     from pydantic import BaseModel, Field, ValidationError  # type: ignore
@@ -742,7 +742,14 @@ def _run_formal_suite(mode: str) -> dict[str, Any]:
     elif mode_key == "quint":
         command.append("--quint")
 
-    proc = subprocess.run(command, check=False, capture_output=True, text=True)
+    proc = harness_memory_guard.guarded_completed_process(
+        command,
+        prefix="MOLT_FORMAL",
+        cwd=_REPO_ROOT,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+    )
     report: dict[str, Any] | None = None
     stdout = (proc.stdout or "").strip()
     if stdout:

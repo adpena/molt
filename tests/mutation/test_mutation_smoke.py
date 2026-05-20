@@ -12,6 +12,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from tests.mutation.process_guard import run_mutation_process
+
 # Ensure tools/ is importable.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
@@ -264,7 +266,6 @@ def test_known_mutation_is_detectable() -> None:
     We use subprocess to execute the code safely in a child process
     rather than running arbitrary code in the test process.
     """
-    import subprocess
     import tempfile
     import os
 
@@ -288,13 +289,13 @@ def test_known_mutation_is_detectable() -> None:
         os.write(mut_fd, mutated.encode())
         os.close(mut_fd)
 
-        orig_result = subprocess.run(
+        orig_result = run_mutation_process(
             [sys.executable, orig_path],
             capture_output=True,
             text=True,
             timeout=10,
         )
-        mut_result = subprocess.run(
+        mut_result = run_mutation_process(
             [sys.executable, mut_path],
             capture_output=True,
             text=True,

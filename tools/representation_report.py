@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -26,6 +25,11 @@ from typing import Any
 from molt.frontend import compile_to_tir
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 BACKEND_SCHEMA = "molt.typed_repr_report.v1"
 DEFAULT_MARKDOWN_PATH = (
     REPO_ROOT
@@ -92,14 +96,17 @@ def backend_report_command() -> list[str]:
 
 def run_backend_report(ir: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps(ir, sort_keys=True, separators=(",", ":"))
-    completed = subprocess.run(
+    env = _canonical_env()
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
+    completed = harness_memory_guard.guarded_completed_process(
         backend_report_command(),
+        prefix="MOLT_TEST_SUITE",
         input=payload,
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
-        env=_canonical_env(),
-        check=False,
+        env=env,
+        limits=limits,
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()

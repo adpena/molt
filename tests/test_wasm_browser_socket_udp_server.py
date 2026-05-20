@@ -7,11 +7,12 @@ Validates that the browser socket host supports:
 - Proper error codes when operations are unsupported or misconfigured
 """
 
+import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 
 def test_wasm_browser_socket_udp_create(tmp_path: Path) -> None:
@@ -66,11 +67,11 @@ console.log('ok');
 """.lstrip()
     )
 
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(script)],
         cwd=root,
-        capture_output=True,
-        text=True,
+        env=os.environ,
+        timeout=None,
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "ok"
@@ -139,11 +140,11 @@ console.log('ok');
 """.lstrip()
     )
 
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(script)],
         cwd=root,
-        capture_output=True,
-        text=True,
+        env=os.environ,
+        timeout=None,
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "ok"
@@ -239,11 +240,11 @@ console.log('ok');
 """.lstrip()
     )
 
-    run = subprocess.run(
+    run = _run_wasm_test_process(
         ["node", str(script)],
         cwd=root,
-        capture_output=True,
-        text=True,
+        env=os.environ,
+        timeout=None,
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "ok"

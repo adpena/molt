@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 import subprocess
+import struct
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,7 +124,7 @@ def _build_and_run_with_env(
     if extra_build_args:
         build_cmd.extend(extra_build_args)
 
-    build = subprocess.run(
+    build = run_native_test_process(
         build_cmd,
         cwd=ROOT,
         env=env,
@@ -132,7 +134,7 @@ def _build_and_run_with_env(
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [str(out_path)],
         cwd=ROOT,
         env=env,

@@ -18,6 +18,12 @@ import statistics
 import time
 from pathlib import Path
 
+TOOLS_ROOT = Path(__file__).resolve().parents[2] / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -26,7 +32,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]  # molt/
 VERTIGO_ROOT = REPO_ROOT.parent / "vertigo"
 GENERATOR_PY = VERTIGO_ROOT / "site" / "world_engine" / "generator.py"
-DEFAULT_MOLT_BINARY = Path("/tmp/generator_molt")
+DEFAULT_MOLT_BINARY = REPO_ROOT / "tmp" / "generator_molt"
+DEFAULT_RUN_TIMEOUT_SEC = 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -53,12 +60,40 @@ def _parse_time_l(stderr: str) -> dict:
     return result
 
 
+def _run_timed_command(cmd: list[str]) -> harness_memory_guard.GuardedCompletedProcess:
+    timeout = harness_memory_guard.timeout_from_env(
+        "MOLT_BENCH",
+        explicit=None,
+        default=DEFAULT_RUN_TIMEOUT_SEC,
+    )
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_BENCH",
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _raise_failed_run(label: str, proc: subprocess.CompletedProcess[str]) -> None:
+    if proc.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
+        raise TimeoutError(f"{label} run timed out:\n{proc.stderr}")
+    raise RuntimeError(f"{label} run failed:\n{proc.stderr}")
+
+
+def _python_version(python: str) -> str:
+    proc = _run_timed_command([python, "--version"])
+    if proc.returncode != 0:
+        _raise_failed_run("CPython version probe", proc)
+    return (proc.stdout or "").strip()
+
+
 def run_once_cpython(python: str, script: Path) -> dict:
     """Run generator.py under CPython, timed with /usr/bin/time -l."""
     cmd = ["/usr/bin/time", "-l", python, str(script)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    proc = _run_timed_command(cmd)
     if proc.returncode != 0:
-        raise RuntimeError(f"CPython run failed:\n{proc.stderr}")
+        _raise_failed_run("CPython", proc)
     metrics = _parse_time_l(proc.stderr)
     # Validate output is valid JSON
     json.loads(proc.stdout)
@@ -69,9 +104,9 @@ def run_once_cpython(python: str, script: Path) -> dict:
 def run_once_molt(binary: Path) -> dict:
     """Run Molt-compiled binary, timed with /usr/bin/time -l."""
     cmd = ["/usr/bin/time", "-l", str(binary)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    proc = _run_timed_command(cmd)
     if proc.returncode != 0:
-        raise RuntimeError(f"Molt run failed (exit {proc.returncode}):\n{proc.stderr}")
+        _raise_failed_run("Molt", proc)
     metrics = _parse_time_l(proc.stderr)
     # Try to validate output (Molt may or may not produce identical JSON)
     stdout = proc.stdout.strip()
@@ -321,9 +356,7 @@ def main():
         sys.exit(1)
 
     python = sys.executable
-    py_version = subprocess.run(
-        [python, "--version"], capture_output=True, text=True
-    ).stdout.strip()
+    py_version = _python_version(python)
 
     print(f"Generator:  {generator}")
     print(f"Molt bin:   {molt_binary}")

@@ -24,6 +24,10 @@ TARGET_CHOICES = ("rust", "luau")
 PROFILE_CHOICES = ("dev", "release")
 TARGET_EXTENSION = {"rust": "rs", "luau": "luau"}
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 @dataclass
@@ -108,34 +112,36 @@ def _run_command(
     phase: str,
 ) -> PhaseResult:
     start = time.perf_counter()
-    proc = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=(os.name != "nt"),
-    )
     timed_out = False
     stdout = ""
     stderr = ""
     returncode = 124
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_sec)
-        returncode = proc.returncode
+        result = harness_memory_guard.guarded_completed_process(
+            command,
+            prefix="MOLT_BENCH",
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            limits=limits,
+        )
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        returncode = result.returncode
+        timed_out = returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        elapsed = round(
+            result.elapsed_s
+            if result.elapsed_s is not None
+            else time.perf_counter() - start,
+            3,
+        )
     except subprocess.TimeoutExpired:
         timed_out = True
-        _terminate_process(proc)
-        try:
-            flushed_stdout, flushed_stderr = proc.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            flushed_stdout = ""
-            flushed_stderr = ""
-        stdout = flushed_stdout or ""
-        stderr = flushed_stderr or ""
+        elapsed = round(time.perf_counter() - start, 3)
         returncode = 124
-    elapsed = round(time.perf_counter() - start, 3)
     return PhaseResult(
         phase=phase,
         command=command,

@@ -17,9 +17,16 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
+
 OUT_PATH = ROOT / "tools" / "stdlib_module_union.py"
 DEFAULT_PYTHONS = ("3.12", "3.13", "3.14")
 
@@ -86,7 +93,21 @@ def _capture_version(
         "-c",
         _QUERY,
     ]
-    output = subprocess.check_output(cmd, cwd=ROOT, text=True)
+    result = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_TEST_SUITE",
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    output = result.stdout or ""
     payload = json.loads(output)
     modules = tuple(payload.get("modules", ()))
     packages = tuple(payload.get("packages", ()))

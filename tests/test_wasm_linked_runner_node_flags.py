@@ -10,6 +10,67 @@ from typing import Any, cast
 import tests.wasm_linked_runner as wasm_runner
 
 
+def test_wasm_test_process_uses_memory_guard(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(
+        wasm_runner.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    result = wasm_runner._run_wasm_test_process(
+        ["node", "-e", "console.log('ok')"],
+        cwd=tmp_path,
+        env={"NODE_NO_WARNINGS": "1"},
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert captured["cmd"] == ["node", "-e", "console.log('ok')"]
+    assert captured["kwargs"]["prefix"] == "MOLT_WASM_TEST"
+    assert captured["kwargs"]["cwd"] == tmp_path
+    assert captured["kwargs"]["timeout"] == 5
+
+
+def test_wasm_test_process_preserves_timeout_semantics(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            cmd,
+            wasm_runner.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            stdout="partial",
+            stderr="memory_guard: timeout after 2.00s\n",
+        )
+
+    monkeypatch.setattr(
+        wasm_runner.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    try:
+        wasm_runner._run_wasm_test_process(
+            ["node", "runner.js"],
+            cwd=tmp_path,
+            env={},
+            timeout=2,
+        )
+    except subprocess.TimeoutExpired as exc:
+        assert exc.cmd == ["node", "runner.js"]
+        assert exc.output == "partial"
+        assert exc.stderr == "memory_guard: timeout after 2.00s\n"
+    else:  # pragma: no cover - assertion clarity
+        raise AssertionError("expected TimeoutExpired")
+
+
 def test_run_wasm_linked_uses_stable_node_flags(
     monkeypatch,
     tmp_path: Path,
@@ -24,7 +85,7 @@ def test_run_wasm_linked_uses_stable_node_flags(
         recorded["env"] = dict(kwargs["env"])
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
-    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
     assert result.returncode == 0
     cmd = cast(list[str], recorded["args"])
@@ -51,7 +112,7 @@ def test_run_wasm_linked_env_overrides_can_opt_out_of_node_warning_suppression(
         recorded["env"] = dict(kwargs["env"])
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
-    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     result = wasm_runner.run_wasm_linked(
         tmp_path,
         wasm_path,
@@ -80,7 +141,7 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
         recorded["env"] = dict(kwargs["env"])
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
-    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
     assert result.returncode == 0
     env = cast(dict[str, str], recorded["env"])
@@ -110,7 +171,7 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
     monkeypatch.setenv("MOLT_EXT_ROOT", str(alias_root))
-    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     output = wasm_runner.build_wasm_linked(root, src, tmp_path)
     assert output.exists()
     env = cast(dict[str, str], recorded["env"])
@@ -167,7 +228,7 @@ def test_build_wasm_linked_does_not_mutate_process_runtime_env(
         (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
-    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     output = wasm_runner.build_wasm_linked(root, src, tmp_path)
     assert output.exists()
     assert "MOLT_RUNTIME_WASM" not in os.environ
@@ -217,7 +278,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_WASM_LINKED"] = "0"
-    build = subprocess.run(
+    build = wasm_runner._run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -246,7 +307,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     run_env["MOLT_WASM_DIRECT_LINK"] = "1"
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(tmp_path / "molt_runtime.wasm")
-    result = subprocess.run(
+    result = wasm_runner._run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(tmp_path / "output.wasm")],
         cwd=root,
         env=run_env,
@@ -268,7 +329,7 @@ def test_linked_wasm_exports_table_base_setter_when_available(
     output_wasm = wasm_runner.build_wasm_linked(root, src, tmp_path)
     node_bin = wasm_runner._select_node_binary()
     assert node_bin is not None
-    probe = subprocess.run(
+    probe = wasm_runner._run_wasm_test_process(
         [
             node_bin,
             "-e",
@@ -282,6 +343,7 @@ def test_linked_wasm_exports_table_base_setter_when_available(
             ),
             str(output_wasm),
         ],
+        cwd=root,
         capture_output=True,
         text=True,
         check=False,

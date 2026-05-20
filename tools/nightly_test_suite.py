@@ -34,13 +34,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +111,7 @@ class SuiteResult:
     timestamp: str
     steps: list[StepResult] = field(default_factory=list)
     regression_alerts: list[str] = field(default_factory=list)
+    memory_guard: dict[str, object] = field(default_factory=dict)
 
     @property
     def all_passed(self) -> bool:
@@ -127,6 +133,7 @@ def _run_cmd(
     *,
     timeout: int = 1200,
     dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> tuple[int, str, str, float]:
     """Run a subprocess, returning (returncode, stdout, stderr, elapsed_s)."""
     if dry_run:
@@ -139,20 +146,21 @@ def _run_cmd(
     env["MOLT_DETERMINISTIC"] = "1"
 
     t0 = time.monotonic()
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(REPO_ROOT),
-            env=env,
-        )
-        elapsed = time.monotonic() - t0
-        return proc.returncode, proc.stdout, proc.stderr, elapsed
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - t0
-        return -1, "", f"TIMEOUT after {timeout}s", elapsed
+    proc = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_TEST_SUITE",
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=str(REPO_ROOT),
+        env=env,
+        limits=limits,
+    )
+    elapsed = time.monotonic() - t0
+    if proc.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
+        stderr = proc.stderr or f"TIMEOUT after {timeout}s"
+        return -1, proc.stdout or "", stderr, elapsed
+    return proc.returncode, proc.stdout or "", proc.stderr or "", elapsed
 
 
 def _python() -> str:
@@ -166,6 +174,7 @@ def run_grammar_fuzz(
     timeout: float = 600,
     shrink: bool = False,
     dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> StepResult:
     """Run grammar-based fuzzing via tools/fuzz_compiler.py."""
     print(f"\n{'=' * 60}")
@@ -194,7 +203,7 @@ def run_grammar_fuzz(
         cmd.append("--shrink")
 
     rc, stdout, stderr, elapsed = _run_cmd(
-        cmd, timeout=int(timeout) + 300, dry_run=dry_run
+        cmd, timeout=int(timeout) + 300, dry_run=dry_run, limits=limits
     )
 
     # Parse results from output
@@ -238,6 +247,7 @@ def run_model_based_tests(
     *,
     traces_per_model: int = 10,
     dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> StepResult:
     """Generate and run model-based tests from Quint traces."""
     print(f"\n{'=' * 60}")
@@ -283,7 +293,9 @@ def run_model_based_tests(
             "--json",
         ]
 
-        rc, stdout, stderr, elapsed = _run_cmd(cmd, timeout=300, dry_run=dry_run)
+        rc, stdout, stderr, elapsed = _run_cmd(
+            cmd, timeout=300, dry_run=dry_run, limits=limits
+        )
 
         generated = 0
         if rc == 0 and stdout.strip():
@@ -313,7 +325,9 @@ def run_model_based_tests(
             "2",
             str(output_dir),
         ]
-        diff_rc, _, diff_stderr, _ = _run_cmd(diff_cmd, timeout=600, dry_run=dry_run)
+        diff_rc, _, diff_stderr, _ = _run_cmd(
+            diff_cmd, timeout=600, dry_run=dry_run, limits=limits
+        )
 
     elapsed_total = time.monotonic() - t0
 
@@ -334,6 +348,7 @@ def run_translation_validation(
     *,
     test_dir: str = "tests/differential/basic",
     dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> StepResult:
     """Run translation validation on differential test files."""
     print(f"\n{'=' * 60}")
@@ -359,7 +374,9 @@ def run_translation_validation(
         "--json",
     ] + [str(f) for f in py_files[:200]]  # cap to avoid argv overflow
 
-    rc, stdout, stderr, elapsed = _run_cmd(cmd, timeout=900, dry_run=dry_run)
+    rc, stdout, stderr, elapsed = _run_cmd(
+        cmd, timeout=900, dry_run=dry_run, limits=limits
+    )
 
     summary: dict[str, Any] = {
         "files_tested": len(py_files[:200]),
@@ -400,6 +417,7 @@ def run_mutation_testing(
     test_subset: str = "tests/differential/basic",
     timeout: int = 120,
     dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> StepResult:
     """Run compiler mutation testing."""
     print(f"\n{'=' * 60}")
@@ -426,7 +444,10 @@ def run_mutation_testing(
     ]
 
     rc, stdout, stderr, elapsed = _run_cmd(
-        cmd, timeout=max_mutations * timeout + 600, dry_run=dry_run
+        cmd,
+        timeout=max_mutations * timeout + 600,
+        dry_run=dry_run,
+        limits=limits,
     )
 
     summary: dict[str, Any] = {"max_mutations": max_mutations}
@@ -462,6 +483,7 @@ def run_reproducibility_check(
     repetitions: int = 5,
     program_count: int = 10,
     dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> StepResult:
     """Verify build reproducibility by compiling programs multiple times."""
     print(f"\n{'=' * 60}")
@@ -475,7 +497,9 @@ def run_reproducibility_check(
     ]
 
     # Check if the tool accepts relevant flags
-    rc, stdout, stderr, elapsed = _run_cmd(cmd, timeout=600, dry_run=dry_run)
+    rc, stdout, stderr, elapsed = _run_cmd(
+        cmd, timeout=600, dry_run=dry_run, limits=limits
+    )
 
     return StepResult(
         name="reproducibility_check",
@@ -622,7 +646,11 @@ def _generate_markdown_report(result: SuiteResult) -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_nightly(*, dry_run: bool = False) -> SuiteResult:
+def run_nightly(
+    *,
+    dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> SuiteResult:
     """Execute the nightly test suite."""
     result = SuiteResult(
         mode="nightly",
@@ -630,23 +658,41 @@ def run_nightly(*, dry_run: bool = False) -> SuiteResult:
     )
 
     # 1. Grammar fuzzing: 500 programs
-    result.steps.append(run_grammar_fuzz(count=500, timeout=600, dry_run=dry_run))
+    result.steps.append(
+        run_grammar_fuzz(
+            count=500,
+            timeout=600,
+            dry_run=dry_run,
+            limits=limits,
+        )
+    )
 
     # 2. Model-based tests: 10 traces per model
-    result.steps.append(run_model_based_tests(traces_per_model=10, dry_run=dry_run))
+    result.steps.append(
+        run_model_based_tests(
+            traces_per_model=10,
+            dry_run=dry_run,
+            limits=limits,
+        )
+    )
 
     # 3. Translation validation: basic tests
     result.steps.append(
         run_translation_validation(
             test_dir="tests/differential/basic",
             dry_run=dry_run,
+            limits=limits,
         )
     )
 
     return result
 
 
-def run_weekly(*, dry_run: bool = False) -> SuiteResult:
+def run_weekly(
+    *,
+    dry_run: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> SuiteResult:
     """Execute the weekly test suite."""
     result = SuiteResult(
         mode="weekly",
@@ -659,6 +705,7 @@ def run_weekly(*, dry_run: bool = False) -> SuiteResult:
             max_mutations=200,
             timeout=120,
             dry_run=dry_run,
+            limits=limits,
         )
     )
 
@@ -669,6 +716,7 @@ def run_weekly(*, dry_run: bool = False) -> SuiteResult:
             timeout=600,
             shrink=True,
             dry_run=dry_run,
+            limits=limits,
         )
     )
 
@@ -677,6 +725,7 @@ def run_weekly(*, dry_run: bool = False) -> SuiteResult:
         run_translation_validation(
             test_dir="tests/differential",
             dry_run=dry_run,
+            limits=limits,
         )
     )
 
@@ -686,6 +735,7 @@ def run_weekly(*, dry_run: bool = False) -> SuiteResult:
             repetitions=5,
             program_count=10,
             dry_run=dry_run,
+            limits=limits,
         )
     )
 
@@ -733,6 +783,8 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    rdir = _report_dir(args.report_dir)
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
 
     print(f"Molt continuous testing — {args.mode} mode")
     print(f"Repo: {REPO_ROOT}")
@@ -741,13 +793,19 @@ def main() -> int:
         print("[DRY RUN — no commands will be executed]")
 
     # Run the selected suite
-    if args.mode == "nightly":
-        result = run_nightly(dry_run=args.dry_run)
-    else:
-        result = run_weekly(dry_run=args.dry_run)
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=rdir,
+        label=f"{args.mode}_test_suite",
+        limits=limits,
+    ):
+        if args.mode == "nightly":
+            result = run_nightly(dry_run=args.dry_run, limits=limits)
+        else:
+            result = run_weekly(dry_run=args.dry_run, limits=limits)
+    result.memory_guard = harness_memory_guard.limits_summary(limits)
 
     # Load history and check for regressions
-    rdir = _report_dir(args.report_dir)
     history = _load_previous_results(rdir)
     alerts = _check_regressions(result, history)
     result.regression_alerts = alerts

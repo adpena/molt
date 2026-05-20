@@ -18,7 +18,11 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
         *,
         reloc: bool,
         output: Path,
+        tty: bool,
+        log: object | None,
+        limits: object | None = None,
     ) -> bool:
+        del tty, log, limits
         build_calls.append((reloc, output))
         return True
 
@@ -37,12 +41,14 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
         tty: bool = False,
         log: object | None = None,
         keep_temp: bool = False,
+        limits: object | None = None,
     ):
         prepared_kwargs["script"] = script
         prepared_kwargs["require_linked"] = require_linked
         prepared_kwargs["tty"] = tty
         prepared_kwargs["log"] = log
         prepared_kwargs["keep_temp"] = keep_temp
+        prepared_kwargs["limits"] = limits
         return SimpleNamespace(
             run_env={"MOLT_WASM_PATH": "/tmp/output.wasm"},
             linked_used=True,
@@ -54,8 +60,14 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
     profile_calls: list[tuple[dict[str, str], Path, str, int | None]] = []
 
     def _fake_run_node_profile(
-        *, env: dict[str, str], out_dir: Path, name: str, interval_us: int | None
+        *,
+        env: dict[str, str],
+        out_dir: Path,
+        name: str,
+        interval_us: int | None,
+        limits: object,
     ) -> bool:
+        del limits
         profile_calls.append((dict(env), out_dir, name, interval_us))
         return True
 
@@ -89,10 +101,11 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
         (True, wasm_profile.bench_wasm.RUNTIME_WASM_RELOC),
     ]
     assert prepared_kwargs["script"] == "tests/benchmarks/bench_sum.py"
-    assert prepared_kwargs["require_linked"] is False
+    assert prepared_kwargs["require_linked"] is True
     assert prepared_kwargs["tty"] is False
     assert prepared_kwargs["log"] is None
     assert prepared_kwargs["keep_temp"] is False
+    assert prepared_kwargs["limits"] is not None
     assert cleanup_state["called"] is True
     assert len(profile_calls) == 1
     assert profile_calls[0][1] == tmp_path

@@ -13,7 +13,14 @@ import tempfile
 import time
 import warnings
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 WASM_MAGIC = b"\x00asm"
@@ -42,6 +49,38 @@ CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
 # Rust wasm symbol names include a hash suffix like "17h<hex...>E". Capture the arity
 # digits that precede the 2-digit hash-length tag so 10+ arities don't get truncated.
 CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
+
+
+def _run_external_tool(
+    cmd: Sequence[str],
+    *,
+    capture_output: bool = True,
+    text: bool = True,
+    timeout: float | None = None,
+    cwd: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    result = harness_memory_guard.guarded_completed_process(
+        list(cmd),
+        prefix="MOLT_WASM_LINK",
+        cwd=cwd,
+        env=env,
+        capture_output=capture_output,
+        text=text,
+        timeout=timeout,
+    )
+    if (
+        timeout is not None
+        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        and "memory_guard: timeout after" in (result.stderr or "")
+    ):
+        raise subprocess.TimeoutExpired(
+            list(cmd),
+            timeout,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
 
 # SHA-256 integrity hashes for known runtime binaries.  When a filename appears
 # in this dict the linker will verify the on-disk file matches the expected hash
@@ -491,7 +530,7 @@ def _dump_symbols(path: Path, wasm_tools: str) -> list[tuple[int, int, str, str]
         return parsed
     if not wasm_tools:
         return []
-    res = subprocess.run(
+    res = _run_external_tool(
         [wasm_tools, "dump", str(path)],
         capture_output=True,
         text=True,
@@ -1125,6 +1164,20 @@ def _repair_out_of_bounds_func_refs(data: bytes) -> bytes | None:
         file=sys.stderr,
     )
     return _build_sections(new_sections)
+
+
+def _safe_repair_out_of_bounds_func_refs(data: bytes) -> bytes | None:
+    """Best-effort function-reference repair that never masks validation.
+
+    The repair pass runs before canonical wasm validation and operates on raw
+    post-link bytes.  Malformed or synthetic modules should still be judged by
+    the validator; the repair scanner must not become a second validator that
+    can crash before that decision point.
+    """
+    try:
+        return _repair_out_of_bounds_func_refs(data)
+    except (IndexError, ValueError):
+        return None
 
 
 def _append_table_ref_elements(
@@ -2467,7 +2520,7 @@ def _wasm_link_source_digest() -> str:
 @functools.lru_cache(maxsize=4)
 def _wasm_opt_version(executable: str) -> str:
     try:
-        result = subprocess.run(
+        result = _run_external_tool(
             [executable, "--version"],
             capture_output=True,
             text=True,
@@ -2711,7 +2764,12 @@ def _tree_shake_runtime(
         ] + feature_flags
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = _run_external_tool(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
         except subprocess.TimeoutExpired:
             print(
                 "wasm-opt tree-shake timed out (non-fatal); keeping post-link-optimized runtime",
@@ -4593,7 +4651,7 @@ def _validate_freestanding(data: bytes) -> bool:
             f.flush()
             tmp_path = f.name
         try:
-            result = subprocess.run(
+            result = _run_external_tool(
                 [exe, tmp_path],
                 capture_output=True,
                 text=True,
@@ -4703,7 +4761,7 @@ def _validate_linked(linked: Path) -> bool:
             f.flush()
             tmp_path = f.name
         try:
-            result = subprocess.run(
+            result = _run_external_tool(
                 [exe, "validate", tmp_path],
                 capture_output=True,
                 text=True,
@@ -5036,7 +5094,7 @@ def _run_wasm_ld(
         str(rewritten_path),
         str(link_runtime_path),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = _run_external_tool(cmd, capture_output=True, text=True)
     try:
         if res.returncode != 0:
             err = res.stderr.strip() or res.stdout.strip()
@@ -5341,7 +5399,7 @@ def _run_wasm_ld(
         # introduced by post-link optimization passes (export stripping,
         # dead-code elimination, wasm-opt).  This must run AFTER all
         # element/code-rewriting passes and BEFORE the final validation.
-        repaired = _repair_out_of_bounds_func_refs(linked_bytes)
+        repaired = _safe_repair_out_of_bounds_func_refs(linked_bytes)
         if repaired is not None:
             linked.write_bytes(repaired)
             linked_bytes = repaired

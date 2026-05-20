@@ -72,6 +72,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import harness_memory_guard
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
 WASM_DIR = REPO_ROOT / "wasm"
@@ -257,7 +259,12 @@ def _normalise(out: str) -> str:
     return out.replace("\r\n", "\n").rstrip("\n")
 
 
-def _run_node(case: SmokeCase, wasm: Path) -> RunResult:
+def _run_node(
+    case: SmokeCase,
+    wasm: Path,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+) -> RunResult:
     node = _node_bin()
     if node is None:
         return RunResult("node", case.name, "skipped", detail="node binary not found")
@@ -284,7 +291,15 @@ def _run_node(case: SmokeCase, wasm: Path) -> RunResult:
     env["MOLT_WASM_LINKED_PATH"] = str(wasm)
     start = time.perf_counter()
     try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+        proc = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_BENCH",
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            limits=limits,
+        )
     except subprocess.TimeoutExpired as exc:
         return RunResult(
             "node",
@@ -294,7 +309,9 @@ def _run_node(case: SmokeCase, wasm: Path) -> RunResult:
             stdout=exc.stdout or "",
             stderr=exc.stderr or "",
         )
-    elapsed = time.perf_counter() - start
+    elapsed = (
+        proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - start
+    )
     if proc.returncode != 0:
         return RunResult(
             "node",
@@ -351,7 +368,12 @@ def _resolve_molt_wasm_host() -> Path | None:
     return None
 
 
-def _run_molt_wasm_host(case: SmokeCase, wasm: Path) -> RunResult:
+def _run_molt_wasm_host(
+    case: SmokeCase,
+    wasm: Path,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+) -> RunResult:
     host = _resolve_molt_wasm_host()
     if host is None:
         return RunResult(
@@ -370,7 +392,15 @@ def _run_molt_wasm_host(case: SmokeCase, wasm: Path) -> RunResult:
     env["MOLT_WASM_LINKED_PATH"] = str(wasm)
     start = time.perf_counter()
     try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+        proc = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_BENCH",
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            limits=limits,
+        )
     except subprocess.TimeoutExpired as exc:
         return RunResult(
             "molt-wasm-host",
@@ -380,7 +410,9 @@ def _run_molt_wasm_host(case: SmokeCase, wasm: Path) -> RunResult:
             stdout=exc.stdout or "",
             stderr=exc.stderr or "",
         )
-    elapsed = time.perf_counter() - start
+    elapsed = (
+        proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - start
+    )
     if proc.returncode != 0:
         return RunResult(
             "molt-wasm-host",
@@ -515,7 +547,14 @@ def _stock_cli_skip_reason(wasm: Path) -> str:
     return f"incompatible-imports: {sample}{suffix}"
 
 
-def _run_stock_cli(runtime: str, exe: str, case: SmokeCase, wasm: Path) -> RunResult:
+def _run_stock_cli(
+    runtime: str,
+    exe: str,
+    case: SmokeCase,
+    wasm: Path,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+) -> RunResult:
     skip = _stock_cli_skip_reason(wasm)
     if skip:
         return RunResult(runtime, case.name, "skipped", detail=skip)
@@ -529,7 +568,14 @@ def _run_stock_cli(runtime: str, exe: str, case: SmokeCase, wasm: Path) -> RunRe
         return RunResult(runtime, case.name, "skipped", detail="unknown stock runtime")
     start = time.perf_counter()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        proc = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_BENCH",
+            capture_output=True,
+            text=True,
+            timeout=60,
+            limits=limits,
+        )
     except subprocess.TimeoutExpired as exc:
         return RunResult(
             runtime,
@@ -539,7 +585,9 @@ def _run_stock_cli(runtime: str, exe: str, case: SmokeCase, wasm: Path) -> RunRe
             stdout=exc.stdout or "",
             stderr=exc.stderr or "",
         )
-    elapsed = time.perf_counter() - start
+    elapsed = (
+        proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - start
+    )
     if proc.returncode != 0:
         return RunResult(
             runtime,
@@ -576,7 +624,9 @@ def _run_stock_cli(runtime: str, exe: str, case: SmokeCase, wasm: Path) -> RunRe
 # ----------------------------------------------------------------------------
 
 
-def _detect_browser_driver() -> tuple[str, str] | None:
+def _detect_browser_driver(
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[str, str] | None:
     """Detect a usable headless browser driver.
 
     Returns (kind, hint) where kind is one of "puppeteer-node",
@@ -590,11 +640,13 @@ def _detect_browser_driver() -> tuple[str, str] | None:
             ("playwright", "playwright-node"),
         ):
             try:
-                proc = subprocess.run(
+                proc = harness_memory_guard.guarded_completed_process(
                     [node, "-e", f"require.resolve('{pkg}')"],
+                    prefix="MOLT_BENCH",
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    limits=limits,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 continue
@@ -760,8 +812,13 @@ _BROWSER_HARNESS_HTML = r"""<!doctype html>
 """
 
 
-def _run_browser(case: SmokeCase, wasm: Path) -> RunResult:
-    driver = _detect_browser_driver()
+def _run_browser(
+    case: SmokeCase,
+    wasm: Path,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+) -> RunResult:
+    driver = _detect_browser_driver(limits=limits)
     if driver is None:
         return RunResult(
             "browser",
@@ -863,7 +920,14 @@ def _run_browser(case: SmokeCase, wasm: Path) -> RunResult:
 
             start = time.perf_counter()
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                proc = harness_memory_guard.guarded_completed_process(
+                    cmd,
+                    prefix="MOLT_BENCH",
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    limits=limits,
+                )
             except subprocess.TimeoutExpired as exc:
                 return RunResult(
                     "browser",
@@ -873,7 +937,11 @@ def _run_browser(case: SmokeCase, wasm: Path) -> RunResult:
                     stdout=exc.stdout or "",
                     stderr=exc.stderr or "",
                 )
-            elapsed = time.perf_counter() - start
+            elapsed = (
+                proc.elapsed_s
+                if proc.elapsed_s is not None
+                else time.perf_counter() - start
+            )
             if proc.returncode != 0:
                 return RunResult(
                     "browser",
@@ -928,7 +996,11 @@ def _resolve_runtime_set(spec: str | None) -> list[str]:
     return parts
 
 
-def _runtime_present(runtime: str) -> tuple[bool, str]:
+def _runtime_present(
+    runtime: str,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[bool, str]:
     if runtime == "node":
         if _node_bin() is None:
             return False, "node binary not on PATH (or missing MOLT_NODE_BIN)"
@@ -947,26 +1019,32 @@ def _runtime_present(runtime: str) -> tuple[bool, str]:
     if runtime == "wasmedge":
         return shutil.which("wasmedge") is not None, "wasmedge CLI not on PATH"
     if runtime == "browser":
-        present = _detect_browser_driver() is not None
+        present = _detect_browser_driver(limits=limits) is not None
         return present, (
             "no headless browser driver (puppeteer/playwright)" if not present else ""
         )
     return False, f"unknown runtime {runtime}"
 
 
-def _run_one(runtime: str, case: SmokeCase, wasm: Path) -> RunResult:
+def _run_one(
+    runtime: str,
+    case: SmokeCase,
+    wasm: Path,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+) -> RunResult:
     if runtime == "node":
-        return _run_node(case, wasm)
+        return _run_node(case, wasm, limits=limits)
     if runtime == "molt-wasm-host":
-        return _run_molt_wasm_host(case, wasm)
+        return _run_molt_wasm_host(case, wasm, limits=limits)
     if runtime == "wasmtime":
-        return _run_stock_cli("wasmtime", "wasmtime", case, wasm)
+        return _run_stock_cli("wasmtime", "wasmtime", case, wasm, limits=limits)
     if runtime == "wasmer":
-        return _run_stock_cli("wasmer", "wasmer", case, wasm)
+        return _run_stock_cli("wasmer", "wasmer", case, wasm, limits=limits)
     if runtime == "wasmedge":
-        return _run_stock_cli("wasmedge", "wasmedge", case, wasm)
+        return _run_stock_cli("wasmedge", "wasmedge", case, wasm, limits=limits)
     if runtime == "browser":
-        return _run_browser(case, wasm)
+        return _run_browser(case, wasm, limits=limits)
     return RunResult(runtime, case.name, "skipped", detail="unknown runtime")
 
 
@@ -1087,39 +1165,50 @@ def main(argv: list[str] | None = None) -> int:
         else REPO_ROOT / "build" / "wasm_matrix"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     print(f"[matrix] runtimes={runtimes}")
     print(f"[matrix] out_dir={out_dir}")
 
     # Probe runtime availability up front.
     presence: dict[str, tuple[bool, str]] = {
-        rt: _runtime_present(rt) for rt in runtimes
+        rt: _runtime_present(rt, limits=limits) for rt in runtimes
     }
     for rt, (ok, why) in presence.items():
         marker = "ok" if ok else "missing"
         suffix = f" ({why})" if not ok and why else ""
         print(f"[matrix] runtime {rt}: {marker}{suffix}")
 
-    artifacts = build_corpus(out_dir=out_dir, rebuild=args.rebuild, names=case_names)
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=out_dir,
+        label="wasm_run_matrix",
+        limits=limits,
+    ):
+        artifacts = build_corpus(
+            out_dir=out_dir, rebuild=args.rebuild, names=case_names
+        )
 
-    if args.build_only:
-        print(f"[matrix] built {len(artifacts)} smoke artifacts; build-only: exiting")
-        return 0
-
-    results: list[RunResult] = []
-    for rt in runtimes:
-        ok, why = presence[rt]
-        for case_name, wasm_path in artifacts.items():
-            case = SMOKE_BY_NAME[case_name]
-            if not ok:
-                results.append(RunResult(rt, case.name, "skipped", detail=why))
-                continue
-            res = _run_one(rt, case, wasm_path)
+        if args.build_only:
             print(
-                f"[matrix] {rt:<14} {case.name:<10} -> {res.status}"
-                + (f" ({res.detail})" if res.detail else "")
+                f"[matrix] built {len(artifacts)} smoke artifacts; build-only: exiting"
             )
-            results.append(res)
+            return 0
+
+        results: list[RunResult] = []
+        for rt in runtimes:
+            ok, why = presence[rt]
+            for case_name, wasm_path in artifacts.items():
+                case = SMOKE_BY_NAME[case_name]
+                if not ok:
+                    results.append(RunResult(rt, case.name, "skipped", detail=why))
+                    continue
+                res = _run_one(rt, case, wasm_path, limits=limits)
+                print(
+                    f"[matrix] {rt:<14} {case.name:<10} -> {res.status}"
+                    + (f" ({res.detail})" if res.detail else "")
+                )
+                results.append(res)
 
     print()
     _print_matrix(results, runtimes)
@@ -1150,6 +1239,7 @@ def main(argv: list[str] | None = None) -> int:
             "results": [dataclasses.asdict(r) for r in results],
             "summary": summary,
             "divergences": divergences,
+            "memory_guard": harness_memory_guard.limits_summary(limits),
         }
         json_path = out_dir / "matrix_results.json"
         json_path.write_text(json.dumps(payload, indent=2) + "\n")

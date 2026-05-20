@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from random import Random
 
+from tests.native_process_guard import run_native_test_process
+
 # Allow importing tools/fuzz_compiler.py from the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "tools"))
@@ -77,11 +79,9 @@ class TestFuzzSmokeTerminates:
     """
 
     def test_programs_terminate(self) -> None:
-        import subprocess
-
         for seed in range(5):
             source = _generate(seed)
-            result = subprocess.run(
+            result = run_native_test_process(
                 [sys.executable, "-c", source],
                 capture_output=True,
                 text=True,

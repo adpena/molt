@@ -6,8 +6,8 @@ import concurrent.futures
 import datetime as dt
 import json
 import os
-import signal
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -19,6 +19,13 @@ DEFAULT_EXTERNAL_ROOT = None
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+REPO_ROOT = _repo_root()
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 DEFAULT_BUILD_SCRIPTS = [
@@ -76,42 +83,37 @@ def _run_command(
     timeout_sec: float,
 ) -> CommandResult:
     start = time.perf_counter()
-    proc = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
     timed_out = False
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_sec)
+        result = harness_memory_guard.guarded_completed_process(
+            command,
+            prefix="MOLT_BENCH",
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            limits=limits,
+        )
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        returncode = result.returncode
+        timed_out = returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        elapsed = (
+            result.elapsed_s
+            if result.elapsed_s is not None
+            else time.perf_counter() - start
+        )
     except subprocess.TimeoutExpired:
         timed_out = True
         stdout = ""
         stderr = ""
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                # Best-effort termination; do not block the harness indefinitely.
-                pass
-    elapsed = time.perf_counter() - start
+        returncode = 124
+        elapsed = time.perf_counter() - start
     return CommandResult(
         command=command,
-        returncode=124 if timed_out else proc.returncode,
+        returncode=124 if timed_out else returncode,
         elapsed_sec=round(elapsed, 3),
         timed_out=timed_out,
         stdout_tail=_tail(stdout),

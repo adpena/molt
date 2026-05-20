@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "freestanding_hello.py"
@@ -665,7 +666,7 @@ def test_freestanding_produces_no_wasi_imports(tmp_path):
     """A freestanding build must contain zero wasi_snapshot_preview1 imports."""
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -679,9 +680,8 @@ def test_freestanding_produces_no_wasi_imports(tmp_path):
             "--linked-output",
             str(linked),
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=180,
     )
     assert result.returncode == 0, (
@@ -700,7 +700,7 @@ def test_freestanding_binary_is_valid_wasm(tmp_path):
     """The linked freestanding binary must be valid WASM."""
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -714,9 +714,8 @@ def test_freestanding_binary_is_valid_wasm(tmp_path):
             "--linked-output",
             str(linked),
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=180,
     )
     assert result.returncode == 0, (
@@ -732,7 +731,7 @@ def test_precompile_produces_cwasm(tmp_path):
     """--precompile should produce a .cwasm alongside the .wasm."""
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -747,9 +746,8 @@ def test_precompile_produces_cwasm(tmp_path):
             str(linked),
             "--precompile",
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=180,
     )
     assert result.returncode == 0, (
@@ -772,7 +770,7 @@ def test_precompile_produces_cwasm(tmp_path):
 
 def test_wasm_profile_pure_accepted():
     """--wasm-profile pure should be accepted by the CLI."""
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -780,9 +778,8 @@ def test_wasm_profile_pure_accepted():
             "build",
             "--help",
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=30,
     )
     assert result.returncode == 0
@@ -792,10 +789,10 @@ def test_wasm_profile_pure_accepted():
 
 def test_profile_cloudflare_accepted():
     """--profile cloudflare should be accepted by the CLI."""
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [sys.executable, "-m", "molt", "build", "--help"],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
+        timeout=30,
     )
     assert "cloudflare" in result.stdout

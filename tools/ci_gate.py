@@ -749,6 +749,21 @@ def _strip_background_flag(argv: Sequence[str]) -> list[str]:
     return [arg for arg in argv if arg != "--background"]
 
 
+def _background_process_kwargs(
+    limits: MemoryGuardLimits | None = MemoryGuardLimits(),
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {"start_new_session": True}
+    if limits is None or os.name != "posix":
+        return kwargs
+    limit_kb = limits.max_rss_kb
+
+    def apply_limit() -> None:
+        memory_guard._apply_child_resource_limit(limit_kb)
+
+    kwargs["preexec_fn"] = apply_limit
+    return kwargs
+
+
 def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
     """Launch this gate detached and write stdout/stderr to canonical logs."""
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
@@ -767,7 +782,7 @@ def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **_background_process_kwargs(),
         )
     metadata = BackgroundGateMetadata(
         pid=proc.pid,

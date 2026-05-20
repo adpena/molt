@@ -27,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import bench_suites  # noqa: E402
+import harness_memory_guard  # noqa: E402
 from molt._wasm_runtime_exports import wasm_runtime_export_link_args  # noqa: E402
 
 SUPER_SAMPLES = 10
@@ -177,6 +178,7 @@ class _RunResult:
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
+    elapsed_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -412,8 +414,9 @@ def _parse_node_major(version_text: str) -> int | None:
 
 def _node_major_for_binary(path: str) -> int | None:
     try:
-        res = subprocess.run(
+        res = harness_memory_guard.guarded_completed_process(
             [path, "-p", "process.versions.node"],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
         )
@@ -546,7 +549,47 @@ def _run_cmd(
     tty: bool,
     log: TextIO | None,
     timeout_s: float | None = None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> _RunResult:
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    if resolved_limits.enabled:
+        if tty and not capture:
+            print(
+                "TTY mode requested; using guarded subprocess mode.",
+                file=sys.stderr,
+            )
+        if log is not None:
+            _log_command(log, cmd)
+        res = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_BENCH",
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            limits=resolved_limits,
+        )
+        stdout = res.stdout or ""
+        stderr = res.stderr or ""
+        if log is not None:
+            if stdout:
+                _log_write(log, stdout)
+            if stderr:
+                _log_write(log, stderr)
+        if not capture:
+            if stdout:
+                sys.stdout.write(stdout)
+                sys.stdout.flush()
+            if stderr:
+                sys.stderr.write(stderr)
+                sys.stderr.flush()
+        return _RunResult(
+            res.returncode,
+            stdout,
+            stderr,
+            res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            getattr(res, "elapsed_s", None),
+        )
     if tty and not capture and os.name == "posix" and timeout_s is None:
         return _run_with_pty(cmd, env, log)
     if tty and timeout_s is not None and not capture:
@@ -617,7 +660,13 @@ def _run_cmd(
                 if err:
                     sys.stderr.write(err)
                     sys.stderr.flush()
-            return _RunResult(returncode=124, stdout=out, stderr=err, timed_out=True)
+            return _RunResult(
+                returncode=124,
+                stdout=out,
+                stderr=err,
+                timed_out=True,
+                elapsed_s=timeout_s,
+            )
     else:
         res = subprocess.run(
             cmd,
@@ -831,7 +880,12 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
 
 
 def build_runtime_wasm(
-    *, reloc: bool, output: Path, tty: bool, log: TextIO | None
+    *,
+    reloc: bool,
+    output: Path,
+    tty: bool,
+    log: TextIO | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> bool:
     runtime_build_timeout = _parse_env_float(
         "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC", default=300.0
@@ -853,6 +907,7 @@ def build_runtime_wasm(
             + wasm_runtime_export_link_args()
         )
     _append_rustflags(env, base_flags)
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     build_cmd = [
         "cargo",
         "build",
@@ -869,6 +924,7 @@ def build_runtime_wasm(
         tty=tty,
         log=log,
         timeout_s=runtime_build_timeout,
+        limits=resolved_limits,
     )
     if res.timed_out:
         print(
@@ -909,6 +965,7 @@ def build_runtime_wasm(
             tty=tty,
             log=log,
             timeout_s=runtime_build_timeout,
+            limits=resolved_limits,
         )
         if clean_res.returncode != 0:
             err = (clean_res.stderr or clean_res.stdout).strip()
@@ -922,6 +979,7 @@ def build_runtime_wasm(
             tty=tty,
             log=log,
             timeout_s=runtime_build_timeout,
+            limits=resolved_limits,
         )
         if res.timed_out:
             print(
@@ -947,6 +1005,7 @@ def build_runtime_wasm(
                 tty=tty,
                 log=log,
                 timeout_s=runtime_build_timeout,
+                limits=resolved_limits,
             )
             if res.timed_out:
                 print(
@@ -996,6 +1055,7 @@ def _link_wasm(
     *,
     require_linked: bool,
     log: TextIO | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> Path | None:
     if not _want_linked():
         return None
@@ -1027,7 +1087,11 @@ def _link_wasm(
             file=sys.stderr,
         )
         if not build_runtime_wasm(
-            reloc=runtime_reloc, output=runtime_path, tty=False, log=log
+            reloc=runtime_reloc,
+            output=runtime_path,
+            tty=False,
+            log=log,
+            limits=limits,
         ):
             if require_linked:
                 print("Linked output is required; aborting.", file=sys.stderr)
@@ -1047,6 +1111,7 @@ def _link_wasm(
         capture=True,
         tty=False,
         log=log,
+        limits=limits,
     )
     if res.returncode != 0:
         err = res.stderr.strip() or res.stdout.strip()
@@ -1088,6 +1153,7 @@ def _build_wasm_output(
     *,
     tty: bool,
     log: TextIO | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> float | None:
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
@@ -1114,6 +1180,7 @@ def _build_wasm_output(
         tty=tty,
         log=log,
         timeout_s=build_timeout_s,
+        limits=limits,
     )
     build_s = time.perf_counter() - start
     if build_res.timed_out:
@@ -1149,6 +1216,7 @@ def _build_wasm_output(
             tty=tty,
             log=log,
             timeout_s=build_timeout_s,
+            limits=limits,
         )
         build_s = time.perf_counter() - start
         if build_res.timed_out:
@@ -1191,6 +1259,7 @@ def _build_wasm_output(
             tty=tty,
             log=log,
             timeout_s=build_timeout_s,
+            limits=limits,
         )
         build_s = time.perf_counter() - start
 
@@ -1225,6 +1294,7 @@ def _build_wasm_output(
             tty=tty,
             log=log,
             timeout_s=build_timeout_s,
+            limits=limits,
         )
         build_s = time.perf_counter() - start
         if build_res.timed_out:
@@ -1271,6 +1341,7 @@ def prepare_wasm_binary(
     tty: bool,
     log: TextIO | None,
     keep_temp: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> WasmBinary | None:
     _prune_backend_daemons()
     global _LAST_BUILD_FAILURE_DETAIL
@@ -1285,6 +1356,9 @@ def prepare_wasm_binary(
     output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
     base_env["MOLT_WASM_PATH"] = str(output_path)
+    resolved_limits = limits or harness_memory_guard.limits_from_env(
+        "MOLT_BENCH", base_env
+    )
     python_cmd = _python_cmd()
 
     env = base_env.copy()
@@ -1302,7 +1376,15 @@ def prepare_wasm_binary(
         if table_base is not None:
             env["MOLT_WASM_TABLE_BASE"] = str(table_base)
 
-    build_s = _build_wasm_output(python_cmd, env, output_path, script, tty=tty, log=log)
+    build_s = _build_wasm_output(
+        python_cmd,
+        env,
+        output_path,
+        script,
+        tty=tty,
+        log=log,
+        limits=resolved_limits,
+    )
     if build_s is None:
         print(
             "Backend build failed; pruning stale daemons and retrying...",
@@ -1311,7 +1393,13 @@ def prepare_wasm_binary(
         _prune_backend_daemons()
         time.sleep(1)
         build_s = _build_wasm_output(
-            python_cmd, env, output_path, script, tty=tty, log=log
+            python_cmd,
+            env,
+            output_path,
+            script,
+            tty=tty,
+            log=log,
+            limits=resolved_limits,
         )
     if build_s is None:
         if _LAST_BUILD_FAILURE_DETAIL is None:
@@ -1321,7 +1409,13 @@ def prepare_wasm_binary(
         return None
 
     linked = (
-        _link_wasm(env, output_path, require_linked=require_linked, log=log)
+        _link_wasm(
+            env,
+            output_path,
+            require_linked=require_linked,
+            log=log,
+            limits=resolved_limits,
+        )
         if want_linked
         else None
     )
@@ -1350,6 +1444,7 @@ def prepare_wasm_binary(
             script,
             tty=tty,
             log=log,
+            limits=resolved_limits,
         )
         if build_s is None:
             if _LAST_BUILD_FAILURE_DETAIL is None:
@@ -1406,10 +1501,20 @@ def measure_wasm_run(
     *,
     runner_name: str,
     log: TextIO | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> _SampleResult:
     start = time.perf_counter()
-    run_res = _run_cmd(runner_cmd, run_env, capture=True, tty=False, log=log)
-    end = time.perf_counter()
+    run_res = _run_cmd(
+        runner_cmd,
+        run_env,
+        capture=True,
+        tty=False,
+        log=log,
+        limits=limits,
+    )
+    elapsed_s = run_res.elapsed_s
+    if elapsed_s is None:
+        elapsed_s = time.perf_counter() - start
     if run_res.returncode != 0:
         err = (run_res.stderr or run_res.stdout).strip()
         summarized = _summarize_error_text(err)
@@ -1429,7 +1534,6 @@ def measure_wasm_run(
             error=summarized or None,
             error_class=error_class,
         )
-    elapsed_s = end - start
     if not math.isfinite(elapsed_s) or elapsed_s <= 0:
         return _SampleResult(
             elapsed_s=None,
@@ -1503,6 +1607,7 @@ def _run_hostfed_call_bundle(
     runner_name: str,
     log: TextIO | None,
     timeout_s: float | None = None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> dict[str, object]:
     calls = _load_hostfed_call_bundle(calls_path)
     env = _base_env()
@@ -1520,6 +1625,7 @@ def _run_hostfed_call_bundle(
         tty=False,
         log=log,
         timeout_s=timeout_s,
+        limits=limits,
     )
     wall_s = time.perf_counter() - start
     payload: dict[str, object] = {
@@ -1628,6 +1734,7 @@ def collect_samples(
     runner_name: str,
     *,
     log: TextIO | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> tuple[list[float], bool, _SampleResult | None]:
     for _ in range(warmup):
         result = measure_wasm_run(
@@ -1635,6 +1742,7 @@ def collect_samples(
             runner_cmd,
             runner_name=runner_name,
             log=log,
+            limits=limits,
         )
         if result.elapsed_s is None:
             return [], False, result
@@ -1646,6 +1754,7 @@ def collect_samples(
             runner_cmd,
             runner_name=runner_name,
             log=log,
+            limits=limits,
         )
         if result.elapsed_s is None:
             if first_failure is None:
@@ -1661,6 +1770,7 @@ def _resolve_runner(
     tty: bool,
     log: TextIO | None,
     node_max_old_space_mb: int | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> list[str]:
     if runner == "node":
         cmd = [resolve_node_binary()]
@@ -1699,6 +1809,7 @@ def _resolve_runner(
             capture=not tty,
             tty=tty,
             log=log,
+            limits=limits,
         )
         if res.returncode != 0:
             err = (res.stderr or res.stdout).strip()
@@ -1711,7 +1822,11 @@ def _resolve_runner(
     raise RuntimeError("molt-wasm-host binary not found after build")
 
 
-def _node_has_websocket(log: TextIO | None) -> bool:
+def _node_has_websocket(
+    log: TextIO | None,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> bool:
     try:
         node_bin = resolve_node_binary()
     except RuntimeError:
@@ -1726,7 +1841,14 @@ def _node_has_websocket(log: TextIO | None) -> bool:
         ),
     ]
     try:
-        res = _run_cmd(cmd, env=os.environ.copy(), capture=True, tty=False, log=log)
+        res = _run_cmd(
+            cmd,
+            env=os.environ.copy(),
+            capture=True,
+            tty=False,
+            log=log,
+            limits=limits,
+        )
     except OSError:
         return False
     return res.returncode == 0
@@ -1766,113 +1888,130 @@ def bench_results(
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
     print("-" * 60)
-    for script in benchmarks:
-        name = Path(script).stem
-        wasm_time: float | None = None
-        wasm_size = 0.0
-        wasm_build = 0.0
-        linked_used = False
-        ok = False
-        wasm_samples: list[float] = []
-        failed_sample: _SampleResult | None = None
-        control_sample: _SampleResult | None = None
-        try:
-            wasm_binary = prepare_wasm_binary(
-                script,
-                require_linked=require_linked,
-                tty=tty,
-                log=log,
-                keep_temp=keep_temp,
-            )
-        except RuntimeError as exc:
-            print(f"WASM benchmark setup failed for {script}: {exc}", file=sys.stderr)
-            wasm_binary = None
-        if wasm_binary is not None:
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=_repo_root(),
+        artifact_root=_repo_root() / "tmp" / "bench",
+        label="bench_wasm",
+        limits=limits,
+    ):
+        for script in benchmarks:
+            name = Path(script).stem
+            wasm_time: float | None = None
+            wasm_size = 0.0
+            wasm_build = 0.0
+            linked_used = False
+            ok = False
+            wasm_samples: list[float] = []
+            failed_sample: _SampleResult | None = None
+            control_sample: _SampleResult | None = None
             try:
-                wasm_samples, ok, failed_sample = collect_samples(
-                    wasm_binary,
-                    samples,
-                    warmup,
-                    runner_cmd,
-                    runner_name,
+                wasm_binary = prepare_wasm_binary(
+                    script,
+                    require_linked=require_linked,
+                    tty=tty,
                     log=log,
+                    keep_temp=keep_temp,
+                    limits=limits,
                 )
-                wasm_time = statistics.mean(wasm_samples) if ok else None
-                wasm_size = wasm_binary.size_kb
-                wasm_build = wasm_binary.build_s
-                linked_used = wasm_binary.linked_used
-                if (
-                    not ok
-                    and control_runner_cmd is not None
-                    and control_runner_name is not None
-                ):
-                    control_sample = measure_wasm_run(
-                        wasm_binary.run_env,
-                        control_runner_cmd,
-                        runner_name=control_runner_name,
+            except RuntimeError as exc:
+                print(
+                    f"WASM benchmark setup failed for {script}: {exc}",
+                    file=sys.stderr,
+                )
+                wasm_binary = None
+            if wasm_binary is not None:
+                try:
+                    wasm_samples, ok, failed_sample = collect_samples(
+                        wasm_binary,
+                        samples,
+                        warmup,
+                        runner_cmd,
+                        runner_name,
                         log=log,
+                        limits=limits,
                     )
-            finally:
-                if keep_temp:
-                    print(
-                        "Keeping wasm artifacts in "
-                        f"{wasm_binary.temp_dir.name} (MOLT_WASM_KEEP=1)",
-                        file=sys.stderr,
+                    wasm_time = statistics.mean(wasm_samples) if ok else None
+                    wasm_size = wasm_binary.size_kb
+                    wasm_build = wasm_binary.build_s
+                    linked_used = wasm_binary.linked_used
+                    if (
+                        not ok
+                        and control_runner_cmd is not None
+                        and control_runner_name is not None
+                    ):
+                        control_sample = measure_wasm_run(
+                            wasm_binary.run_env,
+                            control_runner_cmd,
+                            runner_name=control_runner_name,
+                            log=log,
+                            limits=limits,
+                        )
+                finally:
+                    if keep_temp:
+                        print(
+                            "Keeping wasm artifacts in "
+                            f"{wasm_binary.temp_dir.name} (MOLT_WASM_KEEP=1)",
+                            file=sys.stderr,
+                        )
+                    else:
+                        wasm_binary.temp_dir.cleanup()
+            time_cell = f"{wasm_time:<12.4f}" if ok else f"{'n/a':<12}"
+            print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
+            data[name] = {
+                "molt_wasm_time_s": wasm_time,
+                "molt_wasm_samples_s": wasm_samples,
+                "molt_wasm_build_s": wasm_build,
+                "molt_wasm_size_kb": wasm_size,
+                "molt_wasm_ok": ok,
+                "molt_wasm_linked": linked_used,
+            }
+            if wasm_binary is not None:
+                if wasm_binary.import_count_total is not None:
+                    data[name]["molt_wasm_import_count"] = (
+                        wasm_binary.import_count_total
                     )
+                if wasm_binary.import_count_functions is not None:
+                    data[name]["molt_wasm_function_import_count"] = (
+                        wasm_binary.import_count_functions
+                    )
+                if wasm_binary.import_count_tables is not None:
+                    data[name]["molt_wasm_table_import_count"] = (
+                        wasm_binary.import_count_tables
+                    )
+                if (
+                    wasm_binary.import_count_functions is not None
+                    and wasm_binary.size_kb > 0
+                ):
+                    data[name]["molt_wasm_function_imports_per_kb"] = round(
+                        wasm_binary.import_count_functions / wasm_binary.size_kb,
+                        6,
+                    )
+            if failed_sample is not None:
+                data[name]["molt_wasm_failure_class"] = failed_sample.error_class
+                data[name]["molt_wasm_failure_returncode"] = failed_sample.returncode
+                data[name]["molt_wasm_failure"] = failed_sample.error
+            elif not ok and _LAST_BUILD_FAILURE_DETAIL:
+                data[name]["molt_wasm_failure_class"] = "build_setup_error"
+                data[name]["molt_wasm_failure_returncode"] = -1
+                data[name]["molt_wasm_failure"] = _LAST_BUILD_FAILURE_DETAIL
+            if control_runner_name is not None and control_sample is not None:
+                data[name]["molt_wasm_control_runner"] = control_runner_name
+                data[name]["molt_wasm_control_ok"] = (
+                    control_sample.elapsed_s is not None
+                )
+                if control_sample.elapsed_s is not None:
+                    data[name]["molt_wasm_control_time_s"] = control_sample.elapsed_s
                 else:
-                    wasm_binary.temp_dir.cleanup()
-        time_cell = f"{wasm_time:<12.4f}" if ok else f"{'n/a':<12}"
-        print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
-        data[name] = {
-            "molt_wasm_time_s": wasm_time,
-            "molt_wasm_samples_s": wasm_samples,
-            "molt_wasm_build_s": wasm_build,
-            "molt_wasm_size_kb": wasm_size,
-            "molt_wasm_ok": ok,
-            "molt_wasm_linked": linked_used,
-        }
-        if wasm_binary is not None:
-            if wasm_binary.import_count_total is not None:
-                data[name]["molt_wasm_import_count"] = wasm_binary.import_count_total
-            if wasm_binary.import_count_functions is not None:
-                data[name]["molt_wasm_function_import_count"] = (
-                    wasm_binary.import_count_functions
-                )
-            if wasm_binary.import_count_tables is not None:
-                data[name]["molt_wasm_table_import_count"] = (
-                    wasm_binary.import_count_tables
-                )
-            if (
-                wasm_binary.import_count_functions is not None
-                and wasm_binary.size_kb > 0
-            ):
-                data[name]["molt_wasm_function_imports_per_kb"] = round(
-                    wasm_binary.import_count_functions / wasm_binary.size_kb,
-                    6,
-                )
-        if failed_sample is not None:
-            data[name]["molt_wasm_failure_class"] = failed_sample.error_class
-            data[name]["molt_wasm_failure_returncode"] = failed_sample.returncode
-            data[name]["molt_wasm_failure"] = failed_sample.error
-        elif not ok and _LAST_BUILD_FAILURE_DETAIL:
-            data[name]["molt_wasm_failure_class"] = "build_setup_error"
-            data[name]["molt_wasm_failure_returncode"] = -1
-            data[name]["molt_wasm_failure"] = _LAST_BUILD_FAILURE_DETAIL
-        if control_runner_name is not None and control_sample is not None:
-            data[name]["molt_wasm_control_runner"] = control_runner_name
-            data[name]["molt_wasm_control_ok"] = control_sample.elapsed_s is not None
-            if control_sample.elapsed_s is not None:
-                data[name]["molt_wasm_control_time_s"] = control_sample.elapsed_s
-            else:
-                data[name]["molt_wasm_control_failure_class"] = (
-                    control_sample.error_class
-                )
-                data[name]["molt_wasm_control_failure_returncode"] = (
-                    control_sample.returncode
-                )
-                data[name]["molt_wasm_control_failure"] = control_sample.error
-        if super_run and ok:
-            data[name]["molt_wasm_stats"] = summarize_samples(wasm_samples)
+                    data[name]["molt_wasm_control_failure_class"] = (
+                        control_sample.error_class
+                    )
+                    data[name]["molt_wasm_control_failure_returncode"] = (
+                        control_sample.returncode
+                    )
+                    data[name]["molt_wasm_control_failure"] = control_sample.error
+            if super_run and ok:
+                data[name]["molt_wasm_stats"] = summarize_samples(wasm_samples)
     return data
 
 
@@ -2002,12 +2141,14 @@ def main() -> None:
     keep_temp = args.keep_artifacts or os.environ.get("MOLT_WASM_KEEP") == "1"
     if args.keep_artifacts:
         os.environ["MOLT_WASM_KEEP"] = "1"
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     runner_cmd = _resolve_runner(
         args.runner,
         tty=use_tty,
         log=log_file,
         node_max_old_space_mb=args.node_max_old_space_mb,
+        limits=limits,
     )
     control_runner_name: str | None = None
     control_runner_cmd: list[str] | None = None
@@ -2018,6 +2159,7 @@ def main() -> None:
             tty=use_tty,
             log=log_file,
             node_max_old_space_mb=args.node_max_old_space_mb,
+            limits=limits,
         )
     runtime_policy = _runtime_rebuild_policy()
     shared_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM)
@@ -2044,7 +2186,11 @@ def main() -> None:
             if log_file is not None:
                 _log_write(log_file, f"# {msg}\n")
         if not build_runtime_wasm(
-            reloc=False, output=RUNTIME_WASM, tty=use_tty, log=log_file
+            reloc=False,
+            output=RUNTIME_WASM,
+            tty=use_tty,
+            log=log_file,
+            limits=limits,
         ):
             if log_file is not None:
                 log_file.close()
@@ -2082,7 +2228,11 @@ def main() -> None:
                 if log_file is not None:
                     _log_write(log_file, f"# {msg}\n")
             if not build_runtime_wasm(
-                reloc=True, output=RUNTIME_WASM_RELOC, tty=use_tty, log=log_file
+                reloc=True,
+                output=RUNTIME_WASM_RELOC,
+                tty=use_tty,
+                log=log_file,
+                limits=limits,
             ):
                 if args.require_linked:
                     print(
@@ -2131,7 +2281,10 @@ def main() -> None:
         benchmarks = selected
     include_ws = args.ws or os.environ.get("MOLT_WASM_BENCH_WS") == "1"
     if include_ws:
-        if args.runner == "node" and not _node_has_websocket(log_file):
+        if args.runner == "node" and not _node_has_websocket(
+            log_file,
+            limits=limits,
+        ):
             print(
                 "Skipping websocket bench: node runner has no WebSocket support.",
                 file=sys.stderr,
@@ -2190,6 +2343,7 @@ def main() -> None:
             "cpu_count": os.cpu_count(),
             "load_avg": load_avg,
         },
+        "memory_guard": harness_memory_guard.limits_summary(limits),
         "benchmarks": results,
     }
 

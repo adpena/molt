@@ -12,6 +12,8 @@ from pathlib import Path
 import molt.cli as molt_cli
 from molt.debug import DebugSubcommand, allocate_debug_paths
 
+from tests.cli.process_guard import run_cli_test_process
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,7 +45,7 @@ def _python_executable() -> str:
 
 
 def _run_cli(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_cli_test_process(
         [_python_executable(), "-m", "molt.cli", *args],
         cwd=cwd,
         env=_base_env(),

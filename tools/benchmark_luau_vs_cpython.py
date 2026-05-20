@@ -34,6 +34,11 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TOOLS_ROOT = REPO_ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 def _artifact_root() -> Path:
@@ -98,22 +103,31 @@ LUAU_COMPATIBLE_BENCHMARKS = [
 ]
 
 
-def run_cpython_bench(source_path: str, iterations: int) -> dict:
+def run_cpython_bench(
+    source_path: str,
+    iterations: int,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> dict:
     """Benchmark CPython execution."""
     times = []
     output = None
     for i in range(iterations):
         t0 = time.perf_counter()
         try:
-            proc = subprocess.run(
+            proc = harness_memory_guard.guarded_completed_process(
                 [sys.executable, source_path],
+                prefix="MOLT_BENCH",
                 capture_output=True,
                 text=True,
                 timeout=30,
+                limits=limits,
             )
         except subprocess.TimeoutExpired:
             return {"error": "CPython execution timed out (30s)"}
-        elapsed = time.perf_counter() - t0
+        elapsed = (
+            proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - t0
+        )
         if proc.returncode != 0:
             print(f"  CPython error: {proc.stderr.strip()}", file=sys.stderr)
             return {"error": proc.stderr.strip()}
@@ -132,7 +146,12 @@ def run_cpython_bench(source_path: str, iterations: int) -> dict:
     }
 
 
-def compile_to_luau(source_path: str, output_path: str) -> tuple[bool, float]:
+def compile_to_luau(
+    source_path: str,
+    output_path: str,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[bool, float]:
     """Compile Python source to Luau via Molt. Returns (success, compile_time_s)."""
     artifact_root = _artifact_root()
     env = {
@@ -146,7 +165,7 @@ def compile_to_luau(source_path: str, output_path: str) -> tuple[bool, float]:
     }
     t0 = time.perf_counter()
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             [
                 "uv",
                 "run",
@@ -160,23 +179,30 @@ def compile_to_luau(source_path: str, output_path: str) -> tuple[bool, float]:
                 "--output",
                 output_path,
             ],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=120,
             env=env,
             cwd=str(REPO_ROOT),
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         elapsed = time.perf_counter() - t0
         return False, elapsed
-    elapsed = time.perf_counter() - t0
+    elapsed = proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - t0
     if proc.returncode != 0:
         print(f"  Molt compile error: {proc.stderr.strip()}", file=sys.stderr)
         return False, elapsed
     return True, elapsed
 
 
-def run_lune_bench(luau_path: str, iterations: int) -> dict:
+def run_lune_bench(
+    luau_path: str,
+    iterations: int,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> dict:
     """Benchmark Lune (Luau VM) execution."""
     lune = os.path.expanduser("~/.aftman/bin/lune")
     if not os.path.exists(lune):
@@ -187,15 +213,19 @@ def run_lune_bench(luau_path: str, iterations: int) -> dict:
     for i in range(iterations):
         t0 = time.perf_counter()
         try:
-            proc = subprocess.run(
+            proc = harness_memory_guard.guarded_completed_process(
                 [lune, "run", luau_path],
+                prefix="MOLT_BENCH",
                 capture_output=True,
                 text=True,
                 timeout=30,
+                limits=limits,
             )
         except subprocess.TimeoutExpired:
             return {"error": "Lune execution timed out (30s)"}
-        elapsed = time.perf_counter() - t0
+        elapsed = (
+            proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - t0
+        )
         if proc.returncode != 0:
             print(f"  Lune error: {proc.stderr.strip()}", file=sys.stderr)
             return {"error": proc.stderr.strip()}
@@ -219,6 +249,7 @@ def run_single_benchmark(
     iterations: int,
     cpython_only: bool,
     tmp_dir: str,
+    limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> dict:
     """Run a single benchmark and return structured results."""
     result = {
@@ -237,7 +268,7 @@ def run_single_benchmark(
 
     # CPython
     print("  Running CPython benchmark...")
-    cpython_result = run_cpython_bench(source_path, iterations)
+    cpython_result = run_cpython_bench(source_path, iterations, limits=limits)
     result["cpython"] = cpython_result
     if "error" not in cpython_result:
         print(f"    Mean: {cpython_result['mean_ms']:.2f} ms")
@@ -251,7 +282,7 @@ def run_single_benchmark(
     # Molt -> Luau compilation
     luau_path = os.path.join(tmp_dir, Path(source_path).stem + ".luau")
     print("  Compiling to Luau via Molt...")
-    ok, compile_time = compile_to_luau(source_path, luau_path)
+    ok, compile_time = compile_to_luau(source_path, luau_path, limits=limits)
     result["compile_time_ms"] = round(compile_time * 1000, 0)
 
     if not ok:
@@ -265,7 +296,7 @@ def run_single_benchmark(
 
     # Lune (Luau VM)
     print("  Running Lune (Luau VM) benchmark...")
-    lune_result = run_lune_bench(luau_path, iterations)
+    lune_result = run_lune_bench(luau_path, iterations, limits=limits)
     result["luau"] = lune_result
 
     if "error" in lune_result:
@@ -390,6 +421,7 @@ examples:
         help="Generate a markdown table of all results",
     )
     args = parser.parse_args()
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     # Resolve which benchmarks to run
     bench_files: list[tuple[str, str]] = []  # (name, path)
@@ -418,6 +450,7 @@ examples:
         # Default: use the built-in zone generator
         bench_files = []  # handled below
 
+    artifact_root = _artifact_root() / "bench" / "results"
     with tempfile.TemporaryDirectory(prefix="molt_luau_bench_") as tmp_dir:
         results: list[dict] = []
 
@@ -434,32 +467,39 @@ examples:
             print("Mode: CPython-only")
         print()
 
-        for name, path in bench_files:
-            try:
-                result = run_single_benchmark(
-                    bench_name=name,
-                    source_path=path,
-                    iterations=args.iterations,
-                    cpython_only=args.cpython_only,
-                    tmp_dir=tmp_dir,
-                )
-                results.append(result)
-            except Exception as exc:
-                print(f"  UNEXPECTED ERROR: {exc}", file=sys.stderr)
-                results.append(
-                    {
-                        "name": name,
-                        "source": path,
-                        "cpython": None,
-                        "luau": None,
-                        "compile_time_ms": None,
-                        "luau_output_bytes": None,
-                        "output_match": None,
-                        "ratio": None,
-                        "error": f"Exception: {exc}",
-                    }
-                )
-            print()
+        with harness_memory_guard.repo_process_sentinel(
+            repo_root=REPO_ROOT,
+            artifact_root=artifact_root,
+            label="benchmark_luau_vs_cpython",
+            limits=limits,
+        ):
+            for name, path in bench_files:
+                try:
+                    result = run_single_benchmark(
+                        bench_name=name,
+                        source_path=path,
+                        iterations=args.iterations,
+                        cpython_only=args.cpython_only,
+                        tmp_dir=tmp_dir,
+                        limits=limits,
+                    )
+                    results.append(result)
+                except Exception as exc:
+                    print(f"  UNEXPECTED ERROR: {exc}", file=sys.stderr)
+                    results.append(
+                        {
+                            "name": name,
+                            "source": path,
+                            "cpython": None,
+                            "luau": None,
+                            "compile_time_ms": None,
+                            "luau_output_bytes": None,
+                            "output_match": None,
+                            "ratio": None,
+                            "error": f"Exception: {exc}",
+                        }
+                    )
+                print()
 
         # Summary
         print("=== Summary ===")
@@ -479,7 +519,8 @@ examples:
         # Markdown report
         if args.report:
             report = generate_markdown_report(results, args.iterations)
-            report_path = os.path.join(str(REPO_ROOT), "bench_luau_report.md")
+            artifact_root.mkdir(parents=True, exist_ok=True)
+            report_path = os.path.join(str(artifact_root), "bench_luau_report.md")
             with open(report_path, "w") as f:
                 f.write(report)
             print(f"Report written to: {report_path}")

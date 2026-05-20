@@ -30,6 +30,8 @@ REPO_ROOT = Path(__file__).parent.parent.resolve()
 
 # Import bench.py helpers directly
 sys.path.insert(0, str(REPO_ROOT / "tools"))
+import harness_memory_guard  # noqa: E402
+
 try:
     import bench as _bench
 
@@ -97,14 +99,17 @@ def _median_time(
     Returns None if any run fails or times out.
     """
     times: list[float] = []
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     for _ in range(samples):
         start = time.perf_counter()
         try:
-            res = subprocess.run(
+            res = harness_memory_guard.guarded_completed_process(
                 cmd,
+                prefix="MOLT_BENCH",
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
+                limits=limits,
             )
         except subprocess.TimeoutExpired:
             print(
@@ -112,7 +117,9 @@ def _median_time(
                 file=sys.stderr,
             )
             return None
-        elapsed = time.perf_counter() - start
+        elapsed = (
+            res.elapsed_s if res.elapsed_s is not None else time.perf_counter() - start
+        )
         if res.returncode != 0:
             err_snippet = (res.stderr or res.stdout or "").strip()[:200]
             print(
@@ -188,12 +195,15 @@ def _collect_perf_data(binary_path: Path) -> Optional[dict]:
     if perf is None:
         return None
     events = "instructions,cache-misses,cache-references"
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     try:
-        res = subprocess.run(
+        res = harness_memory_guard.guarded_completed_process(
             [perf, "stat", "-e", events, "--", str(binary_path)],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=30.0,
+            limits=limits,
         )
     except Exception:
         return None

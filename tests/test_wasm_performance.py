@@ -10,12 +10,12 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
@@ -61,10 +61,10 @@ class TestWasmToolAvailability:
             )
         assert Path(wasm_ld).is_file()
         # Verify it actually works
-        result = subprocess.run(
+        result = _run_wasm_test_process(
             [wasm_ld, "--version"],
-            capture_output=True,
-            text=True,
+            cwd=ROOT,
+            env=os.environ,
             timeout=10,
         )
         assert result.returncode == 0
@@ -89,10 +89,10 @@ class TestWasmToolAvailability:
         wasm_opt = shutil.which("wasm-opt")
         if wasm_opt is None:
             pytest.skip("wasm-opt not found; install via cargo or brew")
-        result = subprocess.run(
+        result = _run_wasm_test_process(
             [wasm_opt, "--version"],
-            capture_output=True,
-            text=True,
+            cwd=ROOT,
+            env=os.environ,
             timeout=10,
         )
         assert result.returncode == 0
@@ -102,10 +102,10 @@ class TestWasmToolAvailability:
         wasm_tools = shutil.which("wasm-tools")
         if wasm_tools is None:
             pytest.skip("wasm-tools not found; install via cargo")
-        result = subprocess.run(
+        result = _run_wasm_test_process(
             [wasm_tools, "--version"],
-            capture_output=True,
-            text=True,
+            cwd=ROOT,
+            env=os.environ,
             timeout=10,
         )
         assert result.returncode == 0
@@ -148,12 +148,10 @@ def _build_wasm(
     ]
     if linked:
         cmd.append("--linked")
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         cmd,
-        capture_output=True,
-        text=True,
         env=env,
-        cwd=str(ROOT),
+        cwd=ROOT,
         timeout=300,
     )
     if result.returncode != 0:
@@ -163,6 +161,30 @@ def _build_wasm(
         if candidate.exists():
             return candidate
     return None
+
+
+def test_wasm_performance_build_uses_wasm_test_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "hello.py"
+    source.write_text("print(42)\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        (out_dir / "output.wasm").write_bytes(b"\x00asm")
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
+
+    output = _build_wasm(source, out_dir, linked=False)
+
+    assert output == out_dir / "output.wasm"
+    assert captured["kwargs"]["cwd"] == ROOT
+    assert captured["kwargs"]["timeout"] == 300
 
 
 class TestWasmSizeThresholds:
@@ -189,7 +211,7 @@ class TestWasmSizeThresholds:
             if output is None:
                 pytest.skip("WASM build failed")
             opt_path = tmpdir_path / "optimized.wasm"
-            result = subprocess.run(
+            result = _run_wasm_test_process(
                 [
                     wasm_opt,
                     "-Oz",
@@ -201,8 +223,8 @@ class TestWasmSizeThresholds:
                     "-o",
                     str(opt_path),
                 ],
-                capture_output=True,
-                text=True,
+                cwd=ROOT,
+                env=os.environ,
                 timeout=120,
             )
             if result.returncode != 0 or not opt_path.exists():
@@ -238,7 +260,7 @@ class TestWasmSizeThresholds:
             if output is None:
                 pytest.skip("Linked WASM build failed")
             opt_path = tmpdir_path / "linked_optimized.wasm"
-            result = subprocess.run(
+            result = _run_wasm_test_process(
                 [
                     wasm_opt,
                     "-Oz",
@@ -250,8 +272,8 @@ class TestWasmSizeThresholds:
                     "-o",
                     str(opt_path),
                 ],
-                capture_output=True,
-                text=True,
+                cwd=ROOT,
+                env=os.environ,
                 timeout=120,
             )
             if result.returncode != 0 or not opt_path.exists():

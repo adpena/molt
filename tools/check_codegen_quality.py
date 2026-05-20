@@ -38,6 +38,11 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+try:
+    import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - package import
+    from tools import harness_memory_guard  # type: ignore
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -97,6 +102,28 @@ def detect_arch() -> str:
     return machine
 
 
+def _check_output_text(
+    cmd: list[str],
+    *,
+    stderr: object = None,
+) -> str:
+    del stderr
+    result = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_CODEGEN_QUALITY",
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result.stdout or ""
+
+
 # ---------------------------------------------------------------------------
 # Tool resolution
 # ---------------------------------------------------------------------------
@@ -112,10 +139,9 @@ def find_objdump() -> str | None:
     brew_llvm = shutil.which("brew")
     if brew_llvm:
         try:
-            prefix = subprocess.check_output(
+            prefix = _check_output_text(
                 ["brew", "--prefix", "llvm"],
                 stderr=subprocess.DEVNULL,
-                text=True,
             ).strip()
             candidate = Path(prefix) / "bin" / "llvm-objdump"
             if candidate.is_file():
@@ -155,10 +181,9 @@ def get_text_section_size(binary: Path, objdump: str) -> int | None:
     For Mach-O, the section is listed as __text; for ELF it is .text.
     """
     try:
-        output = subprocess.check_output(
+        output = _check_output_text(
             [objdump, "-h", str(binary)],
             stderr=subprocess.DEVNULL,
-            text=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
@@ -191,10 +216,9 @@ def get_text_section_size(binary: Path, objdump: str) -> int | None:
 def get_text_section_size_fallback(binary: Path, size_tool: str) -> int | None:
     """Fallback: use `size` to get approximate text size."""
     try:
-        output = subprocess.check_output(
+        output = _check_output_text(
             [size_tool, str(binary)],
             stderr=subprocess.DEVNULL,
-            text=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
@@ -227,10 +251,9 @@ def get_function_sizes(binary: Path, nm_tool: str) -> list[FunctionInfo]:
 
     # Try nm -S first (works on ELF / llvm-nm).
     try:
-        output = subprocess.check_output(
+        output = _check_output_text(
             [nm_tool, "-S", "--defined-only", str(binary)],
             stderr=subprocess.DEVNULL,
-            text=True,
         )
         # Format: <address> <size> <type> <name>
         for line in output.splitlines():
@@ -255,10 +278,9 @@ def get_function_sizes(binary: Path, nm_tool: str) -> list[FunctionInfo]:
 
     # Fallback: plain nm, estimate sizes from address deltas.
     try:
-        output = subprocess.check_output(
+        output = _check_output_text(
             [nm_tool, "--defined-only", "-n", str(binary)],
             stderr=subprocess.DEVNULL,
-            text=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
@@ -293,10 +315,9 @@ def disassemble_text(binary: Path, objdump: str) -> str:
     """Disassemble the .text section and return the raw output."""
     # Use --disassemble to get all code sections.
     try:
-        output = subprocess.check_output(
+        output = _check_output_text(
             [objdump, "-d", "--no-show-raw-insn", str(binary)],
             stderr=subprocess.DEVNULL,
-            text=True,
         )
         return output
     except (subprocess.CalledProcessError, FileNotFoundError):

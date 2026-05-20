@@ -21,6 +21,12 @@ import sys
 import time
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 # Optimization levels supported by wasm-opt.
 VALID_LEVELS = {"O1", "O2", "O3", "O4", "Os", "Oz"}
 # Explicit feature set instead of --all-features.  Binaryen's --all-features
@@ -168,12 +174,15 @@ def optimize(
     cmd.extend([str(input_path), "-o", str(output_path)])
 
     t0 = time.monotonic()
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=300,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return {

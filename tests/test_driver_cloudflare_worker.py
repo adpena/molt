@@ -2,23 +2,25 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.process_guard_common import run_guarded_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKER_TS = ROOT / "drivers" / "cloudflare" / "thin_adapter" / "worker.ts"
 
 
-def _run_worker_script(script_text: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_worker_script(script_text: str, cwd: Path):
     if shutil.which("node") is None:
         pytest.skip("node is required for cloudflare worker driver tests")
     script = cwd / "run_worker.mjs"
     script.write_text(script_text, encoding="utf-8")
-    return subprocess.run(
+    return run_guarded_test_process(
         ["node", "--experimental-strip-types", str(script)],
+        prefix="MOLT_NODE_TEST",
         cwd=ROOT,
         text=True,
         capture_output=True,

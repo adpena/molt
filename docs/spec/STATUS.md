@@ -192,6 +192,13 @@ Comparator baseline coverage: PyPy baseline unavailable; Codon baseline unavaila
 WASM run: 2026-03-28 (macOS arm64, CPython 3.12.13). Slowest: none; largest sizes: `bench_sum.py` 7182.5 KB; WASM vs CPython slowest ratios: none.
 <!-- GENERATED:bench-summary:end -->
 
+Focused post-summary recheck: `bench_ptr_registry.py` now builds and runs on the
+current native path (`build_time_s=167.9641`, `molt_time_s=0.456952`, output
+`100000`). Evidence is in
+`bench/results/ptr_registry_repro_bench-ptr-registry-20260519T220445Z.json`.
+The generated full-run failure list above predates this focused recheck and
+should be regenerated on the next full benchmark refresh.
+
 ## Deep Links
 
 - Compatibility architecture: [areas/compat/README.md](areas/compat/README.md)

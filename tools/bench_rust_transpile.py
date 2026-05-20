@@ -49,6 +49,10 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 DEFAULT_BENCHMARKS = [
     "tests/benchmarks/bench_sum.py",
@@ -69,10 +73,16 @@ def _artifact_root() -> Path:
 
 def _find_rustc() -> str | None:
     """Return rustc path, or None if unavailable."""
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     for candidate in ("rustc", os.path.expanduser("~/.cargo/bin/rustc")):
         try:
-            r = subprocess.run(
-                [candidate, "--version"], capture_output=True, text=True, timeout=15
+            r = harness_memory_guard.guarded_completed_process(
+                [candidate, "--version"],
+                prefix="MOLT_BENCH",
+                capture_output=True,
+                text=True,
+                timeout=15,
+                limits=limits,
             )
             if r.returncode == 0:
                 return candidate
@@ -89,15 +99,18 @@ def _find_cpython() -> str:
         shutil.which("python3") or "",
         shutil.which("python") or "",
     ]
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     for candidate in candidates:
         if not candidate:
             continue
         try:
-            probe = subprocess.run(
+            probe = harness_memory_guard.guarded_completed_process(
                 [candidate, "-c", "import sys; print(sys.version_info[0])"],
+                prefix="MOLT_BENCH",
                 capture_output=True,
                 text=True,
                 timeout=5,
+                limits=limits,
             )
             if probe.returncode == 0 and probe.stdout.strip() == "3":
                 return candidate
@@ -132,10 +145,11 @@ def transpile_to_rust(py_path: str, rs_path: str) -> tuple[bool, float, str]:
     """
     env = _molt_env()
     py_exec = sys.executable or _find_cpython()
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
 
     t0 = time.perf_counter()
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             [
                 py_exec,
                 "-m",
@@ -147,15 +161,19 @@ def transpile_to_rust(py_path: str, rs_path: str) -> tuple[bool, float, str]:
                 "--output",
                 rs_path,
             ],
+            prefix="MOLT_BENCH",
             capture_output=True,
             text=True,
             timeout=120,
             env=env,
             cwd=str(REPO_ROOT),
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return False, time.perf_counter() - t0, "transpile timed out (120s)"
-    elapsed = time.perf_counter() - t0
+    elapsed = (
+        result.elapsed_s if result.elapsed_s is not None else time.perf_counter() - t0
+    )
 
     if result.returncode != 0:
         return False, elapsed, result.stderr.strip() or result.stdout.strip()
@@ -184,13 +202,21 @@ def compile_rust(
     ]
 
     t0 = time.perf_counter()
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=compile_timeout
+        result = harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_BENCH",
+            capture_output=True,
+            text=True,
+            timeout=compile_timeout,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return False, time.perf_counter() - t0, f"rustc timed out ({compile_timeout}s)"
-    elapsed = time.perf_counter() - t0
+    elapsed = (
+        result.elapsed_s if result.elapsed_s is not None else time.perf_counter() - t0
+    )
 
     if result.returncode != 0:
         return False, elapsed, result.stderr.strip()
@@ -201,15 +227,23 @@ def run_binary(bin_path: str, iterations: int) -> dict:
     """Run a compiled binary multiple times and collect timings."""
     times = []
     output = None
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     for _ in range(iterations):
         t0 = time.perf_counter()
         try:
-            proc = subprocess.run(
-                [bin_path], capture_output=True, text=True, timeout=60
+            proc = harness_memory_guard.guarded_completed_process(
+                [bin_path],
+                prefix="MOLT_BENCH",
+                capture_output=True,
+                text=True,
+                timeout=60,
+                limits=limits,
             )
         except subprocess.TimeoutExpired:
             return {"error": "binary timed out (60s)"}
-        elapsed = time.perf_counter() - t0
+        elapsed = (
+            proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - t0
+        )
         if proc.returncode != 0:
             return {
                 "error": f"binary exit code {proc.returncode}: {proc.stderr.strip()}"
@@ -233,15 +267,23 @@ def run_cpython(py_path: str, iterations: int) -> dict:
     cpython = _find_cpython()
     times = []
     output = None
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     for _ in range(iterations):
         t0 = time.perf_counter()
         try:
-            proc = subprocess.run(
-                [cpython, py_path], capture_output=True, text=True, timeout=60
+            proc = harness_memory_guard.guarded_completed_process(
+                [cpython, py_path],
+                prefix="MOLT_BENCH",
+                capture_output=True,
+                text=True,
+                timeout=60,
+                limits=limits,
             )
         except subprocess.TimeoutExpired:
             return {"error": "CPython timed out (60s)"}
-        elapsed = time.perf_counter() - t0
+        elapsed = (
+            proc.elapsed_s if proc.elapsed_s is not None else time.perf_counter() - t0
+        )
         if proc.returncode != 0:
             return {"error": f"CPython error: {proc.stderr.strip()}"}
         times.append(elapsed)

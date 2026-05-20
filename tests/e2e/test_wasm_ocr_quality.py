@@ -9,11 +9,11 @@ Verifies:
 
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests.native_process_guard import run_native_test_process
 from tests.helpers.falcon_ocr_paths import (
     FALCON_OCR_TOKENIZER_PATH,
     falcon_ocr_weights_available,
@@ -41,7 +41,7 @@ def test_wasm_runs_cleanly():
     """WASM runs without traps."""
     if not WASM_LINKED_PATH.exists():
         pytest.skip(f"Falcon-OCR linked WASM not found at {WASM_LINKED_PATH}")
-    result = subprocess.run(
+    result = run_native_test_process(
         ["node", "wasm/run_wasm.js", str(WASM_LINKED_PATH)],
         capture_output=True,
         text=True,

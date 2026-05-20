@@ -13,6 +13,10 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 def _load_dx_module():
@@ -76,6 +80,31 @@ def _run_with_pty(cmd: list[str], env: dict[str, str]) -> None:
         raise subprocess.CalledProcessError(rc, cmd)
 
 
+def _check_call_guarded(
+    cmd: list[str],
+    env: dict[str, str],
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> None:
+    resolved_limits = limits or harness_memory_guard.limits_from_env(
+        "MOLT_TEST_SUITE", env
+    )
+    result = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_TEST_SUITE",
+        cwd=ROOT,
+        env=env,
+        capture_output=False,
+        text=True,
+        limits=resolved_limits,
+        stream="stderr",
+    )
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+        raise subprocess.CalledProcessError(result.returncode, cmd)
+
+
 def _uv_project_env_dir() -> Path:
     return DX.project_env_dir()
 
@@ -119,10 +148,11 @@ def run_uv(
                 )
     cmd.extend(args)
     run_env = _normalized_uv_run_env(env or os.environ, python=python)
-    if tty and os.name == "posix":
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
+    if tty and os.name == "posix" and not limits.enabled:
         _run_with_pty(cmd, run_env)
     else:
-        subprocess.check_call(cmd, cwd=ROOT, env=run_env)
+        _check_call_guarded(cmd, run_env, limits=limits)
 
 
 def _apply_dev_trusted(env: dict[str, str]) -> None:
@@ -192,10 +222,11 @@ def _split_command_sequence(
 
 def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
     _log("$ " + " ".join(shlex.quote(part) for part in cmd))
-    if tty and os.name == "posix":
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
+    if tty and os.name == "posix" and not limits.enabled:
         _run_with_pty(cmd, env)
     else:
-        subprocess.check_call(cmd, cwd=ROOT, env=env)
+        _check_call_guarded(cmd, env, limits=limits)
 
 
 def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:

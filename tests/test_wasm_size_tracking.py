@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.wasm_linked_runner import _run_wasm_test_process
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "freestanding_hello.py"
@@ -19,7 +22,7 @@ def _build_and_measure(src_path: Path, tmp_path: Path, target: str = "wasm") -> 
     """Build a molt program to wasm and return size metrics."""
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
-    result = subprocess.run(
+    result = _run_wasm_test_process(
         [
             sys.executable,
             "-m",
@@ -33,9 +36,8 @@ def _build_and_measure(src_path: Path, tmp_path: Path, target: str = "wasm") -> 
             "--linked-output",
             str(linked),
         ],
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=os.environ,
         timeout=180,
     )
     if result.returncode != 0:
@@ -47,6 +49,30 @@ def _build_and_measure(src_path: Path, tmp_path: Path, target: str = "wasm") -> 
     if linked.exists():
         sizes["linked_bytes"] = linked.stat().st_size
     return sizes
+
+
+def test_build_and_measure_uses_wasm_test_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        output = tmp_path / "output.wasm"
+        linked = tmp_path / "output_linked.wasm"
+        output.write_bytes(b"\x00asm")
+        linked.write_bytes(b"\x00asm-linked")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
+
+    sizes = _build_and_measure(FIXTURE, tmp_path)
+
+    assert sizes["ok"] is True
+    assert sizes["linked_bytes"] == len(b"\x00asm-linked")
+    assert captured["kwargs"]["cwd"] == PROJECT_ROOT
+    assert captured["kwargs"]["timeout"] == 180
 
 
 @pytest.mark.slow

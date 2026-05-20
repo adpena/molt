@@ -5,12 +5,18 @@ import argparse
 import os
 import secrets
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 _RANDOM_PLUGIN = "tools.pytest_random_order_plugin"
+
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    import harness_memory_guard  # type: ignore
 
 
 def _log(msg: str) -> None:
@@ -21,7 +27,22 @@ def _log(msg: str) -> None:
 def _run(cmd: list[str]) -> None:
     _log(f"run: {' '.join(cmd)}")
     start = time.monotonic()
-    subprocess.check_call(cmd, cwd=ROOT, env=os.environ.copy())
+    env = os.environ.copy()
+    result = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_DEV_TEST",
+        cwd=ROOT,
+        env=env,
+        capture_output=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
     _log(f"done: {' '.join(cmd)} ({time.monotonic() - start:.2f}s)")
 
 
@@ -79,7 +100,7 @@ def main() -> None:
         "--random-seed",
         help="Explicit seed for --random-order. If omitted, one is generated and logged.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(sys.argv[1:])
 
     pytest_cmd, resolved_seed = _build_pytest_command(
         random_order=args.random_order,

@@ -32,9 +32,14 @@ import argparse
 import hashlib
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +65,14 @@ def _run_quint_trace(
     if invariant:
         cmd += [f"--invariant={invariant}"]
 
-    result = subprocess.run(
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
+    result = harness_memory_guard.guarded_completed_process(
         cmd,
+        prefix="MOLT_TEST_SUITE",
         capture_output=True,
         text=True,
         timeout=120,
+        limits=limits,
     )
     if result.returncode != 0:
         raise RuntimeError(

@@ -93,6 +93,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from random import Random
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Type tags
@@ -1756,7 +1762,7 @@ class CompileOnlyFuzzer:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 def _build_env() -> dict[str, str]:
@@ -1782,13 +1788,17 @@ def _extract_binary(build_json: dict) -> str | None:
 
 
 def run_cpython(source_path: str, timeout: float) -> tuple[str, str, int | None]:
+    env = {**os.environ, "PYTHONHASHSEED": "0"}
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             [sys.executable, source_path],
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={**os.environ, "PYTHONHASHSEED": "0"},
+            env=env,
+            limits=limits,
         )
         return result.stdout, result.stderr, result.returncode
     except subprocess.TimeoutExpired:
@@ -1812,14 +1822,17 @@ def compile_molt(
         "--json",
         source_path,
     ]
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
             cwd=str(_repo_root()),
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return None, "Molt build timed out"
@@ -1876,13 +1889,16 @@ def run_molt_binary(
     timeout: float,
     env: dict[str, str],
 ) -> tuple[str, str, int | None]:
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             [binary_path],
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
+            limits=limits,
         )
         return result.stdout, result.stderr, result.returncode
     except subprocess.TimeoutExpired:
@@ -2282,13 +2298,16 @@ def _fuzz_one_program(
     elapsed_start = time.monotonic()
 
     # CPython baseline
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     try:
-        cp_result = subprocess.run(
+        cp_result = harness_memory_guard.guarded_completed_process(
             [sys.executable, str(src_path)],
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env,
+            limits=limits,
         )
         cp_out = cp_result.stdout
         cp_err = cp_result.stderr
@@ -2341,14 +2360,17 @@ def _fuzz_one_program(
     ]
     build_env = dict(env)
     build_env.setdefault("PYTHONPATH", str(repo_root / "src"))
+    build_limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", build_env)
     try:
-        build_result = subprocess.run(
+        build_result = harness_memory_guard.guarded_completed_process(
             build_cmd,
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout * 2,
             env=build_env,
             cwd=str(repo_root),
+            limits=build_limits,
         )
     except subprocess.TimeoutExpired:
         return FuzzResult(
@@ -2400,11 +2422,13 @@ def _fuzz_one_program(
         )
 
     try:
-        run_result = subprocess.run(
+        run_result = harness_memory_guard.guarded_completed_process(
             [str(binary)],
+            prefix="MOLT_TEST_SUITE",
             capture_output=True,
             text=True,
             timeout=timeout,
+            limits=limits,
         )
     except subprocess.TimeoutExpired:
         return FuzzResult(

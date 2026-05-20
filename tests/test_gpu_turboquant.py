@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import ast
 from pathlib import Path
 
 import pytest
+
+from tests.native_process_guard import run_native_test_process
 
 
 def _native_molt_env(root: Path) -> dict[str, str]:
@@ -242,7 +243,7 @@ def test_turboquant_compiles_in_native_molt(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",
@@ -289,7 +290,7 @@ def test_turboquant_codebook_and_attention_are_finite_in_native_molt(
         encoding="utf-8",
     )
 
-    run = subprocess.run(
+    run = run_native_test_process(
         [
             sys.executable,
             "-m",

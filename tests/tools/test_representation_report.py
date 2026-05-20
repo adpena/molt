@@ -130,7 +130,7 @@ def test_backend_command_uses_typed_repr_report_binary(
             args[0], 0, stdout=json.dumps(_backend_report()), stderr=""
         )
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.harness_memory_guard, "guarded_completed_process", fake_run)
 
     report = mod.run_backend_report({"functions": []})
 
@@ -148,7 +148,7 @@ def test_backend_failure_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args[0], 2, stdout="", stderr="bad LIR")
 
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.harness_memory_guard, "guarded_completed_process", fake_run)
 
     with pytest.raises(mod.BackendReportError, match="bad LIR"):
         mod.run_backend_report({"functions": []})

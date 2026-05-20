@@ -8,6 +8,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from tests.cli.process_guard import run_cli_test_process
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,7 +32,7 @@ def _python_executable() -> str:
 
 
 def _run_cli(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_cli_test_process(
         [_python_executable(), "-m", "molt.cli", *args],
         cwd=cwd,
         env=_base_env(),

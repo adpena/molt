@@ -5,13 +5,16 @@ import argparse
 import json
 import os
 import shlex
-import subprocess
 import sys
 import time
 from xml.sax.saxutils import escape
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -253,14 +256,21 @@ def run_molt_test(
         cmd.append(str(test_path))
     env = build_env(cpython_dir)
     start = time.perf_counter()
-    result = subprocess.run(
+    limits = harness_memory_guard.limits_from_env("MOLT_REGRTEST", env)
+    result = harness_memory_guard.guarded_completed_process(
         cmd,
+        prefix="MOLT_REGRTEST",
         env=env,
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
+        limits=limits,
     )
-    duration = time.perf_counter() - start
+    duration = (
+        result.elapsed_s
+        if result.elapsed_s is not None
+        else time.perf_counter() - start
+    )
     if result.returncode == 0:
         state = "PASSED"
         errors = None
@@ -327,7 +337,15 @@ def run_worker(
 
 def passthrough(args: list[str]) -> int:
     cmd = [sys.executable, *args]
-    result = subprocess.run(cmd, text=True)
+    limits = harness_memory_guard.limits_from_env("MOLT_REGRTEST")
+    result = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_REGRTEST",
+        text=True,
+        capture_output=False,
+        limits=limits,
+        stream="stderr",
+    )
     return result.returncode
 
 

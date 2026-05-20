@@ -9,7 +9,6 @@ import os
 import platform
 import shlex
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -17,6 +16,11 @@ from typing import Iterable
 from xml.etree import ElementTree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = REPO_ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 @dataclass
@@ -468,15 +472,19 @@ def run_command(
     log_line(log_handle, f"cmd: {shlex.join(cmd)}")
     if dry_run:
         return 0
-    result = subprocess.run(
+    result = harness_memory_guard.guarded_completed_process(
         cmd,
+        prefix="MOLT_REGRTEST",
         cwd=cwd,
         env=env,
-        stdout=log_handle,
-        stderr=log_handle,
+        capture_output=True,
         text=True,
-        check=False,
     )
+    if result.stdout:
+        log_handle.write(result.stdout)
+    if result.stderr:
+        log_handle.write(result.stderr)
+    log_handle.flush()
     return result.returncode
 
 
@@ -1009,11 +1017,11 @@ def run_rust_coverage(
             available=False,
             message=message,
         )
-    check = subprocess.run(
+    check = harness_memory_guard.guarded_completed_process(
         ["cargo", "llvm-cov", "--version"],
+        prefix="MOLT_REGRTEST",
         capture_output=True,
         text=True,
-        check=False,
     )
     if check.returncode != 0:
         message = (
@@ -1255,6 +1263,7 @@ def write_summary(
     diff_summary: DiffSummary | None,
     matrix_report: MatrixReport,
     rust_coverage: RustCoverageSummary | None,
+    memory_guard: dict[str, object] | None = None,
 ) -> None:
     payload = {
         "python_version": python_version,
@@ -1275,6 +1284,8 @@ def write_summary(
         },
         "returncode": returncode,
     }
+    if memory_guard is not None:
+        payload["memory_guard"] = memory_guard
     if diff_summary is not None:
         payload["diff_summary"] = {
             "total": diff_summary.total,
@@ -1439,103 +1450,111 @@ def run_regrtest(
     )
     log_path = output_dir / "regrtest.log"
     with log_path.open("w", encoding="utf-8") as log_handle:
+        limits = harness_memory_guard.limits_from_env("MOLT_REGRTEST")
         log_line(log_handle, f"output_dir={output_dir}")
-        if run_config.core_only and not run_config.core_file.exists():
-            raise FileNotFoundError(f"core file missing: {run_config.core_file}")
-        validate_molt_cmd(run_config, log_handle=log_handle)
-        ensure_cpython_checkout(
-            run_config.cpython_dir,
-            run_config.cpython_branch,
-            allow_clone=run_config.allow_clone,
-            log_handle=log_handle,
-            dry_run=run_config.dry_run,
-        )
-        if not run_config.molt_shim_path.exists():
-            raise FileNotFoundError(
-                f"molt regrtest shim missing: {run_config.molt_shim_path}"
-            )
-        regrtest_path = run_config.cpython_dir / "Lib" / "test" / "regrtest.py"
-        if not regrtest_path.exists():
-            raise FileNotFoundError(f"regrtest.py not found: {regrtest_path}")
-        skip_modules = load_skip_list(run_config.skip_file)
-        host_cmd = host_python_cmd(run_config, python_version)
-        regrtest_cmd = build_regrtest_cmd(
-            run_config,
-            regrtest_path,
-            skip_modules,
-            host_cmd,
-        )
-        env = build_env(run_config)
-        cpython_lib = run_config.cpython_dir / "Lib"
-        existing_path = env.get("PYTHONPATH", "")
-        if existing_path:
-            env["PYTHONPATH"] = os.pathsep.join([str(cpython_lib), existing_path])
-        else:
-            env["PYTHONPATH"] = str(cpython_lib)
-        if run_config.enable_coverage:
-            run_config.coverage_dir.mkdir(parents=True, exist_ok=True)
-            env["MOLT_REGRTEST_COVERAGE"] = "1"
-            env["MOLT_REGRTEST_COVERAGE_DIR"] = str(run_config.coverage_dir)
-            if run_config.coverage_source:
-                env["MOLT_REGRTEST_COVERAGE_SOURCE"] = ",".join(
-                    run_config.coverage_source
-                )
-            regrtest_rc = run_coverage(
-                run_config,
-                regrtest_cmd,
-                host_cmd,
-                cwd=run_config.cpython_dir,
-                env=env,
-                log_handle=log_handle,
-            )
-        else:
-            regrtest_rc = run_command(
-                regrtest_cmd,
-                cwd=run_config.cpython_dir,
-                env=env,
+        with harness_memory_guard.repo_process_sentinel(
+            repo_root=run_config.repo_root,
+            artifact_root=run_config.output_dir,
+            label="regrtest",
+            limits=limits,
+        ):
+            if run_config.core_only and not run_config.core_file.exists():
+                raise FileNotFoundError(f"core file missing: {run_config.core_file}")
+            validate_molt_cmd(run_config, log_handle=log_handle)
+            ensure_cpython_checkout(
+                run_config.cpython_dir,
+                run_config.cpython_branch,
+                allow_clone=run_config.allow_clone,
                 log_handle=log_handle,
                 dry_run=run_config.dry_run,
             )
-        summary = None
-        if run_config.junit_xml.exists():
-            summary = parse_junit(run_config.junit_xml)
-            summary.returncode = regrtest_rc
-        coverage = None
-        if run_config.enable_coverage:
-            coverage = finalize_coverage(run_config, host_cmd, log_handle)
-        diff_summary = run_diff_suite(
-            run_config,
-            host_cmd,
-            python_version,
-            env=env,
-            log_handle=log_handle,
-        )
-        modules = load_stdlib_modules(
-            run_config.stdlib_version, run_config.stdlib_source
-        )
-        matrix = parse_stdlib_matrix(run_config.matrix_path)
-        stdlib_paths = write_stdlib_matrix(run_config, modules, matrix)
-        matrix_report = write_type_semantics_report(run_config)
-        prop_rc = run_property_tests(
-            run_config, host_cmd, env=env, log_handle=log_handle
-        )
-        rust_summary = run_rust_coverage(run_config, log_handle=log_handle)
-        diff_rc = diff_summary.returncode if diff_summary else 0
-        rust_rc = rust_summary.returncode if rust_summary else 0
-        final_rc = max(regrtest_rc, prop_rc, diff_rc, rust_rc)
-        if summary:
-            summary.returncode = final_rc
-        write_summary(
-            run_config,
-            summary,
-            coverage,
-            stdlib_paths,
-            python_version,
-            final_rc,
-            diff_summary,
-            matrix_report,
-            rust_summary,
-        )
+            if not run_config.molt_shim_path.exists():
+                raise FileNotFoundError(
+                    f"molt regrtest shim missing: {run_config.molt_shim_path}"
+                )
+            regrtest_path = run_config.cpython_dir / "Lib" / "test" / "regrtest.py"
+            if not regrtest_path.exists():
+                raise FileNotFoundError(f"regrtest.py not found: {regrtest_path}")
+            skip_modules = load_skip_list(run_config.skip_file)
+            host_cmd = host_python_cmd(run_config, python_version)
+            regrtest_cmd = build_regrtest_cmd(
+                run_config,
+                regrtest_path,
+                skip_modules,
+                host_cmd,
+            )
+            env = build_env(run_config)
+            cpython_lib = run_config.cpython_dir / "Lib"
+            existing_path = env.get("PYTHONPATH", "")
+            if existing_path:
+                env["PYTHONPATH"] = os.pathsep.join([str(cpython_lib), existing_path])
+            else:
+                env["PYTHONPATH"] = str(cpython_lib)
+            if run_config.enable_coverage:
+                run_config.coverage_dir.mkdir(parents=True, exist_ok=True)
+                env["MOLT_REGRTEST_COVERAGE"] = "1"
+                env["MOLT_REGRTEST_COVERAGE_DIR"] = str(run_config.coverage_dir)
+                if run_config.coverage_source:
+                    env["MOLT_REGRTEST_COVERAGE_SOURCE"] = ",".join(
+                        run_config.coverage_source
+                    )
+                regrtest_rc = run_coverage(
+                    run_config,
+                    regrtest_cmd,
+                    host_cmd,
+                    cwd=run_config.cpython_dir,
+                    env=env,
+                    log_handle=log_handle,
+                )
+            else:
+                regrtest_rc = run_command(
+                    regrtest_cmd,
+                    cwd=run_config.cpython_dir,
+                    env=env,
+                    log_handle=log_handle,
+                    dry_run=run_config.dry_run,
+                )
+            summary = None
+            if run_config.junit_xml.exists():
+                summary = parse_junit(run_config.junit_xml)
+                summary.returncode = regrtest_rc
+            coverage = None
+            if run_config.enable_coverage:
+                coverage = finalize_coverage(run_config, host_cmd, log_handle)
+            diff_summary = run_diff_suite(
+                run_config,
+                host_cmd,
+                python_version,
+                env=env,
+                log_handle=log_handle,
+            )
+            modules = load_stdlib_modules(
+                run_config.stdlib_version, run_config.stdlib_source
+            )
+            matrix = parse_stdlib_matrix(run_config.matrix_path)
+            stdlib_paths = write_stdlib_matrix(run_config, modules, matrix)
+            matrix_report = write_type_semantics_report(run_config)
+            prop_rc = run_property_tests(
+                run_config, host_cmd, env=env, log_handle=log_handle
+            )
+            rust_summary = run_rust_coverage(run_config, log_handle=log_handle)
+            diff_rc = diff_summary.returncode if diff_summary else 0
+            rust_rc = rust_summary.returncode if rust_summary else 0
+            final_rc = max(regrtest_rc, prop_rc, diff_rc, rust_rc)
+            if summary:
+                summary.returncode = final_rc
+            write_summary(
+                run_config,
+                summary,
+                coverage,
+                stdlib_paths,
+                python_version,
+                final_rc,
+                diff_summary,
+                matrix_report,
+                rust_summary,
+                memory_guard=harness_memory_guard.limits_summary(limits),
+            )
         summary_path = run_config.output_dir / "summary.json"
         return final_rc, summary_path
 

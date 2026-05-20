@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,7 +55,7 @@ def test_native_build_survives_samefile_root_spelling_mismatch(
     env["MOLT_BACKEND_DAEMON"] = "0"
     env["MOLT_EXT_ROOT"] = str(ROOT)
 
-    build = subprocess.run(
+    build = run_cli_test_process(
         [
             sys.executable,
             "-m",
@@ -77,7 +78,7 @@ def test_native_build_survives_samefile_root_spelling_mismatch(
 
     assert build.returncode == 0, build.stdout + build.stderr
 
-    run = subprocess.run(
+    run = run_cli_test_process(
         [str(out_path)],
         cwd=ROOT,
         env=env,

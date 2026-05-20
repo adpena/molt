@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -65,3 +66,26 @@ def test_run_miri_defaults_to_canonical_tmp_root(monkeypatch) -> None:
     assert captured["env"]["TMPDIR"] == str(
         runtime_safety.ROOT / "tmp" / "runtime_safety" / "miri"
     )
+
+
+def test_run_with_log_uses_memory_guard(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="out\n", stderr="err\n")
+
+    monkeypatch.setattr(
+        runtime_safety.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    log_path = tmp_path / "runtime.log"
+
+    runtime_safety._run(["cargo", "test"], log_path=log_path)
+
+    assert captured["cmd"] == ["cargo", "test"]
+    assert captured["kwargs"]["prefix"] == "MOLT_RUNTIME_SAFETY"
+    assert captured["kwargs"]["capture_output"] is True
+    assert log_path.read_text(encoding="utf-8") == "out\nerr\n"
