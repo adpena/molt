@@ -37,7 +37,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -137,14 +137,18 @@ def default_memory_guard_limits(
 
 def _resolve_memory_limits(
     limits: MemoryGuardLimits | None | object,
-) -> MemoryGuardLimits | None:
-    if limits is _DEFAULT_MEMORY_LIMITS:
-        return default_memory_guard_limits()
-    if limits is None or isinstance(limits, MemoryGuardLimits):
-        return limits
-    raise TypeError(
-        "memory limits must be MemoryGuardLimits, None, or the default sentinel"
-    )
+) -> MemoryGuardLimits:
+    if limits is _DEFAULT_MEMORY_LIMITS or limits is None:
+        resolved = default_memory_guard_limits()
+    elif isinstance(limits, MemoryGuardLimits):
+        resolved = limits
+    else:
+        raise TypeError(
+            "memory limits must be MemoryGuardLimits, None, or the default sentinel"
+        )
+    if not resolved.enabled:
+        return replace(resolved, enabled=True)
+    return resolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,36 +562,22 @@ def _run_check(
     start = time.monotonic()
     try:
         with slot_context:
-            if resolved_memory_limits is None:
-                proc = subprocess.run(
-                    check.cmd,
-                    cwd=cwd,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=check.timeout,
-                )
-                returncode = proc.returncode
-                stdout = proc.stdout
-                stderr = proc.stderr
-                status = _status_from_process_result(returncode=returncode)
-            else:
-                guarded = harness_memory_guard.guarded_completed_process(
-                    check.cmd,
-                    prefix="MOLT_CI_GATE",
-                    cwd=cwd,
-                    env=env,
-                    timeout=check.timeout,
-                    capture_output=True,
-                    text=True,
-                    limits=resolved_memory_limits,
-                )
-                returncode = guarded.returncode
-                stdout = guarded.stdout or ""
-                stderr = guarded.stderr or ""
-                status = _status_from_process_result(
-                    returncode=guarded.returncode,
-                )
+            guarded = harness_memory_guard.guarded_completed_process(
+                check.cmd,
+                prefix="MOLT_CI_GATE",
+                cwd=cwd,
+                env=env,
+                timeout=check.timeout,
+                capture_output=True,
+                text=True,
+                limits=resolved_memory_limits,
+            )
+            returncode = guarded.returncode
+            stdout = guarded.stdout or ""
+            stderr = guarded.stderr or ""
+            status = _status_from_process_result(
+                returncode=guarded.returncode,
+            )
         duration = time.monotonic() - start
         return CheckResult(
             name=check.name,
@@ -652,8 +642,10 @@ def _parallel_workers_for_memory_guard(
     memory_limits: MemoryGuardLimits | None,
 ) -> int:
     requested = max(1, requested_workers)
-    if memory_limits is None or not memory_limits.enabled:
-        return requested
+    if memory_limits is None:
+        memory_limits = default_memory_guard_limits()
+    if not memory_limits.enabled:
+        memory_limits = replace(memory_limits, enabled=True)
     current_limits = memory_limits.current_memory_limits()
     global_kb = (
         memory_limits.max_global_rss_kb
@@ -708,11 +700,7 @@ def run_gate(
                 requested_workers,
                 memory_limits=resolved_memory_limits,
             )
-            if (
-                max_workers < requested_workers
-                and not json_out
-                and resolved_memory_limits is not None
-            ):
+            if max_workers < requested_workers and not json_out:
                 print(
                     "[MEMORY-GUARD] "
                     f"Clamping ci_gate workers from {requested_workers} to "
@@ -779,7 +767,7 @@ def _background_process_kwargs(
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {"start_new_session": True}
     resolved_limits = _resolve_memory_limits(limits)
-    if resolved_limits is None or not resolved_limits.enabled or os.name != "posix":
+    if os.name != "posix":
         return kwargs
     kwargs.update(harness_memory_guard.batch_process_group_kwargs(resolved_limits))
     return kwargs
@@ -869,9 +857,7 @@ def _results_to_dict(results: list[CheckResult]) -> dict[str, Any]:
     }
 
 
-def _memory_guard_limits_from_args(args: argparse.Namespace) -> MemoryGuardLimits | None:
-    if args.no_memory_guard:
-        return None
+def _memory_guard_limits_from_args(args: argparse.Namespace) -> MemoryGuardLimits:
     env = os.environ.copy()
     if args.max_rss_gb is not None:
         env["MOLT_CI_GATE_MAX_PROCESS_RSS_GB"] = str(args.max_rss_gb)
@@ -882,7 +868,9 @@ def _memory_guard_limits_from_args(args: argparse.Namespace) -> MemoryGuardLimit
     if args.child_rlimit_gb is not None:
         env["MOLT_CI_GATE_CHILD_RLIMIT_GB"] = str(args.child_rlimit_gb)
     env["MOLT_CI_GATE_MEMORY_GUARD_POLL_SEC"] = str(args.memory_poll_interval)
-    return harness_memory_guard.limits_from_env("MOLT_CI_GATE", env)
+    return _resolve_memory_limits(
+        harness_memory_guard.limits_from_env("MOLT_CI_GATE", env)
+    )
 
 
 def main() -> None:
@@ -927,11 +915,6 @@ def main() -> None:
         "--background",
         action="store_true",
         help="Launch the selected gate in the background and write logs under logs/ci_gate/.",
-    )
-    parser.add_argument(
-        "--no-memory-guard",
-        action="store_true",
-        help="Disable per-check process-tree RSS limits. Intended for debugging this gate only.",
     )
     parser.add_argument(
         "--max-rss-gb",
@@ -1031,8 +1014,6 @@ def main() -> None:
             mode_flags.append("parallel")
         if args.dry_run:
             mode_flags.append("dry-run")
-        if memory_limits is None:
-            mode_flags.append("unguarded")
         mode_str = f" [{', '.join(mode_flags)}]" if mode_flags else ""
         print(bold(f"Molt CI Gate -- tier {tier_label}{mode_str}"))
 
