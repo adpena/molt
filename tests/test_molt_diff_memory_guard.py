@@ -205,20 +205,23 @@ def test_diff_memory_guard_defaults_are_adaptive(monkeypatch) -> None:
 
     assert config.global_gb == pytest.approx(85.6704)
     assert config.max_tree_gb == pytest.approx(51.40224)
-    assert config.max_process_gb == pytest.approx(38.55168)
+    assert config.max_process_gb == pytest.approx(43.691904)
+    assert config.child_rlimit_gb == pytest.approx(102.80448)
 
 
-def test_diff_rlimit_defaults_to_adaptive_process_budget(monkeypatch) -> None:
+def test_diff_rlimit_defaults_to_adaptive_child_budget(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_RLIMIT_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_RLIMIT_MB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_CHILD_RLIMIT_GB", raising=False)
 
     config = module._diff_memory_guard_config()
 
-    assert module._memory_limit_bytes() == config.max_process_kb * 1024
-    assert module._memory_limit_bytes() > 10 * 1024 * 1024 * 1024
+    assert config.child_rlimit_gb == pytest.approx(config.max_tree_gb * 2.0)
+    assert module._memory_limit_bytes() == config.child_rlimit_kb * 1024
+    assert module._memory_limit_bytes() > config.max_process_kb * 1024
 
 
 def test_diff_measure_rss_is_enabled_by_default(monkeypatch) -> None:
@@ -239,6 +242,7 @@ def test_popen_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", "0.5")
     monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", "1.0")
     monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", "2.0")
+    monkeypatch.setenv("MOLT_DIFF_CHILD_RLIMIT_GB", "0.5")
     monkeypatch.setattr(
         module.memory_guard,
         "_apply_child_resource_limit",
@@ -251,6 +255,18 @@ def test_popen_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
     assert callable(kwargs["preexec_fn"])
     kwargs["preexec_fn"]()
     assert applied == [512 * 1024]
+
+
+def test_popen_group_kwargs_can_disable_child_rlimit(monkeypatch) -> None:
+    module = _load_diff_module()
+    if module.os.name == "nt":
+        return
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "1")
+    monkeypatch.setenv("MOLT_DIFF_CHILD_RLIMIT_GB", "0")
+
+    kwargs = module._popen_group_kwargs()
+
+    assert kwargs == {"start_new_session": True}
 
 
 def test_popen_group_kwargs_omits_child_rlimit_when_guard_disabled(monkeypatch) -> None:

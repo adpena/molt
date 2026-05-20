@@ -319,6 +319,9 @@ def run_wasm_linked(
     ):
         env.pop(key, None)
     env.setdefault("NODE_NO_WARNINGS", "1")
+    # Node/V8 reserves large WebAssembly virtual-memory ranges during
+    # instantiation; RSS remains bounded by the shared harness guard.
+    env.setdefault("MOLT_WASM_TEST_CHILD_RLIMIT_GB", "16")
     if env_overrides:
         env.update(env_overrides)
     node_bin = _select_node_binary()

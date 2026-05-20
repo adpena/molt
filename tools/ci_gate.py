@@ -126,6 +126,7 @@ class MemoryGuardLimits:
     max_total_rss_gb: float
     max_global_rss_gb: float
     poll_interval: float
+    child_rlimit_gb: float | None = None
 
     @property
     def max_rss_kb(self) -> int:
@@ -138,6 +139,18 @@ class MemoryGuardLimits:
     @property
     def max_global_rss_kb(self) -> int:
         return memory_guard.max_global_rss_kb_from_gb(self.max_global_rss_gb)
+
+    @property
+    def child_rlimit_kb(self) -> int | None:
+        child_rlimit_gb = self.child_rlimit_gb
+        if child_rlimit_gb is None:
+            child_rlimit_gb = memory_guard.default_child_rlimit_gb(
+                max_process_rss_gb=self.max_rss_gb,
+                max_total_rss_gb=self.max_total_rss_gb,
+            )
+        if child_rlimit_gb <= 0:
+            return None
+        return memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb)
 
 
 _DEFAULT_MEMORY_LIMITS = object()
@@ -155,6 +168,10 @@ def default_memory_guard_limits(
         max_total_rss_gb=budget.max_total_rss_gb,
         max_global_rss_gb=budget.max_global_rss_gb,
         poll_interval=poll_interval,
+        child_rlimit_gb=memory_guard.default_child_rlimit_gb(
+            max_process_rss_gb=budget.max_process_rss_gb,
+            max_total_rss_gb=budget.max_total_rss_gb,
+        ),
     )
 
 
@@ -596,7 +613,7 @@ def _run_check(
                     env=env,
                     timeout=check.timeout,
                     capture_output=True,
-                    child_rlimit_kb=resolved_memory_limits.max_rss_kb,
+                    child_rlimit_kb=resolved_memory_limits.child_rlimit_kb,
                 )
                 returncode = guarded.returncode
                 stdout = guarded.stdout
@@ -788,7 +805,9 @@ def _background_process_kwargs(
     resolved_limits = _resolve_memory_limits(limits)
     if resolved_limits is None or os.name != "posix":
         return kwargs
-    limit_kb = resolved_limits.max_rss_kb
+    limit_kb = resolved_limits.child_rlimit_kb
+    if limit_kb is None:
+        return kwargs
 
     def apply_limit() -> None:
         memory_guard._apply_child_resource_limit(limit_kb)
@@ -961,6 +980,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--child-rlimit-gb",
+        type=float,
+        default=None,
+        help=(
+            "Apply this OS resource limit to each direct check child before exec; "
+            "defaults to an adaptive virtual-memory clamp. Set <=0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--memory-poll-interval",
         type=float,
         default=memory_guard.DEFAULT_POLL_INTERVAL_SEC,
@@ -1018,12 +1046,25 @@ def main() -> None:
                     else args.max_global_rss_gb
                 ),
                 poll_interval=args.memory_poll_interval,
+                child_rlimit_gb=(
+                    memory_guard.default_child_rlimit_gb(
+                        max_process_rss_gb=adaptive_budget.max_process_rss_gb
+                        if args.max_rss_gb is None
+                        else args.max_rss_gb,
+                        max_total_rss_gb=adaptive_budget.max_total_rss_gb
+                        if args.max_total_rss_gb is None
+                        else args.max_total_rss_gb,
+                    )
+                    if args.child_rlimit_gb is None
+                    else args.child_rlimit_gb
+                ),
             )
         )
         if memory_limits is not None:
             memory_limits.max_rss_kb
             memory_limits.max_total_rss_kb
             memory_limits.max_global_rss_kb
+            memory_limits.child_rlimit_kb
             if memory_limits.poll_interval <= 0:
                 raise ValueError("memory poll interval must be greater than 0")
     except ValueError as exc:
