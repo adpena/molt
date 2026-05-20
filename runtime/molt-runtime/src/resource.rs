@@ -368,15 +368,16 @@ impl ResourceTracker for LimitedTracker {
 
     #[inline(always)]
     fn on_grow(&mut self, additional_bytes: usize) -> Result<(), ResourceError> {
-        self.memory_used = self.memory_used.saturating_add(additional_bytes);
+        let new_memory = self.memory_used.saturating_add(additional_bytes);
         if let Some(limit) = self.max_memory
-            && self.memory_used > limit
+            && new_memory > limit
         {
             return Err(ResourceError::Memory {
-                used: self.memory_used,
+                used: new_memory,
                 limit,
             });
         }
+        self.memory_used = new_memory;
         Ok(())
     }
 
@@ -497,6 +498,18 @@ type TrackerFactory = fn() -> Box<dyn ResourceTracker>;
 /// to drop a per-test memory cap before the next test runs on the same
 /// thread pool.
 static GLOBAL_TRACKER_FACTORY: RwLock<Option<TrackerFactory>> = RwLock::new(None);
+static GLOBAL_LIMITED_TRACKER_LIMITS: RwLock<Option<ResourceLimits>> = RwLock::new(None);
+
+fn global_limited_tracker_factory() -> Box<dyn ResourceTracker> {
+    let limits = match GLOBAL_LIMITED_TRACKER_LIMITS.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    match limits {
+        Some(limits) => Box::new(LimitedTracker::new(&limits)),
+        None => Box::new(UnlimitedTracker),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Thread-local accessor
@@ -545,6 +558,22 @@ pub fn with_tracker<R>(f: impl FnOnce(&mut dyn ResourceTracker) -> R) -> R {
     })
 }
 
+/// Best-effort tracker access for destructor paths.
+///
+/// Rust may run thread-local destructors in an order where the resource tracker
+/// TLS has already been destroyed. Normal runtime code should use
+/// [`with_tracker`] and fail loudly on invalid re-entrancy; destructors use this
+/// helper so cleanup cannot panic during thread teardown.
+#[inline(always)]
+pub fn try_with_tracker<R>(f: impl FnOnce(&mut dyn ResourceTracker) -> R) -> Option<R> {
+    TRACKER
+        .try_with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            f(&mut **borrow)
+        })
+        .ok()
+}
+
 /// Replace the thread-local resource tracker.
 ///
 /// Call this at WASM host initialization time to install a [`LimitedTracker`]
@@ -590,6 +619,24 @@ pub fn set_global_tracker_factory(factory: TrackerFactory) {
     }
 }
 
+/// Install one [`ResourceLimits`] configuration for the current thread and
+/// for all future runtime worker threads.
+///
+/// This is the runtime-facing path for manifest/environment limits. Calling
+/// [`set_tracker`] alone only affects the current thread; workers spawned after
+/// runtime initialization would otherwise fall back to [`UnlimitedTracker`].
+pub fn install_global_limited_tracker(limits: ResourceLimits) {
+    {
+        let mut guard = match GLOBAL_LIMITED_TRACKER_LIMITS.write() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Some(limits.clone());
+    }
+    set_global_tracker_factory(global_limited_tracker_factory);
+    set_tracker(Box::new(LimitedTracker::new(&limits)));
+}
+
 /// Remove the global tracker factory installed by
 /// [`set_global_tracker_factory`].  Threads spawned after this call fall
 /// back to [`UnlimitedTracker`].
@@ -603,6 +650,11 @@ pub fn clear_global_tracker_factory() {
         Err(poisoned) => poisoned.into_inner(),
     };
     *guard = None;
+    let mut limits_guard = match GLOBAL_LIMITED_TRACKER_LIMITS.write() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *limits_guard = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -807,6 +859,25 @@ mod tests {
     }
 
     #[test]
+    fn denied_grow_does_not_poison_tracker_state() {
+        let mut t = make_limited(ResourceLimits {
+            max_memory: Some(2048),
+            ..Default::default()
+        });
+        assert!(t.on_allocate(1024).is_ok());
+        assert!(t.on_grow(2048).is_err());
+        assert!(t.on_grow(1024).is_ok());
+        let err = t.on_grow(1).unwrap_err();
+        assert!(matches!(
+            err,
+            ResourceError::Memory {
+                used: 2049,
+                limit: 2048
+            }
+        ));
+    }
+
+    #[test]
     fn time_check_rate_limited() {
         let mut t = make_limited(ResourceLimits {
             max_duration: Some(Duration::from_millis(0)),
@@ -972,6 +1043,11 @@ mod tests {
 
     #[test]
     fn global_tracker_factory_inherited_by_spawned_thread() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_global_tracker_factory();
+        set_tracker(Box::new(UnlimitedTracker));
         // Install a factory that creates a LimitedTracker with a tiny
         // memory cap.  Threads spawned after this call should inherit it.
         fn factory() -> Box<dyn ResourceTracker> {
@@ -1000,5 +1076,28 @@ mod tests {
             "spawned thread should have inherited the limited tracker \
              from the global factory, but allocation of 256 bytes succeeded"
         );
+    }
+
+    #[test]
+    fn installed_global_limited_tracker_applies_current_and_spawned_threads() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_global_tracker_factory();
+        set_tracker(Box::new(UnlimitedTracker));
+        install_global_limited_tracker(ResourceLimits {
+            max_memory: Some(128),
+            ..Default::default()
+        });
+
+        let current_result = with_tracker(|t| t.on_allocate(256));
+        let handle = std::thread::spawn(|| with_tracker(|t| t.on_allocate(256)));
+        let spawned_result = handle.join().expect("child thread panicked");
+
+        clear_global_tracker_factory();
+        set_tracker(Box::new(UnlimitedTracker));
+
+        assert!(current_result.is_err());
+        assert!(spawned_result.is_err());
     }
 }

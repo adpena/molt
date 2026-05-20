@@ -54,8 +54,6 @@ _HOST_RUNTIME_EXPORTS = frozenset(
     }
 )
 _BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS = {
-    "molt_resource_on_allocate": (),
-    "molt_resource_on_free": (),
     "molt_fast_list_append": (
         "molt_call_bind_ic",
         "molt_callargs_new",
