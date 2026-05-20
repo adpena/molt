@@ -493,6 +493,99 @@ def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
     ), "main lowering should not hardwire zipfile._path.Path.__init__ for pathlib.Path"
 
 
+def _counter_known_classes() -> dict[str, dict[str, object]]:
+    return {
+        "Counter": {
+            "methods": {},
+            "fields": {"_handle": 0},
+            "mro": ["Counter", "object"],
+            "static": True,
+            "size": 8,
+        }
+    }
+
+
+def test_imported_counter_list_constructor_uses_intrinsic_handle_path() -> None:
+    gen = SimpleTIRGenerator(
+        known_classes=_counter_known_classes(),
+        known_modules={"collections"},
+        stdlib_allowlist={"collections"},
+    )
+    gen.visit(
+        ast.parse(
+            "from collections import Counter\n"
+            'words = "a b a".split()\n'
+            "c = Counter(words)\n"
+        )
+    )
+    main_ops = next(
+        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+    )
+
+    assert any(
+        op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_counter_from_iterable"
+        for op in main_ops
+    )
+    assert any(op.get("kind") == "object_new_bound" for op in main_ops)
+    assert any(
+        op.get("kind") == "set_attr_generic_obj" and op.get("s_value") == "_handle"
+        for op in main_ops
+    )
+    assert all(op.get("kind") != "call_bind" for op in main_ops)
+
+
+def test_module_counter_list_constructor_uses_intrinsic_handle_path() -> None:
+    gen = SimpleTIRGenerator(
+        known_classes=_counter_known_classes(),
+        known_modules={"collections"},
+        stdlib_allowlist={"collections"},
+    )
+    gen.visit(
+        ast.parse(
+            "import collections\n"
+            'words = "a b a".split()\n'
+            "c = collections.Counter(words)\n"
+        )
+    )
+    main_ops = next(
+        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+    )
+
+    assert any(
+        op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_counter_from_iterable"
+        for op in main_ops
+    )
+    assert any(op.get("kind") == "object_new_bound" for op in main_ops)
+    assert any(
+        op.get("kind") == "set_attr_generic_obj" and op.get("s_value") == "_handle"
+        for op in main_ops
+    )
+    assert all(op.get("kind") != "call_bind" for op in main_ops)
+
+
+def test_counter_string_constructor_keeps_general_constructor_path() -> None:
+    gen = SimpleTIRGenerator(
+        known_classes=_counter_known_classes(),
+        known_modules={"collections"},
+        stdlib_allowlist={"collections"},
+    )
+    gen.visit(ast.parse('from collections import Counter\nc = Counter("aba")\n'))
+    main_ops = next(
+        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+    )
+
+    assert all(
+        not (
+            op.get("kind") == "builtin_func"
+            and op.get("s_value") == "molt_counter_from_iterable"
+        )
+        for op in main_ops
+    )
+    assert all(op.get("kind") != "object_new_bound" for op in main_ops)
+
+
 def test_dotted_import_alias_uses_runtime_module_import_when_parent_allowlisted() -> (
     None
 ):
