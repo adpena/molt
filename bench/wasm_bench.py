@@ -7,7 +7,7 @@ time and binary size, and writes a JSON report suitable for CI consumption.
 Usage::
 
     uv run python bench/wasm_bench.py
-    uv run python bench/wasm_bench.py --out bench/wasm_baseline.json
+    uv run python bench/wasm_bench.py --out bench/results/wasm_baseline.json
     uv run python bench/wasm_bench.py --samples 5 --programs examples/hello.py
 """
 
@@ -18,17 +18,23 @@ import json
 import os
 import platform
 import statistics
-import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = ROOT / "tools"
+BENCH_RESULTS_DIR = ROOT / "bench" / "results"
+BENCH_TMP_ROOT = ROOT / "tmp" / "bench" / "wasm"
+DEFAULT_OUTPUT_PATH = BENCH_RESULTS_DIR / "wasm_baseline.json"
 
 # Make tools/ importable for wasm_optimize
-sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 DEFAULT_PROGRAMS: list[str] = [
     "examples/hello.py",
@@ -147,40 +153,71 @@ def _base_env() -> dict[str, str]:
     env["PYTHONPATH"] = str(ROOT / "src")
     env.setdefault("MOLT_EXT_ROOT", str(ROOT))
     env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
+    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+    env.setdefault("MOLT_CACHE", str(ROOT / ".molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff"))
+    env.setdefault("MOLT_DIFF_TMPDIR", str(ROOT / "tmp"))
+    env.setdefault("UV_CACHE_DIR", str(ROOT / ".uv-cache"))
+    env.setdefault("TMPDIR", str(ROOT / "tmp"))
     return env
 
 
-def _compile_wasm(src: Path, out_dir: Path) -> CompileResult:
+def _run_guarded(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    cwd: Path = ROOT,
+    timeout: float | None = None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> harness_memory_guard.GuardedCompletedProcess:
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_BENCH",
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+        limits=resolved_limits,
+    )
+
+
+def _compile_wasm(
+    src: Path,
+    out_dir: Path,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> CompileResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     env = _base_env()
     env["MOLT_WASM_LINKED"] = "0"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
     t0 = time.monotonic()
-    try:
-        r = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "molt.cli",
-                "build",
-                str(src),
-                "--target",
-                "wasm",
-                "--emit",
-                "wasm",
-                "--out-dir",
-                str(out_dir),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        return CompileResult(ok=False, error="timeout")
+    r = _run_guarded(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--target",
+            "wasm",
+            "--emit",
+            "wasm",
+            "--out-dir",
+            str(out_dir),
+        ],
+        env=env,
+        timeout=120,
+        limits=limits,
+    )
     elapsed = time.monotonic() - t0
+    if r.elapsed_s is not None:
+        elapsed = r.elapsed_s
+    if r.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
+        return CompileResult(ok=False, elapsed_s=elapsed, error="timeout")
     wasm = out_dir / "output.wasm"
     if r.returncode != 0 or not wasm.exists():
         return CompileResult(
@@ -189,32 +226,36 @@ def _compile_wasm(src: Path, out_dir: Path) -> CompileResult:
     return CompileResult(ok=True, elapsed_s=elapsed, size_bytes=wasm.stat().st_size)
 
 
-def _compile_native(src: Path, out_dir: Path) -> CompileResult:
+def _compile_native(
+    src: Path,
+    out_dir: Path,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> CompileResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     env = _base_env()
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
     t0 = time.monotonic()
-    try:
-        r = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "molt.cli",
-                "build",
-                str(src),
-                "--out-dir",
-                str(out_dir),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        return CompileResult(ok=False, error="timeout")
+    r = _run_guarded(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--out-dir",
+            str(out_dir),
+        ],
+        env=env,
+        timeout=120,
+        limits=limits,
+    )
     elapsed = time.monotonic() - t0
+    if r.elapsed_s is not None:
+        elapsed = r.elapsed_s
+    if r.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
+        return CompileResult(ok=False, elapsed_s=elapsed, error="timeout")
     if r.returncode != 0:
         return CompileResult(
             ok=False, elapsed_s=elapsed, error=(r.stderr or r.stdout)[:300]
@@ -248,9 +289,10 @@ def run_benchmarks(
     samples: int = 3,
     skip_native: bool = False,
     do_optimize: bool = False,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> list[BenchEntry]:
-    import tempfile
-
+    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH")
     entries: list[BenchEntry] = []
     for prog_path in programs:
         src = ROOT / prog_path
@@ -262,9 +304,12 @@ def run_benchmarks(
         print(f"  {name}: ", end="", flush=True)
 
         # WASM samples
-        for i in range(samples):
-            with tempfile.TemporaryDirectory(prefix=f"molt_wasm_{name}_") as td:
-                result = _compile_wasm(src, Path(td))
+        for _ in range(samples):
+            with tempfile.TemporaryDirectory(
+                prefix=f"molt_wasm_{name}_",
+                dir=BENCH_TMP_ROOT,
+            ) as td:
+                result = _compile_wasm(src, Path(td), limits=resolved_limits)
                 entry.wasm_samples.append(result)
         if entry.wasm_ok():
             print(
@@ -277,9 +322,12 @@ def run_benchmarks(
 
         # Optimization pass
         if do_optimize and entry.wasm_ok():
-            with tempfile.TemporaryDirectory(prefix=f"molt_opt_{name}_") as td:
+            with tempfile.TemporaryDirectory(
+                prefix=f"molt_opt_{name}_",
+                dir=BENCH_TMP_ROOT,
+            ) as td:
                 # Re-compile to get the .wasm in this temp dir
-                opt_result = _compile_wasm(src, Path(td))
+                opt_result = _compile_wasm(src, Path(td), limits=resolved_limits)
                 if opt_result.ok:
                     wasm_file = Path(td) / "output.wasm"
                     entry.optimize_result = _optimize_wasm(wasm_file, Path(td))
@@ -299,8 +347,13 @@ def run_benchmarks(
 
         # Native
         if not skip_native:
-            with tempfile.TemporaryDirectory(prefix=f"molt_native_{name}_") as td:
-                entry.native_result = _compile_native(src, Path(td))
+            with tempfile.TemporaryDirectory(
+                prefix=f"molt_native_{name}_",
+                dir=BENCH_TMP_ROOT,
+            ) as td:
+                entry.native_result = _compile_native(
+                    src, Path(td), limits=resolved_limits
+                )
             if entry.native_ok():
                 print(f"native={entry.native_size_kb():.1f}KB", end="")
             else:
@@ -318,19 +371,21 @@ def run_benchmarks(
     return entries
 
 
-def build_report(entries: list[BenchEntry]) -> dict[str, Any]:
+def build_report(
+    entries: list[BenchEntry],
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> dict[str, Any]:
     git_rev = ""
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-        )
-        if r.returncode == 0:
-            git_rev = r.stdout.strip()
-    except OSError:
-        pass
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH")
+    r = _run_guarded(
+        ["git", "rev-parse", "HEAD"],
+        env=_base_env(),
+        cwd=ROOT,
+        limits=resolved_limits,
+    )
+    if r.returncode == 0:
+        git_rev = r.stdout.strip()
 
     return {
         "schema_version": 1,
@@ -342,6 +397,7 @@ def build_report(entries: list[BenchEntry]) -> dict[str, Any]:
             "python": platform.python_version(),
         },
         "benchmarks": {e.name: e.to_dict() for e in entries},
+        "memory_guard": harness_memory_guard.limits_summary(resolved_limits),
         "notes": {
             "wasm_mode": "unlinked (MOLT_WASM_LINKED=0)",
             "native_mode": "default (Cranelift AOT)",
@@ -359,8 +415,8 @@ def main() -> None:
     parser.add_argument(
         "--out",
         type=Path,
-        default=ROOT / "bench" / "wasm_baseline.json",
-        help="Output JSON path (default: bench/wasm_baseline.json)",
+        default=DEFAULT_OUTPUT_PATH,
+        help="Output JSON path (default: bench/results/wasm_baseline.json)",
     )
     parser.add_argument(
         "--samples",
@@ -385,17 +441,27 @@ def main() -> None:
         help="Run wasm-opt on each WASM output and report size reduction",
     )
     args = parser.parse_args()
+    if args.samples <= 0:
+        parser.error("--samples must be positive")
 
     programs = args.programs if args.programs else DEFAULT_PROGRAMS
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
     print(f"Running WASM benchmarks ({len(programs)} programs, {args.samples} samples)")
-    entries = run_benchmarks(
-        programs,
-        samples=args.samples,
-        skip_native=args.skip_native,
-        do_optimize=args.optimize,
-    )
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=ROOT,
+        artifact_root=ROOT / "tmp" / "bench",
+        label="wasm_bench",
+        limits=limits,
+    ):
+        entries = run_benchmarks(
+            programs,
+            samples=args.samples,
+            skip_native=args.skip_native,
+            do_optimize=args.optimize,
+            limits=limits,
+        )
 
-    report = build_report(entries)
+    report = build_report(entries, limits=limits)
     out_path: Path = args.out
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2) + "\n")

@@ -14,15 +14,23 @@ Environment variables:
     MOLT_EXT_ROOT   Artifact root for molt compilation
 """
 
-import subprocess
-import time
-import sys
 import os
 import json
+import shlex
+import sys
+import time
 from pathlib import Path
 
 BENCH_DIR = Path(__file__).parent
 REPO_ROOT = BENCH_DIR.parent.parent
+TOOLS_ROOT = REPO_ROOT / "tools"
+RESULTS_DIR = REPO_ROOT / "bench" / "results" / "luau"
+TMP_ROOT = REPO_ROOT / "tmp" / "bench" / "luau"
+DEFAULT_RESULTS_PATH = RESULTS_DIR / "results.json"
+
+sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 BENCHMARKS = [
     "bench_fibonacci.py",
@@ -47,19 +55,97 @@ BENCHMARKS = [
 ]
 
 
-def run_cpython(bench_file: Path, runs: int = 3) -> tuple:
+def _base_env() -> dict[str, str]:
+    artifact_root = os.environ.get("MOLT_EXT_ROOT", str(REPO_ROOT))
+    cargo_target = os.environ.get("CARGO_TARGET_DIR", str(REPO_ROOT / "target"))
+    env = {
+        **os.environ,
+        "MOLT_EXT_ROOT": artifact_root,
+        "CARGO_TARGET_DIR": cargo_target,
+        "MOLT_DIFF_CARGO_TARGET_DIR": os.environ.get(
+            "MOLT_DIFF_CARGO_TARGET_DIR",
+            cargo_target,
+        ),
+        "MOLT_CACHE": os.environ.get("MOLT_CACHE", str(REPO_ROOT / ".molt_cache")),
+        "MOLT_DIFF_ROOT": os.environ.get(
+            "MOLT_DIFF_ROOT",
+            str(REPO_ROOT / "tmp" / "diff"),
+        ),
+        "MOLT_DIFF_TMPDIR": os.environ.get(
+            "MOLT_DIFF_TMPDIR",
+            str(REPO_ROOT / "tmp"),
+        ),
+        "UV_CACHE_DIR": os.environ.get(
+            "UV_CACHE_DIR",
+            str(REPO_ROOT / ".uv-cache"),
+        ),
+        "TMPDIR": os.environ.get("TMPDIR", str(REPO_ROOT / "tmp")),
+        "RUSTC_WRAPPER": "",
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+    return env
+
+
+def _command_parts(command: str) -> list[str]:
+    return shlex.split(command) if command.strip() else []
+
+
+def _run_guarded(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float | None = 120,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> harness_memory_guard.GuardedCompletedProcess:
+    run_env = env if env is not None else _base_env()
+    resolved_limits = limits or harness_memory_guard.limits_from_env(
+        "MOLT_BENCH",
+        run_env,
+    )
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_BENCH",
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=run_env,
+        limits=resolved_limits,
+    )
+
+
+def _elapsed_ms(
+    result: harness_memory_guard.GuardedCompletedProcess,
+    fallback_start: float,
+) -> float:
+    if result.elapsed_s is not None:
+        return result.elapsed_s * 1000
+    return (time.perf_counter() - fallback_start) * 1000
+
+
+def _luau_output_path(bench_file: Path) -> Path:
+    TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    return TMP_ROOT / f"{bench_file.stem}.luau"
+
+
+def run_cpython(
+    bench_file: Path,
+    runs: int = 3,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[float, str]:
     """Run benchmark with CPython, return (avg_time_ms, output)."""
     times = []
     output = ""
     for _ in range(runs):
         start = time.perf_counter()
-        result = subprocess.run(
+        result = _run_guarded(
             [sys.executable, str(bench_file)],
-            capture_output=True,
-            text=True,
+            env=_base_env(),
             timeout=120,
+            limits=limits,
         )
-        elapsed = (time.perf_counter() - start) * 1000
+        elapsed = _elapsed_ms(result, start)
         if result.returncode != 0:
             raise RuntimeError(f"CPython failed: {result.stderr[:200]}")
         times.append(elapsed)
@@ -67,22 +153,22 @@ def run_cpython(bench_file: Path, runs: int = 3) -> tuple:
     return sum(times) / len(times), output
 
 
-def compile_to_luau(bench_file: Path, molt_path: str) -> Path:
+def compile_to_luau(
+    bench_file: Path,
+    molt_cmd: str,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[Path | None, float, str]:
     """Compile Python to Luau via molt, return output path or None."""
-    out_path = bench_file.with_suffix(".luau")
-    artifact_root = os.environ.get("MOLT_EXT_ROOT", str(REPO_ROOT))
-    env = {
-        **os.environ,
-        "MOLT_EXT_ROOT": artifact_root,
-        "CARGO_TARGET_DIR": os.environ.get(
-            "CARGO_TARGET_DIR", os.path.join(artifact_root, "target")
-        ),
-        "RUSTC_WRAPPER": "",
-        "PYTHONPATH": str(REPO_ROOT / "src"),
-    }
-    result = subprocess.run(
-        [
-            molt_path,
+    out_path = _luau_output_path(bench_file)
+    cmd_parts = _command_parts(molt_cmd)
+    if not cmd_parts:
+        return None, 0.0, "empty Molt command"
+    env = _base_env()
+    start = time.perf_counter()
+    result = _run_guarded(
+        cmd_parts
+        + [
             "build",
             str(bench_file),
             "--target",
@@ -90,31 +176,40 @@ def compile_to_luau(bench_file: Path, molt_path: str) -> Path:
             "--output",
             str(out_path),
         ],
-        capture_output=True,
-        text=True,
-        timeout=120,
         env=env,
-        cwd=str(REPO_ROOT),
+        timeout=120,
+        limits=limits,
     )
+    elapsed_ms = _elapsed_ms(result, start)
     if result.returncode != 0:
-        print(f"  COMPILE FAILED: {result.stderr[:200]}")
-        return None
-    return out_path
+        return None, elapsed_ms, (result.stderr or result.stdout)[:200]
+    if not out_path.exists():
+        return None, elapsed_ms, f"missing Luau output: {out_path}"
+    return out_path, elapsed_ms, ""
 
 
-def run_lune(luau_file: Path, lune_path: str, runs: int = 3) -> tuple:
+def run_lune(
+    luau_file: Path,
+    lune_cmd: str,
+    runs: int = 3,
+    *,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+) -> tuple[float, str]:
     """Run Luau benchmark via Lune, return (avg_time_ms, output)."""
+    cmd_parts = _command_parts(lune_cmd)
+    if not cmd_parts:
+        raise RuntimeError("empty Lune command")
     times = []
     output = ""
     for _ in range(runs):
         start = time.perf_counter()
-        result = subprocess.run(
-            [lune_path, "run", str(luau_file)],
-            capture_output=True,
-            text=True,
+        result = _run_guarded(
+            cmd_parts + ["run", str(luau_file)],
+            env=_base_env(),
             timeout=120,
+            limits=limits,
         )
-        elapsed = (time.perf_counter() - start) * 1000
+        elapsed = _elapsed_ms(result, start)
         if result.returncode != 0:
             raise RuntimeError(f"Lune failed: {result.stderr[:200]}")
         times.append(elapsed)
@@ -155,9 +250,14 @@ def main():
         "--benchmarks", nargs="*", help="Specific benchmark files to run"
     )
     args = parser.parse_args()
+    if args.runs <= 0:
+        parser.error("--runs must be positive")
 
     molt_cmd = resolve_molt_path()
-    lune_path = resolve_lune_path()
+    lune_cmd = resolve_lune_path()
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
+    TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     bench_list = args.benchmarks if args.benchmarks else BENCHMARKS
 
@@ -168,136 +268,117 @@ def main():
     print(f"CPython: {sys.version.split()[0]}")
     print("=" * 70)
 
-    for bench_name in bench_list:
-        bench_file = BENCH_DIR / bench_name
-        if not bench_file.exists():
-            print(f"\n[SKIP] {bench_name} -- file not found")
-            continue
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=REPO_ROOT / "tmp" / "bench",
+        label="luau_run_benchmarks",
+        limits=limits,
+    ):
+        for bench_name in bench_list:
+            bench_file = BENCH_DIR / bench_name
+            if not bench_file.exists():
+                print(f"\n[SKIP] {bench_name} -- file not found")
+                continue
 
-        print(f"\n--- {bench_name} ---")
+            print(f"\n--- {bench_name} ---")
 
-        # CPython
-        try:
-            cpython_time, cpython_output = run_cpython(bench_file, args.runs)
-            print(f"  CPython:    {cpython_time:8.1f} ms")
-        except Exception as e:
-            print(f"  CPython:    FAILED ({e})")
-            results.append(
-                {
-                    "name": bench_name,
-                    "cpython_ms": None,
-                    "luau_ms": None,
-                    "correct": False,
-                    "error": str(e),
-                }
+            # CPython
+            try:
+                cpython_time, cpython_output = run_cpython(
+                    bench_file,
+                    args.runs,
+                    limits=limits,
+                )
+                print(f"  CPython:    {cpython_time:8.1f} ms")
+            except Exception as e:
+                print(f"  CPython:    FAILED ({e})")
+                results.append(
+                    {
+                        "name": bench_name,
+                        "cpython_ms": None,
+                        "luau_ms": None,
+                        "correct": False,
+                        "error": str(e),
+                    }
+                )
+                continue
+
+            if args.cpython_only:
+                results.append(
+                    {
+                        "name": bench_name,
+                        "cpython_ms": round(cpython_time, 1),
+                        "luau_ms": None,
+                        "correct": None,
+                    }
+                )
+                continue
+
+            out_path, compile_time, compile_error = compile_to_luau(
+                bench_file,
+                molt_cmd,
+                limits=limits,
             )
-            continue
+            if out_path is None:
+                print(f"  COMPILE FAILED ({compile_time:.0f} ms): {compile_error}")
+                results.append(
+                    {
+                        "name": bench_name,
+                        "cpython_ms": round(cpython_time, 1),
+                        "luau_ms": None,
+                        "correct": False,
+                        "compile_ms": round(compile_time, 1),
+                        "error": "compile failed",
+                    }
+                )
+                continue
 
-        if args.cpython_only:
-            results.append(
-                {
-                    "name": bench_name,
-                    "cpython_ms": round(cpython_time, 1),
-                    "luau_ms": None,
-                    "correct": None,
-                }
-            )
-            continue
+            luau_lines = len(out_path.read_text().splitlines())
+            print(f"  Compiled:   {compile_time:8.0f} ms  ({luau_lines} lines of Luau)")
 
-        # Compile to Luau
-        # Use uv run if molt_cmd contains spaces (i.e. "uv run python -m molt.cli")
-        if " " in molt_cmd:
-            cmd_parts = molt_cmd.split()
-        else:
-            cmd_parts = [molt_cmd]
+            # Run Luau via Lune
+            try:
+                luau_time, luau_output = run_lune(
+                    out_path,
+                    lune_cmd,
+                    args.runs,
+                    limits=limits,
+                )
+                correct = luau_output == cpython_output
+                speedup = cpython_time / luau_time if luau_time > 0 else 0
 
-        out_path = bench_file.with_suffix(".luau")
-        artifact_root = os.environ.get("MOLT_EXT_ROOT", str(REPO_ROOT))
-        env = {
-            **os.environ,
-            "MOLT_EXT_ROOT": artifact_root,
-            "CARGO_TARGET_DIR": os.environ.get(
-                "CARGO_TARGET_DIR", os.path.join(artifact_root, "target")
-            ),
-            "RUSTC_WRAPPER": "",
-            "PYTHONPATH": str(REPO_ROOT / "src"),
-        }
+                status = "PASS" if correct else "FAIL (output mismatch)"
+                print(
+                    f"  Luau:       {luau_time:8.1f} ms  "
+                    f"({speedup:.2f}x vs CPython) [{status}]"
+                )
 
-        compile_start = time.perf_counter()
-        compile_result = subprocess.run(
-            cmd_parts
-            + [
-                "build",
-                str(bench_file),
-                "--target",
-                "luau",
-                "--output",
-                str(out_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-            cwd=str(REPO_ROOT),
-        )
-        compile_time = (time.perf_counter() - compile_start) * 1000
+                if not correct:
+                    print(f"  Expected: {cpython_output[:80]}")
+                    print(f"  Got:      {luau_output[:80]}")
 
-        if compile_result.returncode != 0:
-            print(
-                f"  COMPILE FAILED ({compile_time:.0f} ms): {compile_result.stderr[:200]}"
-            )
-            results.append(
-                {
-                    "name": bench_name,
-                    "cpython_ms": round(cpython_time, 1),
-                    "luau_ms": None,
-                    "correct": False,
-                    "compile_ms": round(compile_time, 1),
-                    "error": "compile failed",
-                }
-            )
-            continue
-
-        luau_lines = len(out_path.read_text().splitlines())
-        print(f"  Compiled:   {compile_time:8.0f} ms  ({luau_lines} lines of Luau)")
-
-        # Run Luau via Lune
-        try:
-            luau_time, luau_output = run_lune(out_path, lune_path, args.runs)
-            correct = luau_output == cpython_output
-            speedup = cpython_time / luau_time if luau_time > 0 else 0
-
-            status = "PASS" if correct else "FAIL (output mismatch)"
-            print(
-                f"  Luau:       {luau_time:8.1f} ms  ({speedup:.2f}x vs CPython) [{status}]"
-            )
-
-            if not correct:
-                print(f"  Expected: {cpython_output[:80]}")
-                print(f"  Got:      {luau_output[:80]}")
-
-            results.append(
-                {
-                    "name": bench_name,
-                    "cpython_ms": round(cpython_time, 1),
-                    "luau_ms": round(luau_time, 1),
-                    "speedup": round(speedup, 2),
-                    "correct": correct,
-                    "compile_ms": round(compile_time, 1),
-                    "luau_lines": luau_lines,
-                }
-            )
-        except Exception as e:
-            print(f"  Luau:       FAILED ({e})")
-            results.append(
-                {
-                    "name": bench_name,
-                    "cpython_ms": round(cpython_time, 1),
-                    "luau_ms": None,
-                    "correct": False,
-                    "error": str(e),
-                }
-            )
+                results.append(
+                    {
+                        "name": bench_name,
+                        "cpython_ms": round(cpython_time, 1),
+                        "luau_ms": round(luau_time, 1),
+                        "speedup": round(speedup, 2),
+                        "correct": correct,
+                        "compile_ms": round(compile_time, 1),
+                        "luau_lines": luau_lines,
+                    }
+                )
+            except Exception as e:
+                print(f"  Luau:       FAILED ({e})")
+                results.append(
+                    {
+                        "name": bench_name,
+                        "cpython_ms": round(cpython_time, 1),
+                        "luau_ms": None,
+                        "correct": False,
+                        "error": str(e),
+                    }
+                )
 
     # Summary table
     print("\n" + "=" * 70)
@@ -330,7 +411,7 @@ def main():
         print(f"{r['name']:<25} {cp_str} {luau_str} {speedup_str} {correct_str:>8}")
 
     # Write JSON results
-    json_path = BENCH_DIR / "results.json"
+    json_path = DEFAULT_RESULTS_PATH
     with open(json_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nResults written to {json_path}")
