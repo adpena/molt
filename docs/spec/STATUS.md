@@ -206,6 +206,13 @@ numeric construction. Evidence:
 `bench/results/json_roundtrip_baseline_20260520.json` and
 `bench/results/json_roundtrip_byte_parser_20260520.json`.
 
+Focused Counter recheck: `bench_counter_words.py` moved from the generated
+full-run `0.31x` CPython entry to `1.0341x` CPython on current `main` after
+the compiler lowered exact `collections.Counter(list|tuple)` construction plus
+exact Counter indexing/length to Rust intrinsics. The focused run preserved
+output parity and recorded `git_rev=a5ccd8d5e`; evidence is in
+`bench/results/counter_words_head_20260520.json`.
+
 ## Deep Links
 
 - Compatibility architecture: [areas/compat/README.md](areas/compat/README.md)
