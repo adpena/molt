@@ -135,10 +135,7 @@ def _external_root() -> Path | None:
 
 def _default_output_root() -> Path:
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    external = _external_root()
-    if external is not None:
-        return external / "benchmarks" / "friends" / timestamp
-    return Path("bench/results/friends") / timestamp
+    return REPO_ROOT / "bench" / "results" / "friends" / timestamp
 
 
 def _load_manifest(path: Path) -> tuple[dict[str, Any], list[SuiteSpec]]:
@@ -806,7 +803,7 @@ def _parser() -> argparse.ArgumentParser:
         "--output-root",
         type=Path,
         default=None,
-        help="Output root directory. Default prefers external volume when present.",
+        help="Output root directory. Default: bench/results/friends/<timestamp>.",
     )
     parser.add_argument(
         "--repos-root",

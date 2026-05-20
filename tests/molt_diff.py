@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from tools.batch_compile_client import BatchCompileServerClient
-from tools import memory_guard
+from tools import harness_memory_guard, memory_guard
 
 _ACTIVE_CHILD_PIDS: set[int] = set()
 _SIGNAL_HANDLERS_INSTALLED = False
@@ -38,11 +38,6 @@ _DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV = "MOLT_DIFF_MEMORY_GUARD_EVENTS_JSONL"
 _DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV = (
     "MOLT_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL"
 )
-_DIFF_MEMORY_GUARD_HARD_GLOBAL_GB = memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB
-_DIFF_MEMORY_GUARD_DEFAULT_GLOBAL_GB = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
-_DIFF_MEMORY_GUARD_DEFAULT_TREE_GB = memory_guard.DEFAULT_MAX_TOTAL_RSS_GB
-_DIFF_MEMORY_GUARD_DEFAULT_PROCESS_GB = memory_guard.DEFAULT_MAX_RSS_GB
-_DIFF_MEMORY_GUARD_DEFAULT_POLL_SEC = 0.10
 _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_INTERVAL_SEC = 1.0
 _DIFF_MEMORY_GUARD_DEFAULT_EVENT_MAX_MB = 1.0
 _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_MAX_MB = 2.0
@@ -1499,14 +1494,6 @@ def _parse_float_env(name: str) -> float | None:
         return None
 
 
-def _parse_first_float_env(names: Sequence[str]) -> float | None:
-    for name in names:
-        value = _parse_float_env(name)
-        if value is not None:
-            return value
-    return None
-
-
 @dataclass(frozen=True, slots=True)
 class _DiffMemoryGuardConfig:
     max_process_kb: int
@@ -1534,10 +1521,6 @@ class _DiffMemoryGuardConfig:
         return self.child_rlimit_kb / (1024 * 1024)
 
 
-def _gb_to_kb(value: float) -> int:
-    return max(1, int(value * 1024 * 1024))
-
-
 def _bounded_positive_float_env(
     name: str, *, default: float, upper: float | None = None
 ) -> float:
@@ -1549,83 +1532,19 @@ def _bounded_positive_float_env(
     return max(0.001, value)
 
 
-def _default_global_memory_guard_gb() -> float:
-    return memory_guard.adaptive_memory_budget("MOLT_DIFF").max_global_rss_gb
-
-
 def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
-    adaptive_budget = memory_guard.adaptive_memory_budget("MOLT_DIFF")
-    global_gb = _bounded_positive_float_env(
-        "MOLT_DIFF_GLOBAL_RSS_LIMIT_GB",
-        default=adaptive_budget.max_global_rss_gb,
-        upper=memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
-    )
-    legacy_global = _parse_float_env("MOLT_DIFF_MAX_GLOBAL_RSS_GB")
-    if legacy_global is not None and legacy_global > 0:
-        global_gb = min(
-            global_gb,
-            legacy_global,
-            memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
-        )
-
-    default_tree_gb = min(
-        adaptive_budget.max_total_rss_gb,
-        max(0.5, global_gb * 0.60),
-    )
-    tree_gb = _bounded_positive_float_env(
-        "MOLT_DIFF_MAX_TREE_RSS_GB",
-        default=default_tree_gb,
-        upper=global_gb,
-    )
-    legacy_tree_gb = _parse_float_env("MOLT_DIFF_MAX_TOTAL_RSS_GB")
-    if legacy_tree_gb is not None and 0 < legacy_tree_gb < tree_gb:
-        tree_gb = legacy_tree_gb
-
-    default_process_gb = min(
-        adaptive_budget.max_process_rss_gb,
-        max(0.25, tree_gb * 0.85),
-    )
-    process_gb = _bounded_positive_float_env(
-        "MOLT_DIFF_MAX_PROCESS_RSS_GB",
-        default=default_process_gb,
-        upper=tree_gb,
-    )
-    default_child_rlimit_gb = memory_guard.default_child_rlimit_gb(
-        max_process_rss_gb=process_gb,
-        max_total_rss_gb=tree_gb,
-    )
-    child_rlimit_gb = _parse_first_float_env(
-        (
-            "MOLT_DIFF_CHILD_RLIMIT_GB",
-            "MOLT_DIFF_MAX_CHILD_RLIMIT_GB",
-            "MOLT_CHILD_RLIMIT_GB",
-            "MOLT_MAX_CHILD_RLIMIT_GB",
-        )
-    )
-    if child_rlimit_gb is None:
-        child_rlimit_gb = default_child_rlimit_gb
-    child_rlimit_kb = (
-        None
-        if child_rlimit_gb <= 0
-        else memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb)
-    )
-    poll_interval = _bounded_positive_float_env(
-        "MOLT_DIFF_MEMORY_GUARD_POLL_SEC",
-        default=_DIFF_MEMORY_GUARD_DEFAULT_POLL_SEC,
-        upper=2.0,
-    )
+    limits = harness_memory_guard.limits_from_env("MOLT_DIFF")
     return _DiffMemoryGuardConfig(
-        max_process_kb=_gb_to_kb(process_gb),
-        max_tree_kb=_gb_to_kb(tree_gb),
-        global_kb=_gb_to_kb(global_gb),
-        child_rlimit_kb=child_rlimit_kb,
-        poll_interval=max(0.01, poll_interval),
+        max_process_kb=limits.max_process_rss_kb,
+        max_tree_kb=limits.max_total_rss_kb,
+        global_kb=limits.max_global_rss_kb,
+        child_rlimit_kb=limits.child_rlimit_kb,
+        poll_interval=min(2.0, max(0.01, limits.poll_interval)),
     )
 
 
 def _diff_memory_guard_enabled() -> bool:
-    raw = os.environ.get("MOLT_DIFF_MEMORY_GUARD", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return harness_memory_guard.enabled_from_env("MOLT_DIFF")
 
 
 def _diff_memory_guard_sample_interval_sec() -> float:

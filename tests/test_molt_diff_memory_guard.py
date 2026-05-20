@@ -205,8 +205,57 @@ def test_diff_memory_guard_defaults_are_adaptive(monkeypatch) -> None:
 
     assert config.global_gb == pytest.approx(85.6704)
     assert config.max_tree_gb == pytest.approx(51.40224)
-    assert config.max_process_gb == pytest.approx(43.691904)
+    assert config.max_process_gb == pytest.approx(46.262016)
     assert config.child_rlimit_gb == pytest.approx(102.80448)
+
+
+def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "7")
+    monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "8")
+    monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "9")
+    monkeypatch.setenv("MOLT_CHILD_RLIMIT_GB", "10")
+
+    config = module._diff_memory_guard_config()
+
+    assert config.max_process_gb == pytest.approx(7)
+    assert config.max_tree_gb == pytest.approx(8)
+    assert config.global_gb == pytest.approx(9)
+    assert config.child_rlimit_gb == pytest.approx(10)
+
+
+def test_diff_memory_guard_family_overrides_parent_controls(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "7")
+    monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "8")
+    monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "9")
+    monkeypatch.setenv("MOLT_CHILD_RLIMIT_GB", "10")
+    monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", "3")
+    monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", "4")
+    monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", "5")
+    monkeypatch.setenv("MOLT_DIFF_CHILD_RLIMIT_GB", "6")
+
+    config = module._diff_memory_guard_config()
+
+    assert config.max_process_gb == pytest.approx(3)
+    assert config.max_tree_gb == pytest.approx(4)
+    assert config.global_gb == pytest.approx(5)
+    assert config.child_rlimit_gb == pytest.approx(6)
+
+
+def test_diff_memory_guard_global_disable_can_be_overridden(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_MEMORY_GUARD", "0")
+    monkeypatch.delenv("MOLT_DIFF_MEMORY_GUARD", raising=False)
+
+    assert module._diff_memory_guard_enabled() is False
+
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "1")
+    assert module._diff_memory_guard_enabled() is True
 
 
 def test_diff_rlimit_defaults_to_adaptive_child_budget(monkeypatch) -> None:
