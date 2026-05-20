@@ -15,6 +15,46 @@ bench_harness = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bench_harness)
 
 
+def test_bench_harness_run_cmd_uses_memory_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        calls.append({"cmd": cmd, **kwargs})
+        return bench_harness.harness_memory_guard.GuardedCompletedProcess(
+            cmd,
+            0,
+            "ok\n",
+            "",
+            elapsed_s=0.02,
+        )
+
+    monkeypatch.setattr(
+        bench_harness.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    stdout, stderr, returncode, elapsed = bench_harness.run_cmd(
+        ["python3", "--version"],
+        9.0,
+        cwd=tmp_path,
+    )
+
+    assert (stdout, stderr, returncode, elapsed) == ("ok\n", "", 0, 0.02)
+    call = calls[0]
+    assert call["cmd"] == ["python3", "--version"]
+    assert call["prefix"] == bench_harness.BENCH_MEMORY_PREFIX
+    assert call["cwd"] == tmp_path
+    assert call["capture_output"] is True
+    assert call["text"] is True
+    assert call["timeout"] == 9.0
+    assert call["env"]["MOLT_EXT_ROOT"] == str(bench_harness.REPO_ROOT)
+    assert call["env"]["CARGO_TARGET_DIR"] == str(bench_harness.REPO_ROOT / "target")
+    assert call["env"]["TMPDIR"] == str(bench_harness.REPO_ROOT / "tmp")
+
+
 def test_bench_harness_supports_explicit_molt_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -41,7 +81,31 @@ def test_bench_harness_supports_explicit_molt_profile(
     monkeypatch.setattr(
         bench_harness, "print_summary_table", lambda *args, **kwargs: None
     )
-    monkeypatch.setattr(bench_harness, "build_json_report", lambda *args, **kwargs: {})
+    report_calls: list[dict[str, object]] = []
+
+    def fake_build_json_report(*args, **kwargs):
+        report_calls.append(kwargs)
+        return {}
+
+    class FakeSentinel:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    sentinel_calls: list[dict[str, object]] = []
+
+    def fake_repo_process_sentinel(**kwargs):
+        sentinel_calls.append(kwargs)
+        return FakeSentinel()
+
+    monkeypatch.setattr(bench_harness, "build_json_report", fake_build_json_report)
+    monkeypatch.setattr(
+        bench_harness.harness_memory_guard,
+        "repo_process_sentinel",
+        fake_repo_process_sentinel,
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -67,6 +131,12 @@ def test_bench_harness_supports_explicit_molt_profile(
         "--profile",
         "release",
     ]
+    assert sentinel_calls[0]["repo_root"] == bench_harness.REPO_ROOT
+    assert sentinel_calls[0]["artifact_root"] == (
+        bench_harness.REPO_ROOT / "tmp" / "bench" / "harness"
+    )
+    assert sentinel_calls[0]["label"] == "bench_harness"
+    assert "memory_guard" in report_calls[0]
 
 
 def test_bench_harness_uses_canonical_defaults() -> None:

@@ -76,6 +76,48 @@ def test_main_returns_zero_on_success():
     assert callable(_run_profile)
 
 
+def test_run_harness_wraps_profile_in_repo_process_sentinel(monkeypatch, tmp_path):
+    import molt.harness as harness
+    from molt.harness_layers import HarnessConfig, LayerDef
+
+    events: list[str] = []
+    expected_limits = object()
+
+    def pass_layer(config):
+        events.append("layer")
+        return LayerResult(name="pass", status=LayerStatus.PASS, duration_s=0.1)
+
+    class FakeSentinel:
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            events.append("exit")
+
+    def fake_sentinel(project_root, *, limits=None):
+        assert project_root == tmp_path
+        assert limits is expected_limits
+        return FakeSentinel()
+
+    monkeypatch.setattr(harness, "harness_memory_limits", lambda: expected_limits)
+    monkeypatch.setattr(harness, "harness_repo_sentinel", fake_sentinel)
+    monkeypatch.setattr(
+        harness,
+        "get_layers_for_profile",
+        lambda profile: [LayerDef("pass", "quick", pass_layer)],
+    )
+
+    report = harness.run_harness(
+        "quick",
+        HarnessConfig(project_root=tmp_path),
+        check_baseline=False,
+    )
+
+    assert report.all_passed is True
+    assert events == ["enter", "layer", "exit"]
+
+
 def test_harness_module_importable():
     from molt.harness import run_harness, main, _run_profile
 

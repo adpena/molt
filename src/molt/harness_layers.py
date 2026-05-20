@@ -15,11 +15,72 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from molt.harness_report import LayerResult, LayerStatus
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - installed package without repo tools
+    harness_memory_guard = None  # type: ignore[assignment]
+
+HARNESS_MEMORY_PREFIX = "MOLT_HARNESS"
+
+
+def _require_harness_memory_guard():
+    if harness_memory_guard is None:
+        raise RuntimeError(
+            "memory guard unavailable: tools.harness_memory_guard is required "
+            "for molt harness subprocesses"
+        )
+    return harness_memory_guard
+
+
+def _merged_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+    run_env.setdefault("MOLT_EXT_ROOT", str(_REPO_ROOT))
+    run_env.setdefault("CARGO_TARGET_DIR", str(_REPO_ROOT / "target"))
+    run_env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", run_env["CARGO_TARGET_DIR"])
+    run_env.setdefault("MOLT_CACHE", str(_REPO_ROOT / ".molt_cache"))
+    run_env.setdefault("MOLT_DIFF_ROOT", str(_REPO_ROOT / "tmp" / "diff"))
+    run_env.setdefault("MOLT_DIFF_TMPDIR", str(_REPO_ROOT / "tmp"))
+    run_env.setdefault("UV_CACHE_DIR", str(_REPO_ROOT / ".uv-cache"))
+    run_env.setdefault("TMPDIR", str(_REPO_ROOT / "tmp"))
+    return run_env
+
+
+def harness_memory_limits(
+    env: dict[str, str] | None = None,
+) -> "harness_memory_guard.HarnessMemoryLimits":
+    guard = _require_harness_memory_guard()
+    return guard.limits_from_env(HARNESS_MEMORY_PREFIX, _merged_env(env))
+
+
+@contextmanager
+def harness_repo_sentinel(
+    project_root: Path,
+    *,
+    limits: "harness_memory_guard.HarnessMemoryLimits | None" = None,
+) -> Iterator[object]:
+    guard = _require_harness_memory_guard()
+    resolved_limits = limits or harness_memory_limits()
+    with guard.repo_process_sentinel(
+        repo_root=project_root,
+        artifact_root=project_root / "tmp" / "harness",
+        label="molt_harness",
+        limits=resolved_limits,
+    ) as sentinel:
+        yield sentinel
 
 
 def _discover_workspace_crates(project_root: Path) -> list[str]:
@@ -94,20 +155,25 @@ def _run_cmd(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess, handling common failure modes."""
-    import os
-
-    run_env: dict[str, str] | None = None
-    if env:
-        run_env = {**os.environ, **env}
+    guard = _require_harness_memory_guard()
+    run_env = _merged_env(env)
+    limits = guard.limits_from_env(HARNESS_MEMORY_PREFIX, run_env)
+    timeout = guard.timeout_from_env(
+        HARNESS_MEMORY_PREFIX,
+        run_env,
+        explicit=timeout_s,
+    )
 
     try:
-        return subprocess.run(
+        return guard.guarded_completed_process(
             args,
+            prefix=HARNESS_MEMORY_PREFIX,
             cwd=cwd,
+            env=run_env,
             capture_output=True,
             text=True,
-            timeout=timeout_s,
-            env=run_env,
+            timeout=timeout,
+            limits=limits,
         )
     except FileNotFoundError as exc:
         return subprocess.CompletedProcess(

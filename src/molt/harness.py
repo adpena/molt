@@ -10,7 +10,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from molt.harness_layers import HarnessConfig, LayerDef, get_layers_for_profile
+from molt.harness_layers import (
+    HarnessConfig,
+    LayerDef,
+    get_layers_for_profile,
+    harness_memory_limits,
+    harness_repo_sentinel,
+)
 from molt.harness_report import (
     Baseline,
     HarnessReport,
@@ -58,7 +64,9 @@ def run_harness(
 ) -> HarnessReport:
     """Run the harness with the given profile."""
     layers = get_layers_for_profile(profile)
-    report = _run_profile(layers, config)
+    limits = harness_memory_limits()
+    with harness_repo_sentinel(config.project_root, limits=limits):
+        report = _run_profile(layers, config)
     report.profile = profile
 
     print(report.to_console_table(), file=sys.stderr)
