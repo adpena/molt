@@ -1005,6 +1005,11 @@ def _write_wrapper_build_cache_manifest(
     )
 
 
+_CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
+_CROSS_MEMORY_GUARD_PREFIX = "MOLT_CROSS"
+_DIFF_MEMORY_GUARD_PREFIX = "MOLT_DIFF"
+
+
 def _run_wrapper_build(
     *,
     file_path: str | None,
@@ -1016,6 +1021,7 @@ def _run_wrapper_build(
     command: str,
     verbose: bool,
     resolved_build_entry: _ResolvedBuildEntry | None = None,
+    memory_guard_prefix: str | None = _CLI_MEMORY_GUARD_PREFIX,
 ) -> tuple[_WrapperBuildContract | None, float, int | None]:
     wrapper_cache_enabled = (
         resolved_build_entry is not None
@@ -1049,14 +1055,16 @@ def _run_wrapper_build(
     if verbose and not json_output:
         print(f"Build command: {shlex.join(build_cmd)}", file=sys.stderr)
     start = time.monotonic()
-    build_res = subprocess.run(
+    build_res = _run_completed_command(
         build_cmd,
         env=dict(env),
         cwd=project_root,
         capture_output=True,
-        text=True,
+        memory_guard_prefix=memory_guard_prefix,
     )
-    duration = time.monotonic() - start
+    duration = getattr(build_res, "elapsed_s", None)
+    if duration is None:
+        duration = time.monotonic() - start
     stdout = _coerce_process_text(build_res.stdout)
     stderr = _coerce_process_text(build_res.stderr)
     if build_res.returncode != 0:
@@ -2057,19 +2065,22 @@ def _run_command_timed(
     cwd: Path | None = None,
     verbose: bool = False,
     capture_output: bool = False,
+    memory_guard_prefix: str | None = None,
 ) -> _TimedResult:
     cmd = [str(part) for part in cmd]
     if verbose:
         print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
     start = time.perf_counter()
-    result = subprocess.run(
+    result = _run_completed_command(
         cmd,
         env=env,
         cwd=cwd,
         capture_output=capture_output,
-        text=True,
+        memory_guard_prefix=memory_guard_prefix,
     )
-    duration = time.perf_counter() - start
+    duration = getattr(result, "elapsed_s", None)
+    if duration is None:
+        duration = time.perf_counter() - start
     return _TimedResult(
         result.returncode,
         result.stdout or "",
@@ -27959,6 +27970,7 @@ def _run_script_cross(
             command="run",
             verbose=verbose,
             resolved_build_entry=resolved_build_entry,
+            memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
         )
     finally:
         if capabilities_tmp is not None:
@@ -28037,8 +28049,16 @@ def _run_script_cross(
         print(f"Running: {shlex.join(run_cmd)}", file=sys.stderr)
 
     t_run_start = time.monotonic()
-    run_res = subprocess.run(run_cmd, env=env, cwd=project_root)
-    t_run = time.monotonic() - t_run_start
+    run_res = _run_completed_command(
+        run_cmd,
+        env=env,
+        cwd=project_root,
+        capture_output=False,
+        memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
+    )
+    t_run = getattr(run_res, "elapsed_s", None)
+    if t_run is None:
+        t_run = time.monotonic() - t_run_start
 
     if timing and not json_output:
         print(
@@ -28134,6 +28154,7 @@ def _deploy(
         command="deploy",
         verbose=verbose,
         resolved_build_entry=resolved_build_entry,
+        memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
     )
     if build_error is not None:
         return build_error
@@ -28195,6 +28216,7 @@ def _deploy(
             cwd=bundle_root,
             json_output=json_output,
             label="deploy",
+            memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
         )
 
     elif platform == "roblox":
@@ -28339,6 +28361,7 @@ def run_script(
             command="run",
             verbose=verbose,
             resolved_build_entry=resolved_build_entry,
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
     finally:
         if capabilities_tmp is not None:
@@ -28370,6 +28393,7 @@ def run_script(
             cwd=project_root,
             verbose=verbose,
             capture_output=json_output,
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
         if json_output:
             data: dict[str, Any] = {
@@ -28407,6 +28431,7 @@ def run_script(
         json_output=json_output,
         verbose=verbose,
         label="run",
+        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
     )
 
 
@@ -28472,6 +28497,7 @@ def compare(
         cwd=project_root,
         verbose=verbose,
         capture_output=True,
+        memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
     )
 
     build_args = list(build_args or [])
@@ -28523,6 +28549,7 @@ def compare(
             cwd=project_root,
             verbose=verbose,
             capture_output=True,
+            memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
         )
     finally:
         if capabilities_tmp is not None:
@@ -28580,6 +28607,7 @@ def compare(
         cwd=project_root,
         verbose=verbose,
         capture_output=True,
+        memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
     )
 
     stdout_match = cpy_res.stdout == molt_res.stdout
@@ -28729,6 +28757,7 @@ def parity_run(
             cwd=project_root,
             verbose=verbose,
             capture_output=json_output,
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
         if json_output:
             data: dict[str, Any] = {
@@ -28763,6 +28792,7 @@ def parity_run(
         json_output=json_output,
         verbose=verbose,
         label="parity-run",
+        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
     )
 
 
@@ -28795,6 +28825,7 @@ def diff(
         json_output=json_output,
         verbose=verbose,
         label="diff",
+        memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
     )
 
 
