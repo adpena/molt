@@ -107,6 +107,7 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     assert limits.dynamic_process_rss is True
     assert limits.dynamic_total_rss is True
     assert limits.dynamic_global_rss is True
+    assert limits.dynamic_child_rlimit is True
 
 
 def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
@@ -122,6 +123,31 @@ def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
     assert limits.max_process_rss_gb == 6
     assert limits.dynamic_process_rss is False
     assert limits.dynamic_total_rss is True
+
+
+def test_limits_from_env_canonicalizes_implausible_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("MOLT_CONFORMANCE_MAX_PROCESS_RSS_GB", "4200")
+    monkeypatch.setenv("MOLT_CONFORMANCE_MAX_TREE_RSS_GB", "4500")
+    monkeypatch.setenv("MOLT_CONFORMANCE_GLOBAL_RSS_LIMIT_GB", "5000")
+    monkeypatch.setenv("MOLT_CONFORMANCE_CHILD_RLIMIT_GB", "5000")
+    env = {
+        "PATH": "/usr/bin",
+        "MOLT_CONFORMANCE_TOTAL_MEMORY_GB": "128",
+        "MOLT_CONFORMANCE_MEM_AVAILABLE_GB": "96",
+    }
+
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
+
+    assert limits.max_process_rss_gb == pytest.approx(
+        85.6704
+    )
+    assert limits.max_total_rss_gb == pytest.approx(
+        85.6704
+    )
+    assert limits.max_global_rss_gb == pytest.approx(85.6704)
+    assert limits.child_rlimit_gb == pytest.approx(
+        171.3408
+    )
 
 
 def test_current_memory_limits_refreshes_unset_adaptive_caps(monkeypatch) -> None:
@@ -163,6 +189,49 @@ def test_current_memory_limits_refreshes_unset_adaptive_caps(monkeypatch) -> Non
     assert current.max_process_rss_gb == pytest.approx(7)
     assert current.max_total_rss_gb == pytest.approx(3)
     assert current.max_global_rss_gb == pytest.approx(9)
+
+
+def test_current_child_rlimit_refreshes_dynamic_adaptive_budget(monkeypatch) -> None:
+    calls: list[tuple[str, int]] = []
+
+    def fake_budget(prefix, environ=None, *, accounted_rss_kb=0):
+        calls.append((prefix, accounted_rss_kb))
+        return harness_memory_guard.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=11,
+            max_total_rss_gb=13,
+            max_global_rss_gb=17,
+            reserve_gb=1,
+            physical_gb=32,
+            available_gb=24,
+            source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "adaptive_memory_budget",
+        fake_budget,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+        adaptive_prefix="MOLT_CONFORMANCE",
+        dynamic_process_rss=True,
+        dynamic_total_rss=True,
+        dynamic_global_rss=True,
+        dynamic_child_rlimit=True,
+    )
+
+    child_rlimit = limits.current_child_rlimit_kb(
+        {"PATH": "/usr/bin"},
+        accounted_rss_kb=99,
+    )
+
+    assert calls == [("MOLT_CONFORMANCE", 99)]
+    assert child_rlimit == 26 * 1024 * 1024
 
 
 def test_limits_from_env_uses_fast_default_poll(monkeypatch) -> None:
@@ -240,6 +309,165 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     assert call["child_rlimit_kb"] == 8 * 1024 * 1024
     assert call["dynamic_process_rss"] is False
     assert call["dynamic_total_rss"] is False
+
+
+def test_guarded_completed_process_starts_default_repo_sentinel(monkeypatch) -> None:
+    run_calls: list[dict[str, object]] = []
+    sentinel_calls: list[dict[str, object]] = []
+
+    class FakeSentinel:
+        def __enter__(self):
+            sentinel_calls.append({"event": "enter"})
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            sentinel_calls.append({"event": "exit"})
+
+    def fake_sentinel(**kwargs):
+        sentinel_calls.append(kwargs)
+        return FakeSentinel()
+
+    def fake_run_guarded(command, **kwargs):
+        run_calls.append({"command": command, **kwargs})
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        fake_sentinel,
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "run_guarded",
+        fake_run_guarded,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_CONFORMANCE",
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert run_calls
+    assert sentinel_calls[0]["label"] == "molt_conformance_command"
+    assert sentinel_calls[0]["limits"] is limits
+    assert sentinel_calls[1] == {"event": "enter"}
+    assert sentinel_calls[2] == {"event": "exit"}
+
+
+def test_guarded_completed_process_reuses_active_repo_sentinel(monkeypatch) -> None:
+    sentinel_calls: list[dict[str, object]] = []
+
+    def fake_run_guarded(command, **kwargs):
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **kwargs: sentinel_calls.append(kwargs),
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: True)
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "run_guarded",
+        fake_run_guarded,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_CONFORMANCE",
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert sentinel_calls == []
+
+
+def test_guarded_completed_process_refreshes_dynamic_child_rlimit(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_budget(prefix, environ=None, *, accounted_rss_kb=0):
+        return harness_memory_guard.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=5,
+            max_total_rss_gb=7,
+            max_global_rss_gb=9,
+            reserve_gb=1,
+            physical_gb=16,
+            available_gb=12,
+            source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+        )
+
+    def fake_run_guarded(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "adaptive_memory_budget",
+        fake_budget,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+        adaptive_prefix="MOLT_TEST",
+        dynamic_process_rss=True,
+        dynamic_total_rss=True,
+        dynamic_global_rss=True,
+        dynamic_child_rlimit=True,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert calls[0]["child_rlimit_kb"] == 14 * 1024 * 1024
 
 
 def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> None:
@@ -467,3 +695,50 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     events = sentinel.events_path.read_text(encoding="utf-8")
     assert "repo_process_guard_drained" in events
     assert "drain_on_exit" in events
+
+
+def test_guarded_harness_scope_standardizes_repo_sentinel(monkeypatch, tmp_path: Path):
+    calls: list[dict[str, object]] = []
+
+    class FakeSentinel:
+        def __enter__(self):
+            calls.append({"event": "enter"})
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            calls.append({"event": "exit"})
+
+    def fake_repo_process_sentinel(**kwargs):
+        calls.append(kwargs)
+        return FakeSentinel()
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        fake_repo_process_sentinel,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.01,
+    )
+
+    with harness_memory_guard.guarded_harness_scope(
+        prefix="MOLT_CONFORMANCE",
+        repo_root=tmp_path,
+        artifact_root=tmp_path / "artifacts",
+        label="unit-scope",
+        env={"PATH": "/usr/bin"},
+        limits=limits,
+    ) as scope:
+        assert scope.limits is limits
+        assert scope.memory_guard["enabled"] is True
+
+    assert calls[0]["repo_root"] == tmp_path
+    assert calls[0]["artifact_root"] == tmp_path / "artifacts"
+    assert calls[0]["label"] == "unit-scope"
+    assert calls[0]["limits"] is limits
+    assert calls[1] == {"event": "enter"}
+    assert calls[2] == {"event": "exit"}

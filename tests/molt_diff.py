@@ -42,6 +42,10 @@ _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_INTERVAL_SEC = 1.0
 _DIFF_MEMORY_GUARD_DEFAULT_EVENT_MAX_MB = 1.0
 _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_MAX_MB = 2.0
 _DIFF_MEMORY_GUARD_RETURN_CODE = memory_guard.GUARD_RETURN_CODE
+_DIFF_MEMORY_GUARD_HARD_GLOBAL_GB = harness_memory_guard.HARD_RSS_LIMIT_GB
+_DIFF_MEMORY_GUARD_HARD_GLOBAL_KB = memory_guard.max_rss_kb_from_gb(
+    _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB
+)
 
 try:
     import fcntl  # type: ignore
@@ -1534,10 +1538,13 @@ def _bounded_positive_float_env(
 
 def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
     limits = harness_memory_guard.limits_from_env("MOLT_DIFF")
+    global_kb = min(limits.max_global_rss_kb, _DIFF_MEMORY_GUARD_HARD_GLOBAL_KB)
+    tree_kb = min(limits.max_total_rss_kb, global_kb)
+    process_kb = min(limits.max_process_rss_kb, tree_kb)
     return _DiffMemoryGuardConfig(
-        max_process_kb=limits.max_process_rss_kb,
-        max_tree_kb=limits.max_total_rss_kb,
-        global_kb=limits.max_global_rss_kb,
+        max_process_kb=process_kb,
+        max_tree_kb=tree_kb,
+        global_kb=global_kb,
         child_rlimit_kb=limits.child_rlimit_kb,
         poll_interval=min(2.0, max(0.01, limits.poll_interval)),
     )
