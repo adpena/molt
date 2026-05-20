@@ -34,6 +34,44 @@ def test_default_pathspecs_avoid_recursive_globs() -> None:
     assert all("**" not in pathspec for pathspec in module.default_pathspecs())
 
 
+def test_extra_pathspecs_reject_stateful_roots() -> None:
+    module = _load_artifact_cleanup()
+
+    for pathspec in [".venv/", ".omx/cache", "third_party/tool"]:
+        try:
+            module.validate_extra_pathspecs([pathspec])
+        except ValueError as exc:
+            assert "stateful data" in str(exc)
+        else:
+            raise AssertionError(f"{pathspec} should have been rejected")
+
+
+def test_extra_pathspecs_reject_nonliteral_paths() -> None:
+    module = _load_artifact_cleanup()
+
+    for pathspec in ["/tmp/cache", "../tmp", "tests/**/__pycache__/", ":(glob)tmp/*"]:
+        try:
+            module.validate_extra_pathspecs([pathspec])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{pathspec} should have been rejected")
+
+
+def test_repo_root_must_be_this_checkout(tmp_path: Path) -> None:
+    module = _load_artifact_cleanup()
+    other_repo = tmp_path / "other"
+    other_repo.mkdir()
+    (other_repo / "pyproject.toml").write_text("[project]\nname = 'molt'\n")
+
+    try:
+        module.validate_repo_root(other_repo)
+    except ValueError as exc:
+        assert "not this Molt checkout" in str(exc)
+    else:
+        raise AssertionError("foreign repo root should have been rejected")
+
+
 def test_git_clean_command_is_dry_run_by_default() -> None:
     module = _load_artifact_cleanup()
 
@@ -76,6 +114,19 @@ def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> Non
             pathspecs=module.default_pathspecs(),
         )
     ]
+
+
+def test_main_rejects_stateful_extra_before_git_clean(monkeypatch) -> None:
+    module = _load_artifact_cleanup()
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("git clean must not run for rejected extra pathspecs")
+
+    monkeypatch.setattr(module.subprocess, "run", fail_run)
+
+    rc = module.main(["--extra-path", ".venv/"])
+
+    assert rc == 2
 
 
 def test_main_apply_accepts_sentinel_kill_report(monkeypatch) -> None:
