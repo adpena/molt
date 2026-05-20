@@ -672,6 +672,42 @@ def test_dce_lattice_keeps_guard_results_even_when_unused() -> None:
     assert any(op.get("kind") == "guard_dict_shape" for op in lowered)
 
 
+def test_fused_dict_increment_prunes_redundant_unused_dict_guard() -> None:
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="DICT_NEW", args=[], result=MoltValue("obj")),
+            MoltOp(kind="CONST", args=[10], result=MoltValue("dict_type_tag")),
+            MoltOp(
+                kind="BUILTIN_TYPE",
+                args=[MoltValue("dict_type_tag")],
+                result=MoltValue("dict_type"),
+            ),
+            MoltOp(
+                kind="CLASS_VERSION",
+                args=[MoltValue("dict_type")],
+                result=MoltValue("shape_ver"),
+            ),
+            MoltOp(kind="CONST_STR", args=["k"], result=MoltValue("key")),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("delta")),
+            MoltOp(
+                kind="GUARD_DICT_SHAPE",
+                args=[MoltValue("obj"), MoltValue("dict_type"), MoltValue("shape_ver")],
+                result=MoltValue("guard_result"),
+            ),
+            MoltOp(
+                kind="DICT_STR_INT_INC",
+                args=[MoltValue("obj"), MoltValue("key"), MoltValue("delta")],
+                result=MoltValue("none"),
+            ),
+        ]
+    )
+
+    assert all(op.get("kind") != "guard_dict_shape" for op in lowered)
+    assert all(op.get("kind") != "class_layout_version" for op in lowered)
+    assert all(op.get("kind") != "builtin_type" for op in lowered)
+    assert any(op.get("kind") == "dict_str_int_inc" for op in lowered)
+
+
 def test_cfg_gvn_reuses_type_of_and_is() -> None:
     lowered = _lower_ops(
         [

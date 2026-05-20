@@ -1521,6 +1521,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "guard_hoist_attempts": 0,
             "guard_hoist_accepted": 0,
             "guard_hoist_rejected": 0,
+            "fused_dict_guard_prunes": 0,
             "phi_edge_trims": 0,
             "gvn_hits": 0,
             "dce_removed_total": 0,
@@ -11379,7 +11380,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_guard_dict_shape(self, obj: MoltValue) -> MoltValue:
         dict_type = self._emit_builtin_type_value("dict")
         expected_version = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=expected_version))
+        self.emit(
+            MoltOp(
+                kind="CLASS_VERSION",
+                args=[dict_type],
+                result=expected_version,
+            )
+        )
         guard = MoltValue(self.next_var(), type_hint="bool")
         self.emit(
             MoltOp(
@@ -31909,6 +31916,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             self._active_midend_function_name = "<direct>"
         ops = self._run_ir_midend_passes(ops)
+        ops, fused_dict_guard_prunes = (
+            self._eliminate_redundant_fused_dict_increment_guards(ops)
+        )
+        if fused_dict_guard_prunes:
+            self.midend_stats["fused_dict_guard_prunes"] = (
+                self.midend_stats.get("fused_dict_guard_prunes", 0)
+                + fused_dict_guard_prunes
+            )
+            func_stats = self._midend_function_stats()
+            func_stats["fused_dict_guard_prunes"] += fused_dict_guard_prunes
         json_ops: list[dict[str, Any]] = []
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         emit_function_frame = self._function_needs_frame_trace(function_name)
@@ -35748,6 +35765,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "guard_hoist_attempted": 0,
                 "guard_hoist_accepted": 0,
                 "guard_hoist_rejected": 0,
+                "fused_dict_guard_prunes": 0,
                 "cse_attempted": 0,
                 "cse_accepted": 0,
                 "cse_readheap_attempted": 0,
@@ -39582,6 +39600,78 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for sig in stale:
                 available.discard(sig)
 
+    def _eliminate_redundant_fused_dict_increment_guards(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]:
+        if not ops:
+            return ops, 0
+
+        use_counts: dict[str, int] = {}
+        users_by_value: dict[str, set[int]] = {}
+        removable_guard_producer_kinds = {
+            "BUILTIN_TYPE",
+            "CLASS_VERSION",
+            "CONST",
+            "CONST_BOOL",
+            "CONST_STR",
+            "MISSING",
+        }
+        for op_index, op in enumerate(ops):
+            for arg in op.args:
+                if isinstance(arg, MoltValue):
+                    use_counts[arg.name] = use_counts.get(arg.name, 0) + 1
+                    users_by_value.setdefault(arg.name, set()).add(op_index)
+
+        fused_dict_operand_index = {
+            "DICT_STR_INT_INC": 0,
+            "STRING_SPLIT_WS_DICT_INC": 1,
+            "STRING_SPLIT_SEP_DICT_INC": 2,
+        }
+
+        remove_indices: set[int] = set()
+        removed_guards = 0
+        for idx, op in enumerate(ops):
+            op = ops[idx]
+            if (
+                op.kind == "GUARD_DICT_SHAPE"
+                and len(op.args) == 3
+                and op.result.name != "none"
+                and use_counts.get(op.result.name, 0) == 0
+                and idx + 1 < len(ops)
+            ):
+                next_op = ops[idx + 1]
+                dict_operand_index = fused_dict_operand_index.get(next_op.kind)
+                guarded = op.args[0]
+                if (
+                    dict_operand_index is not None
+                    and len(next_op.args) > dict_operand_index
+                    and isinstance(guarded, MoltValue)
+                    and isinstance(next_op.args[dict_operand_index], MoltValue)
+                    and guarded.name == next_op.args[dict_operand_index].name
+                ):
+                    remove_indices.add(idx)
+                    removed_guards += 1
+
+        if remove_indices:
+            changed = True
+            while changed:
+                changed = False
+                for idx, op in enumerate(ops):
+                    if idx in remove_indices or op.kind not in removable_guard_producer_kinds:
+                        continue
+                    if op.result.name == "none":
+                        continue
+                    users = users_by_value.get(op.result.name, set())
+                    if users and users.issubset(remove_indices):
+                        remove_indices.add(idx)
+                        changed = True
+
+        if not remove_indices:
+            return ops, 0
+
+        out = [op for idx, op in enumerate(ops) if idx not in remove_indices]
+        return out, removed_guards
+
     def _eliminate_redundant_guards_cfg(
         self, ops: list[MoltOp]
     ) -> tuple[list[MoltOp], int, int, int]:
@@ -41569,6 +41659,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 upcoming_pass="guard_hoist",
             )
 
+            pass_start = time.perf_counter()
+            guard_prune_input = step_ops
+            step_ops, fused_dict_guard_prunes = (
+                self._eliminate_redundant_fused_dict_increment_guards(step_ops)
+            )
+            if fused_dict_guard_prunes:
+                self.midend_stats["fused_dict_guard_prunes"] = (
+                    self.midend_stats.get("fused_dict_guard_prunes", 0)
+                    + fused_dict_guard_prunes
+                )
+                func_stats["fused_dict_guard_prunes"] += fused_dict_guard_prunes
+            self._record_midend_pass_sample(
+                "fused_dict_guard_prune",
+                elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                accepted=step_ops != guard_prune_input,
+                degraded=degraded,
+            )
+
             if enable_guard_hoist:
                 pass_start = time.perf_counter()
                 step_ops, guard_attempts, guard_accepts, guard_rejects = (
@@ -41855,6 +41963,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "midend idempotence check failed after convergence for "
                         f"{self._active_midend_function_name}"
                     )
+
+        final_guard_prune_input = rewritten_ops
+        rewritten_ops, final_fused_dict_guard_prunes = (
+            self._eliminate_redundant_fused_dict_increment_guards(rewritten_ops)
+        )
+        if final_fused_dict_guard_prunes:
+            self.midend_stats["fused_dict_guard_prunes"] = (
+                self.midend_stats.get("fused_dict_guard_prunes", 0)
+                + final_fused_dict_guard_prunes
+            )
+            func_stats["fused_dict_guard_prunes"] += final_fused_dict_guard_prunes
+            final_predefined = self._infer_predefined_value_names(final_guard_prune_input)
+            final_failures = self._verify_definite_assignment_in_ops(
+                rewritten_ops, predefined_value_names=final_predefined
+            )
+            if final_failures:
+                rewritten_ops = final_guard_prune_input
+                self.midend_stats["fused_dict_guard_prunes"] -= (
+                    final_fused_dict_guard_prunes
+                )
+                func_stats["fused_dict_guard_prunes"] -= final_fused_dict_guard_prunes
 
         self.midend_stats["sccp_branch_prunes"] += total_branch_prunes
         self.midend_stats["loop_edge_thread_prunes"] += (

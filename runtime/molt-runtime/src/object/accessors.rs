@@ -1,20 +1,21 @@
 use molt_obj_model::MoltObject;
 use std::sync::OnceLock;
 
-use super::inline_cache::{IC_TABLE_CAPACITY, global_ic_table};
+use super::inline_cache::{global_ic_table, IC_TABLE_CAPACITY};
 use crate::{
+    attr_name_bits_from_bytes, builtin_classes_if_initialized, class_dict_bits, class_field_offset,
+    class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place,
+    exception_pending, global_type_version, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
+    intern_static_name, is_missing_bits, obj_from_bits, object_class_bits,
+    object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size, object_type_id,
+    profile_hit, raise_exception, runtime_state, to_i64, usize_from_bits, PyToken,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT, GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
-    GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
+    GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL,
     STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
-    attr_name_bits_from_bytes, class_dict_bits, class_field_offset, class_layout_version_bits,
-    dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
-    global_type_version, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, intern_static_name,
-    is_missing_bits, obj_from_bits, object_class_bits, object_mark_has_ptrs, object_payload_size,
-    object_type_id, profile_hit, raise_exception, runtime_state, to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -297,29 +298,6 @@ unsafe fn guard_layout_match(
             return false;
         }
         let header = header_from_obj_ptr(obj_ptr);
-        if (*header).type_id != TYPE_ID_OBJECT {
-            profile_hit(_py, &LAYOUT_GUARD_FAIL);
-            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT);
-            return false;
-        }
-        let obj_class_bits = object_class_bits(obj_ptr);
-        if obj_class_bits == 0 || obj_class_bits != class_bits {
-            profile_hit(_py, &LAYOUT_GUARD_FAIL);
-            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT);
-            return false;
-        }
-        let class_obj = obj_from_bits(class_bits);
-        let Some(class_ptr) = class_obj.as_ptr() else {
-            profile_hit(_py, &LAYOUT_GUARD_FAIL);
-            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
-            return false;
-        };
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            profile_hit(_py, &LAYOUT_GUARD_FAIL);
-            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
-            return false;
-        }
-        let version = class_layout_version_bits(class_ptr);
         let expected = match to_i64(obj_from_bits(expected_version)) {
             Some(val) if val >= 0 => val as u64,
             _ => {
@@ -331,6 +309,45 @@ unsafe fn guard_layout_match(
                 return false;
             }
         };
+        let class_obj = obj_from_bits(class_bits);
+        let Some(class_ptr) = class_obj.as_ptr() else {
+            profile_hit(_py, &LAYOUT_GUARD_FAIL);
+            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
+            return false;
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            profile_hit(_py, &LAYOUT_GUARD_FAIL);
+            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
+            return false;
+        }
+        if (*header).type_id == TYPE_ID_DICT {
+            let expected_is_builtin_dict = builtin_classes_if_initialized(_py)
+                .is_some_and(|builtins| class_bits == builtins.dict);
+            if !expected_is_builtin_dict || !object_is_exact_builtin_dict(_py, obj_ptr) {
+                profile_hit(_py, &LAYOUT_GUARD_FAIL);
+                profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT);
+                return false;
+            }
+            let version = class_layout_version_bits(class_ptr);
+            if version != expected {
+                profile_hit(_py, &LAYOUT_GUARD_FAIL);
+                profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT);
+                return false;
+            }
+            return true;
+        }
+        if (*header).type_id != TYPE_ID_OBJECT {
+            profile_hit(_py, &LAYOUT_GUARD_FAIL);
+            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT);
+            return false;
+        }
+        let obj_class_bits = object_class_bits(obj_ptr);
+        if obj_class_bits == 0 || obj_class_bits != class_bits {
+            profile_hit(_py, &LAYOUT_GUARD_FAIL);
+            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT);
+            return false;
+        }
+        let version = class_layout_version_bits(class_ptr);
         if version != expected {
             profile_hit(_py, &LAYOUT_GUARD_FAIL);
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT);
@@ -761,4 +778,38 @@ pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -
     crate::with_gil_entry_nopanic!(_py, {
         unsafe { object_field_get_ptr_raw(_py, obj_ptr, offset as usize) }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guard_layout_match;
+    use crate::{
+        alloc_dict_with_pairs, builtin_classes, class_layout_version_bits, dec_ref_bits,
+        obj_from_bits, MoltObject,
+    };
+
+    #[test]
+    fn guard_layout_accepts_exact_builtin_dict_with_bootstrap_version() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins = builtin_classes(_py);
+            let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+            assert!(!dict_ptr.is_null());
+            let dict_class_ptr = obj_from_bits(builtins.dict)
+                .as_ptr()
+                .expect("builtin dict class must be a heap object");
+            let current_version = unsafe { class_layout_version_bits(dict_class_ptr) };
+            assert!(current_version > 0);
+            let current_version_bits = MoltObject::from_int(current_version as i64).bits();
+            assert!(unsafe {
+                guard_layout_match(_py, dict_ptr, builtins.dict, current_version_bits)
+            });
+
+            let stale_version_bits = MoltObject::from_int(0).bits();
+            assert!(!unsafe {
+                guard_layout_match(_py, dict_ptr, builtins.dict, stale_version_bits)
+            });
+
+            dec_ref_bits(_py, MoltObject::from_ptr(dict_ptr).bits());
+        });
+    }
 }
