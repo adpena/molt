@@ -342,6 +342,25 @@ main()
     assert "copy_var" in kinds
 
 
+def test_string_split_scalarization_ignores_compiler_list_guard():
+    src = """
+def main() -> None:
+    line = "1|NA|2"
+    parts: list[str] = line.split("|")
+    first = parts[0]
+    second = parts[1]
+    print(first, second)
+main()
+"""
+    ir = compile_to_tir(src)
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    kinds = [op["kind"] for op in ops]
+    assert "string_split" not in kinds
+    assert "guard_tag" not in kinds
+    assert kinds.count("string_split_validate") == 1
+    assert kinds.count("string_split_field") == 2
+
+
 def test_string_split_scalarization_keeps_escaping_and_dynamic_uses_on_list_path():
     cases = [
         """
@@ -522,6 +541,52 @@ if __name__ == "__main__":
     kinds = _op_kinds(ir, "__main____molt_user_main")
     assert kinds.count("dataclass_get") == 2
     assert "get_attr_generic_obj" not in kinds
+
+
+def test_dataclass_field_dict_increment_uses_single_fused_update():
+    src = """
+from dataclasses import dataclass
+
+@dataclass
+class Order:
+    region: str
+
+def main() -> None:
+    totals: dict[str, int] = {}
+    order = Order("NA")
+    revenue = 5
+    totals[order.region] = totals.get(order.region, 0) + revenue
+    print(totals["NA"])
+
+if __name__ == "__main__":
+    main()
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir, "__main____molt_user_main")
+    assert "dict_str_int_inc" in kinds
+    assert "dict_get" not in kinds
+
+
+def test_generic_attribute_dict_increment_keeps_normal_update_path():
+    src = """
+class Box:
+    @property
+    def key(self):
+        return "NA"
+
+def main() -> None:
+    totals: dict[str, int] = {}
+    box = Box()
+    totals[box.key] = totals.get(box.key, 0) + 1
+    print(totals["NA"])
+
+if __name__ == "__main__":
+    main()
+"""
+    ir = compile_to_tir(src)
+    kinds = _op_kinds(ir, "__main____molt_user_main")
+    assert "dict_str_int_inc" not in kinds
+    assert "dict_get" in kinds
 
 
 def test_prod_reduction_over_flat_listcomp_skips_intarray_conversion():
