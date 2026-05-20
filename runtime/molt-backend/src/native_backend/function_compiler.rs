@@ -22983,21 +22983,20 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[count_val]);
                 }
-                "trace_enter_slot" => {
-                    if emit_traces {
-                        let code_id = op.value.unwrap_or(0);
-                        let code_id_val = builder.ins().iconst(types::I64, code_id);
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_trace_enter_slot",
-                            &[types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let _ = builder.ins().call(local_callee, &[code_id_val]);
-                    }
+                "trace_enter_slot" if emit_traces => {
+                    let code_id = op.value.unwrap_or(0);
+                    let code_id_val = builder.ins().iconst(types::I64, code_id);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_trace_enter_slot",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let _ = builder.ins().call(local_callee, &[code_id_val]);
                 }
+                "trace_enter_slot" => {}
                 "trace_exit" => {}
                 "frame_locals_set" => {
                     let arg_names = op.args.as_deref().unwrap_or(&[]);
