@@ -26,18 +26,21 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
     module = _load_ci_gate()
     calls: list[dict[str, object]] = []
 
-    def fake_run_guarded(command, **kwargs):
+    def fake_guarded_completed_process(command, **kwargs):
         calls.append({"command": list(command), **kwargs})
-        return module.memory_guard.GuardResult(
-            returncode=0,
-            violation=None,
-            peak=None,
-            peak_total=None,
-            stdout="ok\n",
-            stderr="",
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            0,
+            "ok\n",
+            "",
+            elapsed_s=0.1,
         )
 
-    monkeypatch.setattr(module.memory_guard, "run_guarded", fake_run_guarded)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
     check = module.Check(
         name="unit",
         tier=1,
@@ -48,7 +51,8 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
     result = module._run_check(
         check,
         memory_limits=module.MemoryGuardLimits(
-            max_rss_gb=2.0,
+            enabled=True,
+            max_process_rss_gb=2.0,
             max_total_rss_gb=3.0,
             max_global_rss_gb=9.0,
             poll_interval=0.5,
@@ -60,16 +64,21 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
     assert calls == [
         {
             "command": ["python3", "-c", "print('ok')"],
-            "max_rss_kb": 2 * 1024 * 1024,
-            "max_total_rss_kb": 3 * 1024 * 1024,
-            "poll_interval": 0.5,
+            "prefix": "MOLT_CI_GATE",
             "cwd": str(module.ROOT),
             "env": calls[0]["env"],
             "timeout": 7,
             "capture_output": True,
-            "child_rlimit_kb": 8 * 1024 * 1024,
+            "text": True,
+            "limits": calls[0]["limits"],
         }
     ]
+    limits = calls[0]["limits"]
+    assert limits.max_process_rss_gb == 2.0
+    assert limits.max_total_rss_gb == 3.0
+    assert limits.max_global_rss_gb == 9.0
+    assert limits.poll_interval == 0.5
+    assert limits.child_rlimit_gb == 8.0
     assert calls[0]["env"]["PYTHONPATH"] == str(module.ROOT / "src")
 
 
@@ -77,9 +86,9 @@ def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
     module = _load_ci_gate()
     calls: list[dict[str, object]] = []
 
-    def fake_adaptive_memory_budget(prefix, environ=None):
+    def fake_adaptive_memory_budget(prefix, environ=None, *, accounted_rss_kb=0):
         assert prefix == "MOLT_CI_GATE"
-        assert environ is None
+        assert accounted_rss_kb == 0
         return module.memory_guard.AdaptiveMemoryBudget(
             max_process_rss_gb=4.0,
             max_total_rss_gb=6.0,
@@ -88,32 +97,37 @@ def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
             physical_gb=16.0,
             available_gb=12.0,
             source="test",
+            accounted_rss_gb=0.0,
         )
 
-    def fake_run_guarded(command, **kwargs):
+    def fake_guarded_completed_process(command, **kwargs):
         calls.append({"command": list(command), **kwargs})
-        return module.memory_guard.GuardResult(
-            returncode=0,
-            violation=None,
-            peak=None,
-            peak_total=None,
-            stdout="adaptive\n",
-            stderr="",
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            0,
+            "adaptive\n",
+            "",
+            elapsed_s=0.1,
         )
 
     monkeypatch.setattr(
         module.memory_guard, "adaptive_memory_budget", fake_adaptive_memory_budget
     )
-    monkeypatch.setattr(module.memory_guard, "run_guarded", fake_run_guarded)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
 
     result = module._run_check(
         module.Check(name="unit", tier=1, cmd=["python3", "-c", "print('ok')"])
     )
 
     assert result.status == "pass"
-    assert calls[0]["max_rss_kb"] == 4 * 1024 * 1024
-    assert calls[0]["max_total_rss_kb"] == 6 * 1024 * 1024
-    assert calls[0]["child_rlimit_kb"] == 10 * 1024 * 1024
+    limits = calls[0]["limits"]
+    assert limits.max_process_rss_gb == 4.0
+    assert limits.max_total_rss_gb == 6.0
+    assert limits.child_rlimit_gb == 10.0
 
 
 def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
@@ -170,14 +184,18 @@ def test_run_check_can_opt_out_of_memory_guard(monkeypatch) -> None:
     module = _load_ci_gate()
     direct_calls: list[dict[str, object]] = []
 
-    def fail_run_guarded(*_args, **_kwargs):
+    def fail_guarded_completed_process(*_args, **_kwargs):
         raise AssertionError("memory guard should not run")
 
     def fake_subprocess_run(command, **kwargs):
         direct_calls.append({"command": list(command), **kwargs})
         return subprocess.CompletedProcess(command, 0, "direct\n", "")
 
-    monkeypatch.setattr(module.memory_guard, "run_guarded", fail_run_guarded)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fail_guarded_completed_process,
+    )
     monkeypatch.setattr(module.subprocess, "run", fake_subprocess_run)
 
     result = module._run_check(
@@ -193,7 +211,8 @@ def test_run_check_can_opt_out_of_memory_guard(monkeypatch) -> None:
 def test_parallel_workers_clamped_by_global_memory_budget() -> None:
     module = _load_ci_gate()
     limits = module.MemoryGuardLimits(
-        max_rss_gb=2.0,
+        enabled=True,
+        max_process_rss_gb=2.0,
         max_total_rss_gb=8.0,
         max_global_rss_gb=17.0,
         poll_interval=0.5,
@@ -218,18 +237,21 @@ def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
         slot_calls.append(kwargs)
         return FakeSlot()
 
-    def fake_run_guarded(command, **kwargs):
-        return module.memory_guard.GuardResult(
-            returncode=0,
-            violation=None,
-            peak=None,
-            peak_total=None,
-            stdout="rust ok\n",
-            stderr="",
+    def fake_guarded_completed_process(command, **kwargs):
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            0,
+            "rust ok\n",
+            "",
+            elapsed_s=0.1,
         )
 
     monkeypatch.setattr(module.compile_governor, "compile_slot", fake_compile_slot)
-    monkeypatch.setattr(module.memory_guard, "run_guarded", fake_run_guarded)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
 
     result = module._run_check(
         module.Check(
@@ -263,7 +285,7 @@ def test_launch_background_gate_strips_recursive_background_flag(
         def __init__(self, command, **kwargs) -> None:
             popen_calls.append({"command": list(command), **kwargs})
 
-    def fake_adaptive_memory_budget(prefix, environ=None):
+    def fake_adaptive_memory_budget(prefix, environ=None, *, accounted_rss_kb=0):
         return module.memory_guard.AdaptiveMemoryBudget(
             max_process_rss_gb=2.0,
             max_total_rss_gb=3.0,
@@ -272,6 +294,7 @@ def test_launch_background_gate_strips_recursive_background_flag(
             physical_gb=8.0,
             available_gb=6.0,
             source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
         )
 
     monkeypatch.setattr(module, "LOG_ROOT", tmp_path)
