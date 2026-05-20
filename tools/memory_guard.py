@@ -81,6 +81,7 @@ class GuardResult:
     stderr: str
     timed_out: bool = False
     elapsed_s: float | None = None
+    limit_at_violation: ResolvedMemoryLimits | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +102,34 @@ class AdaptiveMemoryBudget:
     physical_gb: float | None
     available_gb: float | None
     source: str
+    accounted_rss_gb: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedMemoryLimits:
+    max_process_rss_kb: int
+    max_total_rss_kb: int | None
+    max_global_rss_kb: int | None = None
+    adaptive_budget: AdaptiveMemoryBudget | None = None
+    dynamic_process_rss: bool = False
+    dynamic_total_rss: bool = False
+    dynamic_global_rss: bool = False
+
+    @property
+    def max_process_rss_gb(self) -> float:
+        return self.max_process_rss_kb / (1024 * 1024)
+
+    @property
+    def max_total_rss_gb(self) -> float | None:
+        if self.max_total_rss_kb is None:
+            return None
+        return self.max_total_rss_kb / (1024 * 1024)
+
+    @property
+    def max_global_rss_gb(self) -> float | None:
+        if self.max_global_rss_kb is None:
+            return None
+        return self.max_global_rss_kb / (1024 * 1024)
 
 
 def _normalize_env_prefix(prefix: str | None) -> str:
@@ -262,10 +291,15 @@ def available_memory_bytes(
 def adaptive_memory_budget(
     prefix: str | None = None,
     environ: Mapping[str, str] | None = None,
+    *,
+    accounted_rss_kb: int = 0,
 ) -> AdaptiveMemoryBudget:
     source = os.environ if environ is None else environ
     physical_gb = _gb_from_bytes(physical_memory_bytes(prefix, source))
     available_gb = _gb_from_bytes(available_memory_bytes(prefix, source))
+    accounted_rss_gb = max(0, accounted_rss_kb) / (1024 * 1024)
+    if available_gb is not None and accounted_rss_gb > 0:
+        available_gb += accounted_rss_gb
     if physical_gb is not None and available_gb is not None:
         available_gb = min(available_gb, physical_gb)
     reserve_override = _float_env(
@@ -302,6 +336,7 @@ def adaptive_memory_budget(
             physical_gb=None,
             available_gb=None,
             source="fallback",
+            accounted_rss_gb=accounted_rss_gb,
         )
 
     global_gb = max(0.25, usable_gb * DEFAULT_GLOBAL_FRACTION_OF_USABLE)
@@ -323,6 +358,44 @@ def adaptive_memory_budget(
         physical_gb=physical_gb,
         available_gb=available_gb,
         source=source_name,
+        accounted_rss_gb=accounted_rss_gb,
+    )
+
+
+def resolve_memory_limits(
+    *,
+    max_process_rss_kb: int,
+    max_total_rss_kb: int | None = None,
+    max_global_rss_kb: int | None = None,
+    adaptive_budget_provider: Callable[[int], AdaptiveMemoryBudget] | None = None,
+    dynamic_process_rss: bool = False,
+    dynamic_total_rss: bool = False,
+    dynamic_global_rss: bool = False,
+    accounted_rss_kb: int = 0,
+) -> ResolvedMemoryLimits:
+    budget = None
+    if adaptive_budget_provider is not None and (
+        dynamic_process_rss or dynamic_total_rss or dynamic_global_rss
+    ):
+        budget = adaptive_budget_provider(max(0, accounted_rss_kb))
+    process_kb = max_process_rss_kb
+    total_kb = max_total_rss_kb
+    global_kb = max_global_rss_kb
+    if budget is not None:
+        if dynamic_process_rss:
+            process_kb = max_rss_kb_from_gb(budget.max_process_rss_gb)
+        if dynamic_total_rss:
+            total_kb = max_rss_kb_from_gb(budget.max_total_rss_gb)
+        if dynamic_global_rss:
+            global_kb = max_global_rss_kb_from_gb(budget.max_global_rss_gb)
+    return ResolvedMemoryLimits(
+        max_process_rss_kb=process_kb,
+        max_total_rss_kb=total_kb,
+        max_global_rss_kb=global_kb,
+        adaptive_budget=budget,
+        dynamic_process_rss=dynamic_process_rss,
+        dynamic_total_rss=dynamic_total_rss,
+        dynamic_global_rss=dynamic_global_rss,
     )
 
 
@@ -611,6 +684,7 @@ def _record_sample(
     peak: RssViolation | None,
     total: RssViolation | None,
     violation: RssViolation | None,
+    limits: ResolvedMemoryLimits | None = None,
     samples_jsonl: str | None,
     samples_jsonl_max_bytes: int | None,
     stream: str,
@@ -622,6 +696,8 @@ def _record_sample(
         "total": _rss_record_payload(total),
         "violation": _rss_record_payload(violation),
     }
+    if limits is not None:
+        payload["limits"] = memory_limits_payload(limits)
     if samples_jsonl is not None:
         sample_path = Path(samples_jsonl)
         if sample_path.parent:
@@ -832,6 +908,9 @@ def run_guarded(
     stream: str = "",
     child_rlimit_kb: int | None = None,
     input: str | None = None,
+    adaptive_budget_provider: Callable[[int], AdaptiveMemoryBudget] | None = None,
+    dynamic_process_rss: bool = False,
+    dynamic_total_rss: bool = False,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -882,6 +961,7 @@ def run_guarded(
         )
         stdin_thread.start()
     violation: RssViolation | None = None
+    limit_at_violation: ResolvedMemoryLimits | None = None
     peak: RssViolation | None = None
     peak_total: RssViolation | None = None
     timed_out = False
@@ -901,18 +981,28 @@ def run_guarded(
             peak_total is None or observed_total.rss_kb > peak_total.rss_kb
         ):
             peak_total = observed_total
+        current_limits = resolve_memory_limits(
+            max_process_rss_kb=max_rss_kb,
+            max_total_rss_kb=max_total_rss_kb,
+            adaptive_budget_provider=adaptive_budget_provider,
+            dynamic_process_rss=dynamic_process_rss,
+            dynamic_total_rss=dynamic_total_rss,
+            accounted_rss_kb=0 if observed_total is None else observed_total.rss_kb,
+        )
         violation = find_rss_violation(
             samples,
             root_pid=proc.pid,
-            max_rss_kb=max_rss_kb,
-            max_total_rss_kb=max_total_rss_kb,
+            max_rss_kb=current_limits.max_process_rss_kb,
+            max_total_rss_kb=current_limits.max_total_rss_kb,
         )
         if violation is not None:
+            limit_at_violation = current_limits
             _record_sample(
                 root_pid=proc.pid,
                 peak=observed_peak,
                 total=observed_total,
                 violation=violation,
+                limits=current_limits,
                 samples_jsonl=samples_jsonl,
                 samples_jsonl_max_bytes=samples_jsonl_max_bytes,
                 stream=stream,
@@ -925,6 +1015,7 @@ def run_guarded(
                 peak=observed_peak,
                 total=observed_total,
                 violation=None,
+                limits=current_limits,
                 samples_jsonl=samples_jsonl,
                 samples_jsonl_max_bytes=samples_jsonl_max_bytes,
                 stream=stream,
@@ -963,6 +1054,7 @@ def run_guarded(
         stderr=stderr or "",
         timed_out=timed_out,
         elapsed_s=elapsed_s,
+        limit_at_violation=limit_at_violation,
     )
 
 
@@ -975,6 +1067,27 @@ def _rss_record_payload(record: RssViolation | None) -> dict[str, object] | None
         "rss_gb": record.rss_gb,
         "command": record.command,
         "scope": record.scope,
+    }
+
+
+def memory_limits_payload(limits: ResolvedMemoryLimits) -> dict[str, object]:
+    budget = limits.adaptive_budget
+    return {
+        "max_process_rss_gb": limits.max_process_rss_gb,
+        "max_total_rss_gb": limits.max_total_rss_gb,
+        "max_global_rss_gb": limits.max_global_rss_gb,
+        "dynamic_process_rss": limits.dynamic_process_rss,
+        "dynamic_total_rss": limits.dynamic_total_rss,
+        "dynamic_global_rss": limits.dynamic_global_rss,
+        "adaptive_budget": None
+        if budget is None
+        else {
+            "source": budget.source,
+            "reserve_gb": budget.reserve_gb,
+            "physical_gb": budget.physical_gb,
+            "available_gb": budget.available_gb,
+            "accounted_rss_gb": budget.accounted_rss_gb,
+        },
     }
 
 
@@ -1034,6 +1147,11 @@ def _write_summary_json(
         "peak": _rss_record_payload(result.peak),
         "peak_total": _rss_record_payload(result.peak_total),
         "timed_out": result.timed_out,
+        "limit_at_violation": (
+            None
+            if result.limit_at_violation is None
+            else memory_limits_payload(result.limit_at_violation)
+        ),
         "exit_signal": (
             None
             if result.violation is not None or result.timed_out
@@ -1221,6 +1339,14 @@ def main(
         child_rlimit_kb = (
             None if child_rlimit_gb <= 0 else child_rlimit_kb_from_gb(child_rlimit_gb)
         )
+        dynamic_process_rss = args.max_rss_gb is None
+        dynamic_total_rss = args.max_total_rss_gb is None
+
+        def adaptive_budget_provider(accounted_rss_kb: int) -> AdaptiveMemoryBudget:
+            return adaptive_memory_budget(
+                environ=current_env,
+                accounted_rss_kb=accounted_rss_kb,
+            )
     except ValueError as exc:
         print(f"memory_guard: {exc}", file=sys.stderr)
         return 2
@@ -1245,6 +1371,9 @@ def main(
         samples_jsonl_max_bytes=samples_jsonl_max_bytes,
         stream=args.stream,
         child_rlimit_kb=child_rlimit_kb,
+        adaptive_budget_provider=adaptive_budget_provider,
+        dynamic_process_rss=dynamic_process_rss,
+        dynamic_total_rss=dynamic_total_rss,
     )
     if args.summary_json:
         try:
@@ -1260,14 +1389,25 @@ def main(
             print(f"memory_guard: failed to write summary JSON: {exc}", file=sys.stderr)
             return 2 if result.returncode == 0 else result.returncode
     if result.violation is not None:
+        violation_limits = result.limit_at_violation
         limit_gb = (
-            max_total_rss_gb if result.violation.scope == "process_tree" else max_rss_gb
+            (
+                violation_limits.max_total_rss_gb
+                if violation_limits is not None
+                else max_total_rss_gb
+            )
+            if result.violation.scope == "process_tree"
+            else (
+                violation_limits.max_process_rss_gb
+                if violation_limits is not None
+                else max_rss_gb
+            )
         )
         print(
             "memory_guard: RSS limit exceeded: "
             f"pid={result.violation.pid} "
             f"rss={result.violation.rss_gb:.2f}GB "
-            f"limit={limit_gb:.2f}GB "
+            f"limit={0.0 if limit_gb is None else limit_gb:.2f}GB "
             f"scope={result.violation.scope} "
             f"command={result.violation.command}",
             file=sys.stderr,

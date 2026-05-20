@@ -250,6 +250,64 @@ def test_find_violations_catches_aggregate_global_rss() -> None:
     assert [violation.pgid for violation in violations] == [10, 20]
 
 
+def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    group = module.ProcessGroup(
+        pgid=10,
+        matched=True,
+        samples=(
+            module.memory_guard.ProcessSample(
+                pid=10,
+                ppid=1,
+                pgid=10,
+                rss_kb=20 * 1024 * 1024,
+                command=f"{module.repo_root()}/target/release-fast/molt-backend",
+            ),
+        ),
+    )
+    accounted: list[int] = []
+    captured: dict[str, int] = {}
+
+    def fake_budget(prefix, environ=None, *, accounted_rss_kb=0):
+        assert prefix == "MOLT_SENTINEL"
+        accounted.append(accounted_rss_kb)
+        return module.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=2,
+            max_total_rss_gb=3,
+            max_global_rss_gb=4,
+            reserve_gb=1,
+            physical_gb=16,
+            available_gb=12,
+            source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+        )
+
+    def fake_find_violations(
+        groups, *, max_process_kb, max_group_kb, max_global_kb, kill_all=False
+    ):
+        captured["max_process_kb"] = max_process_kb
+        captured["max_group_kb"] = max_group_kb
+        captured["max_global_kb"] = max_global_kb
+        return []
+
+    monkeypatch.setattr(module.memory_guard, "adaptive_memory_budget", fake_budget)
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: {})
+    monkeypatch.setattr(module, "process_groups", lambda *args, **kwargs: [group])
+    monkeypatch.setattr(module, "find_violations", fake_find_violations)
+
+    rc = module.main(["--once", "--dry-run"])
+
+    assert rc == 0
+    assert accounted[-1] == group.total_rss_kb
+    assert captured == {
+        "max_process_kb": 2 * 1024 * 1024,
+        "max_group_kb": 3 * 1024 * 1024,
+        "max_global_kb": 4 * 1024 * 1024,
+    }
+
+
 def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> None:
     module = _load_process_sentinel()
     terminated: list[int] = []

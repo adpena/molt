@@ -26,6 +26,9 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     assert limits.max_global_rss_gb == 5
     assert limits.child_rlimit_gb == 6
     assert limits.poll_interval == 0.05
+    assert limits.dynamic_process_rss is False
+    assert limits.dynamic_total_rss is False
+    assert limits.dynamic_global_rss is False
     assert limits.max_process_rss_kb == 3 * 1024 * 1024
     assert limits.max_total_rss_kb == 4 * 1024 * 1024
     assert limits.max_global_rss_kb == 5 * 1024 * 1024
@@ -101,6 +104,9 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     assert limits.max_global_rss_gb == pytest.approx(85.6704)
     assert limits.child_rlimit_gb == pytest.approx(102.80448)
     assert limits.poll_interval == harness_memory_guard.DEFAULT_POLL_INTERVAL_SEC
+    assert limits.dynamic_process_rss is True
+    assert limits.dynamic_total_rss is True
+    assert limits.dynamic_global_rss is True
 
 
 def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
@@ -114,6 +120,49 @@ def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
 
     assert limits.enabled is True
     assert limits.max_process_rss_gb == 6
+    assert limits.dynamic_process_rss is False
+    assert limits.dynamic_total_rss is True
+
+
+def test_current_memory_limits_refreshes_unset_adaptive_caps(monkeypatch) -> None:
+    calls: list[tuple[str, int]] = []
+
+    def fake_budget(prefix, environ=None, *, accounted_rss_kb=0):
+        calls.append((prefix, accounted_rss_kb))
+        return harness_memory_guard.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=7,
+            max_total_rss_gb=8,
+            max_global_rss_gb=9,
+            reserve_gb=1,
+            physical_gb=16,
+            available_gb=12,
+            source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "adaptive_memory_budget",
+        fake_budget,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+        adaptive_prefix="MOLT_BENCH",
+        dynamic_process_rss=True,
+        dynamic_total_rss=False,
+        dynamic_global_rss=True,
+    )
+
+    current = limits.current_memory_limits(accounted_rss_kb=42)
+
+    assert calls == [("MOLT_BENCH", 42)]
+    assert current.max_process_rss_gb == pytest.approx(7)
+    assert current.max_total_rss_gb == pytest.approx(3)
+    assert current.max_global_rss_gb == pytest.approx(9)
 
 
 def test_limits_from_env_uses_fast_default_poll(monkeypatch) -> None:
@@ -189,6 +238,8 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     assert call["max_rss_kb"] == 2 * 1024 * 1024
     assert call["max_total_rss_kb"] == 3 * 1024 * 1024
     assert call["child_rlimit_kb"] == 8 * 1024 * 1024
+    assert call["dynamic_process_rss"] is False
+    assert call["dynamic_total_rss"] is False
 
 
 def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> None:
@@ -292,7 +343,21 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "process_groups",
-        lambda *args, **kwargs: ["group"],
+        lambda *args, **kwargs: [
+            harness_memory_guard.process_sentinel.ProcessGroup(
+                pgid=12345,
+                matched=True,
+                samples=(
+                    harness_memory_guard.memory_guard.ProcessSample(
+                        pid=12346,
+                        ppid=1,
+                        pgid=12345,
+                        rss_kb=3 * 1024 * 1024,
+                        command="molt-backend --daemon",
+                    ),
+                ),
+            )
+        ],
     )
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
@@ -323,9 +388,9 @@ def test_repo_process_sentinel_records_and_terminates_violation(
 
     assert sentinel.tripped is True
     assert terminated == [12345]
-    assert "repo_process_guard_tripped" in sentinel.events_path.read_text(
-        encoding="utf-8"
-    )
+    events = sentinel.events_path.read_text(encoding="utf-8")
+    assert "repo_process_guard_tripped" in events
+    assert "limits" in events
 
 
 def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
