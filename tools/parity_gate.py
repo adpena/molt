@@ -554,23 +554,37 @@ def main() -> int:
 
     print(f"Parity gate: {len(test_files)} tests in {directory}")
     print(f"Molt command: {' '.join(molt_cmd)}")
-    print()
 
     timeout = args.timeout if args.timeout is not None else TIMEOUT_SECONDS
 
-    results: list[TestResult] = []
-    for path in test_files:
-        result = run_one(path, molt_cmd, molt_env, timeout=timeout)
-        results.append(result)
-        print_result(result, verbose=args.verbose)
+    guard_env = os.environ.copy()
+    if molt_env:
+        guard_env.update(molt_env)
+    limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", guard_env)
+    with harness_memory_guard.guarded_harness_scope(
+        prefix="MOLT_CONFORMANCE",
+        repo_root=REPO_ROOT,
+        artifact_root=REPO_ROOT / "tmp" / "parity_gate",
+        label="parity_gate",
+        env=guard_env,
+        limits=limits,
+    ) as guard_scope:
+        print(harness_memory_guard.limits_status_line(guard_scope.limits))
+        print()
 
-    strict_violations = sum(
-        1 for r in results if r.status == "fail" and r.tier == TIER_STRICT
-    )
+        results: list[TestResult] = []
+        for path in test_files:
+            result = run_one(path, molt_cmd, molt_env, timeout=timeout)
+            results.append(result)
+            print_result(result, verbose=args.verbose)
 
-    print_summary(results, strict_violations=strict_violations)
+        strict_violations = sum(
+            1 for r in results if r.status == "fail" and r.tier == TIER_STRICT
+        )
 
-    return 1 if strict_violations > 0 else 0
+        print_summary(results, strict_violations=strict_violations)
+
+        return 1 if strict_violations > 0 else 0
 
 
 if __name__ == "__main__":
