@@ -555,15 +555,23 @@ unsafe fn exception_class_can_use_cached_message_str(
     }
 }
 
-pub(crate) unsafe fn exception_cached_message_str_bits(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-) -> Option<u64> {
+pub(crate) unsafe fn exception_uses_cached_message_str(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
         let class_bits = exception_class_bits(ptr);
-        let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+        exception_class_bits_uses_cached_message_str(_py, class_bits)
+    }
+}
+
+pub(crate) unsafe fn exception_class_bits_uses_cached_message_str(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+) -> bool {
+    unsafe {
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return false;
+        };
         if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return None;
+            return false;
         }
         let class_version = class_layout_version_bits(class_ptr);
         let cached = runtime_state(_py)
@@ -572,7 +580,7 @@ pub(crate) unsafe fn exception_cached_message_str_bits(
             .unwrap()
             .get(&class_bits)
             .copied();
-        let can_use_cached_message = match cached {
+        match cached {
             Some((version, value)) if version == class_version => value,
             _ => {
                 let value = exception_class_can_use_cached_message_str(_py, class_bits, class_ptr);
@@ -583,11 +591,19 @@ pub(crate) unsafe fn exception_cached_message_str_bits(
                     .insert(class_bits, (class_version, value));
                 value
             }
-        };
-        if !can_use_cached_message {
+        }
+    }
+}
+
+pub(crate) unsafe fn exception_cached_message_str_bits(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+) -> Option<u64> {
+    unsafe {
+        if !exception_uses_cached_message_str(_py, ptr) {
             return None;
         }
-        let msg_bits = exception_msg_bits(ptr);
+        let msg_bits = exception_materialized_message_bits(_py, ptr);
         let msg_ptr = obj_from_bits(msg_bits).as_ptr()?;
         if object_type_id(msg_ptr) != TYPE_ID_STRING {
             return None;

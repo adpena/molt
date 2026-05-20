@@ -9773,6 +9773,22 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "int_from_str_of_obj" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        let base = locals[&args[1]];
+                        let has_base = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(val));
+                        func.instruction(&Instruction::LocalGet(base));
+                        func.instruction(&Instruction::LocalGet(has_base));
+                        emit_call(func, reloc_enabled, import_ids["int_from_str_of_obj"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "complex_from_obj" => {
                         let args = op.args.as_ref().unwrap();
                         let val = locals[&args[0]];

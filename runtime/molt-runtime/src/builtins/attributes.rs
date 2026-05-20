@@ -1184,7 +1184,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         kind.as_deref(),
                         Some("SyntaxError" | "IndentationError" | "TabError")
                     ) {
-                        let bits = exception_msg_bits(obj_ptr);
+                        let bits = crate::exception_materialized_message_bits(_py, obj_ptr);
                         inc_ref_bits(_py, bits);
                         return Some(bits);
                     }
@@ -3297,7 +3297,10 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
                     }
-                    let msg_bits = exception_message_from_args(_py, args_bits);
+                    let class_bits = exception_class_bits(obj_ptr);
+                    let kind_bits = exception_kind_bits(obj_ptr);
+                    let msg_bits =
+                        crate::exception_message_for_storage(_py, kind_bits, class_bits, args_bits);
                     if obj_from_bits(msg_bits).is_none() {
                         dec_ref_bits(_py, args_bits);
                         dec_ref_bits(_py, attr_bits);

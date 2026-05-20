@@ -9000,6 +9000,10 @@ BASE_IMPORTS = """\
     }
     throw new Error('TypeError: int() argument must be a string or a number');
   },
+  int_from_str_of_obj: (val, baseBits, hasBase) => {
+    const strBits = baseImports.str_from_obj(val);
+    return baseImports.int_from_obj(strBits, baseBits, hasBase);
+  },
   float_from_obj: (val) => {
     if (isFloat(val)) return val;
     if (isIntLike(val)) return boxFloat(Number(unboxIntLike(val)));

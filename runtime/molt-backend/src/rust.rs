@@ -2563,6 +2563,29 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     &self.hoisted_vars.clone(),
                 ));
             }
+            "int_from_str_of_obj" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let a = args
+                    .first()
+                    .map(|s| rust_value(s))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                let base = args
+                    .get(1)
+                    .map(|s| rust_value(s))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                let has_base = args
+                    .get(2)
+                    .map(|s| rust_value(s))
+                    .unwrap_or_else(|| "MoltValue::Bool(false)".to_string());
+                self.emit_line(&declare(
+                    &o,
+                    &format!(
+                        "{{ let __s = molt_str(&{a}); if molt_bool(&{has_base}) {{ let __base = molt_int(&{base}); MoltValue::Int(if (2..=36).contains(&__base) {{ i64::from_str_radix(__s.trim(), __base as u32).unwrap_or(0) }} else {{ 0 }}) }} else {{ MoltValue::Int(molt_int(&MoltValue::Str(__s))) }} }}"
+                    ),
+                    &self.hoisted_vars.clone(),
+                ));
+            }
             "float" | "cast_float" | "builtin_float" => {
                 let o = out();
                 let a = arg0(op);
@@ -3685,6 +3708,47 @@ mod tests {
 
         let source = backend.compile(&ir);
         assert!(source.contains("fn __main____annotate__("));
+    }
+
+    #[test]
+    fn compile_int_from_str_of_obj_preserves_base_operand() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![
+                    "value".to_string(),
+                    "base".to_string(),
+                    "has_base".to_string(),
+                ],
+                ops: vec![
+                    OpIR {
+                        kind: "int_from_str_of_obj".to_string(),
+                        args: Some(vec![
+                            "value".to_string(),
+                            "base".to_string(),
+                            "has_base".to_string(),
+                        ]),
+                        out: Some("out".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("out".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("molt_bool(&has_base)"));
+        assert!(source.contains("let __base = molt_int(&base);"));
+        assert!(source.contains("i64::from_str_radix(__s.trim(), __base as u32)"));
     }
 
     #[test]

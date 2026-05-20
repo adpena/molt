@@ -316,12 +316,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                     }
                     crate::CURRENT_TASK.with(|cell| cell.set(prev_task));
                     if obj_from_bits(exc_bits).is_none() {
-                        let global_exc = {
-                            let guard = runtime_state(_py).last_exception.lock().unwrap();
-                            guard.map(|ptr| ptr.0)
-                        };
-                        if let Some(exc_ptr) = global_exc {
-                            let exc_bits = MoltObject::from_ptr(exc_ptr).bits();
+                        if let Some(exc_bits) = crate::global_last_exception_bits_noinc(_py) {
                             inc_ref_bits(_py, exc_bits);
                             let raised = molt_raise(exc_bits);
                             dec_ref_bits(_py, exc_bits);
