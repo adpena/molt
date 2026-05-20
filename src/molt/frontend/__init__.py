@@ -1097,6 +1097,27 @@ MOLT_DIRECT_CALL_BIND_ALWAYS = {
     "itertools": {"chain", "islice", "repeat"},
 }
 
+@dataclass(frozen=True)
+class IntrinsicHandleClassConstructorSpec:
+    type_hint: str
+    handle_attr: str
+    empty_intrinsic: str
+    iterable_intrinsic: str
+    iterable_types: frozenset[str]
+
+
+INTRINSIC_HANDLE_CLASS_CONSTRUCTORS: dict[
+    tuple[str, str], IntrinsicHandleClassConstructorSpec
+] = {
+    ("collections", "Counter"): IntrinsicHandleClassConstructorSpec(
+        type_hint="counter",
+        handle_attr="_handle",
+        empty_intrinsic="molt_counter_new",
+        iterable_intrinsic="molt_counter_from_iterable",
+        iterable_types=frozenset({"list", "tuple"}),
+    ),
+}
+
 STDLIB_DIRECT_CALL_MODULES = {
     module for module in MOLT_DIRECT_CALLS if not module.startswith("molt.")
 }
@@ -6850,6 +6871,98 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
         return func_val
+
+    def _static_expr_type_hint_without_emitting(self, expr: ast.expr) -> str | None:
+        if isinstance(expr, ast.List):
+            return "list"
+        if isinstance(expr, ast.Tuple):
+            return "tuple"
+        if isinstance(expr, ast.Dict):
+            return "dict"
+        if isinstance(expr, ast.Set):
+            return "set"
+        if isinstance(expr, ast.Constant):
+            if isinstance(expr.value, str):
+                return "str"
+            if isinstance(expr.value, bytes):
+                return "bytes"
+            if isinstance(expr.value, bool):
+                return "bool"
+            if isinstance(expr.value, int):
+                return "int"
+            if isinstance(expr.value, float):
+                return "float"
+            if expr.value is None:
+                return "None"
+        if not isinstance(expr, ast.Name):
+            return None
+        if self.is_async() and expr.id in self.async_local_hints:
+            return self.async_local_hints[expr.id]
+        boxed_hint = self.boxed_local_hints.get(expr.id)
+        if boxed_hint is not None:
+            return boxed_hint
+        local_val = self.locals.get(expr.id)
+        if local_val is not None:
+            return local_val.type_hint
+        global_val = self.globals.get(expr.id)
+        if global_val is not None:
+            return global_val.type_hint
+        return None
+
+    def _try_emit_intrinsic_handle_class_constructor(
+        self,
+        target_module: str,
+        attr_name: str,
+        node: ast.Call,
+    ) -> MoltValue | None:
+        spec = INTRINSIC_HANDLE_CLASS_CONSTRUCTORS.get((target_module, attr_name))
+        if spec is None:
+            return None
+        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
+            return None
+        if len(node.args) > 1:
+            return None
+
+        runtime_args: list[MoltValue]
+        if node.args:
+            arg_hint = self._static_expr_type_hint_without_emitting(node.args[0])
+            if arg_hint not in spec.iterable_types:
+                return None
+            intrinsic_name = spec.iterable_intrinsic
+        else:
+            intrinsic_name = spec.empty_intrinsic
+
+        class_ref = self.visit(node.func)
+        if class_ref is None:
+            raise NotImplementedError("Unsupported intrinsic-backed class target")
+        runtime_args = []
+        if node.args:
+            iterable = self.visit(node.args[0])
+            if iterable is None:
+                raise NotImplementedError(
+                    "Unsupported intrinsic-backed class constructor argument"
+                )
+            runtime_args.append(iterable)
+
+        intrinsic_func = self._emit_intrinsic_function(intrinsic_name)
+        handle = MoltValue(self.next_var(), type_hint="int")
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[intrinsic_func] + runtime_args,
+                result=handle,
+            )
+        )
+        res = MoltValue(self.next_var(), type_hint=spec.type_hint)
+        self.emit(MoltOp(kind="OBJECT_NEW_BOUND", args=[class_ref], result=res))
+        self.emit(
+            MoltOp(
+                kind="SETATTR_GENERIC_OBJ",
+                args=[res, spec.handle_attr, handle],
+                result=MoltValue("none"),
+            )
+        )
+        return res
 
     @staticmethod
     def _is_intrinsics_module_name(module_name: str | None) -> bool:
@@ -19573,6 +19686,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     or self._is_internal_module(module_name)
                     or self._is_known_project_module(module_name)
                 ):
+                    lowered_handle_ctor = (
+                        self._try_emit_intrinsic_handle_class_constructor(
+                            allowlist_key,
+                            func_id,
+                            node,
+                        )
+                    )
+                    if lowered_handle_ctor is not None:
+                        return lowered_handle_ctor
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
@@ -19706,6 +19828,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             if lowered_wrapper_intrinsic is not None:
                 return lowered_wrapper_intrinsic
+            if imported_from:
+                target_module = self._normalize_allowlist_module(imported_from)
+                if target_module is None:
+                    target_module = imported_from
+                original_attr = self.imported_attr_names.get(func_id, func_id)
+                lowered_handle_ctor = (
+                    self._try_emit_intrinsic_handle_class_constructor(
+                        target_module,
+                        original_attr,
+                        node,
+                    )
+                )
+                if lowered_handle_ctor is not None:
+                    return lowered_handle_ctor
             if func_id in {"BaseExceptionGroup", "ExceptionGroup"}:
                 if node.keywords:
                     self._bridge_fallback(
