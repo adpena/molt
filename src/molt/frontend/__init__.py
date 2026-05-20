@@ -24342,7 +24342,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if not isinstance(target.value, ast.Name):
             return None
         target_key = target.slice
-        if not isinstance(target_key, (ast.Name, ast.Constant)):
+        if not self._dict_increment_key_is_single_eval_safe(target_key):
             return None
         if not isinstance(node.value, ast.BinOp) or not isinstance(
             node.value.op, ast.Add
@@ -24384,6 +24384,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             return None
         return target.value, target_key, delta_expr
+
+    def _dict_increment_key_is_single_eval_safe(self, key: ast.expr) -> bool:
+        if isinstance(key, (ast.Name, ast.Constant)):
+            return True
+        if not isinstance(key, ast.Attribute) or not isinstance(key.value, ast.Name):
+            return False
+        obj_name = key.value.id
+        obj_value = self.locals.get(obj_name)
+        if obj_value is None and self.current_func_name == "molt_main":
+            obj_value = self.globals.get(obj_name)
+        class_id = self.exact_locals.get(obj_name)
+        if class_id is None and obj_value is not None:
+            class_id = self.boxed_local_hints.get(obj_name) or obj_value.type_hint
+        class_info = self.classes.get(class_id or "")
+        return bool(
+            class_info
+            and class_info.get("dataclass")
+            and key.attr in class_info.get("fields", {})
+        )
 
     def _match_split_dict_increment_for_loop(
         self, node: ast.For
@@ -31801,6 +31820,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     candidates[root].unsafe = True
                     for other_root in used_roots - {root}:
                         candidates[other_root].unsafe = True
+            elif kind == "guard_tag" and len(args) >= 1 and arg_roots[0] is not None:
+                root = arg_roots[0]
+                candidates[root].alias_op_indexes.add(op_index)
+                for other_root in used_roots - {root}:
+                    candidates[other_root].unsafe = True
             else:
                 for root in used_roots:
                     candidates[root].unsafe = True
