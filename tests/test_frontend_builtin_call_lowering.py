@@ -192,6 +192,53 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     assert match_ops[0]["s_value"] == "ValueError"
     assert match_ops[0]["value"] == 5
     assert not any(op.get("kind") == "exception_class" for op in func_ops)
+    assert not any(op.get("kind") == "context_depth" for op in func_ops)
+    assert not any(op.get("kind") == "context_unwind_to" for op in func_ops)
+
+
+def test_sync_try_except_keeps_context_unwind_when_body_enters_with() -> None:
+    source = (
+        "def f(p):\n"
+        "    try:\n"
+        "        with open(p) as fp:\n"
+        "            raise ValueError(1)\n"
+        "    except ValueError:\n"
+        "        return 1\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+
+    assert any(op.get("kind") == "context_depth" for op in func_ops)
+    assert any(op.get("kind") == "context_unwind_to" for op in func_ops)
+
+
+def test_sync_try_except_splits_clean_and_pending_cleanup_lanes() -> None:
+    source = (
+        "def f(i):\n"
+        "    total = 0\n"
+        "    try:\n"
+        "        if i:\n"
+        "            raise ValueError(i)\n"
+        "        total += i\n"
+        "    except ValueError as e:\n"
+        "        total += int(str(e))\n"
+        "    return total\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    pop_indices = [
+        idx for idx, op in enumerate(func_ops) if op.get("kind") == "exception_pop"
+    ]
+
+    assert len(pop_indices) >= 2
+    assert any(func_ops[idx + 1].get("kind") == "jump" for idx in pop_indices)
+    assert any(
+        func_ops[idx + 1].get("kind") == "check_exception" for idx in pop_indices
+    )
 
 
 def test_zip_lowering_uses_call_bind() -> None:

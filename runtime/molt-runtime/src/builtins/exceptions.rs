@@ -2089,24 +2089,17 @@ fn alloc_builtin_exception_from_tag(_py: &PyToken<'_>, tag: u64, args_bits: u64)
         return std::ptr::null_mut();
     };
     let kind_bits = unsafe { class_name_bits(class_ptr) };
-    let args_bits = exception_normalize_args(_py, args_bits);
-    if obj_from_bits(args_bits).is_none() {
-        return std::ptr::null_mut();
-    }
     let msg_bits = exception_message_for_builtin_tag_storage(_py, tag, class_bits, args_bits);
     if obj_from_bits(msg_bits).is_none() {
-        dec_ref_bits(_py, args_bits);
         return std::ptr::null_mut();
     }
     let none_bits = MoltObject::none().bits();
     let ptr = alloc_exception_obj(_py, kind_bits, msg_bits, class_bits, args_bits, none_bits);
-    if !ptr.is_null() {
+    if tag == 8 && !ptr.is_null() {
         unsafe {
             exception_set_stop_iteration_value(_py, ptr, args_bits);
-            exception_set_system_exit_code(_py, ptr, args_bits);
         }
     }
-    dec_ref_bits(_py, args_bits);
     dec_ref_bits(_py, msg_bits);
     ptr
 }
@@ -4934,6 +4927,22 @@ pub extern "C" fn molt_exception_new_builtin(tag: u64, args_bits: u64) -> u64 {
         if builtin_exception_name_for_tag(tag).is_none() {
             return raise_exception::<u64>(_py, "RuntimeError", "unknown builtin exception tag");
         }
+        let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "builtin exception constructor expects tuple args",
+            );
+        };
+        unsafe {
+            if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "builtin exception constructor expects tuple args",
+                );
+            }
+        }
         let ptr = alloc_builtin_exception_from_tag(_py, tag, args_bits);
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -4956,11 +4965,11 @@ pub extern "C" fn molt_exception_match_builtin(exc_bits: u64, tag: u64) -> u64 {
             if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
                 return MoltObject::from_bool(false).bits();
             }
-            MoltObject::from_bool(issubclass_bits(
-                exception_class_bits(exc_ptr),
-                target_class_bits,
-            ))
-            .bits()
+            let class_bits = exception_class_bits(exc_ptr);
+            if class_bits == target_class_bits {
+                return MoltObject::from_bool(true).bits();
+            }
+            MoltObject::from_bool(issubclass_bits(class_bits, target_class_bits)).bits()
         }
     })
 }
