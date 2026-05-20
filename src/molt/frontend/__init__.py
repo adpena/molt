@@ -17953,6 +17953,68 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return res
 
+    def _local_name_shadows_import_binding(self, name: str) -> bool:
+        if self.current_func_name == "molt_main":
+            return False
+        if name in self.global_decls:
+            return False
+        return name in self.locals or name in self.boxed_locals
+
+    def _literal_importlib_import_module_target(
+        self, node: ast.Call
+    ) -> str | None:
+        if node.keywords or len(node.args) != 1:
+            return None
+        arg = node.args[0]
+        if not isinstance(arg, ast.Constant) or not isinstance(arg.value, str):
+            return None
+        module_name = arg.value
+        if not module_name or module_name.startswith("."):
+            return None
+
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr != "import_module" or not isinstance(
+                node.func.value, ast.Name
+            ):
+                return None
+            binding_name = node.func.value.id
+            if self._local_name_shadows_import_binding(binding_name):
+                return None
+            if self.imported_modules.get(binding_name) != "importlib":
+                return None
+        elif isinstance(node.func, ast.Name):
+            binding_name = node.func.id
+            if self._local_name_shadows_import_binding(binding_name):
+                return None
+            imported_from = self.imported_names.get(binding_name)
+            if imported_from is None:
+                imported_from = self.global_imported_names.get(binding_name)
+            if imported_from != "importlib":
+                return None
+            original_attr = self.imported_attr_names.get(binding_name)
+            if original_attr is None:
+                original_attr = self.global_imported_attr_names.get(
+                    binding_name, binding_name
+                )
+            if original_attr != "import_module":
+                return None
+        else:
+            return None
+
+        if module_name in self.known_modules:
+            return module_name
+        if self._should_attempt_runtime_module_import(module_name):
+            return module_name
+        return None
+
+    def _try_emit_importlib_import_module_literal_call(
+        self, node: ast.Call
+    ) -> MoltValue | None:
+        module_name = self._literal_importlib_import_module_target(node)
+        if module_name is None:
+            return None
+        return self._emit_module_load(module_name)
+
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
         if gpu_launch is not None:
@@ -17990,6 +18052,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         super_fold = self._try_emit_super_static_call(node)
         if super_fold is not None:
             return super_fold
+
+        importlib_literal = self._try_emit_importlib_import_module_literal_call(node)
+        if importlib_literal is not None:
+            return importlib_literal
 
         needs_bind = self._call_needs_bind(node)
         if isinstance(node.func, ast.Attribute):
