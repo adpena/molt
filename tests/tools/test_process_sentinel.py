@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -19,6 +20,39 @@ def _load_process_sentinel():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _imports_harness_memory_guard(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(
+                alias.name in {"harness_memory_guard", "tools.harness_memory_guard"}
+                for alias in node.names
+            ):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == "tools":
+            if any(alias.name == "harness_memory_guard" for alias in node.names):
+                return True
+    return False
+
+
+def _guarded_entrypoint_tokens_from_source() -> set[str]:
+    entrypoints: set[str] = set()
+    for base in (REPO_ROOT / "tools", REPO_ROOT / "tests" / "harness"):
+        for path in sorted(base.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            if not _imports_harness_memory_guard(path):
+                continue
+            entrypoints.add("/" + path.relative_to(REPO_ROOT).as_posix())
+    for path in (
+        REPO_ROOT / "src" / "molt" / "cli.py",
+        REPO_ROOT / "src" / "molt" / "harness_layers.py",
+    ):
+        if _imports_harness_memory_guard(path):
+            entrypoints.add("/" + path.relative_to(REPO_ROOT).as_posix())
+    return entrypoints
 
 
 def test_process_groups_include_full_matched_group() -> None:
@@ -136,6 +170,33 @@ def test_process_groups_does_not_match_repo_root_alone() -> None:
     groups = module.process_groups(samples, root=root, self_pid=9999)
 
     assert groups == []
+
+
+def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
+    module = _load_process_sentinel()
+
+    assert set(module.GUARDED_ENTRYPOINT_TOKENS) == (
+        _guarded_entrypoint_tokens_from_source()
+    )
+
+
+def test_process_groups_match_guarded_entrypoints() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        idx: module.memory_guard.ProcessSample(
+            pid=idx,
+            ppid=1,
+            pgid=idx,
+            rss_kb=100,
+            command=f"/usr/bin/python /repo/molt{token} --unit",
+        )
+        for idx, token in enumerate(module.GUARDED_ENTRYPOINT_TOKENS, start=10)
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert [group.pgid for group in groups] == sorted(samples)
 
 
 def test_process_groups_match_repo_scoped_cached_binary() -> None:
