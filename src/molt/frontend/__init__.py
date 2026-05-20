@@ -2330,8 +2330,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return False
         if op.kind in {"NEG", "POS"}:
             return all(
-                isinstance(arg, MoltValue) and arg.type_hint == "int"
-                for arg in op.args
+                isinstance(arg, MoltValue) and arg.type_hint == "int" for arg in op.args
             )
         # Bitwise ops on bools must NOT use the fast_int path because the
         # backend's inline band/bor/bxor + box_int_value always returns an
@@ -12364,6 +12363,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         res = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="STR_FROM_OBJ", args=[value], result=res))
         return res
+
+    def _builtin_str_single_object_arg(self, node: ast.AST) -> ast.AST | None:
+        if not isinstance(node, ast.Call):
+            return None
+        if not (isinstance(node.func, ast.Name) and node.func.id == "str"):
+            return None
+        if len(node.args) > 1:
+            return None
+        kw_object: ast.AST | None = None
+        for keyword in node.keywords:
+            if keyword.arg != "object":
+                return None
+            if kw_object is not None:
+                return None
+            kw_object = keyword.value
+        if node.args:
+            return node.args[0]
+        return kw_object
 
     def _emit_repr_from_obj(self, value: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="str")
@@ -22713,8 +22730,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 value: MoltValue | None = None
                 base_val: MoltValue | None = None
                 has_base_flag = False
+                from_str_source = False
+                str_source_node = (
+                    self._builtin_str_single_object_arg(node.args[0])
+                    if node.args
+                    else None
+                )
                 if node.args:
-                    value = self.visit(node.args[0])
+                    if str_source_node is not None:
+                        value = self.visit(str_source_node)
+                        from_str_source = True
+                    else:
+                        value = self.visit(node.args[0])
                     if value is None:
                         raise NotImplementedError("Unsupported int input")
                 if len(node.args) == 2:
@@ -22761,7 +22788,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(
                     MoltOp(
-                        kind="INT_FROM_OBJ",
+                        kind=(
+                            "INT_FROM_STR_OF_OBJ" if from_str_source else "INT_FROM_OBJ"
+                        ),
                         args=[value, base_val, has_base],
                         result=res,
                     )
@@ -34028,6 +34057,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "int_from_obj",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "INT_FROM_STR_OF_OBJ":
+                json_ops.append(
+                    {
+                        "kind": "int_from_str_of_obj",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

@@ -402,6 +402,55 @@ fn parse_int_from_str(text: &str, base: i64) -> Result<(BigInt, i64), ()> {
     Ok((parsed, base_val))
 }
 
+#[inline(always)]
+fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    let mut idx = 0usize;
+    let mut negative = false;
+    match bytes[0] {
+        b'+' => idx = 1,
+        b'-' => {
+            negative = true;
+            idx = 1;
+        }
+        _ => {}
+    }
+    if idx == bytes.len() {
+        return None;
+    }
+    let limit: u64 = if negative {
+        (i64::MAX as u64) + 1
+    } else {
+        i64::MAX as u64
+    };
+    let mut value = 0u64;
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        let digit = (byte - b'0') as u64;
+        if value > (limit - digit) / 10 {
+            return None;
+        }
+        value = value * 10 + digit;
+        idx += 1;
+    }
+    if negative {
+        if value == (i64::MAX as u64) + 1 {
+            Some(i64::MIN)
+        } else {
+            Some(-(value as i64))
+        }
+    } else {
+        Some(value as i64)
+    }
+}
+
 /// # Safety
 /// - `ptr` must be null or valid for `len_bits` bytes.
 #[unsafe(no_mangle)]
@@ -419,6 +468,9 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
                     return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
                 }
             };
+            if let Some(i) = parse_simple_ascii_decimal_i64(text) {
+                return int_bits_from_i64(_py, i);
+            }
             let (parsed, _base_used) = match parse_int_from_str(text, 10) {
                 Ok(val) => val,
                 Err(_) => {
@@ -1341,6 +1393,58 @@ pub extern "C" fn molt_int_is_integer(self_bits: u64) -> u64 {
     })
 }
 
+#[inline(always)]
+unsafe fn int_from_default_exception_single_inline_int_str(
+    _py: &PyToken<'_>,
+    val_bits: u64,
+) -> Option<u64> {
+    let ptr = maybe_ptr_from_bits(val_bits)?;
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_EXCEPTION {
+            return None;
+        }
+        let msg_bits = exception_msg_bits(ptr);
+        if !exception_message_is_lazy(msg_bits)
+            && !crate::object::ops_format::exception_uses_cached_message_str(_py, ptr)
+        {
+            return None;
+        }
+        let args_bits = exception_args_bits(ptr);
+        let args_ptr = maybe_ptr_from_bits(args_bits)?;
+        if object_type_id(args_ptr) != TYPE_ID_TUPLE || tuple_len(args_ptr) != 1 {
+            return None;
+        }
+        let arg_bits = seq_vec_ref(args_ptr)[0];
+        let arg = obj_from_bits(arg_bits);
+        arg.as_int().map(|value| MoltObject::from_int(value).bits())
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_from_str_of_obj(
+    val_bits: u64,
+    base_bits: u64,
+    has_base_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let has_base = to_i64(obj_from_bits(has_base_bits)).unwrap_or(0) != 0;
+        if !has_base
+            && let Some(bits) =
+                unsafe { int_from_default_exception_single_inline_int_str(_py, val_bits) }
+        {
+            return bits;
+        }
+
+        let str_bits = molt_str_from_obj(val_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let out_bits = molt_int_from_obj(str_bits, base_bits, has_base_bits);
+        dec_ref_bits(_py, str_bits);
+        out_bits
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1432,6 +1536,11 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                         Err(_) => return invalid_literal(base_val, "<bytes>"),
                     };
                     let base = if has_base { base_val } else { 10 };
+                    if base == 10
+                        && let Some(i) = parse_simple_ascii_decimal_i64(text)
+                    {
+                        return int_bits_from_i64(_py, i);
+                    }
                     let (parsed, _base_used) = match parse_int_from_str(text, base) {
                         Ok(val) => val,
                         Err(_) => return invalid_literal(base, text),
@@ -1446,6 +1555,11 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                     let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                     let text = String::from_utf8_lossy(bytes);
                     let base = if has_base { base_val } else { 10 };
+                    if base == 10
+                        && let Some(i) = parse_simple_ascii_decimal_i64(&text)
+                    {
+                        return int_bits_from_i64(_py, i);
+                    }
                     let (parsed, _base_used) = match parse_int_from_str(&text, base) {
                         Ok(val) => val,
                         Err(_) => return invalid_literal(base, &format!("b'{text}'")),

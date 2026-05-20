@@ -7508,6 +7508,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "int_from_str_of_obj" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let int_fn = self.ensure_runtime_i64_fn("molt_int_from_str_of_obj", 3);
+                let val_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let base_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let has_base_bits = self.materialize_dynbox_operand(op.operands[2]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        int_fn,
+                        &[val_bits.into(), base_bits.into(), has_base_bits.into()],
+                        "int_from_str_of_obj",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "string_join" => {
                 if op.operands.len() != 2 {
                     return false;

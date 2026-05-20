@@ -581,6 +581,68 @@ pub(crate) unsafe fn exception_msg_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
 }
 
+#[inline]
+fn exception_lazy_message_bits() -> u64 {
+    MoltObject::pending().bits()
+}
+
+#[inline]
+pub(crate) fn exception_message_is_lazy(bits: u64) -> bool {
+    bits == exception_lazy_message_bits()
+}
+
+fn exception_should_defer_message(_py: &PyToken<'_>, kind_bits: u64, class_bits: u64) -> bool {
+    if let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits))
+        && matches!(
+            kind.as_str(),
+            "SyntaxError" | "IndentationError" | "TabError"
+        )
+    {
+        return false;
+    }
+    let base_group_bits = builtin_classes(_py).base_exception_group;
+    if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
+        return false;
+    }
+    unsafe {
+        crate::object::ops_format::exception_class_bits_uses_cached_message_str(_py, class_bits)
+    }
+}
+
+pub(crate) fn exception_message_for_storage(
+    _py: &PyToken<'_>,
+    kind_bits: u64,
+    class_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    if exception_should_defer_message(_py, kind_bits, class_bits) {
+        exception_lazy_message_bits()
+    } else {
+        exception_message_from_args(_py, args_bits)
+    }
+}
+
+pub(crate) fn exception_materialized_message_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
+    let raw_bits = unsafe { exception_msg_bits(ptr) };
+    if !exception_message_is_lazy(raw_bits) {
+        return raw_bits;
+    }
+    let args_bits = unsafe { exception_args_bits(ptr) };
+    let msg_bits = exception_message_from_args(_py, args_bits);
+    if obj_from_bits(msg_bits).is_none() {
+        return msg_bits;
+    }
+    unsafe {
+        let msg_slot = ptr.add(std::mem::size_of::<u64>()) as *mut u64;
+        let old_msg = *msg_slot;
+        if old_msg != msg_bits {
+            dec_ref_bits(_py, old_msg);
+            *msg_slot = msg_bits;
+        }
+    }
+    msg_bits
+}
+
 pub(crate) unsafe fn exception_cause_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
 }
@@ -671,6 +733,115 @@ fn exception_slot_is_valid(ptr: PtrSlot) -> bool {
     valid
 }
 
+#[inline]
+fn global_last_exception_raw_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
+    let ptr = runtime_state(_py)
+        .last_exception
+        .load(AtomicOrdering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(PtrSlot(ptr))
+    }
+}
+
+#[inline]
+fn global_last_exception_valid_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
+    let state = runtime_state(_py);
+    let ptr = state.last_exception.load(AtomicOrdering::Acquire);
+    if ptr.is_null() {
+        return None;
+    }
+    let slot = PtrSlot(ptr);
+    if exception_slot_is_valid(slot) {
+        return Some(slot);
+    }
+    if state
+        .last_exception
+        .compare_exchange(
+            ptr,
+            std::ptr::null_mut(),
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        )
+        .is_ok()
+    {
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Release);
+    }
+    None
+}
+
+#[inline]
+fn global_last_exception_pending_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
+    let state = runtime_state(_py);
+    if !state.last_exception_pending.load(AtomicOrdering::Acquire) {
+        return None;
+    }
+    let slot = global_last_exception_valid_slot(_py);
+    if slot.is_none() {
+        state
+            .last_exception_pending
+            .store(false, AtomicOrdering::Release);
+    }
+    slot
+}
+
+#[inline]
+fn global_last_exception_take(_py: &PyToken<'_>) -> Option<PtrSlot> {
+    let state = runtime_state(_py);
+    let ptr = state
+        .last_exception
+        .swap(std::ptr::null_mut(), AtomicOrdering::AcqRel);
+    state
+        .last_exception_pending
+        .store(false, AtomicOrdering::Release);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(PtrSlot(ptr))
+    }
+}
+
+#[inline]
+fn global_last_exception_store_recorded(_py: &PyToken<'_>, ptr: *mut u8, reuse_existing_ref: bool) {
+    let state = runtime_state(_py);
+    if !reuse_existing_ref {
+        let bits = MoltObject::from_ptr(ptr).bits();
+        inc_ref_bits(_py, bits);
+    }
+    state.last_exception.store(ptr, AtomicOrdering::Release);
+    state
+        .last_exception_pending
+        .store(true, AtomicOrdering::Release);
+}
+
+#[inline]
+fn global_last_exception_replace_borrowed(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+    let state = runtime_state(_py);
+    let old = state.last_exception.load(AtomicOrdering::Acquire);
+    if old == ptr {
+        state
+            .last_exception_pending
+            .store(true, AtomicOrdering::Release);
+        return;
+    }
+    inc_ref_bits(_py, bits);
+    let old = state.last_exception.swap(ptr, AtomicOrdering::AcqRel);
+    state
+        .last_exception_pending
+        .store(true, AtomicOrdering::Release);
+    if !old.is_null() && old != ptr {
+        let old_bits = MoltObject::from_ptr(old).bits();
+        dec_ref_bits(_py, old_bits);
+    }
+}
+
+pub(crate) fn global_last_exception_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
+    global_last_exception_raw_slot(_py).map(|ptr| MoltObject::from_ptr(ptr.0).bits())
+}
+
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     let state = runtime_state(_py);
     let debug_pending = debug_exception_pending();
@@ -703,21 +874,7 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         } else {
             None
         };
-        let global_pending = if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
-            let mut guard = state.last_exception.lock().unwrap();
-            match *guard {
-                Some(ptr) if exception_slot_is_valid(ptr) => true,
-                _ => {
-                    *guard = None;
-                    state
-                        .last_exception_pending
-                        .store(false, AtomicOrdering::Relaxed);
-                    false
-                }
-            }
-        } else {
-            false
-        };
+        let global_pending = global_last_exception_pending_slot(_py).is_some();
         let pending = pending_ptr.is_some() || global_pending;
         if debug_pending
             && pending
@@ -733,24 +890,9 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         }
         return pending;
     }
-    let pending = if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
-        let mut guard = state.last_exception.lock().unwrap();
-        match *guard {
-            Some(ptr) if exception_slot_is_valid(ptr) => true,
-            _ => {
-                *guard = None;
-                state
-                    .last_exception_pending
-                    .store(false, AtomicOrdering::Relaxed);
-                false
-            }
-        }
-    } else {
-        false
-    };
+    let pending = global_last_exception_pending_slot(_py).is_some();
     if debug_pending && pending {
-        let guard = state.last_exception.lock().unwrap();
-        if let Some(ptr) = *guard {
+        if let Some(ptr) = global_last_exception_raw_slot(_py) {
             let kind_bits = unsafe { exception_kind_bits(ptr.0) };
             let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                 .unwrap_or_else(|| "<unknown>".to_string());
@@ -766,12 +908,7 @@ pub(crate) fn exception_is_rooted(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return false;
     }
     let state = runtime_state(_py);
-    if state
-        .last_exception
-        .lock()
-        .unwrap()
-        .is_some_and(|slot| slot.0 == ptr)
-    {
+    if state.last_exception.load(AtomicOrdering::Acquire) == ptr {
         return true;
     }
     if task_last_exceptions(_py)
@@ -826,21 +963,12 @@ pub(crate) fn exception_last_bits_noinc(_py: &PyToken<'_>) -> Option<u64> {
     {
         return Some(MoltObject::from_ptr(ptr.0).bits());
     }
-    let guard = runtime_state(_py).last_exception.lock().unwrap();
-    guard.map(|ptr| MoltObject::from_ptr(ptr.0).bits())
+    global_last_exception_bits_noinc(_py)
 }
 
 pub(crate) fn clear_exception_state(_py: &PyToken<'_>) {
     crate::gil_assert();
-    let state = runtime_state(_py);
-    let ptr = {
-        let mut guard = state.last_exception.lock().unwrap();
-        let ptr = guard.take();
-        state
-            .last_exception_pending
-            .store(false, AtomicOrdering::Relaxed);
-        ptr
-    };
+    let ptr = global_last_exception_take(_py);
     if let Some(ptr) = ptr {
         let bits = MoltObject::from_ptr(ptr.0).bits();
         dec_ref_bits(_py, bits);
@@ -1326,14 +1454,8 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
                 .task_last_exception_pending
                 .store(false, AtomicOrdering::Relaxed);
         }
-    } else {
-        let mut guard = state.last_exception.lock().unwrap();
-        if let Some(old_ptr) = guard.take() {
-            prior_ptr = Some(old_ptr.0);
-        }
-        state
-            .last_exception_pending
-            .store(false, AtomicOrdering::Relaxed);
+    } else if let Some(old_ptr) = global_last_exception_take(_py) {
+        prior_ptr = Some(old_ptr.0);
     }
     if let Some(old_ptr) = prior_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr).bits();
@@ -1443,18 +1565,10 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
             .task_last_exception_pending
             .store(true, AtomicOrdering::Relaxed);
     } else {
-        let mut guard = state.last_exception.lock().unwrap();
-        // Inc-ref the exception so the slot holds a strong reference.
-        // Without this, Cranelift's dec_ref cleanup in check_exception
-        // handlers can free the exception object between record_exception
-        // and exception_last, causing exception_slot_is_valid to fail
-        // and silently clearing the pending flag.
-        let bits = MoltObject::from_ptr(ptr).bits();
-        inc_ref_bits(_py, bits);
-        *guard = Some(PtrSlot(ptr));
-        state
-            .last_exception_pending
-            .store(true, AtomicOrdering::Relaxed);
+        // The global slot owns one strong reference. Re-recording the same
+        // pointer reuses the reference removed from the slot above; new
+        // pointers acquire a fresh slot reference.
+        global_last_exception_store_recorded(_py, ptr, same_ptr);
     }
     if std::env::var("MOLT_DEBUG_EXCEPTIONS").as_deref() == Ok("1") {
         let debug_pending = debug_exception_pending();
@@ -1536,14 +1650,7 @@ pub(crate) fn clear_exception(_py: &PyToken<'_>) {
         }
         return;
     }
-    let old_ptr = {
-        let mut guard = state.last_exception.lock().unwrap();
-        let old = guard.take();
-        state
-            .last_exception_pending
-            .store(false, AtomicOrdering::Relaxed);
-        old
-    };
+    let old_ptr = global_last_exception_take(_py);
     if let Some(old_ptr) = old_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
         dec_ref_bits(_py, old_bits);
@@ -1579,22 +1686,7 @@ pub(crate) fn exception_set_last_bits_raw(_py: &PyToken<'_>, exc_bits: u64) {
             .task_last_exception_pending
             .store(true, AtomicOrdering::Relaxed);
     } else {
-        let old_ptr = {
-            let mut guard = state.last_exception.lock().unwrap();
-            guard.replace(PtrSlot(ptr))
-        };
-        if let Some(old_ptr) = old_ptr {
-            if old_ptr.0 != ptr {
-                let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
-                dec_ref_bits(_py, old_bits);
-                inc_ref_bits(_py, exc_bits);
-            }
-        } else {
-            inc_ref_bits(_py, exc_bits);
-        }
-        state
-            .last_exception_pending
-            .store(true, AtomicOrdering::Relaxed);
+        global_last_exception_replace_borrowed(_py, ptr, exc_bits);
     }
 }
 
@@ -1985,7 +2077,7 @@ fn exception_group_message_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
             }
         }
     }
-    unsafe { exception_msg_bits(ptr) }
+    exception_materialized_message_bits(_py, ptr)
 }
 
 fn exception_group_exceptions_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
@@ -3320,7 +3412,7 @@ pub(crate) fn alloc_exception_from_class_bits(
             };
             dict_bits = unicode_error_attr_dict(_py, fields);
         }
-        let msg_bits = exception_message_from_args(_py, args_bits);
+        let msg_bits = exception_message_for_storage(_py, kind_bits, class_bits, args_bits);
         if obj_from_bits(msg_bits).is_none() {
             dec_ref_bits(_py, args_bits);
             return std::ptr::null_mut();
@@ -4696,12 +4788,12 @@ pub extern "C" fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64 {
         if obj_from_bits(args_bits).is_none() {
             return MoltObject::none().bits();
         }
-        let msg_bits = exception_message_from_args(_py, args_bits);
+        let class_bits = exception_type_bits(_py, kind_bits);
+        let msg_bits = exception_message_for_storage(_py, kind_bits, class_bits, args_bits);
         if obj_from_bits(msg_bits).is_none() {
             dec_ref_bits(_py, args_bits);
             return MoltObject::none().bits();
         }
-        let class_bits = exception_type_bits(_py, kind_bits);
         let none_bits = MoltObject::none().bits();
         let ptr = alloc_exception_obj(_py, kind_bits, msg_bits, class_bits, args_bits, none_bits);
         let out = if ptr.is_null() {
@@ -4787,7 +4879,9 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
             }
             return MoltObject::none().bits();
         }
-        let msg_bits = exception_message_from_args(_py, norm_bits);
+        let kind_bits = unsafe { exception_kind_bits(self_ptr) };
+        let class_bits = unsafe { exception_class_bits(self_ptr) };
+        let msg_bits = exception_message_for_storage(_py, kind_bits, class_bits, norm_bits);
         if obj_from_bits(msg_bits).is_none() {
             dec_ref_bits(_py, norm_bits);
             if !obj_from_bits(args_bits).is_none() {
@@ -5473,7 +5567,7 @@ pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_EXCEPTION {
                 return raise_exception::<u64>(_py, "TypeError", "expected exception object");
             }
-            let bits = exception_msg_bits(ptr);
+            let bits = exception_materialized_message_bits(_py, ptr);
             inc_ref_bits(_py, bits);
             bits
         }
@@ -5623,23 +5717,7 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
                 .task_last_exception_pending
                 .store(true, AtomicOrdering::Relaxed);
         } else {
-            let state = runtime_state(_py);
-            let old_ptr = {
-                let mut guard = state.last_exception.lock().unwrap();
-                guard.replace(PtrSlot(ptr))
-            };
-            if let Some(old_ptr) = old_ptr {
-                if old_ptr.0 != ptr {
-                    let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
-                    dec_ref_bits(_py, old_bits);
-                    inc_ref_bits(_py, new_bits);
-                }
-            } else {
-                inc_ref_bits(_py, new_bits);
-            }
-            state
-                .last_exception_pending
-                .store(true, AtomicOrdering::Relaxed);
+            global_last_exception_replace_borrowed(_py, ptr, new_bits);
         }
         MoltObject::none().bits()
     })
@@ -5654,7 +5732,7 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     let task_pending = state
         .task_last_exception_pending
         .load(AtomicOrdering::Relaxed);
-    let global_pending = state.last_exception_pending.load(AtomicOrdering::Relaxed);
+    let global_pending = state.last_exception_pending.load(AtomicOrdering::Acquire);
     if !task_pending && !global_pending {
         if let Some(bits) = exception_context_active_bits() {
             inc_ref_bits(_py, bits);
@@ -5711,20 +5789,7 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
             return bits;
         }
     }
-    let ptr = {
-        let state = runtime_state(_py);
-        let mut guard = state.last_exception.lock().unwrap();
-        match *guard {
-            Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
-            _ => {
-                *guard = None;
-                state
-                    .last_exception_pending
-                    .store(false, AtomicOrdering::Relaxed);
-                None
-            }
-        }
-    };
+    let ptr = global_last_exception_pending_slot(_py);
     if let Some(ptr) = ptr {
         let bits = MoltObject::from_ptr(ptr.0).bits();
         if exception_handler_active() {
@@ -5737,7 +5802,7 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
             exception_context_set(_py, bits);
             state
                 .last_exception_pending
-                .store(false, AtomicOrdering::Relaxed);
+                .store(false, AtomicOrdering::Release);
         }
         if debug_flow {
             let kind_bits = unsafe { exception_kind_bits(ptr.0) };
