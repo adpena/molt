@@ -165,10 +165,25 @@ def test_memory_guard_defaults_adapt_to_live_memory_budget() -> None:
     )
 
     assert budget.reserve_gb == pytest.approx(7.68)
-    assert budget.max_process_rss_gb == pytest.approx(38.55168)
+    assert budget.max_process_rss_gb == pytest.approx(46.262016)
     assert budget.max_total_rss_gb == pytest.approx(51.40224)
     assert budget.max_global_rss_gb == pytest.approx(85.6704)
     assert memory_guard.DEFAULT_POLL_INTERVAL_SEC == 0.10
+
+
+def test_memory_guard_adaptive_defaults_do_not_starve_small_hosts() -> None:
+    budget = memory_guard.adaptive_memory_budget(
+        "MOLT_BENCH",
+        {
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "7",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "5",
+        },
+    )
+
+    assert budget.reserve_gb == pytest.approx(1.0)
+    assert budget.max_process_rss_gb == pytest.approx(2.0952)
+    assert budget.max_total_rss_gb == pytest.approx(2.328)
+    assert budget.max_global_rss_gb == pytest.approx(3.88)
 
 
 def test_run_command_passes_through_success() -> None:

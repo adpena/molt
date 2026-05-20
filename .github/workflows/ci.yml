@@ -37,7 +37,9 @@ jobs:
         run: uv run python3 tools/check_docs_architecture.py
 
       - name: Run docs architecture tests
-        run: uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py
+        run: |
+          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py
 
   python-tooling-smoke:
     name: Python Tooling Smoke
@@ -65,7 +67,8 @@ jobs:
         env:
           MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"
         run: |
-          uv run python3 -m pytest -q \
+          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+            uv run python3 -m pytest -q \
             tests/test_bench_harness.py \
             tests/test_bench_tool.py \
             tests/test_ci_workflow_topology.py \
@@ -100,25 +103,25 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
-          cargo build 2>&1 | tee logs/ci-cargo-build.log
+          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo build 2>&1 | tee logs/ci-cargo-build.log
 
       - name: Run molt-backend unit tests (native backend)
-        run: cargo test -p molt-backend --features native-backend --lib
+        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo test -p molt-backend --features native-backend --lib
 
       - name: Clippy (molt-backend)
-        run: cargo clippy -p molt-backend --features native-backend -- -D warnings
+        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo clippy -p molt-backend --features native-backend -- -D warnings
 
       - name: Test molt-snapshot
-        run: cargo test -p molt-snapshot
+        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo test -p molt-snapshot
 
       - name: Test molt-embed
-        run: cargo test -p molt-embed
+        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo test -p molt-embed
 
       - name: Test molt-harness
-        run: cargo test -p molt-harness
+        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo test -p molt-harness
 
       - name: Test molt-runtime-protobuf
-        run: cargo test -p molt-runtime-protobuf
+        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo test -p molt-runtime-protobuf
 
       - name: Verify zero warnings
         run: |
