@@ -78,7 +78,7 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
     assert limits.max_total_rss_gb == 3.0
     assert limits.max_global_rss_gb == 9.0
     assert limits.poll_interval == 0.5
-    assert limits.child_rlimit_gb == 8.0
+    assert limits.child_rlimit_gb == 2.0
     assert calls[0]["env"]["PYTHONPATH"] == str(module.ROOT / "src")
 
 
@@ -127,7 +127,7 @@ def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
     limits = calls[0]["limits"]
     assert limits.max_process_rss_gb == 4.0
     assert limits.max_total_rss_gb == 6.0
-    assert limits.child_rlimit_gb == 10.0
+    assert limits.child_rlimit_gb == 4.0
 
 
 def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:

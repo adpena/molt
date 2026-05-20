@@ -350,25 +350,25 @@ def test_memory_guard_adaptive_defaults_do_not_starve_small_hosts() -> None:
     assert budget.max_global_rss_gb == pytest.approx(3.88)
 
 
-def test_default_child_rlimit_is_decoupled_from_rss_budget() -> None:
+def test_default_child_rlimit_tracks_process_rss_budget() -> None:
     assert memory_guard.default_child_rlimit_gb(
         max_process_rss_gb=2.0,
         max_total_rss_gb=3.0,
-    ) == pytest.approx(8.0)
+    ) == pytest.approx(2.0)
     assert memory_guard.default_child_rlimit_gb(
         max_process_rss_gb=2.0,
         max_total_rss_gb=3.0,
         max_global_rss_gb=4.0,
-    ) == pytest.approx(4.0)
+    ) == pytest.approx(2.0)
     assert memory_guard.default_child_rlimit_gb(
         max_process_rss_gb=46.0,
         max_total_rss_gb=51.0,
         max_global_rss_gb=85.0,
-    ) == pytest.approx(85.0)
+    ) == pytest.approx(46.0)
     assert memory_guard.default_child_rlimit_gb(
         max_process_rss_gb=46.0,
         max_total_rss_gb=51.0,
-    ) == pytest.approx(102.0)
+    ) == pytest.approx(46.0)
 
 
 def test_run_command_passes_through_success() -> None:
@@ -421,7 +421,7 @@ def test_run_command_ignores_samples_without_root_pid() -> None:
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "print('ok')"],
-        max_rss_kb=1,
+        max_rss_kb=1_000_000,
         poll_interval=0.01,
         sampler=sampler,
     )
@@ -440,6 +440,46 @@ def test_run_command_returns_guard_code_on_real_low_limit() -> None:
     assert result.returncode == memory_guard.GUARD_RETURN_CODE
     assert result.violation is not None
     assert result.violation.rss_kb > 1
+
+
+def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> None:
+    script = (
+        "import time; "
+        "buf = bytearray(192 * 1024 * 1024); "
+        "time.sleep(0.20); "
+        "print(len(buf))"
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", script],
+        max_rss_kb=96 * 1024,
+        max_total_rss_kb=160 * 1024,
+        poll_interval=1.0,
+        child_rlimit_kb=None,
+    )
+
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    assert result.violation is not None
+    assert result.elapsed_s is not None
+    assert result.elapsed_s < 1.0
+
+
+def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
+    if memory_guard.os.name != "posix" or not hasattr(memory_guard.os, "wait4"):
+        return
+    script = "buf = bytearray(192 * 1024 * 1024); print(len(buf))"
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", script],
+        max_rss_kb=96 * 1024,
+        max_total_rss_kb=160 * 1024,
+        poll_interval=1.0,
+        child_rlimit_kb=None,
+    )
+
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    assert result.violation is not None
+    assert result.violation.scope == "process_rusage"
 
 
 def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
@@ -544,7 +584,7 @@ def test_main_reports_signal_status_without_guard_violation(
     assert "SIGTERM status" in capsys.readouterr().err
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["returncode"] == 143
-    assert payload["child_rlimit_gb"] == pytest.approx(36.0)
+    assert payload["child_rlimit_gb"] == pytest.approx(1.0)
     assert payload["timed_out"] is False
     assert payload["violation"] is None
     assert payload["exit_signal"] == {
@@ -717,7 +757,7 @@ def test_child_runner_env_wraps_command_without_leaking_guard_keys() -> None:
     assert child_env == {"KEEP": "1"}
 
 
-def test_guarded_launch_uses_child_runner_when_resource_limit_enabled() -> None:
+def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
     command = [sys.executable, "-c", "print('child')"]
     launch = memory_guard._guarded_launch(
         command,
@@ -725,15 +765,22 @@ def test_guarded_launch_uses_child_runner_when_resource_limit_enabled() -> None:
         child_rlimit_kb=12345,
     )
 
-    assert launch.command == [
-        sys.executable,
-        str(Path(memory_guard.__file__).resolve()),
-    ]
-    launch_env = launch.env
-    assert launch_env is not None
-    assert json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
-    assert launch_env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
-    assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV in launch_env
+    if memory_guard.os.name == "posix":
+        assert launch.command == command
+        assert launch.env == {"KEEP": "1"}
+        assert launch.preexec_fn is not None
+        assert launch.started_read_fd is not None
+        assert launch.pass_fds == launch.close_fds
+    else:
+        assert launch.command == [
+            sys.executable,
+            str(Path(memory_guard.__file__).resolve()),
+        ]
+        launch_env = launch.env
+        assert launch_env is not None
+        assert json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
+        assert launch_env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
+        assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV in launch_env
     memory_guard._close_fds((*launch.close_fds, launch.started_read_fd))
 
 

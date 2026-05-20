@@ -24,7 +24,7 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     assert limits.max_process_rss_gb == 3
     assert limits.max_total_rss_gb == 4
     assert limits.max_global_rss_gb == 7
-    assert limits.child_rlimit_gb == 6
+    assert limits.child_rlimit_gb == 3
     assert limits.poll_interval == 0.05
     assert limits.dynamic_process_rss is False
     assert limits.dynamic_total_rss is False
@@ -32,7 +32,7 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     assert limits.max_process_rss_kb == 3 * 1024 * 1024
     assert limits.max_total_rss_kb == 4 * 1024 * 1024
     assert limits.max_global_rss_kb == 7 * 1024 * 1024
-    assert limits.child_rlimit_kb == 6 * 1024 * 1024
+    assert limits.child_rlimit_kb == 3 * 1024 * 1024
 
 
 def test_enabled_from_env_matches_family_override_semantics(monkeypatch) -> None:
@@ -102,7 +102,7 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     assert limits.max_process_rss_gb == pytest.approx(46.262016)
     assert limits.max_total_rss_gb == pytest.approx(51.40224)
     assert limits.max_global_rss_gb == pytest.approx(85.6704)
-    assert limits.child_rlimit_gb == pytest.approx(85.6704)
+    assert limits.child_rlimit_gb == pytest.approx(46.262016)
     assert limits.poll_interval == harness_memory_guard.DEFAULT_POLL_INTERVAL_SEC
     assert limits.dynamic_process_rss is True
     assert limits.dynamic_total_rss is True
@@ -229,7 +229,7 @@ def test_current_child_rlimit_refreshes_dynamic_adaptive_budget(monkeypatch) -> 
     )
 
     assert calls == [("MOLT_CONFORMANCE", 99)]
-    assert child_rlimit == 17 * 1024 * 1024
+    assert child_rlimit == 11 * 1024 * 1024
 
 
 def test_limits_from_env_uses_fast_default_poll(monkeypatch) -> None:
@@ -304,7 +304,7 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     call = calls[0]
     assert call["max_rss_kb"] == 2 * 1024 * 1024
     assert call["max_total_rss_kb"] == 3 * 1024 * 1024
-    assert call["child_rlimit_kb"] == 4 * 1024 * 1024
+    assert call["child_rlimit_kb"] == 2 * 1024 * 1024
     assert call["dynamic_process_rss"] is False
     assert call["dynamic_total_rss"] is False
 
@@ -465,7 +465,7 @@ def test_guarded_completed_process_refreshes_dynamic_child_rlimit(monkeypatch) -
     )
 
     assert result.returncode == 0
-    assert calls[0]["child_rlimit_kb"] == 9 * 1024 * 1024
+    assert calls[0]["child_rlimit_kb"] == 5 * 1024 * 1024
 
 
 def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> None:
@@ -536,7 +536,7 @@ def test_batch_process_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
     preexec = kwargs["preexec_fn"]
     assert callable(preexec)
     preexec()
-    assert applied == [4 * 1024 * 1024]
+    assert applied == [2 * 1024 * 1024]
 
 
 def test_batch_process_group_kwargs_can_disable_child_rlimit() -> None:
