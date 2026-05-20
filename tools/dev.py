@@ -369,10 +369,16 @@ def main() -> None:
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
+    elif cmd[0] == "clean-artifacts":
+        _run_repo_cmd(
+            [sys.executable, "tools/artifact_cleanup.py", *cmd[1:]],
+            _canonical_env(),
+            tty=use_tty,
+        )
     else:
         print(
             "Usage: tools/dev.py "
-            "[env|install|clippy|security|compliance|backend|gates|lint|test|setup|doctor|update|validate]"
+            "[env|install|clippy|security|compliance|backend|gates|lint|test|setup|doctor|update|validate|clean-artifacts]"
         )
 
 
