@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -184,6 +186,58 @@ def test_measure_wasm_run_uses_guard_child_elapsed(monkeypatch) -> None:
 
     assert result.elapsed_s == 0.045
     assert result.error is None
+    assert calls[0]["limits"] is limits
+
+
+def test_wasm_run_cmd_routes_tty_timeout_through_guard(monkeypatch) -> None:
+    limits = bench_wasm.harness_memory_guard.HarnessMemoryLimits(
+        enabled=False,
+        max_process_rss_gb=1.0,
+        max_total_rss_gb=1.0,
+        max_global_rss_gb=1.0,
+        poll_interval=0.1,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_guard(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        completed = subprocess.CompletedProcess(
+            command,
+            bench_wasm.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            "stdout",
+            "TERM_CLEANUP\n",
+        )
+        completed.elapsed_s = 0.1
+        return completed
+
+    monkeypatch.setattr(
+        bench_wasm.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guard,
+    )
+
+    log = io.StringIO()
+    result = bench_wasm._run_cmd(
+        ["node", "runner.js"],
+        env={},
+        capture=False,
+        tty=True,
+        log=log,
+        timeout_s=0.1,
+        limits=limits,
+    )
+
+    assert (
+        result.returncode
+        == bench_wasm.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    )
+    assert result.timed_out is True
+    assert result.elapsed_s == 0.1
+    assert "TERM_CLEANUP" in result.stderr
+    assert "TERM_CLEANUP" in log.getvalue()
+    assert calls[0]["command"] == ["node", "runner.js"]
+    assert calls[0]["capture_output"] is True
+    assert calls[0]["timeout"] == 0.1
     assert calls[0]["limits"] is limits
 
 
