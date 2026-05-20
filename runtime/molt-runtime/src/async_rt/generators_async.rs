@@ -2299,7 +2299,7 @@ unsafe fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64)
         if kind == "InterruptedError" {
             return Some(libc::EINTR as i64);
         }
-        let args_bits = exception_args_bits(exc_ptr);
+        let args_bits = exception_materialized_args_bits(_py, exc_ptr);
         let args_ptr = obj_from_bits(args_bits).as_ptr()?;
         if object_type_id(args_ptr) != TYPE_ID_TUPLE {
             return None;

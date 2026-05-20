@@ -4722,12 +4722,22 @@ Use static modules or pre-generated code paths instead."
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let trace = trace_name_error();
-        let module_obj = obj_from_bits(module_bits);
-        let Some(module_ptr) = module_obj.as_ptr() else {
+fn module_del_global_impl(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    name_bits: u64,
+    missing_ok: bool,
+) -> u64 {
+    let trace = trace_name_error();
+    let module_obj = obj_from_bits(module_bits);
+    let Some(module_ptr) = module_obj.as_ptr() else {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        return raise_exception::<_>(_py, "TypeError", "module attribute access expects module");
+    };
+    unsafe {
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -4736,41 +4746,46 @@ pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u6
                 "TypeError",
                 "module attribute access expects module",
             );
-        };
-        unsafe {
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "module attribute access expects module",
-                );
-            }
-            let dict_bits = module_dict_bits(module_ptr);
-            let dict_obj = obj_from_bits(dict_bits);
-            let dict_ptr = match dict_obj.as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
-            };
-            if dict_del_in_place(_py, dict_ptr, name_bits) {
-                return MoltObject::none().bits();
-            }
-            let name = string_obj_to_owned(obj_from_bits(name_bits))
-                .unwrap_or_else(|| "<name>".to_string());
-            if trace {
-                let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                    .unwrap_or_else(|| "<module>".to_string());
-                let pending = exception_pending(_py);
-                eprintln!(
-                    "molt name error(del) module={} name={} pending={}",
-                    module_name, name, pending
-                );
-            }
-            let msg = format!("name '{name}' is not defined");
-            raise_exception::<_>(_py, "NameError", &msg)
         }
+        let dict_bits = module_dict_bits(module_ptr);
+        let dict_obj = obj_from_bits(dict_bits);
+        let dict_ptr = match dict_obj.as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+            _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
+        };
+        if dict_del_in_place(_py, dict_ptr, name_bits) {
+            return MoltObject::none().bits();
+        }
+        if exception_pending(_py) || missing_ok {
+            return MoltObject::none().bits();
+        }
+        let name =
+            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<name>".to_string());
+        if trace {
+            let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
+                .unwrap_or_else(|| "<module>".to_string());
+            let pending = exception_pending(_py);
+            eprintln!(
+                "molt name error(del) module={} name={} pending={}",
+                module_name, name, pending
+            );
+        }
+        let msg = format!("name '{name}' is not defined");
+        raise_exception::<_>(_py, "NameError", &msg)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        module_del_global_impl(_py, module_bits, name_bits, false)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_del_global_if_present(module_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        module_del_global_impl(_py, module_bits, name_bits, true)
     })
 }
 

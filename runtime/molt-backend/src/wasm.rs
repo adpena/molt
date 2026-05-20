@@ -4352,6 +4352,8 @@ impl WasmBackend {
                 "exception_clear",
                 "exception_new",
                 "exception_new_builtin",
+                "exception_new_builtin_empty",
+                "exception_new_builtin_one",
                 "exception_new_from_class",
                 "exception_match_builtin",
                 "exception_kind",
@@ -12370,13 +12372,13 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "module_del_global" => {
+                    "module_del_global" | "module_del_global_if_present" => {
                         let args = op.args.as_ref().unwrap();
                         let module = locals[&args[0]];
                         let name = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(module));
                         func.instruction(&Instruction::LocalGet(name));
-                        emit_call(func, reloc_enabled, import_ids["module_del_global"]);
+                        emit_call(func, reloc_enabled, import_ids[op.kind.as_str()]);
                         if let Some(out) = op.out.as_ref() {
                             if out != "none" {
                                 let res = locals[out];
@@ -12694,6 +12696,37 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(tag));
                         func.instruction(&Instruction::LocalGet(args_bits));
                         emit_call(func, reloc_enabled, import_ids["exception_new_builtin"]);
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "exception_new_builtin_empty" => {
+                        let tag = op
+                            .value
+                            .expect("exception_new_builtin_empty missing tag value");
+                        func.instruction(&Instruction::I64Const(tag));
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids["exception_new_builtin_empty"],
+                        );
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "exception_new_builtin_one" => {
+                        let args = op.args.as_ref().unwrap();
+                        let tag = op
+                            .value
+                            .expect("exception_new_builtin_one missing tag value");
+                        let arg_bits = locals[&args[0]];
+                        func.instruction(&Instruction::I64Const(tag));
+                        func.instruction(&Instruction::LocalGet(arg_bits));
+                        emit_call(func, reloc_enabled, import_ids["exception_new_builtin_one"]);
                         if let Some(out) = op.out.as_ref() {
                             func.instruction(&Instruction::LocalSet(locals[out]));
                         } else {

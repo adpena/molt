@@ -706,6 +706,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::ModuleGetName
         | OpCode::ModuleSetAttr
         | OpCode::ModuleDelGlobal
+        | OpCode::ModuleDelGlobalIfPresent
         | OpCode::Pow
         | OpCode::Is
         | OpCode::IsNot

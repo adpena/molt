@@ -100,6 +100,7 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         | OpCode::ModuleGetName
         | OpCode::ModuleSetAttr
         | OpCode::ModuleDelGlobal
+        | OpCode::ModuleDelGlobalIfPresent
         // IO / diagnostics — emits to stderr.
         | OpCode::WarnStderr
         // Deoptimisation must not be silently dropped.
@@ -137,6 +138,7 @@ pub(super) fn is_potentially_throwing(opcode: OpCode) -> bool {
             | OpCode::ModuleGetName
             | OpCode::ModuleSetAttr
             | OpCode::ModuleDelGlobal
+            | OpCode::ModuleDelGlobalIfPresent
             | OpCode::Div
             | OpCode::FloorDiv
             | OpCode::Mod
@@ -656,6 +658,14 @@ mod tests {
     fn module_del_global_kept_when_result_dead() {
         assert_module_mutation_kept_when_result_dead(
             OpCode::ModuleDelGlobal,
+            vec![ValueId(0), ValueId(1)],
+        );
+    }
+
+    #[test]
+    fn module_del_global_if_present_kept_when_result_dead() {
+        assert_module_mutation_kept_when_result_dead(
+            OpCode::ModuleDelGlobalIfPresent,
             vec![ValueId(0), ValueId(1)],
         );
     }

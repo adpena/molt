@@ -906,6 +906,7 @@ impl<'a> SsaContext<'a> {
                 | "module_cache_del"
                 | "module_set_attr"
                 | "module_del_global"
+                | "module_del_global_if_present"
                 | "store"
                 | "store_init"
                 | "store_index"
@@ -1786,6 +1787,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "module_get_name" => OpCode::ModuleGetName,
         "module_set_attr" => OpCode::ModuleSetAttr,
         "module_del_global" => OpCode::ModuleDelGlobal,
+        "module_del_global_if_present" => OpCode::ModuleDelGlobalIfPresent,
         "warn_stderr" => OpCode::WarnStderr,
         // Fallback for unknown ops.
         _ => OpCode::Copy,
@@ -2082,6 +2084,15 @@ mod tests {
         assert_first_class_module_mutation(
             "module_del_global",
             OpCode::ModuleDelGlobal,
+            &["module", "name"],
+        );
+    }
+
+    #[test]
+    fn module_del_global_if_present_lowers_to_first_class_tir_opcode() {
+        assert_first_class_module_mutation(
+            "module_del_global_if_present",
+            OpCode::ModuleDelGlobalIfPresent,
             &["module", "name"],
         );
     }

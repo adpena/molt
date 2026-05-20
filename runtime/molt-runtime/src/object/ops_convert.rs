@@ -1410,6 +1410,10 @@ unsafe fn int_from_default_exception_single_inline_int_str(
             return None;
         }
         let args_bits = exception_args_bits(ptr);
+        if exception_args_is_lazy_single(args_bits) {
+            let arg = obj_from_bits(exception_args_payload_bits(ptr));
+            return arg.as_int().map(|value| MoltObject::from_int(value).bits());
+        }
         let args_ptr = maybe_ptr_from_bits(args_bits)?;
         if object_type_id(args_ptr) != TYPE_ID_TUPLE || tuple_len(args_ptr) != 1 {
             return None;

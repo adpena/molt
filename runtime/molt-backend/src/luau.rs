@@ -3491,7 +3491,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "module_del_global" => {
+            "module_del_global" | "module_del_global_if_present" => {
                 // Module dict deletion is a no-op in Luau.
             }
 
@@ -3606,6 +3606,25 @@ impl LuauBackend {
                     .first()
                     .map(|a| sanitize_ident(a))
                     .unwrap_or_else(|| "\"error\"".to_string());
+                self.emit_line(&format!(
+                    "local {out} = {{__type = \"{class_name}\", __msg = {msg}}}"
+                ));
+            }
+            "exception_new_builtin_empty" => {
+                let out = self.out_var(op);
+                let class_name = op.s_value.as_deref().unwrap_or("Exception");
+                self.emit_line(&format!(
+                    "local {out} = {{__type = \"{class_name}\", __msg = \"\"}}"
+                ));
+            }
+            "exception_new_builtin_one" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let class_name = op.s_value.as_deref().unwrap_or("Exception");
+                let msg = args
+                    .first()
+                    .map(|a| sanitize_ident(a))
+                    .unwrap_or_else(|| "\"\"".to_string());
                 self.emit_line(&format!(
                     "local {out} = {{__type = \"{class_name}\", __msg = {msg}}}"
                 ));
@@ -5361,6 +5380,8 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                                 | "line"
                                 | "exception_new"
                                 | "exception_new_builtin"
+                                | "exception_new_builtin_empty"
+                                | "exception_new_builtin_one"
                                 | "exception_stack_set_depth"
                                 | "exception_stack_exit"
                                 | "tuple_new"

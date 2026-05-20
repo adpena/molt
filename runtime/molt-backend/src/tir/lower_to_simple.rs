@@ -1690,6 +1690,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: Some("none".to_string()),
             ..OpIR::default()
         }),
+        OpCode::ModuleDelGlobalIfPresent => Some(OpIR {
+            kind: "module_del_global_if_present".to_string(),
+            args: Some(operand_args(op)),
+            out: Some("none".to_string()),
+            ..OpIR::default()
+        }),
         OpCode::WarnStderr => Some(OpIR {
             kind: "warn_stderr".to_string(),
             args: Some(operand_args(op)),
@@ -3119,6 +3125,15 @@ mod tests {
     #[test]
     fn lower_module_del_global_roundtrips() {
         assert_module_mutation_roundtrips(OpCode::ModuleDelGlobal, "module_del_global", 2);
+    }
+
+    #[test]
+    fn lower_module_del_global_if_present_roundtrips() {
+        assert_module_mutation_roundtrips(
+            OpCode::ModuleDelGlobalIfPresent,
+            "module_del_global_if_present",
+            2,
+        );
     }
 
     #[test]

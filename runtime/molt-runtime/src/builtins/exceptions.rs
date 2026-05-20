@@ -542,7 +542,27 @@ pub(crate) fn alloc_exception_obj(
     args_bits: u64,
     dict_bits: u64,
 ) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 10 * std::mem::size_of::<u64>();
+    alloc_exception_obj_with_args_payload(
+        _py,
+        kind_bits,
+        msg_bits,
+        class_bits,
+        args_bits,
+        dict_bits,
+        MoltObject::none().bits(),
+    )
+}
+
+fn alloc_exception_obj_with_args_payload(
+    _py: &PyToken<'_>,
+    kind_bits: u64,
+    msg_bits: u64,
+    class_bits: u64,
+    args_bits: u64,
+    dict_bits: u64,
+    args_payload_bits: u64,
+) -> *mut u8 {
+    let total = std::mem::size_of::<MoltHeader>() + 11 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_EXCEPTION);
     if ptr.is_null() {
         return ptr;
@@ -559,6 +579,7 @@ pub(crate) fn alloc_exception_obj(
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = class_bits;
         *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64) = args_bits;
         *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
+        *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = args_payload_bits;
         inc_ref_bits(_py, kind_bits);
         inc_ref_bits(_py, msg_bits);
         inc_ref_bits(_py, MoltObject::none().bits());
@@ -569,6 +590,7 @@ pub(crate) fn alloc_exception_obj(
         inc_ref_bits(_py, class_bits);
         inc_ref_bits(_py, args_bits);
         inc_ref_bits(_py, dict_bits);
+        inc_ref_bits(_py, args_payload_bits);
     }
     ptr
 }
@@ -589,6 +611,16 @@ fn exception_lazy_message_bits() -> u64 {
 #[inline]
 pub(crate) fn exception_message_is_lazy(bits: u64) -> bool {
     bits == exception_lazy_message_bits()
+}
+
+#[inline]
+fn exception_lazy_single_args_bits() -> u64 {
+    MoltObject::pending().bits()
+}
+
+#[inline]
+pub(crate) fn exception_args_is_lazy_single(bits: u64) -> bool {
+    bits == exception_lazy_single_args_bits()
 }
 
 fn exception_should_defer_message(_py: &PyToken<'_>, kind_bits: u64, class_bits: u64) -> bool {
@@ -627,8 +659,7 @@ pub(crate) fn exception_materialized_message_bits(_py: &PyToken<'_>, ptr: *mut u
     if !exception_message_is_lazy(raw_bits) {
         return raw_bits;
     }
-    let args_bits = unsafe { exception_args_bits(ptr) };
-    let msg_bits = exception_message_from_args(_py, args_bits);
+    let msg_bits = exception_message_from_exception_args(_py, ptr);
     if obj_from_bits(msg_bits).is_none() {
         return msg_bits;
     }
@@ -706,8 +737,43 @@ pub(crate) unsafe fn exception_args_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(8 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
+pub(crate) fn exception_materialized_args_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
+    let raw_bits = unsafe { exception_args_bits(ptr) };
+    if exception_args_is_lazy_single(raw_bits) {
+        let payload_bits = unsafe { exception_args_payload_bits(ptr) };
+        let tuple_ptr = alloc_tuple(_py, &[payload_bits]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let new_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        unsafe {
+            let args_slot = ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64;
+            *args_slot = new_bits;
+            exception_set_args_payload_slot(_py, ptr, MoltObject::none().bits());
+        }
+        return new_bits;
+    }
+    if obj_from_bits(raw_bits).is_none() || raw_bits == 0 {
+        let tuple_ptr = alloc_tuple(_py, &[]);
+        if tuple_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let new_bits = MoltObject::from_ptr(tuple_ptr).bits();
+        unsafe {
+            let args_slot = ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64;
+            *args_slot = new_bits;
+        }
+        return new_bits;
+    }
+    raw_bits
+}
+
 pub(crate) unsafe fn exception_dict_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(9 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn exception_args_payload_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(10 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 #[inline]
@@ -2081,6 +2147,23 @@ fn exception_message_for_builtin_tag_storage(
     }
 }
 
+fn exception_message_for_builtin_tag_single_storage(
+    _py: &PyToken<'_>,
+    tag: u64,
+    class_bits: u64,
+    arg_bits: u64,
+) -> u64 {
+    if tag != 3
+        && unsafe {
+            crate::object::ops_format::exception_class_bits_uses_cached_message_str(_py, class_bits)
+        }
+    {
+        exception_lazy_message_bits()
+    } else {
+        molt_str_from_obj(arg_bits)
+    }
+}
+
 fn alloc_builtin_exception_from_tag(_py: &PyToken<'_>, tag: u64, args_bits: u64) -> *mut u8 {
     let Some(class_bits) = builtin_exception_class_bits_for_tag(_py, tag) else {
         return std::ptr::null_mut();
@@ -2098,6 +2181,37 @@ fn alloc_builtin_exception_from_tag(_py: &PyToken<'_>, tag: u64, args_bits: u64)
     if tag == 8 && !ptr.is_null() {
         unsafe {
             exception_set_stop_iteration_value(_py, ptr, args_bits);
+        }
+    }
+    dec_ref_bits(_py, msg_bits);
+    ptr
+}
+
+fn alloc_builtin_exception_from_tag_single(_py: &PyToken<'_>, tag: u64, arg_bits: u64) -> *mut u8 {
+    let Some(class_bits) = builtin_exception_class_bits_for_tag(_py, tag) else {
+        return std::ptr::null_mut();
+    };
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return std::ptr::null_mut();
+    };
+    let kind_bits = unsafe { class_name_bits(class_ptr) };
+    let msg_bits = exception_message_for_builtin_tag_single_storage(_py, tag, class_bits, arg_bits);
+    if obj_from_bits(msg_bits).is_none() {
+        return std::ptr::null_mut();
+    }
+    let none_bits = MoltObject::none().bits();
+    let ptr = alloc_exception_obj_with_args_payload(
+        _py,
+        kind_bits,
+        msg_bits,
+        class_bits,
+        exception_lazy_single_args_bits(),
+        none_bits,
+        arg_bits,
+    );
+    if tag == 8 && !ptr.is_null() {
+        unsafe {
+            exception_set_stop_iteration_value(_py, ptr, exception_lazy_single_args_bits());
         }
     }
     dec_ref_bits(_py, msg_bits);
@@ -2160,6 +2274,19 @@ pub(crate) fn exception_message_from_args(_py: &PyToken<'_>, args_bits: u64) -> 
         }
     }
     molt_str_from_obj(args_bits)
+}
+
+fn exception_message_from_exception_args(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
+    let args_bits = unsafe { exception_args_bits(ptr) };
+    if exception_args_is_lazy_single(args_bits) {
+        let value_bits = unsafe { exception_args_payload_bits(ptr) };
+        let kind_bits = unsafe { exception_kind_bits(ptr) };
+        if string_obj_to_owned(obj_from_bits(kind_bits)).as_deref() == Some("KeyError") {
+            return molt_repr_from_obj(value_bits);
+        }
+        return molt_str_from_obj(value_bits);
+    }
+    exception_message_from_args(_py, args_bits)
 }
 
 struct ExceptionGroupItems {
@@ -2918,12 +3045,41 @@ pub(crate) unsafe fn exception_store_args_and_message(
         if old_args != args_bits {
             dec_ref_bits(_py, old_args);
             *args_slot = args_bits;
+            if exception_args_is_lazy_single(old_args) {
+                exception_set_args_payload_slot(_py, ptr, MoltObject::none().bits());
+            }
         }
         let msg_slot = ptr.add(std::mem::size_of::<u64>()) as *mut u64;
         let old_msg = *msg_slot;
         if old_msg != msg_bits {
             dec_ref_bits(_py, old_msg);
             *msg_slot = msg_bits;
+        }
+    }
+}
+
+unsafe fn exception_set_value_slot(_py: &PyToken<'_>, ptr: *mut u8, value_bits: u64) {
+    unsafe {
+        crate::gil_assert();
+        let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = *slot;
+        if old_bits != value_bits {
+            dec_ref_bits(_py, old_bits);
+            inc_ref_bits(_py, value_bits);
+            *slot = value_bits;
+        }
+    }
+}
+
+unsafe fn exception_set_args_payload_slot(_py: &PyToken<'_>, ptr: *mut u8, value_bits: u64) {
+    unsafe {
+        crate::gil_assert();
+        let slot = ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = *slot;
+        if old_bits != value_bits {
+            dec_ref_bits(_py, old_bits);
+            inc_ref_bits(_py, value_bits);
+            *slot = value_bits;
         }
     }
 }
@@ -2940,27 +3096,25 @@ pub(crate) unsafe fn exception_set_stop_iteration_value(
             return;
         }
         let mut value_bits = MoltObject::none().bits();
-        let args_obj = obj_from_bits(args_bits);
-        if let Some(args_ptr) = args_obj.as_ptr() {
-            let type_id = object_type_id(args_ptr);
-            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = seq_vec_ref(args_ptr);
-                if let Some(first) = elems.first() {
-                    value_bits = *first;
+        if exception_args_is_lazy_single(args_bits) {
+            value_bits = exception_args_payload_bits(ptr);
+        } else {
+            let args_obj = obj_from_bits(args_bits);
+            if let Some(args_ptr) = args_obj.as_ptr() {
+                let type_id = object_type_id(args_ptr);
+                if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
+                    let elems = seq_vec_ref(args_ptr);
+                    if let Some(first) = elems.first() {
+                        value_bits = *first;
+                    }
+                } else if !args_obj.is_none() {
+                    value_bits = args_bits;
                 }
             } else if !args_obj.is_none() {
                 value_bits = args_bits;
             }
-        } else if !args_obj.is_none() {
-            value_bits = args_bits;
         }
-        let slot = ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64;
-        let old_bits = *slot;
-        if old_bits != value_bits {
-            dec_ref_bits(_py, old_bits);
-            inc_ref_bits(_py, value_bits);
-            *slot = value_bits;
-        }
+        exception_set_value_slot(_py, ptr, value_bits);
     }
 }
 
@@ -3545,6 +3699,9 @@ pub(crate) fn alloc_exception_from_class_bits(
 fn exception_args_vec(ptr: *mut u8) -> Vec<u64> {
     unsafe {
         let args_bits = exception_args_bits(ptr);
+        if exception_args_is_lazy_single(args_bits) {
+            return vec![exception_args_payload_bits(ptr)];
+        }
         let args_obj = obj_from_bits(args_bits);
         if let Some(args_ptr) = args_obj.as_ptr() {
             let type_id = object_type_id(args_ptr);
@@ -4953,6 +5110,42 @@ pub extern "C" fn molt_exception_new_builtin(tag: u64, args_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_new_builtin_empty(tag: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if builtin_exception_name_for_tag(tag).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "unknown builtin exception tag");
+        }
+        let args_ptr = alloc_tuple(_py, &[]);
+        if args_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let args_bits = MoltObject::from_ptr(args_ptr).bits();
+        let ptr = alloc_builtin_exception_from_tag(_py, tag, args_bits);
+        dec_ref_bits(_py, args_bits);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_new_builtin_one(tag: u64, arg_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if builtin_exception_name_for_tag(tag).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "unknown builtin exception tag");
+        }
+        let ptr = alloc_builtin_exception_from_tag_single(_py, tag, arg_bits);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_match_builtin(exc_bits: u64, tag: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(target_class_bits) = builtin_exception_class_bits_for_tag(_py, tag) else {
@@ -5053,7 +5246,9 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let existing_bits = unsafe { exception_args_bits(self_ptr) };
-        let existing_len = if let Some(ptr) = obj_from_bits(existing_bits).as_ptr() {
+        let existing_len = if exception_args_is_lazy_single(existing_bits) {
+            1
+        } else if let Some(ptr) = obj_from_bits(existing_bits).as_ptr() {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
@@ -6423,14 +6618,16 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 mod tests {
     use super::{
         alloc_exception, clear_exception, exception_context_set, exception_last_public_bits,
-        exception_stack_pop, exception_stack_push, frame_stack_pop, frame_stack_push,
-        frame_stack_push_owned, generator_exception_stack_drop, generator_exception_stack_store,
-        generator_exception_stack_take, record_exception, task_exception_stack_drop,
+        exception_stack_pop, exception_stack_push, format_exception, format_exception_message,
+        frame_stack_pop, frame_stack_push, frame_stack_push_owned, generator_exception_stack_drop,
+        generator_exception_stack_store, generator_exception_stack_take,
+        molt_exception_new_builtin_one, record_exception, task_exception_stack_drop,
         task_exception_stack_store, task_exception_stack_take,
     };
+    use crate::builtins::containers::tuple_len;
     use crate::object::builders::alloc_code_obj;
     use crate::object::header_from_obj_ptr;
-    use crate::{alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
+    use crate::{alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits, seq_vec_ref};
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
@@ -6546,6 +6743,68 @@ mod tests {
 
             clear_exception(_py);
             exception_stack_pop(_py);
+            dec_ref_bits(_py, exc_bits);
+        });
+    }
+
+    #[test]
+    fn builtin_exception_one_arg_materializes_args_on_demand() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let exc_bits = molt_exception_new_builtin_one(5, MoltObject::from_int(42).bits());
+            let exc_ptr = obj_from_bits(exc_bits).as_ptr().expect("exception object");
+            assert!(unsafe {
+                super::exception_args_is_lazy_single(super::exception_args_bits(exc_ptr))
+            });
+            assert_eq!(format_exception_message(_py, exc_ptr), "42");
+            assert_eq!(format_exception(_py, exc_ptr), "ValueError(42)");
+
+            let args_bits = super::exception_materialized_args_bits(_py, exc_ptr);
+            let args_ptr = obj_from_bits(args_bits)
+                .as_ptr()
+                .expect("materialized args tuple");
+            unsafe {
+                assert_eq!(tuple_len(args_ptr), 1);
+                assert_eq!(seq_vec_ref(args_ptr)[0], MoltObject::from_int(42).bits());
+                assert!(!super::exception_args_is_lazy_single(
+                    super::exception_args_bits(exc_ptr)
+                ));
+                assert_eq!(super::exception_args_bits(exc_ptr), args_bits);
+                assert_eq!(
+                    super::exception_materialized_args_bits(_py, exc_ptr),
+                    args_bits
+                );
+            }
+            dec_ref_bits(_py, exc_bits);
+        });
+    }
+
+    #[test]
+    fn stop_iteration_lazy_arg_keeps_public_value_after_args_materialization() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let exc_bits = molt_exception_new_builtin_one(8, MoltObject::from_int(99).bits());
+            let exc_ptr = obj_from_bits(exc_bits).as_ptr().expect("exception object");
+            unsafe {
+                assert!(super::exception_args_is_lazy_single(
+                    super::exception_args_bits(exc_ptr)
+                ));
+                assert_eq!(
+                    super::exception_value_bits(exc_ptr),
+                    MoltObject::from_int(99).bits()
+                );
+            }
+
+            let _args_bits = super::exception_materialized_args_bits(_py, exc_ptr);
+            unsafe {
+                assert!(!super::exception_args_is_lazy_single(
+                    super::exception_args_bits(exc_ptr)
+                ));
+                assert_eq!(
+                    super::exception_value_bits(exc_ptr),
+                    MoltObject::from_int(99).bits()
+                );
+            }
             dec_ref_bits(_py, exc_bits);
         });
     }

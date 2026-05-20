@@ -1350,7 +1350,10 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         .filter_map(|op| op.out.as_deref())
         .collect();
     let is_unbound_exception_new = |op: &OpIR| -> bool {
-        if op.kind == "exception_new_builtin" {
+        if matches!(
+            op.kind.as_str(),
+            "exception_new_builtin" | "exception_new_builtin_empty" | "exception_new_builtin_one"
+        ) {
             return op.s_value.as_deref() == Some("UnboundLocalError");
         }
         if op.kind != "exception_new" {
@@ -1691,7 +1694,11 @@ pub fn canonicalize_direct_raise_edges(func_ir: &mut FunctionIR) {
             continue;
         };
         let producer = &func_ir.ops[producer_idx];
-        if producer.kind != "exception_new_builtin" || producer.out.as_deref() != Some(raise_arg) {
+        if !matches!(
+            producer.kind.as_str(),
+            "exception_new_builtin" | "exception_new_builtin_empty" | "exception_new_builtin_one"
+        ) || producer.out.as_deref() != Some(raise_arg)
+        {
             continue;
         }
         for slot in remove.iter_mut().take(check_idx + 1).skip(store_start) {
