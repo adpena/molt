@@ -199,6 +199,13 @@ current native path (`build_time_s=167.9641`, `molt_time_s=0.456952`, output
 The generated full-run failure list above predates this focused recheck and
 should be regenerated on the next full benchmark refresh.
 
+Focused JSON recheck: `bench_json_roundtrip.py` moved from `0.2109x` CPython
+(`molt_time_s=0.108314`) to `3.1942x` CPython (`molt_time_s=0.007368`) after
+the intrinsic parser switched to byte-indexed scanning and direct default
+numeric construction. Evidence:
+`bench/results/json_roundtrip_baseline_20260520.json` and
+`bench/results/json_roundtrip_byte_parser_20260520.json`.
+
 ## Deep Links
 
 - Compatibility architecture: [areas/compat/README.md](areas/compat/README.md)

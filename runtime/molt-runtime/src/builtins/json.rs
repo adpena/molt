@@ -277,191 +277,181 @@ fn json_string_line_col(text: &str, pos: usize) -> (usize, usize) {
     (lineno, colno)
 }
 
+enum JsonDecodedString<'a> {
+    Borrowed(&'a str),
+    Owned(String),
+}
+
+impl<'a> JsonDecodedString<'a> {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(text) => text.as_bytes(),
+            Self::Owned(text) => text.as_bytes(),
+        }
+    }
+
+    fn into_owned(self) -> String {
+        match self {
+            Self::Borrowed(text) => text.to_string(),
+            Self::Owned(text) => text,
+        }
+    }
+}
+
+fn char_index_to_byte_index(text: &str, char_idx: usize) -> Option<usize> {
+    let mut count = 0usize;
+    for (byte_idx, _) in text.char_indices() {
+        if count == char_idx {
+            return Some(byte_idx);
+        }
+        count += 1;
+    }
+    if count == char_idx {
+        Some(text.len())
+    } else {
+        None
+    }
+}
+
+fn byte_index_to_char_index(text: &str, byte_idx: usize) -> usize {
+    let mut boundary = byte_idx.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text[..boundary].chars().count()
+}
+
+fn json_hex_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some((byte - b'0') as u32),
+        b'a'..=b'f' => Some((byte - b'a' + 10) as u32),
+        b'A'..=b'F' => Some((byte - b'A' + 10) as u32),
+        _ => None,
+    }
+}
+
+fn json_parse_hex4(bytes: &[u8], start: usize) -> Option<u32> {
+    if start.checked_add(4)? > bytes.len() {
+        return None;
+    }
+    let mut code = 0u32;
+    for byte in &bytes[start..start + 4] {
+        code = (code << 4) | json_hex_value(*byte)?;
+    }
+    Some(code)
+}
+
+fn json_scanstring_decode_bytes<'a>(
+    text: &'a str,
+    start_byte: usize,
+    strict: bool,
+) -> Result<(JsonDecodedString<'a>, usize), (String, usize)> {
+    let bytes = text.as_bytes();
+    if start_byte > bytes.len() {
+        return Err(("end is out of bounds".to_string(), start_byte));
+    }
+
+    let mut idx = start_byte;
+    let mut segment_start = start_byte;
+    let mut out: Option<String> = None;
+
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'"' => {
+                if let Some(mut decoded) = out {
+                    decoded.push_str(&text[segment_start..idx]);
+                    return Ok((JsonDecodedString::Owned(decoded), idx + 1));
+                }
+                return Ok((
+                    JsonDecodedString::Borrowed(&text[segment_start..idx]),
+                    idx + 1,
+                ));
+            }
+            b'\\' => {
+                let decoded = out.get_or_insert_with(|| {
+                    String::with_capacity(bytes.len().saturating_sub(start_byte))
+                });
+                decoded.push_str(&text[segment_start..idx]);
+                idx += 1;
+                if idx >= bytes.len() {
+                    return Err((
+                        "Unterminated string starting at".to_string(),
+                        start_byte.saturating_sub(1),
+                    ));
+                }
+                match bytes[idx] {
+                    b'"' => decoded.push('"'),
+                    b'\\' => decoded.push('\\'),
+                    b'/' => decoded.push('/'),
+                    b'b' => decoded.push('\u{08}'),
+                    b'f' => decoded.push('\u{0C}'),
+                    b'n' => decoded.push('\n'),
+                    b'r' => decoded.push('\r'),
+                    b't' => decoded.push('\t'),
+                    b'u' => {
+                        let escape_pos = idx;
+                        let hex_start = idx + 1;
+                        let Some(code) = json_parse_hex4(bytes, hex_start) else {
+                            return Err(("Invalid \\uXXXX escape".to_string(), escape_pos));
+                        };
+                        idx = hex_start + 4;
+
+                        if (0xD800..=0xDBFF).contains(&code)
+                            && idx + 6 <= bytes.len()
+                            && bytes[idx] == b'\\'
+                            && bytes[idx + 1] == b'u'
+                            && let Some(low) = json_parse_hex4(bytes, idx + 2)
+                            && (0xDC00..=0xDFFF).contains(&low)
+                        {
+                            let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                            if let Some(real) = char::from_u32(combined) {
+                                decoded.push(real);
+                                idx += 6;
+                                segment_start = idx;
+                                continue;
+                            }
+                        }
+
+                        if let Some(real) = char::from_u32(code) {
+                            decoded.push(real);
+                            segment_start = idx;
+                            continue;
+                        }
+                        return Err(("Invalid \\uXXXX escape".to_string(), escape_pos));
+                    }
+                    _ => return Err(("Invalid \\escape".to_string(), idx.saturating_sub(1))),
+                }
+                idx += 1;
+                segment_start = idx;
+            }
+            byte if strict && byte < 0x20 => {
+                return Err(("Invalid control character at".to_string(), idx));
+            }
+            _ => idx += 1,
+        }
+    }
+
+    Err((
+        "Unterminated string starting at".to_string(),
+        start_byte.saturating_sub(1),
+    ))
+}
+
 fn json_scanstring_decode(
     text: &str,
     end: usize,
     strict: bool,
 ) -> Result<(String, usize), (String, usize)> {
-    let bytes = text.as_bytes();
-    // Use byte offsets for the SIMD fast path, converting to char offsets for escape handling
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    if end > len {
+    let Some(start_byte) = char_index_to_byte_index(text, end) else {
         return Err(("end is out of bounds".to_string(), end));
+    };
+    match json_scanstring_decode_bytes(text, start_byte, strict) {
+        Ok((decoded, next_byte)) => Ok((
+            decoded.into_owned(),
+            byte_index_to_char_index(text, next_byte),
+        )),
+        Err((msg, pos_byte)) => Err((msg, byte_index_to_char_index(text, pos_byte))),
     }
-    let mut idx = end;
-    let mut out = String::new();
-
-    // SIMD fast path: scan for safe ASCII bytes (not '"', not '\\', not control chars)
-    // and bulk-copy them. This is the common case for JSON string values.
-    if idx < len {
-        // Convert char offset to byte offset for SIMD scanning
-        let byte_start: usize = chars[..idx].iter().map(|c| c.len_utf8()).sum();
-        let mut bi = byte_start;
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            unsafe {
-                use std::arch::aarch64::*;
-                let lo_bound = vdupq_n_u8(0x20);
-                let hi_bound = vdupq_n_u8(0x7E);
-                let quote = vdupq_n_u8(b'"');
-                let backslash = vdupq_n_u8(b'\\');
-                while bi + 16 <= bytes.len() {
-                    let chunk = vld1q_u8(bytes.as_ptr().add(bi));
-                    let ge_lo = vcgeq_u8(chunk, lo_bound);
-                    let le_hi = vcleq_u8(chunk, hi_bound);
-                    let not_quote = vmvnq_u8(vceqq_u8(chunk, quote));
-                    let not_bs = vmvnq_u8(vceqq_u8(chunk, backslash));
-                    let safe = vandq_u8(vandq_u8(ge_lo, le_hi), vandq_u8(not_quote, not_bs));
-                    if vminvq_u8(safe) == 0xFF {
-                        out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
-                        bi += 16;
-                        idx += 16; // All safe ASCII, so 1 byte = 1 char
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            unsafe {
-                use std::arch::x86_64::*;
-                let lo_bound = _mm_set1_epi8(0x1F);
-                let hi_bound = _mm_set1_epi8(0x7F_u8 as i8);
-                let quote = _mm_set1_epi8(b'"' as i8);
-                let backslash = _mm_set1_epi8(b'\\' as i8);
-                while bi + 16 <= bytes.len() {
-                    let chunk = _mm_loadu_si128(bytes.as_ptr().add(bi) as *const __m128i);
-                    let gt_lo = _mm_cmpgt_epi8(chunk, lo_bound);
-                    let lt_hi = _mm_cmpgt_epi8(hi_bound, chunk);
-                    let not_quote =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, quote), _mm_set1_epi8(-1));
-                    let not_bs =
-                        _mm_andnot_si128(_mm_cmpeq_epi8(chunk, backslash), _mm_set1_epi8(-1));
-                    let safe = _mm_and_si128(
-                        _mm_and_si128(gt_lo, lt_hi),
-                        _mm_and_si128(not_quote, not_bs),
-                    );
-                    if _mm_movemask_epi8(safe) == 0xFFFF {
-                        out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
-                        bi += 16;
-                        idx += 16;
-                        continue;
-                    }
-                    break;
-                }
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            if cfg!(target_feature = "simd128") {
-                unsafe {
-                    use std::arch::wasm32::*;
-                    let lo_bound = u8x16_splat(0x20);
-                    let hi_bound = u8x16_splat(0x7E);
-                    let quote = u8x16_splat(b'"');
-                    let backslash = u8x16_splat(b'\\');
-                    while bi + 16 <= bytes.len() {
-                        let chunk = v128_load(bytes.as_ptr().add(bi) as *const v128);
-                        let ge_lo = u8x16_ge(chunk, lo_bound);
-                        let le_hi = u8x16_le(chunk, hi_bound);
-                        let not_quote = v128_not(u8x16_eq(chunk, quote));
-                        let not_bs = v128_not(u8x16_eq(chunk, backslash));
-                        let safe = v128_and(v128_and(ge_lo, le_hi), v128_and(not_quote, not_bs));
-                        if u8x16_bitmask(safe) == 0xFFFF {
-                            out.push_str(std::str::from_utf8_unchecked(&bytes[bi..bi + 16]));
-                            bi += 16;
-                            idx += 16;
-                            continue;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // Continue with scalar char-by-char processing from where SIMD left off
-    while idx < len {
-        let ch = chars[idx];
-        if ch == '"' {
-            return Ok((out, idx + 1));
-        }
-        if ch == '\\' {
-            idx += 1;
-            if idx >= len {
-                let start = end.saturating_sub(1);
-                return Err(("Unterminated string starting at".to_string(), start));
-            }
-            let esc = chars[idx];
-            match esc {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '/' => out.push('/'),
-                'b' => out.push('\u{08}'),
-                'f' => out.push('\u{0C}'),
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                'u' => {
-                    let hex_start = idx + 1;
-                    if hex_start + 4 > len {
-                        return Err(("Invalid \\uXXXX escape".to_string(), idx));
-                    }
-                    let mut code: u32 = 0;
-                    for c in &chars[hex_start..hex_start + 4] {
-                        let Some(digit) = c.to_digit(16) else {
-                            return Err(("Invalid \\uXXXX escape".to_string(), idx));
-                        };
-                        code = (code << 4) | digit;
-                    }
-                    idx += 4;
-                    if (0xD800..=0xDBFF).contains(&code)
-                        && idx + 6 <= len
-                        && chars[idx + 1] == '\\'
-                        && chars[idx + 2] == 'u'
-                    {
-                        let mut low: u32 = 0;
-                        let mut valid = true;
-                        for c in &chars[idx + 3..idx + 7] {
-                            if let Some(d) = c.to_digit(16) {
-                                low = (low << 4) | d;
-                            } else {
-                                valid = false;
-                                break;
-                            }
-                        }
-                        if valid && (0xDC00..=0xDFFF).contains(&low) {
-                            let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                            if let Some(real) = char::from_u32(combined) {
-                                out.push(real);
-                                idx += 6;
-                                idx += 1;
-                                continue;
-                            }
-                        }
-                    }
-                    if let Some(real) = char::from_u32(code) {
-                        out.push(real);
-                    } else {
-                        return Err(("Invalid \\uXXXX escape".to_string(), idx));
-                    }
-                }
-                _ => return Err(("Invalid \\escape".to_string(), idx.saturating_sub(1))),
-            }
-            idx += 1;
-            continue;
-        }
-        if strict && (ch as u32) < 0x20 {
-            return Err(("Invalid control character at".to_string(), idx));
-        }
-        out.push(ch);
-        idx += 1;
-    }
-    let start = end.saturating_sub(1);
-    Err(("Unterminated string starting at".to_string(), start))
 }
 
 #[unsafe(no_mangle)]
@@ -1634,7 +1624,7 @@ fn object_to_json_with_options(
 struct JsonParser<'a, 'py> {
     _py: &'py PyToken<'py>,
     text: &'a str,
-    chars: Vec<char>,
+    bytes: &'a [u8],
     length: usize,
     index: usize,
     options: JsonLoadsOptions,
@@ -1642,13 +1632,11 @@ struct JsonParser<'a, 'py> {
 
 impl<'a, 'py> JsonParser<'a, 'py> {
     fn new(_py: &'py PyToken<'py>, text: &'a str, options: JsonLoadsOptions) -> Self {
-        let chars: Vec<char> = text.chars().collect();
-        let length = chars.len();
         Self {
             _py,
             text,
-            chars,
-            length,
+            bytes: text.as_bytes(),
+            length: text.len(),
             index: 0,
             options,
         }
@@ -1676,8 +1664,8 @@ impl<'a, 'py> JsonParser<'a, 'py> {
 
     fn consume_ws(&mut self) {
         while self.index < self.length {
-            let ch = self.chars[self.index];
-            if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+            let byte = self.bytes[self.index];
+            if byte == b' ' || byte == b'\t' || byte == b'\r' || byte == b'\n' {
                 self.index += 1;
             } else {
                 break;
@@ -1687,7 +1675,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
 
     fn peek(&self) -> Option<char> {
         if self.index < self.length {
-            Some(self.chars[self.index])
+            Some(self.bytes[self.index] as char)
         } else {
             None
         }
@@ -1702,22 +1690,15 @@ impl<'a, 'py> JsonParser<'a, 'py> {
     }
 
     fn starts_with(&self, text: &str) -> bool {
-        let mut probe = self.index;
-        for ch in text.chars() {
-            if probe >= self.length || self.chars[probe] != ch {
-                return false;
-            }
-            probe += 1;
-        }
-        true
+        self.bytes[self.index..].starts_with(text.as_bytes())
     }
 
     fn bump_text(&mut self, text: &str) {
-        self.index += text.chars().count();
+        self.index += text.len();
     }
 
-    fn alloc_string_bits(&self, text: &str) -> Result<u64, JsonParseError> {
-        let ptr = alloc_string(self._py, text.as_bytes());
+    fn alloc_string_bytes(&self, bytes: &[u8]) -> Result<u64, JsonParseError> {
+        let ptr = alloc_string(self._py, bytes);
         if ptr.is_null() {
             return Err(JsonParseError::Raised(raise_exception::<u64>(
                 self._py,
@@ -1726,6 +1707,10 @@ impl<'a, 'py> JsonParser<'a, 'py> {
             )));
         }
         Ok(MoltObject::from_ptr(ptr).bits())
+    }
+
+    fn alloc_string_bits(&self, text: &str) -> Result<u64, JsonParseError> {
+        self.alloc_string_bytes(text.as_bytes())
     }
 
     fn call_text_callback(&self, callback_bits: u64, text: &str) -> Result<u64, JsonParseError> {
@@ -1803,7 +1788,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
         match self.peek() {
             Some('0') => self.index += 1,
             Some(ch) if ch.is_ascii_digit() => {
-                while self.index < self.length && self.chars[self.index].is_ascii_digit() {
+                while self.index < self.length && self.bytes[self.index].is_ascii_digit() {
                     self.index += 1;
                 }
             }
@@ -1816,13 +1801,13 @@ impl<'a, 'py> JsonParser<'a, 'py> {
         }
         if self.peek() == Some('.') {
             self.index += 1;
-            if self.index >= self.length || !self.chars[self.index].is_ascii_digit() {
+            if self.index >= self.length || !self.bytes[self.index].is_ascii_digit() {
                 return Err(JsonParseError::Message {
                     msg: "Expecting value".to_string(),
                     pos: start,
                 });
             }
-            while self.index < self.length && self.chars[self.index].is_ascii_digit() {
+            while self.index < self.length && self.bytes[self.index].is_ascii_digit() {
                 self.index += 1;
             }
         }
@@ -1831,37 +1816,43 @@ impl<'a, 'py> JsonParser<'a, 'py> {
             if matches!(self.peek(), Some('+') | Some('-')) {
                 self.index += 1;
             }
-            if self.index >= self.length || !self.chars[self.index].is_ascii_digit() {
+            if self.index >= self.length || !self.bytes[self.index].is_ascii_digit() {
                 return Err(JsonParseError::Message {
                     msg: "Expecting value".to_string(),
                     pos: start,
                 });
             }
-            while self.index < self.length && self.chars[self.index].is_ascii_digit() {
+            while self.index < self.length && self.bytes[self.index].is_ascii_digit() {
                 self.index += 1;
             }
         }
 
-        let raw: String = self.chars[start..self.index].iter().collect();
-        let is_float = raw.contains('.') || raw.contains('e') || raw.contains('E');
+        let raw = &self.text[start..self.index];
+        let is_float = raw.as_bytes().contains(&b'.')
+            || raw.as_bytes().contains(&b'e')
+            || raw.as_bytes().contains(&b'E');
         if is_float {
             if let Some(callback_bits) = self.options.parse_float {
-                return self.call_text_callback(callback_bits, &raw);
+                return self.call_text_callback(callback_bits, raw);
             }
-            let arg_bits = self.alloc_string_bits(&raw)?;
-            let out_bits =
-                unsafe { call_callable1(self._py, builtin_classes(self._py).float, arg_bits) };
-            dec_ref_bits(self._py, arg_bits);
-            if exception_pending(self._py) {
-                return Err(JsonParseError::Raised(out_bits));
+            match raw.parse::<f64>() {
+                Ok(value) => return Ok(MoltObject::from_float(value).bits()),
+                Err(_) => {
+                    return Err(JsonParseError::Message {
+                        msg: "Expecting value".to_string(),
+                        pos: start,
+                    });
+                }
             }
-            return Ok(out_bits);
         }
 
         if let Some(callback_bits) = self.options.parse_int {
-            return self.call_text_callback(callback_bits, &raw);
+            return self.call_text_callback(callback_bits, raw);
         }
-        let arg_bits = self.alloc_string_bits(&raw)?;
+        if let Ok(value) = raw.parse::<i64>() {
+            return Ok(MoltObject::from_int(value).bits());
+        }
+        let arg_bits = self.alloc_string_bits(raw)?;
         let out_bits = unsafe { call_callable1(self._py, builtin_classes(self._py).int, arg_bits) };
         dec_ref_bits(self._py, arg_bits);
         if exception_pending(self._py) {
@@ -1877,10 +1868,10 @@ impl<'a, 'py> JsonParser<'a, 'py> {
                 pos: self.index,
             });
         }
-        match json_scanstring_decode(self.text, self.index, self.options.strict) {
+        match json_scanstring_decode_bytes(self.text, self.index, self.options.strict) {
             Ok((decoded, next_idx)) => {
                 self.index = next_idx;
-                self.alloc_string_bits(&decoded)
+                self.alloc_string_bytes(decoded.as_bytes())
             }
             Err((msg, pos)) => Err(JsonParseError::Message { msg, pos }),
         }
@@ -1925,14 +1916,13 @@ impl<'a, 'py> JsonParser<'a, 'py> {
                     break;
                 }
                 Some(',') => {
-                    let comma_pos = self.index;
                     self.index += 1;
                     self.consume_ws();
                     if self.peek() == Some(']') {
                         release_bits(self._py, &items);
                         return Err(JsonParseError::Message {
                             msg: "Illegal trailing comma before end of array".to_string(),
-                            pos: comma_pos,
+                            pos: self.index,
                         });
                     }
                 }
@@ -2091,7 +2081,6 @@ impl<'a, 'py> JsonParser<'a, 'py> {
                     break;
                 }
                 Some(',') => {
-                    let comma_pos = self.index;
                     self.index += 1;
                     self.consume_ws();
                     if self.peek() == Some('}') {
@@ -2101,7 +2090,7 @@ impl<'a, 'py> JsonParser<'a, 'py> {
                         }
                         return Err(JsonParseError::Message {
                             msg: "Illegal trailing comma before end of object".to_string(),
-                            pos: comma_pos,
+                            pos: self.index,
                         });
                     }
                 }
@@ -2123,8 +2112,9 @@ impl<'a, 'py> JsonParser<'a, 'py> {
 }
 
 fn json_parse_error_message(text: &str, msg: &str, pos: usize) -> String {
-    let (lineno, colno) = json_string_line_col(text, pos);
-    format!("{msg}: line {lineno} column {colno} (char {pos})")
+    let char_pos = byte_index_to_char_index(text, pos);
+    let (lineno, colno) = json_string_line_col(text, char_pos);
+    format!("{msg}: line {lineno} column {colno} (char {char_pos})")
 }
 
 fn run_json_parse(
@@ -2148,8 +2138,15 @@ fn run_json_raw_decode(
     idx: usize,
     options: JsonLoadsOptions,
 ) -> Result<(u64, usize), JsonParseError> {
+    let Some(byte_idx) = char_index_to_byte_index(text, idx) else {
+        return Err(JsonParseError::Message {
+            msg: "Expecting value".to_string(),
+            pos: text.len(),
+        });
+    };
     let mut parser = JsonParser::new(_py, text, options);
-    parser.parse_raw(idx)
+    let (value_bits, end_byte) = parser.parse_raw(byte_idx)?;
+    Ok((value_bits, byte_index_to_char_index(text, end_byte)))
 }
 
 fn raise_json_parse_error(_py: &PyToken<'_>, text: &str, err: JsonParseError) -> u64 {
@@ -2463,14 +2460,18 @@ pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
                     let data_ptr = crate::bytes_data(ptr);
                     let data = std::slice::from_raw_parts(data_ptr, len);
                     let encoding = detect_json_encoding(data, len);
-                    let decoded = if encoding == "utf-8" && data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                    let decoded = if encoding == "utf-8-sig" {
                         String::from_utf8_lossy(&data[3..]).into_owned()
                     } else if encoding == "utf-8" {
                         String::from_utf8_lossy(data).into_owned()
+                    } else if encoding == "utf-16" {
+                        json_decode_utf16_with_bom(data)
                     } else if encoding == "utf-16-be" {
                         json_decode_utf16_be(data)
                     } else if encoding == "utf-16-le" {
                         json_decode_utf16_le(data)
+                    } else if encoding == "utf-32" {
+                        json_decode_utf32_with_bom(data)
                     } else if encoding == "utf-32-be" {
                         json_decode_utf32_be(data)
                     } else if encoding == "utf-32-le" {
@@ -2610,6 +2611,18 @@ fn json_decode_utf16_be(data: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
+fn json_decode_utf16_with_bom(data: &[u8]) -> String {
+    if data.len() >= 2 {
+        if data[0] == 0xFE && data[1] == 0xFF {
+            return json_decode_utf16_be(&data[2..]);
+        }
+        if data[0] == 0xFF && data[1] == 0xFE {
+            return json_decode_utf16_le(&data[2..]);
+        }
+    }
+    json_decode_utf16_be(data)
+}
+
 fn json_decode_utf16_le(data: &[u8]) -> String {
     let units: Vec<u16> = data
         .chunks(2)
@@ -2635,6 +2648,18 @@ fn json_decode_utf32_be(data: &[u8]) -> String {
             }
         })
         .collect()
+}
+
+fn json_decode_utf32_with_bom(data: &[u8]) -> String {
+    if data.len() >= 4 {
+        if data[0] == 0x00 && data[1] == 0x00 && data[2] == 0xFE && data[3] == 0xFF {
+            return json_decode_utf32_be(&data[4..]);
+        }
+        if data[0] == 0xFF && data[1] == 0xFE && data[2] == 0x00 && data[3] == 0x00 {
+            return json_decode_utf32_le(&data[4..]);
+        }
+    }
+    json_decode_utf32_be(data)
 }
 
 fn json_decode_utf32_le(data: &[u8]) -> String {
