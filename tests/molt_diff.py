@@ -1587,7 +1587,7 @@ def _diff_memory_guard_config(*, accounted_rss_kb: int = 0) -> _DiffMemoryGuardC
 
 
 def _diff_memory_guard_enabled() -> bool:
-    return harness_memory_guard.enabled_from_env("MOLT_DIFF")
+    return True
 
 
 def _diff_memory_guard_sample_interval_sec() -> float:
@@ -2011,15 +2011,14 @@ def _popen_group_kwargs() -> dict[str, object]:
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return {"creationflags": creationflags}
     kwargs: dict[str, object] = {"start_new_session": True}
-    if _diff_memory_guard_enabled():
-        limit_kb = _diff_memory_guard_config().child_rlimit_kb
-        if limit_kb is None:
-            return kwargs
+    limit_kb = _diff_memory_guard_config().child_rlimit_kb
+    if limit_kb is None:
+        return kwargs
 
-        def apply_limit() -> None:
-            memory_guard._apply_child_resource_limit(limit_kb)
+    def apply_limit() -> None:
+        memory_guard._apply_child_resource_limit(limit_kb)
 
-        kwargs["preexec_fn"] = apply_limit
+    kwargs["preexec_fn"] = apply_limit
     return kwargs
 
 
@@ -2267,6 +2266,17 @@ def _memory_guard_message(
     )
 
 
+def _memory_guard_exit_signal_message(returncode: int) -> str:
+    payload = memory_guard.exit_signal_payload(returncode)
+    if payload is None:
+        return ""
+    signame = payload["name"] or f"signal {payload['signal']}"
+    return (
+        "memory_guard: command exited with "
+        f"{signame} status ({returncode}); no RSS violation observed"
+    )
+
+
 def _mark_memory_guard_tripped(payload: dict[str, object]) -> None:
     trip_file = _diff_memory_guard_trip_file()
     data = {"ts": time.time(), **payload}
@@ -2391,8 +2401,6 @@ class _DiffGlobalMemoryMonitor:
         self._trackers: dict[int, memory_guard.ProcessTreeTracker] = {}
 
     def __enter__(self) -> "_DiffGlobalMemoryMonitor":
-        if not _diff_memory_guard_enabled():
-            return self
         self._thread = threading.Thread(
             target=self._run,
             name="molt-diff-global-memory-guard",
@@ -2620,31 +2628,6 @@ def _run_subprocess(
     cmd: list[str], *, env: dict[str, str], timeout: float | None
 ) -> subprocess.CompletedProcess[str]:
     _install_signal_cleanup_handlers()
-    if not _diff_memory_guard_enabled():
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="surrogateescape",
-            **_popen_group_kwargs(),
-        )
-        _ACTIVE_CHILD_PIDS.add(proc.pid)
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            _terminate_process_tree(proc)
-            raise subprocess.TimeoutExpired(
-                cmd=cmd,
-                timeout=timeout,
-                output=exc.output,
-                stderr=exc.stderr,
-            ) from exc
-        finally:
-            _ACTIVE_CHILD_PIDS.discard(proc.pid)
-            _reap_lingering_process_group(proc.pid)
-        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
     trip_message = _memory_guard_trip_message()
     if trip_message is not None:
         return subprocess.CompletedProcess(
@@ -2782,6 +2765,10 @@ def _run_subprocess(
     if guard_message:
         returncode = _DIFF_MEMORY_GUARD_RETURN_CODE
         stderr = f"{stderr}{guard_message}\n"
+    else:
+        signal_message = _memory_guard_exit_signal_message(returncode)
+        if signal_message:
+            stderr = f"{stderr}{signal_message}\n"
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
@@ -4053,14 +4040,12 @@ def run_diff(
     run_id = _diff_run_id()
     os.environ["MOLT_DIFF_RUN_ID"] = run_id
     guard_config = _diff_memory_guard_config()
-    guard_enabled = _diff_memory_guard_enabled()
     guard_context: _DiffGlobalMemoryMonitor | None = None
-    if guard_enabled:
-        _prepare_memory_guard_run(guard_config)
-        jobs = _constrain_jobs_for_memory_guard(jobs, config=guard_config)
-        guard_context = _DiffGlobalMemoryMonitor(guard_config)
-        guard_context.__enter__()
-        atexit.register(lambda: guard_context.__exit__(None, None, None))
+    _prepare_memory_guard_run(guard_config)
+    jobs = _constrain_jobs_for_memory_guard(jobs, config=guard_config)
+    guard_context = _DiffGlobalMemoryMonitor(guard_config)
+    guard_context.__enter__()
+    atexit.register(lambda: guard_context.__exit__(None, None, None))
     if _should_preemptive_dyld_quarantine() and _diff_disable_daemon_on_dyld():
         remaining = _consume_dyld_guard_run()
         remaining_suffix = (
@@ -4324,7 +4309,7 @@ def run_diff(
             "batch_compile_server": _diff_batch_compile_server_enabled(),
             "batch_compile_server_strict": _diff_batch_compile_server_strict(),
             "memory_guard": {
-                "enabled": guard_enabled,
+                "enabled": True,
                 **_config_payload(guard_config),
                 "sample_interval": _diff_memory_guard_sample_interval_sec(),
                 "write_samples": _diff_memory_guard_write_samples(),

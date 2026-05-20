@@ -226,11 +226,11 @@ def test_diff_memory_guard_config_clamps_implausible_global_limit(monkeypatch) -
     assert config.max_process_gb == pytest.approx(config.max_tree_gb)
 
 
-def test_diff_memory_guard_can_be_disabled(monkeypatch) -> None:
+def test_diff_memory_guard_disable_env_is_ignored(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD", "off")
 
-    assert module._diff_memory_guard_enabled() is False
+    assert module._diff_memory_guard_enabled() is True
 
 
 def test_diff_memory_guard_jsonl_rotation_bounds_artifacts(
