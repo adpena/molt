@@ -378,10 +378,10 @@ def test_main_rejects_once_with_until_clean(capsys) -> None:
     assert "mutually exclusive" in capsys.readouterr().err
 
 
-def test_main_rejects_global_cap_without_margin(capsys) -> None:
+def test_main_rejects_implausible_global_cap_without_margin(capsys) -> None:
     module = _load_process_sentinel()
 
-    rc = module.main(["--once", "--max-global-rss-gb", "58"])
+    rc = module.main(["--once", "--max-global-rss-gb", "4096"])
 
     assert rc == 2
-    assert "below 58" in capsys.readouterr().err
+    assert "below 4096" in capsys.readouterr().err

@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools import harness_memory_guard
 
 
@@ -55,6 +57,36 @@ def test_timeout_from_env_prefers_harness_prefix(monkeypatch) -> None:
         )
         == 7
     )
+
+
+def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("MOLT_MEMORY_GUARD", raising=False)
+    monkeypatch.delenv("MOLT_BENCH_MEMORY_GUARD", raising=False)
+    monkeypatch.delenv("MOLT_BENCH_MAX_PROCESS_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_BENCH_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_BENCH_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_BENCH_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_BENCH_MEMORY_GUARD_POLL_SEC", raising=False)
+    monkeypatch.delenv("MOLT_MAX_PROCESS_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_MEMORY_GUARD_POLL_SEC", raising=False)
+
+    limits = harness_memory_guard.limits_from_env(
+        "MOLT_BENCH",
+        {
+            "PATH": "/usr/bin",
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "96",
+        },
+    )
+
+    assert limits.enabled is True
+    assert limits.max_process_rss_gb == pytest.approx(38.55168)
+    assert limits.max_total_rss_gb == pytest.approx(51.40224)
+    assert limits.max_global_rss_gb == pytest.approx(85.6704)
+    assert limits.poll_interval == harness_memory_guard.DEFAULT_POLL_INTERVAL_SEC
 
 
 def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:

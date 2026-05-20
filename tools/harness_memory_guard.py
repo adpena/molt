@@ -22,6 +22,9 @@ except ModuleNotFoundError:  # pragma: no cover - direct script import from tool
 DEFAULT_POLL_INTERVAL_SEC = 0.10
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
+TERMINATED_PGID_TTL_SEC = 60.0
+_TERMINATED_PGIDS: dict[int, float] = {}
+_TERMINATED_PGIDS_LOCK = threading.Lock()
 
 
 class GuardedCompletedProcess(subprocess.CompletedProcess[str]):
@@ -38,6 +41,22 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[str]):
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
         )
         self.elapsed_s = elapsed_s
+
+
+def _claim_terminated_pgid(pgid: int) -> bool:
+    now = time.monotonic()
+    with _TERMINATED_PGIDS_LOCK:
+        stale = [
+            known_pgid
+            for known_pgid, ts in _TERMINATED_PGIDS.items()
+            if now - ts > TERMINATED_PGID_TTL_SEC
+        ]
+        for known_pgid in stale:
+            _TERMINATED_PGIDS.pop(known_pgid, None)
+        if pgid in _TERMINATED_PGIDS:
+            return False
+        _TERMINATED_PGIDS[pgid] = now
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +141,7 @@ def limits_from_env(
 ) -> HarnessMemoryLimits:
     source = _effective_env(env)
     normalized = _normalize_prefix(prefix)
+    adaptive_budget = memory_guard.adaptive_memory_budget(normalized, source)
     enabled = _env_bool(
         source,
         [f"{normalized}_MEMORY_GUARD", "MOLT_MEMORY_GUARD"],
@@ -135,7 +155,7 @@ def limits_from_env(
             "MOLT_MAX_PROCESS_RSS_GB",
             "MOLT_MAX_RSS_GB",
         ],
-        default=memory_guard.DEFAULT_MAX_RSS_GB,
+        default=adaptive_budget.max_process_rss_gb,
     )
     total_gb = _env_float(
         source,
@@ -145,7 +165,7 @@ def limits_from_env(
             "MOLT_MAX_TOTAL_RSS_GB",
             "MOLT_MAX_TREE_RSS_GB",
         ],
-        default=memory_guard.DEFAULT_MAX_TOTAL_RSS_GB,
+        default=adaptive_budget.max_total_rss_gb,
     )
     global_gb = _env_float(
         source,
@@ -155,7 +175,7 @@ def limits_from_env(
             "MOLT_GLOBAL_RSS_LIMIT_GB",
             "MOLT_MAX_GLOBAL_RSS_GB",
         ],
-        default=memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB,
+        default=adaptive_budget.max_global_rss_gb,
     )
     poll_interval = _env_float(
         source,
@@ -313,9 +333,7 @@ def batch_process_group_kwargs(
         return {}
     return {
         "start_new_session": True,
-        "preexec_fn": _child_resource_limit_preexec(
-            resolved_limits.max_process_rss_kb
-        ),
+        "preexec_fn": _child_resource_limit_preexec(resolved_limits.max_process_rss_kb),
     }
 
 
@@ -375,6 +393,7 @@ class RepoProcessMemorySentinel:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._baseline_pgids: set[int] = set()
+        self._terminated_pgids: set[int] = set()
         self.tripped = False
         self.events_path = artifact_root / "memory_guard" / f"{label}_sentinel.jsonl"
 
@@ -445,7 +464,13 @@ class RepoProcessMemorySentinel:
                         "violation": process_sentinel.violation_payload(violation),
                     }
                 )
+                if (
+                    violation.pgid in self._terminated_pgids
+                    or not _claim_terminated_pgid(violation.pgid)
+                ):
+                    continue
                 process_sentinel.terminate_group(violation.pgid, grace=0.25)
+                self._terminated_pgids.add(violation.pgid)
         except Exception as exc:  # noqa: BLE001
             self._record(
                 {
@@ -479,7 +504,11 @@ class RepoProcessMemorySentinel:
             else:
                 clean_since = None
                 for group in groups:
-                    if group.pgid in drained_pgids:
+                    if (
+                        group.pgid in drained_pgids
+                        or group.pgid in self._terminated_pgids
+                        or not _claim_terminated_pgid(group.pgid)
+                    ):
                         continue
                     peak = group.peak
                     violation = process_sentinel.SentinelViolation(
@@ -494,9 +523,7 @@ class RepoProcessMemorySentinel:
                     self._record(
                         {
                             "event": "repo_process_guard_drained",
-                            "violation": process_sentinel.violation_payload(
-                                violation
-                            ),
+                            "violation": process_sentinel.violation_payload(violation),
                         }
                     )
                     process_sentinel.terminate_group(
@@ -504,6 +531,7 @@ class RepoProcessMemorySentinel:
                         grace=self._drain_grace_sec,
                     )
                     drained_pgids.add(group.pgid)
+                    self._terminated_pgids.add(group.pgid)
                     drained += 1
             if (
                 self._drain_max_runtime_sec > 0

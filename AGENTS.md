@@ -505,11 +505,11 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - Run the core-lane lowering gate with the current manifest path:
   - `python3 tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt`
 - NON-NEGOTIABLE: Differential work MUST use canonical artifact roots (`CARGO_TARGET_DIR`, `MOLT_DIFF_ROOT`, `MOLT_DIFF_TMPDIR`, `MOLT_CACHE`) and must not spill ad hoc artifacts elsewhere in the repo.
-- NON-NEGOTIABLE: Always run the differential testing suite with memory profiling enabled (`MOLT_DIFF_MEASURE_RSS=1`).
+- NON-NEGOTIABLE: Differential memory profiling is default-on; set `MOLT_DIFF_MEASURE_RSS=0` only for an explicit local investigation.
 - NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
-- NON-NEGOTIABLE: Enforce a 10 GB per-process memory cap for diff runs when possible.
-  - macOS/Linux: `ulimit -Sv 10485760` (KB) or `ulimit -v 10485760` in the shell that launches the suite.
-  - If the limit is hit or memory pressure occurs, reduce parallelism (`--jobs 2` or `--jobs 1`) and rerun.
+- NON-NEGOTIABLE: Use the default-on adaptive diff memory guard and adaptive per-process OS rlimit; do not pin stale fixed caps in normal runs.
+  - macOS/Linux: let `tests/molt_diff.py` apply its adaptive child limit by default; use `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` only for a deliberate narrower cap, or `MOLT_DIFF_RLIMIT_GB=0` only for an explicit local investigation.
+  - If the adaptive limit is hit or memory pressure occurs, inspect the guard telemetry, reduce parallelism (`--jobs 2` or `--jobs 1`) only as a containment step, and fix the underlying allocation growth.
 - Differential artifacts can be redirected to an external volume to avoid local disk pressure.
   - Set `MOLT_DIFF_ROOT` to an absolute path; all per-test build artifacts, caches, and temp dirs will live under it.
   - Optional: set `MOLT_DIFF_TMPDIR` to override only the temp root.
@@ -517,8 +517,8 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_KEEP=1` to preserve per-test artifacts after each run.
   - Optional: set `MOLT_DIFF_TRUSTED=1` to force trusted mode for diff runs (defaults to trusted unless `MOLT_DEV_TRUSTED=0`).
   - Default to a shorter timeout unless a test is known to be slow: `MOLT_DIFF_TIMEOUT=180` (bump per-test only when needed).
-  - Optional: set `MOLT_DIFF_RLIMIT_GB=10` (default) or `MOLT_DIFF_RLIMIT_MB=<n>` to enforce a per-process memory cap; set to `0` to disable.
-  - Optional: set `MOLT_DIFF_MEM_PER_JOB_GB=<n>` to tune auto-parallelism by memory budget (default: 2 GB/worker).
+  - Optional: set `MOLT_DIFF_RLIMIT_GB=<n>` or `MOLT_DIFF_RLIMIT_MB=<n>` to override the adaptive per-process OS rlimit; set `MOLT_DIFF_RLIMIT_GB=0` only for an explicit local investigation.
+  - Optional: set `MOLT_DIFF_MEM_PER_JOB_GB=<n>` to tune auto-parallelism by memory budget (default: adaptive process-tree guard budget).
   - Optional: set `MOLT_DIFF_MAX_JOBS=<n>` to hard-cap the auto-selected job count.
   - Optional: set `MOLT_DIFF_ORDER=auto|name|size-asc|size-desc` to control scheduling order (default: auto).
   - Optional: set `MOLT_DIFF_FAILURES=<path>` or pass `--failures-output <path>` to capture a failure queue file.
@@ -537,7 +537,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is platform-safe auto (`1` on macOS, `0` elsewhere) and dyld guard/retry also enables it.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: `ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>` (and `kill -KILL <pid>` if needed). Keep one supervising diff run per shared target to minimize contention and memory spikes.
 - Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
-- Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+- Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
   - Example (kill on blowup): `kill -TERM <PID>` then `kill -KILL <PID>` if it does not exit quickly; log the abort + last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md).
 - Example (multi-target list, auto-parallel): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
