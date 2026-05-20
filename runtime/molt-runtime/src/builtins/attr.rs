@@ -1580,11 +1580,13 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
         }
 
         let mut layout_size = 0usize;
+        let mut original_layout_size = 0usize;
         if let Some(size_bits) = dict_get_in_place(_py, dict_ptr, layout_name_bits)
             && let Some(size) = obj_from_bits(size_bits).as_int()
             && size > 0
         {
             layout_size = size as usize;
+            original_layout_size = layout_size;
         }
         if layout_size == 0
             && let Some(size_bits) = class_attr_lookup_raw_mro(_py, class_ptr, layout_name_bits)
@@ -1592,6 +1594,7 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
             && size > 0
         {
             layout_size = size as usize;
+            original_layout_size = layout_size;
         }
         if layout_size == 0 {
             layout_size = 8;
@@ -1608,6 +1611,21 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
             layout_size = reserved_tail;
         }
         layout_size = layout_size.saturating_sub(reserved_tail);
+
+        let entries = dict_order(offsets_ptr).clone();
+        for pair in entries.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            if let Some(offset) = obj_from_bits(pair[1]).as_int()
+                && offset >= 0
+            {
+                let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
+                if end > layout_size {
+                    layout_size = end;
+                }
+            }
+        }
 
         let mut updated = false;
         let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
@@ -1675,6 +1693,9 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
             updated = true;
         }
         layout_size = layout_size.saturating_add(reserved_tail);
+        if layout_size != original_layout_size {
+            updated = true;
+        }
         if updated {
             let size_bits = MoltObject::from_int(layout_size as i64).bits();
             dict_set_in_place(_py, dict_ptr, layout_name_bits, size_bits);

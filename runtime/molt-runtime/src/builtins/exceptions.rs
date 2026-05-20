@@ -1066,6 +1066,19 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
     }
 }
 
+/// Pop one synthetic exception handler and restore a captured exception as
+/// pending. Use when runtime code must inspect a terminal exception
+/// (StopIteration/IndexError) but propagate every other exception unchanged.
+///
+/// `exc_bits` is borrowed by this helper; callers that obtained it from
+/// `molt_exception_last()` still own that reference and must release it.
+pub(crate) fn exception_stack_pop_restore_last(_py: &PyToken<'_>, exc_bits: u64) {
+    exception_stack_pop(_py);
+    if !obj_from_bits(exc_bits).is_none() && exc_bits != 0 {
+        let _ = molt_exception_set_last(exc_bits);
+    }
+}
+
 pub(crate) fn generator_raise_active() -> bool {
     GENERATOR_RAISE.with(|flag| flag.get())
 }

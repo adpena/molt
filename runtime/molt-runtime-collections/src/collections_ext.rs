@@ -18,10 +18,11 @@ use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
-    call_callable0, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order_clone,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, dec_ref_bits,
+    dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_order_clone,
     dict_set_in_place, exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy, obj_eq,
-    object_type_id, raise_exception, raise_key_error_with_key, seq_vec_ref, string_obj_to_owned,
-    to_i64, type_name,
+    object_type_id, raise_exception, raise_key_error_with_key, seq_vec_ref, string_data,
+    string_obj_to_owned, to_i64, type_name,
 };
 
 use std::collections::{HashMap, VecDeque};
@@ -1752,6 +1753,12 @@ struct CounterState {
     /// `count_bits` is NaN-boxed: usually an int, but can be any value (e.g. float)
     /// when assigned via `__setitem__`.
     entries: Vec<(u64, u64)>,
+    /// Exact-string content index for the common token-counting path.
+    ///
+    /// Counter equality still falls back to `obj_eq` for non-string keys. Strings are
+    /// immutable and compare by content, so this index is a sound acceleration for
+    /// repeated string tokens while preserving ordered `entries` as the authority.
+    string_index: HashMap<Vec<u8>, usize>,
 }
 
 /// Extract an i64 count from NaN-boxed bits, defaulting to 0 for non-integers.
@@ -1770,6 +1777,16 @@ impl CounterState {
     fn new() -> Self {
         Self {
             entries: Vec::new(),
+            string_index: HashMap::new(),
+        }
+    }
+
+    fn rebuild_string_index(&mut self) {
+        self.string_index.clear();
+        for (idx, &(key, _)) in self.entries.iter().enumerate() {
+            if let Some(bytes) = unsafe { counter_string_key_bytes(key) } {
+                self.string_index.insert(bytes.to_vec(), idx);
+            }
         }
     }
 
@@ -1777,6 +1794,11 @@ impl CounterState {
     /// Fast path: bit-exact match first, then obj_eq for heap values.
     #[inline]
     fn find_key(&self, _py: &CoreGilToken, key: u64) -> Option<usize> {
+        if let Some(bytes) = unsafe { counter_string_key_bytes(key) }
+            && let Some(&idx) = self.string_index.get(bytes)
+        {
+            return Some(idx);
+        }
         let target = obj_from_bits(key);
         for (i, &(k, _)) in self.entries.iter().enumerate() {
             if k == key || obj_eq(_py, obj_from_bits(k), target) {
@@ -1803,7 +1825,11 @@ impl CounterState {
             self.entries[idx].1 = i64_to_count(cur + delta);
         } else {
             inc_ref_bits(_py, key);
+            let idx = self.entries.len();
             self.entries.push((key, i64_to_count(delta)));
+            if let Some(bytes) = unsafe { counter_string_key_bytes(key) } {
+                self.string_index.insert(bytes.to_vec(), idx);
+            }
         }
     }
 
@@ -1814,7 +1840,11 @@ impl CounterState {
             self.entries[idx].1 = count_bits;
         } else {
             inc_ref_bits(_py, key);
+            let idx = self.entries.len();
             self.entries.push((key, count_bits));
+            if let Some(bytes) = unsafe { counter_string_key_bytes(key) } {
+                self.string_index.insert(bytes.to_vec(), idx);
+            }
         }
     }
 
@@ -1827,6 +1857,14 @@ impl CounterState {
     fn remove(&mut self, _py: &CoreGilToken, key: u64) -> Option<u64> {
         let idx = self.find_key(_py, key)?;
         let (old_key, count_bits) = self.entries.swap_remove(idx);
+        if let Some(bytes) = unsafe { counter_string_key_bytes(old_key) } {
+            self.string_index.remove(bytes);
+        }
+        if idx < self.entries.len()
+            && let Some(bytes) = unsafe { counter_string_key_bytes(self.entries[idx].0) }
+        {
+            self.string_index.insert(bytes.to_vec(), idx);
+        }
         dec_ref_bits(_py, old_key);
         Some(count_bits)
     }
@@ -1846,15 +1884,29 @@ impl CounterState {
             dec_ref_bits(_py, key);
         }
         self.entries.clear();
+        self.string_index.clear();
     }
 
     fn clone_state(&self, _py: &CoreGilToken) -> Self {
         for &(key, _) in &self.entries {
             inc_ref_bits(_py, key);
         }
-        Self {
+        let mut cloned = Self {
             entries: self.entries.clone(),
+            string_index: HashMap::with_capacity(self.string_index.len()),
+        };
+        cloned.rebuild_string_index();
+        cloned
+    }
+}
+
+unsafe fn counter_string_key_bytes(key: u64) -> Option<&'static [u8]> {
+    let ptr = obj_from_bits(key).as_ptr()?;
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_STRING {
+            return None;
         }
+        string_data(ptr)
     }
 }
 
@@ -1903,6 +1955,29 @@ fn dd_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
         return None;
     };
     Some(id)
+}
+
+fn defaultdict_missing_value(_py: &CoreGilToken, handle_bits: u64, key_bits: u64) -> u64 {
+    let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
+        return MoltObject::none().bits();
+    };
+    let factory = DEFAULTDICT_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|s| s.factory_bits);
+    let Some(factory_bits) = factory else {
+        return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
+    };
+    let factory_obj = obj_from_bits(factory_bits);
+    if factory_obj.is_none() {
+        return raise_key_error_with_key::<u64>(_py, key_bits);
+    }
+    let val = call_callable0(_py, factory_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    val
 }
 
 // ─── Counter intrinsics: construction ───────────────────────────────────────
@@ -2055,7 +2130,13 @@ pub extern "C" fn molt_counter_elements(handle_bits: u64) -> u64 {
                 Some(state) => {
                     let mut out = Vec::new();
                     for &(elem_bits, count_bits) in &state.entries {
-                        let count = count_to_i64(count_bits);
+                        let Some(count) = to_i64(obj_from_bits(count_bits)) else {
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "Counter.elements count must be an integer",
+                            );
+                        };
                         if count > 0 {
                             for _ in 0..count {
                                 out.push(elem_bits);
@@ -2482,6 +2563,39 @@ pub extern "C" fn molt_counter_and(a_bits: u64, b_bits: u64) -> u64 {
     })
 }
 
+fn counter_unary_op(_py: &CoreGilToken, handle_bits: u64, transform: fn(i64) -> i64) -> u64 {
+    let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
+        return MoltObject::none().bits();
+    };
+    let entries: Vec<(u64, u64)> = match COUNTER_REGISTRY.lock().unwrap().get(&id) {
+        Some(state) => state.entries.clone(),
+        None => return raise_exception::<_>(_py, "RuntimeError", "invalid Counter handle"),
+    };
+
+    let mut result = CounterState::new();
+    for (key, count_bits) in entries {
+        let count = transform(count_to_i64(count_bits));
+        if count > 0 {
+            result.set_count_i64(_py, key, count);
+        }
+    }
+    let new_id = next_counter_handle();
+    COUNTER_REGISTRY.lock().unwrap().insert(new_id, result);
+    MoltObject::from_int(new_id).bits()
+}
+
+/// +c: keep only positive counts.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_pos(handle_bits: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, { counter_unary_op(_py, handle_bits, |count| count) })
+}
+
+/// -c: keep only counts that become positive after negation.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_counter_neg(handle_bits: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, { counter_unary_op(_py, handle_bits, |count| -count) })
+}
+
 // ─── Counter intrinsics: copy / clear / pop / drop ──────────────────────────
 
 /// Deep copy.  Returns new handle.
@@ -2590,24 +2704,55 @@ pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_defaultdict_missing(handle_bits: u64, key_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
+        defaultdict_missing_value(_py, handle_bits, key_bits)
+    })
+}
+
+/// Native `defaultdict.__missing__(self, key)` method.
+/// Reads the intrinsic state handle from the instance slot, computes the
+/// default value or raises KeyError, and inserts factory-produced values into
+/// the dict-subclass backing store before returning them.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_defaultdict_missing_method(self_bits: u64, key_bits: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        let self_obj = obj_from_bits(self_bits);
+        let Some(self_ptr) = self_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "defaultdict.__missing__ expects self");
+        };
+        let Some(handle_name_bits) = attr_name_bits_from_bytes(_py, b"_dd_handle") else {
             return MoltObject::none().bits();
         };
-        let factory = DEFAULTDICT_REGISTRY
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.factory_bits);
-        let Some(factory_bits) = factory else {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
-        };
-        let factory_obj = obj_from_bits(factory_bits);
-        if factory_obj.is_none() {
-            return raise_key_error_with_key::<u64>(_py, key_bits);
-        }
-        // Call the factory with 0 arguments (supports types, functions, bound methods).
-        let val = call_callable0(_py, factory_bits);
+        let handle_bits = unsafe { attr_lookup_ptr_allow_missing(_py, self_ptr, handle_name_bits) };
+        dec_ref_bits(_py, handle_name_bits);
         if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(handle_bits) = handle_bits else {
+            return raise_exception::<_>(_py, "RuntimeError", "defaultdict handle is missing");
+        };
+        let val = defaultdict_missing_value(_py, handle_bits, key_bits);
+        dec_ref_bits(_py, handle_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(dict_bits) = (unsafe { dict_like_bits_from_ptr(_py, self_ptr) }) else {
+            return raise_exception::<_>(_py, "TypeError", "defaultdict storage is unavailable");
+        };
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "defaultdict storage is unavailable");
+        };
+        unsafe {
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "defaultdict storage is unavailable",
+                );
+            }
+            dict_set_in_place(_py, dict_ptr, key_bits, val);
+        }
+        if exception_pending(_py) {
+            dec_ref_bits(_py, val);
             return MoltObject::none().bits();
         }
         val
