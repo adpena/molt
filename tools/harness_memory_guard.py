@@ -66,9 +66,11 @@ class HarnessMemoryLimits:
     max_total_rss_gb: float
     max_global_rss_gb: float
     poll_interval: float
+    child_rlimit_gb: float | None = None
     max_process_rss_kb: int = field(init=False, repr=False)
     max_total_rss_kb: int = field(init=False, repr=False)
     max_global_rss_kb: int = field(init=False, repr=False)
+    child_rlimit_kb: int | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -85,6 +87,20 @@ class HarnessMemoryLimits:
             self,
             "max_global_rss_kb",
             memory_guard.max_global_rss_kb_from_gb(self.max_global_rss_gb),
+        )
+        child_rlimit_gb = self.child_rlimit_gb
+        if child_rlimit_gb is None:
+            child_rlimit_gb = memory_guard.default_child_rlimit_gb(
+                max_process_rss_gb=self.max_process_rss_gb,
+                max_total_rss_gb=self.max_total_rss_gb,
+            )
+            object.__setattr__(self, "child_rlimit_gb", child_rlimit_gb)
+        object.__setattr__(
+            self,
+            "child_rlimit_kb",
+            None
+            if child_rlimit_gb <= 0
+            else memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb),
         )
 
 
@@ -184,12 +200,26 @@ def limits_from_env(
     )
     if poll_interval <= 0:
         poll_interval = DEFAULT_POLL_INTERVAL_SEC
+    child_rlimit_gb = _env_float(
+        source,
+        [
+            f"{normalized}_CHILD_RLIMIT_GB",
+            f"{normalized}_MAX_CHILD_RLIMIT_GB",
+            "MOLT_CHILD_RLIMIT_GB",
+            "MOLT_MAX_CHILD_RLIMIT_GB",
+        ],
+        default=memory_guard.default_child_rlimit_gb(
+            max_process_rss_gb=process_gb,
+            max_total_rss_gb=total_gb,
+        ),
+    )
     return HarnessMemoryLimits(
         enabled=enabled,
         max_process_rss_gb=process_gb,
         max_total_rss_gb=total_gb,
         max_global_rss_gb=global_gb,
         poll_interval=poll_interval,
+        child_rlimit_gb=child_rlimit_gb,
     )
 
 
@@ -199,6 +229,7 @@ def limits_summary(limits: HarnessMemoryLimits) -> dict[str, object]:
         "max_process_rss_gb": limits.max_process_rss_gb,
         "max_total_rss_gb": limits.max_total_rss_gb,
         "max_global_rss_gb": limits.max_global_rss_gb,
+        "child_rlimit_gb": limits.child_rlimit_gb,
         "poll_interval": limits.poll_interval,
     }
 
@@ -307,7 +338,7 @@ def guarded_completed_process(
         env=env,
         timeout=timeout,
         capture_output=capture_output,
-        child_rlimit_kb=resolved_limits.max_process_rss_kb,
+        child_rlimit_kb=resolved_limits.child_rlimit_kb,
         input=input,
         stream=stream,
     )
@@ -331,10 +362,12 @@ def batch_process_group_kwargs(
     resolved_limits = limits or limits_from_env("MOLT")
     if not resolved_limits.enabled or os.name != "posix":
         return {}
-    return {
-        "start_new_session": True,
-        "preexec_fn": _child_resource_limit_preexec(resolved_limits.max_process_rss_kb),
-    }
+    kwargs: dict[str, object] = {"start_new_session": True}
+    if resolved_limits.child_rlimit_kb is not None:
+        kwargs["preexec_fn"] = _child_resource_limit_preexec(
+            resolved_limits.child_rlimit_kb
+        )
+    return kwargs
 
 
 def _child_resource_limit_preexec(limit_kb: int) -> Callable[[], None]:

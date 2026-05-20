@@ -21,6 +21,7 @@ DEFAULT_MAX_TOTAL_RSS_GB = 18.0
 DEFAULT_MAX_GLOBAL_RSS_GB = 36.0
 DEFAULT_HARD_MAX_RSS_GB = 112.0
 DEFAULT_HARD_MAX_GLOBAL_RSS_GB = 4096.0
+DEFAULT_HARD_MAX_CHILD_RLIMIT_GB = 4096.0
 DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_SAMPLES_MAX_MB = 2.0
 DEFAULT_MEMORY_RESERVE_FRACTION = 0.06
@@ -29,6 +30,8 @@ DEFAULT_MEMORY_RESERVE_MAX_GB = 12.0
 DEFAULT_GLOBAL_FRACTION_OF_USABLE = 0.97
 DEFAULT_TOTAL_FRACTION_OF_GLOBAL = 0.60
 DEFAULT_PROCESS_FRACTION_OF_TOTAL = 0.90
+DEFAULT_CHILD_RLIMIT_MIN_GB = 8.0
+DEFAULT_CHILD_RLIMIT_TREE_MULTIPLIER = 2.0
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
@@ -488,6 +491,32 @@ def max_global_rss_kb_from_gb(value: float) -> int:
             f"global RSS must stay below {DEFAULT_HARD_MAX_GLOBAL_RSS_GB:g} GB"
         )
     return int(value * 1024 * 1024)
+
+
+def child_rlimit_kb_from_gb(value: float) -> int:
+    if value <= 0:
+        raise ValueError("child resource limit must be greater than 0 GB")
+    if value >= DEFAULT_HARD_MAX_CHILD_RLIMIT_GB:
+        raise ValueError(
+            "child resource limit must stay below "
+            f"{DEFAULT_HARD_MAX_CHILD_RLIMIT_GB:g} GB"
+        )
+    return int(value * 1024 * 1024)
+
+
+def default_child_rlimit_gb(
+    *,
+    max_process_rss_gb: float,
+    max_total_rss_gb: float,
+) -> float:
+    return min(
+        DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001,
+        max(
+            max_process_rss_gb,
+            max_total_rss_gb * DEFAULT_CHILD_RLIMIT_TREE_MULTIPLIER,
+            DEFAULT_CHILD_RLIMIT_MIN_GB,
+        ),
+    )
 
 
 def _samples_max_bytes_from_mb(value: float | None) -> int | None:
@@ -1079,7 +1108,8 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Apply an OS resource limit to the direct guarded child before exec; "
-            "defaults to --max-rss-gb. Set <=0 to disable this layer."
+            "defaults to an adaptive virtual-memory clamp distinct from RSS. "
+            "Set <=0 to disable this layer."
         ),
     )
     parser.add_argument(
@@ -1181,10 +1211,15 @@ def main(
             raise ValueError("timeout must be greater than 0")
         samples_jsonl_max_bytes = _samples_max_bytes_from_mb(args.samples_max_mb)
         child_rlimit_gb = (
-            max_rss_gb if args.child_rlimit_gb is None else float(args.child_rlimit_gb)
+            default_child_rlimit_gb(
+                max_process_rss_gb=max_rss_gb,
+                max_total_rss_gb=max_total_rss_gb,
+            )
+            if args.child_rlimit_gb is None
+            else float(args.child_rlimit_gb)
         )
         child_rlimit_kb = (
-            None if child_rlimit_gb <= 0 else max_rss_kb_from_gb(child_rlimit_gb)
+            None if child_rlimit_gb <= 0 else child_rlimit_kb_from_gb(child_rlimit_gb)
         )
     except ValueError as exc:
         print(f"memory_guard: {exc}", file=sys.stderr)

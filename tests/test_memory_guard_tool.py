@@ -186,6 +186,17 @@ def test_memory_guard_adaptive_defaults_do_not_starve_small_hosts() -> None:
     assert budget.max_global_rss_gb == pytest.approx(3.88)
 
 
+def test_default_child_rlimit_is_decoupled_from_rss_budget() -> None:
+    assert memory_guard.default_child_rlimit_gb(
+        max_process_rss_gb=2.0,
+        max_total_rss_gb=3.0,
+    ) == pytest.approx(8.0)
+    assert memory_guard.default_child_rlimit_gb(
+        max_process_rss_gb=46.0,
+        max_total_rss_gb=51.0,
+    ) == pytest.approx(102.0)
+
+
 def test_run_command_passes_through_success() -> None:
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "print('ok')"],
@@ -359,7 +370,7 @@ def test_main_reports_signal_status_without_guard_violation(
     assert "SIGTERM status" in capsys.readouterr().err
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["returncode"] == 143
-    assert payload["child_rlimit_gb"] == pytest.approx(1.0)
+    assert payload["child_rlimit_gb"] == pytest.approx(36.0)
     assert payload["timed_out"] is False
     assert payload["violation"] is None
     assert payload["exit_signal"] == {

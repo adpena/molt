@@ -1499,11 +1499,20 @@ def _parse_float_env(name: str) -> float | None:
         return None
 
 
+def _parse_first_float_env(names: Sequence[str]) -> float | None:
+    for name in names:
+        value = _parse_float_env(name)
+        if value is not None:
+            return value
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class _DiffMemoryGuardConfig:
     max_process_kb: int
     max_tree_kb: int
     global_kb: int
+    child_rlimit_kb: int | None
     poll_interval: float
 
     @property
@@ -1517,6 +1526,12 @@ class _DiffMemoryGuardConfig:
     @property
     def global_gb(self) -> float:
         return self.global_kb / (1024 * 1024)
+
+    @property
+    def child_rlimit_gb(self) -> float | None:
+        if self.child_rlimit_kb is None:
+            return None
+        return self.child_rlimit_kb / (1024 * 1024)
 
 
 def _gb_to_kb(value: float) -> int:
@@ -1575,6 +1590,25 @@ def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
         default=default_process_gb,
         upper=tree_gb,
     )
+    default_child_rlimit_gb = memory_guard.default_child_rlimit_gb(
+        max_process_rss_gb=process_gb,
+        max_total_rss_gb=tree_gb,
+    )
+    child_rlimit_gb = _parse_first_float_env(
+        (
+            "MOLT_DIFF_CHILD_RLIMIT_GB",
+            "MOLT_DIFF_MAX_CHILD_RLIMIT_GB",
+            "MOLT_CHILD_RLIMIT_GB",
+            "MOLT_MAX_CHILD_RLIMIT_GB",
+        )
+    )
+    if child_rlimit_gb is None:
+        child_rlimit_gb = default_child_rlimit_gb
+    child_rlimit_kb = (
+        None
+        if child_rlimit_gb <= 0
+        else memory_guard.child_rlimit_kb_from_gb(child_rlimit_gb)
+    )
     poll_interval = _bounded_positive_float_env(
         "MOLT_DIFF_MEMORY_GUARD_POLL_SEC",
         default=_DIFF_MEMORY_GUARD_DEFAULT_POLL_SEC,
@@ -1584,6 +1618,7 @@ def _diff_memory_guard_config() -> _DiffMemoryGuardConfig:
         max_process_kb=_gb_to_kb(process_gb),
         max_tree_kb=_gb_to_kb(tree_gb),
         global_kb=_gb_to_kb(global_gb),
+        child_rlimit_kb=child_rlimit_kb,
         poll_interval=max(0.01, poll_interval),
     )
 
@@ -1634,8 +1669,10 @@ def _memory_limit_bytes() -> int | None:
         if mb <= 0:
             return None
         return int(mb * 1024 * 1024)
-    # Default to the same adaptive per-process budget as the process-tree guard.
-    return _diff_memory_guard_config().max_process_kb * 1024
+    # Default to the adaptive child resource budget. RSS enforcement remains
+    # process/tree/global sampling; this layer bounds inherited virtual memory.
+    child_rlimit_kb = _diff_memory_guard_config().child_rlimit_kb
+    return None if child_rlimit_kb is None else child_rlimit_kb * 1024
 
 
 _MEM_LIMIT_APPLIED = False
@@ -1678,22 +1715,7 @@ def _apply_memory_limit() -> None:
     if limit is None:
         _MEM_LIMIT_APPLIED = True
         return
-    try:
-        import resource  # type: ignore
-    except Exception:
-        _MEM_LIMIT_APPLIED = True
-        return
-    for name in ("RLIMIT_AS", "RLIMIT_DATA", "RLIMIT_RSS"):
-        res = getattr(resource, name, None)
-        if res is None:
-            continue
-        try:
-            soft, hard = resource.getrlimit(res)
-            new_soft = min(soft, limit) if soft != resource.RLIM_INFINITY else limit
-            new_hard = min(hard, limit) if hard != resource.RLIM_INFINITY else limit
-            resource.setrlimit(res, (new_soft, new_hard))
-        except Exception:
-            continue
+    memory_guard._apply_child_resource_limit(max(1, limit // 1024))
     _MEM_LIMIT_APPLIED = True
 
 
@@ -2039,7 +2061,9 @@ def _popen_group_kwargs() -> dict[str, object]:
         return {"creationflags": creationflags}
     kwargs: dict[str, object] = {"start_new_session": True}
     if _diff_memory_guard_enabled():
-        limit_kb = _diff_memory_guard_config().max_process_kb
+        limit_kb = _diff_memory_guard_config().child_rlimit_kb
+        if limit_kb is None:
+            return kwargs
 
         def apply_limit() -> None:
             memory_guard._apply_child_resource_limit(limit_kb)
@@ -2239,6 +2263,7 @@ def _format_memory_guard_stream(payload: dict[str, object]) -> str:
             f"run_started global={_memory_guard_payload_gb(payload, 'global_gb')} "
             f"tree={_memory_guard_payload_gb(payload, 'max_tree_gb')} "
             f"process={_memory_guard_payload_gb(payload, 'max_process_gb')} "
+            f"child_rlimit={_memory_guard_payload_gb(payload, 'child_rlimit_gb')} "
             f"poll={payload.get('poll_interval')}s "
             f"samples={'on' if _diff_memory_guard_write_samples() else 'off'}"
         )
@@ -2405,6 +2430,7 @@ def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
             "max_process_gb": config.max_process_gb,
             "max_tree_gb": config.max_tree_gb,
             "global_gb": config.global_gb,
+            "child_rlimit_gb": config.child_rlimit_gb,
             "poll_interval": config.poll_interval,
             "sample_interval": _diff_memory_guard_sample_interval_sec(),
             "write_samples": _diff_memory_guard_write_samples(),
@@ -4316,6 +4342,7 @@ def run_diff(
                 "max_process_gb": guard_config.max_process_gb,
                 "max_tree_gb": guard_config.max_tree_gb,
                 "global_gb": guard_config.global_gb,
+                "child_rlimit_gb": guard_config.child_rlimit_gb,
                 "poll_interval": guard_config.poll_interval,
                 "sample_interval": _diff_memory_guard_sample_interval_sec(),
                 "write_samples": _diff_memory_guard_write_samples(),
