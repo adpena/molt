@@ -22,10 +22,11 @@
 //! `CheckException` is a side-effecting op (it branches to a handler
 //! when the runtime exception flag is set).  Removing one is safe iff
 //! no op since the previous check could have set the flag — i.e. the
-//! intervening ops are all in the "cannot raise" set.  We delegate to
-//! the same `is_potentially_throwing` predicate that DCE uses for
-//! preserving potentially-raising ops inside try regions, ensuring the
-//! two passes share a single source of truth for raising semantics.
+//! intervening ops are all in the "cannot raise" set.  The base
+//! classifier delegates to the same `is_potentially_throwing` predicate
+//! that DCE uses, then tightens it with local TIR facts for operations
+//! whose only remaining exceptional case has been statically excluded
+//! (for example integer division-family ops by a proven nonzero const).
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,6 +35,8 @@ use super::dce::is_potentially_throwing;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::types::TirType;
+use crate::tir::values::ValueId;
 
 /// SimpleIR op kinds that fall through to `OpCode::Copy` in the SSA lift
 /// (so they carry `_original_kind`) but are nevertheless provably
@@ -120,7 +123,59 @@ fn original_kind_is_provably_nonthrowing(kind: &str) -> bool {
 /// elision in fast-int loops) or under-approximate (treating them all
 /// as non-raising and dropping the safety guards that protect
 /// `exception_new` / `exception_class` etc.).
-fn op_may_raise(op: &TirOp) -> bool {
+fn const_int_values(func: &TirFunction) -> HashMap<ValueId, i64> {
+    let mut values = HashMap::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            let value = match op.opcode {
+                OpCode::ConstInt => match op.attrs.get("value") {
+                    Some(AttrValue::Int(value)) => Some(*value),
+                    _ => None,
+                },
+                OpCode::ConstBool => match op.attrs.get("value") {
+                    Some(AttrValue::Bool(value)) => Some(i64::from(*value)),
+                    Some(AttrValue::Int(value)) => Some(i64::from(*value != 0)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(value) = value {
+                for result in &op.results {
+                    values.insert(*result, value);
+                }
+            }
+        }
+    }
+    values
+}
+
+fn value_is_i64(value_types: &HashMap<ValueId, TirType>, value: ValueId) -> bool {
+    matches!(value_types.get(&value), Some(TirType::I64))
+}
+
+fn proven_nonzero_i64_divisor(
+    value_types: &HashMap<ValueId, TirType>,
+    const_ints: &HashMap<ValueId, i64>,
+    op: &TirOp,
+) -> bool {
+    let [lhs, rhs] = op.operands.as_slice() else {
+        return false;
+    };
+    value_is_i64(value_types, *lhs)
+        && value_is_i64(value_types, *rhs)
+        && const_ints.get(rhs).is_some_and(|value| *value != 0)
+}
+
+fn op_may_raise(
+    value_types: &HashMap<ValueId, TirType>,
+    const_ints: &HashMap<ValueId, i64>,
+    op: &TirOp,
+) -> bool {
+    if matches!(op.opcode, OpCode::Div | OpCode::FloorDiv | OpCode::Mod)
+        && proven_nonzero_i64_divisor(value_types, const_ints, op)
+    {
+        return false;
+    }
     if is_potentially_throwing(op.opcode) {
         return true;
     }
@@ -184,7 +239,12 @@ fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
     targets
 }
 
-fn transfer_block_pending(block: &crate::tir::blocks::TirBlock, mut pending: bool) -> bool {
+fn transfer_block_pending(
+    value_types: &HashMap<ValueId, TirType>,
+    const_ints: &HashMap<ValueId, i64>,
+    block: &crate::tir::blocks::TirBlock,
+    mut pending: bool,
+) -> bool {
     for op in &block.ops {
         if op.opcode == OpCode::CheckException {
             if pending {
@@ -194,7 +254,7 @@ fn transfer_block_pending(block: &crate::tir::blocks::TirBlock, mut pending: boo
         }
         if op_clears_pending_exception(op) {
             pending = false;
-        } else if op_may_raise(op) {
+        } else if op_may_raise(value_types, const_ints, op) {
             pending = true;
         }
     }
@@ -203,6 +263,8 @@ fn transfer_block_pending(block: &crate::tir::blocks::TirBlock, mut pending: boo
 
 fn compute_block_entry_pending(func: &TirFunction) -> HashMap<BlockId, bool> {
     let exception_targets = exception_target_blocks(func);
+    let const_ints = const_int_values(func);
+    let value_types = func.value_types.clone();
     let mut entry_pending: HashMap<BlockId, bool> = func
         .blocks
         .keys()
@@ -228,7 +290,8 @@ fn compute_block_entry_pending(func: &TirFunction) -> HashMap<BlockId, bool> {
 
         for (bid, block) in &func.blocks {
             let starts_pending = entry_pending.get(bid).copied().unwrap_or(false);
-            let exits_pending = transfer_block_pending(block, starts_pending);
+            let exits_pending =
+                transfer_block_pending(&value_types, &const_ints, block, starts_pending);
             if !exits_pending {
                 continue;
             }
@@ -253,6 +316,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     };
 
     let entry_pending = compute_block_entry_pending(func);
+    let const_ints = const_int_values(func);
+    let value_types = func.value_types.clone();
 
     for block in func.blocks.values_mut() {
         // `pending_exception_possible` is true when an entry edge may
@@ -277,7 +342,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 _ => {
                     if op_clears_pending_exception(&op) {
                         pending_exception_possible = false;
-                    } else if op_may_raise(&op) {
+                    } else if op_may_raise(&value_types, &const_ints, &op) {
                         pending_exception_possible = true;
                     }
                     new_ops.push(op);
@@ -339,6 +404,17 @@ mod tests {
             operands: vec![],
             results: vec![out],
             attrs,
+            source_span: None,
+        }
+    }
+
+    fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![lhs, rhs],
+            results: vec![out],
+            attrs: AttrDict::new(),
             source_span: None,
         }
     }
@@ -516,5 +592,70 @@ mod tests {
         let stats = run(&mut func);
         assert_eq!(stats.ops_removed, 1);
         assert_eq!(func.blocks[&BlockId(1)].ops.len(), 0);
+    }
+
+    #[test]
+    fn check_after_i64_mod_by_nonzero_const_is_dropped() {
+        let lhs = ValueId(0);
+        let rhs = ValueId(1);
+        let out = ValueId(2);
+        let mut func = make_func_with_block(vec![
+            make_const_int(9, lhs),
+            make_const_int(3, rhs),
+            make_check_exception(), // first check, kept
+            make_binary(OpCode::Mod, lhs, rhs, out),
+            make_check_exception(), // redundant: i64 modulo by nonzero const
+        ]);
+        func.value_types.insert(lhs, TirType::I64);
+        func.value_types.insert(rhs, TirType::I64);
+        func.value_types.insert(out, TirType::I64);
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 1);
+        assert_eq!(func.blocks[&BlockId(0)].ops.len(), 4);
+    }
+
+    #[test]
+    fn check_after_i64_mod_by_zero_const_is_kept() {
+        let lhs = ValueId(0);
+        let rhs = ValueId(1);
+        let out = ValueId(2);
+        let mut func = make_func_with_block(vec![
+            make_const_int(9, lhs),
+            make_const_int(0, rhs),
+            make_check_exception(), // first check, kept
+            make_binary(OpCode::Mod, lhs, rhs, out),
+            make_check_exception(), // required: modulo by zero may raise
+        ]);
+        func.value_types.insert(lhs, TirType::I64);
+        func.value_types.insert(rhs, TirType::I64);
+        func.value_types.insert(out, TirType::I64);
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(func.blocks[&BlockId(0)].ops.len(), 5);
+    }
+
+    #[test]
+    fn check_after_i64_mod_by_dynamic_rhs_is_kept() {
+        let lhs = ValueId(0);
+        let rhs = ValueId(1);
+        let out = ValueId(2);
+        let mut func = make_func_with_block(vec![
+            make_const_int(9, lhs),
+            make_check_exception(), // first check, kept
+            make_binary(OpCode::Mod, lhs, rhs, out),
+            make_check_exception(), // required: typed but not proven nonzero
+        ]);
+        func.value_types.insert(lhs, TirType::I64);
+        func.value_types.insert(rhs, TirType::I64);
+        func.value_types.insert(out, TirType::I64);
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(func.blocks[&BlockId(0)].ops.len(), 4);
     }
 }
