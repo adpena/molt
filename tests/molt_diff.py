@@ -41,6 +41,8 @@ _DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV = (
 _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_INTERVAL_SEC = 1.0
 _DIFF_MEMORY_GUARD_DEFAULT_EVENT_MAX_MB = 1.0
 _DIFF_MEMORY_GUARD_DEFAULT_SAMPLE_MAX_MB = 2.0
+_DIFF_MEMORY_GUARD_FAST_START_POLL_SEC = 0.02
+_DIFF_MEMORY_GUARD_FAST_START_DURATION_SEC = 2.0
 _DIFF_MEMORY_GUARD_RETURN_CODE = memory_guard.GUARD_RETURN_CODE
 _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB = harness_memory_guard.HARD_RSS_LIMIT_GB
 _DIFF_MEMORY_GUARD_HARD_GLOBAL_KB = memory_guard.max_rss_kb_from_gb(
@@ -2415,7 +2417,9 @@ class _DiffGlobalMemoryMonitor:
             self._thread.join(timeout=max(0.2, self._config.poll_interval * 4.0))
 
     def _run(self) -> None:
-        while not self._stop.wait(self._config.poll_interval):
+        while not self._stop.wait(
+            min(self._config.poll_interval, _DIFF_MEMORY_GUARD_FAST_START_POLL_SEC)
+        ):
             try:
                 self._sample_once()
             except Exception as exc:  # pragma: no cover - defensive monitor boundary
@@ -2736,6 +2740,11 @@ def _run_subprocess(
                     if proc.poll() is not None:
                         break
                     sleep_for = config.poll_interval
+                    if elapsed < _DIFF_MEMORY_GUARD_FAST_START_DURATION_SEC:
+                        sleep_for = min(
+                            sleep_for,
+                            _DIFF_MEMORY_GUARD_FAST_START_POLL_SEC,
+                        )
                     if timeout is not None:
                         remaining = timeout - elapsed
                         sleep_for = min(sleep_for, max(0.01, remaining))
