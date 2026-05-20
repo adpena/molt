@@ -1104,6 +1104,8 @@ class IntrinsicHandleClassConstructorSpec:
     empty_intrinsic: str
     iterable_intrinsic: str
     iterable_types: frozenset[str]
+    getitem_intrinsic: str | None = None
+    len_intrinsic: str | None = None
 
 
 INTRINSIC_HANDLE_CLASS_CONSTRUCTORS: dict[
@@ -1115,8 +1117,14 @@ INTRINSIC_HANDLE_CLASS_CONSTRUCTORS: dict[
         empty_intrinsic="molt_counter_new",
         iterable_intrinsic="molt_counter_from_iterable",
         iterable_types=frozenset({"list", "tuple"}),
+        getitem_intrinsic="molt_counter_getitem",
+        len_intrinsic="molt_counter_len",
     ),
 }
+
+INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE: dict[
+    str, IntrinsicHandleClassConstructorSpec
+] = {spec.type_hint: spec for spec in INTRINSIC_HANDLE_CLASS_CONSTRUCTORS.values()}
 
 STDLIB_DIRECT_CALL_MODULES = {
     module for module in MOLT_DIRECT_CALLS if not module.startswith("molt.")
@@ -6960,6 +6968,41 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 kind="SETATTR_GENERIC_OBJ",
                 args=[res, spec.handle_attr, handle],
                 result=MoltValue("none"),
+            )
+        )
+        return res
+
+    def _intrinsic_handle_class_spec_for_value(
+        self, value: MoltValue | None
+    ) -> IntrinsicHandleClassConstructorSpec | None:
+        if value is None:
+            return None
+        return INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE.get(value.type_hint)
+
+    def _emit_intrinsic_handle_class_call(
+        self,
+        obj: MoltValue,
+        spec: IntrinsicHandleClassConstructorSpec,
+        intrinsic_name: str,
+        args: list[MoltValue],
+        *,
+        result_hint: str,
+    ) -> MoltValue:
+        handle = MoltValue(self.next_var(), type_hint="int")
+        self.emit(
+            MoltOp(
+                kind="GETATTR_GENERIC_OBJ",
+                args=[obj, spec.handle_attr],
+                result=handle,
+            )
+        )
+        intrinsic_func = self._emit_intrinsic_function(intrinsic_name)
+        res = MoltValue(self.next_var(), type_hint=result_hint)
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[intrinsic_func, handle] + args,
+                result=res,
             )
         )
         return res
@@ -21865,6 +21908,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(MoltOp(kind="CONST", args=[folded_len], result=res))
                     return res
                 arg = self.visit(node.args[0])
+                spec = self._intrinsic_handle_class_spec_for_value(arg)
+                if spec is not None and spec.len_intrinsic is not None:
+                    return self._emit_intrinsic_handle_class_call(
+                        arg,
+                        spec,
+                        spec.len_intrinsic,
+                        [],
+                        result_hint="int",
+                    )
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LEN", args=[arg], result=res))
                 return res
@@ -23538,6 +23590,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 val_hint = self._dict_value_hint(target)
                 if val_hint:
                     res_type = val_hint
+            spec = self._intrinsic_handle_class_spec_for_value(target)
+            if spec is not None and spec.getitem_intrinsic is not None:
+                if index_val is None:
+                    raise NotImplementedError(
+                        "Unsupported intrinsic-backed class index"
+                    )
+                return self._emit_intrinsic_handle_class_call(
+                    target,
+                    spec,
+                    spec.getitem_intrinsic,
+                    [index_val],
+                    result_hint="int",
+                )
         res = MoltValue(self.next_var(), type_hint=res_type)
         self.emit(MoltOp(kind="INDEX", args=[target, index_val], result=res))
         return res
