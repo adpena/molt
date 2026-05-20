@@ -49,6 +49,12 @@ pub extern "C" fn molt_str_from_obj(val_bits: u64) -> u64 {
                     molt_inc_ref(ptr);
                     return val_bits;
                 }
+                if object_type_id(ptr) == TYPE_ID_EXCEPTION
+                    && let Some(bits) =
+                        crate::object::ops_format::exception_cached_message_str_bits(_py, ptr)
+                {
+                    return bits;
+                }
             }
         }
         // Fast path: inline int -- stack-format to avoid String allocation.

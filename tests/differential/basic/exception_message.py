@@ -16,3 +16,16 @@ try:
     raise Exception([1, 2])
 except Exception as exc:
     print(str(exc))
+
+header("custom_str")
+
+
+class CustomStrError(ValueError):
+    def __str__(self):
+        return "custom:" + self.args[0]
+
+
+try:
+    raise CustomStrError("payload")
+except CustomStrError as exc:
+    print(str(exc))
