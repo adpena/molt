@@ -418,6 +418,29 @@ BUILTIN_EXCEPTION_NAMES = {
     "EncodingWarning",
 }
 
+BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS = {
+    name: idx
+    for idx, name in enumerate(
+        (
+            "BaseException",
+            "Exception",
+            "KeyError",
+            "IndexError",
+            "ValueError",
+            "TypeError",
+            "RuntimeError",
+            "StopIteration",
+            "StopAsyncIteration",
+            "AssertionError",
+            "ImportError",
+            "NameError",
+            "UnboundLocalError",
+            "NotImplementedError",
+        ),
+        start=1,
+    )
+}
+
 _MOLT_MISSING = ast.Name(id="__molt_missing__", ctx=ast.Load())
 _MOLT_CLOSURE_PARAM = "__molt_closure__"
 _MOLT_LOCALS_CACHE = "__molt_locals_cache__"
@@ -1096,6 +1119,7 @@ MOLT_DIRECT_CALL_BIND_ALWAYS = {
     # through CALL_BIND unless we explicitly materialize packed args.
     "itertools": {"chain", "islice", "repeat"},
 }
+
 
 @dataclass(frozen=True)
 class IntrinsicHandleClassConstructorSpec:
@@ -2256,6 +2280,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "STATE_TRANSITION",
             "STATE_YIELD",
             "PHI",
+            "RAISE",
+            "RAISE_CAUSE",
+            "RERAISE",
             "EXCEPTION_PUSH",
             "EXCEPTION_POP",
             "EXCEPTION_STACK_CLEAR",
@@ -2268,6 +2295,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "EXCEPTION_SET_CAUSE",
             "EXCEPTION_SET_LAST",
             "EXCEPTION_CONTEXT_SET",
+            "EXCEPTION_MATCH_BUILTIN",
             "CONTEXT_UNWIND_TO",
             "LINE",
             "TRACE_ENTER_SLOT",
@@ -2293,6 +2321,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "DEC_REF",
             "BORROW",
             "RELEASE",
+            "EXCEPTION_NEW_BUILTIN",
             "MISSING",
             "TUPLE_NEW",
             "LIST_NEW",
@@ -6590,11 +6619,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_exception_new_from_args(
         self, kind: str, args: list[MoltValue]
     ) -> MoltValue:
-        kind_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[kind], result=kind_val))
         args_val = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=args, result=args_val))
         exc_val = MoltValue(self.next_var(), type_hint="exception")
+        if kind_tag := BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS.get(kind):
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_NEW_BUILTIN",
+                    args=[args_val],
+                    result=exc_val,
+                    metadata={"exception_name": kind, "exception_tag": kind_tag},
+                )
+            )
+            return exc_val
+        kind_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[kind], result=kind_val))
         self.emit(
             MoltOp(
                 kind="EXCEPTION_NEW",
@@ -6753,6 +6792,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if handler.type is None:
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[1], result=res))
+            return res
+        if (
+            isinstance(handler.type, ast.Name)
+            and (kind_tag := BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS.get(handler.type.id))
+            is not None
+        ):
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+            res = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_MATCH_BUILTIN",
+                    args=[exc_val],
+                    result=res,
+                    metadata={
+                        "exception_name": handler.type.id,
+                        "exception_tag": kind_tag,
+                    },
+                )
+            )
             return res
         # Evaluate the handler expression with the pending exception temporarily
         # cleared. Attribute-based handlers (e.g. `except mod.Error`) otherwise
@@ -19876,12 +19934,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if target_module is None:
                     target_module = imported_from
                 original_attr = self.imported_attr_names.get(func_id, func_id)
-                lowered_handle_ctor = (
-                    self._try_emit_intrinsic_handle_class_constructor(
-                        target_module,
-                        original_attr,
-                        node,
-                    )
+                lowered_handle_ctor = self._try_emit_intrinsic_handle_class_constructor(
+                    target_module,
+                    original_attr,
+                    node,
                 )
                 if lowered_handle_ctor is not None:
                     return lowered_handle_ctor
@@ -21957,7 +22013,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if target is None or index_val is None:
                         raise NotImplementedError("Unsupported ord subscript argument")
                     res = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="ORD_AT", args=[target, index_val], result=res))
+                    self.emit(
+                        MoltOp(kind="ORD_AT", args=[target, index_val], result=res)
+                    )
                     return res
                 arg = self.visit(node.args[0])
                 if arg is None:
@@ -27706,6 +27764,144 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res))
         return res
 
+    def _emit_sync_try_except_split(
+        self,
+        node: ast.Try,
+        scope: TryScope,
+        unbound_snapshot_try: set[str],
+        prior_terminated: bool,
+    ) -> None:
+        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
+        try_exc_label = self.next_label()
+        try_normal_label = self.next_label()
+        try_done_label = self.next_label()
+        scope.done_label = try_done_label
+        self.try_end_labels.append(try_exc_label)
+        self.emit(
+            MoltOp(
+                kind="TRY_START",
+                args=[try_exc_label],
+                result=MoltValue("none"),
+            )
+        )
+        self._visit_block(node.body)
+        body_terminated = self.block_terminated
+        self.block_terminated = False
+        if not body_terminated:
+            self.emit(
+                MoltOp(
+                    kind="TRY_END",
+                    args=[try_exc_label],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(kind="JUMP", args=[try_normal_label], result=MoltValue("none"))
+            )
+        self.emit(
+            MoltOp(
+                kind="LABEL",
+                args=[try_exc_label],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(
+            MoltOp(
+                kind="TRY_END",
+                args=[try_exc_label],
+                result=MoltValue("none"),
+            )
+        )
+        self.try_end_labels.pop()
+        prior_suppress = self.try_suppress_depth
+        self.try_suppress_depth = len(self.try_end_labels)
+        self.try_handler_scopes.append(scope)
+
+        exc_val = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
+        ctx_arg = self._ctx_mark_arg(scope)
+        self.emit(
+            MoltOp(
+                kind="CONTEXT_UNWIND_TO",
+                args=[ctx_arg, exc_val],
+                result=MoltValue("none"),
+            )
+        )
+
+        def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
+            if not handlers:
+                self.emit(
+                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
+                )
+                return
+            handler = handlers[0]
+            match_val = self._emit_exception_match(handler, exc_val)
+            self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
+            exc_slot_offset = None
+            if handler.name:
+                if self.current_func_name == "molt_main":
+                    self.module_global_mutations.add(handler.name)
+                self._store_local_value(handler.name, exc_val)
+            exc_entry = ActiveException(value=exc_val, slot=exc_slot_offset)
+            self.active_exceptions.append(exc_entry)
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[exc_val],
+                    result=MoltValue("none"),
+                )
+            )
+            self._emit_guarded_body(handler.body, exc_entry)
+            cleared_ctx = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_ctx))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[cleared_ctx],
+                    result=MoltValue("none"),
+                )
+            )
+            if handler.name:
+                self._emit_delete_name(handler.name, allow_missing=True)
+            self.active_exceptions.pop()
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            if len(handlers) > 1:
+                emit_handlers(handlers[1:])
+            else:
+                self.emit(
+                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
+                )
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+
+        emit_handlers(node.handlers)
+        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
+
+        self.emit(
+            MoltOp(
+                kind="LABEL",
+                args=[try_normal_label],
+                result=MoltValue("none"),
+            )
+        )
+        if node.orelse:
+            self._emit_guarded_body(node.orelse, None)
+        self.emit(
+            MoltOp(
+                kind="LABEL",
+                args=[try_done_label],
+                result=MoltValue("none"),
+            )
+        )
+        self.try_handler_scopes.pop()
+        self.try_suppress_depth = prior_suppress
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+        self._emit_raise_if_pending(emit_exit=True)
+        self.try_scopes.pop()
+        self.unbound_check_names = unbound_snapshot_try
+        self.control_flow_depth -= 1
+        self.block_terminated = prior_terminated
+
     def visit_Try(self, node: ast.Try) -> None:
         if not node.handlers and not node.finalbody:
             self._bridge_fallback(
@@ -27759,18 +27955,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         self.try_scopes.append(scope)
 
+        if node.handlers and not node.finalbody and not self.is_async():
+            self._emit_sync_try_except_split(
+                node,
+                scope,
+                unbound_snapshot_try,
+                prior_terminated,
+            )
+            return None
+
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
         try_join_label = self.next_label()
         try_done_label = self.next_label()
         scope.done_label = try_done_label
         self.try_end_labels.append(try_exc_label)
-        self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_START",
+                args=[try_exc_label],
+                result=MoltValue("none"),
+            )
+        )
         self._visit_block(node.body)
         body_terminated = self.block_terminated
         self.block_terminated = False
         if not body_terminated:
-            self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
+            self.emit(
+                MoltOp(
+                    kind="TRY_END",
+                    args=[try_exc_label],
+                    result=MoltValue("none"),
+                )
+            )
             self.emit(
                 MoltOp(kind="JUMP", args=[try_join_label], result=MoltValue("none"))
             )
@@ -27781,7 +27998,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
-        self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_END",
+                args=[try_exc_label],
+                result=MoltValue("none"),
+            )
+        )
         self.try_end_labels.pop()
         prior_suppress = self.try_suppress_depth
         self.try_suppress_depth = len(self.try_end_labels)
@@ -28103,7 +28326,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         try_done_label = self.next_label()
         scope.done_label = try_done_label
         self.try_end_labels.append(try_exc_label)
-        self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_START",
+                args=[try_exc_label],
+                result=MoltValue("none"),
+            )
+        )
         self._visit_block(node.body)
         self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
         self.emit(
@@ -28113,7 +28342,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
-        self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_END",
+                args=[try_exc_label],
+                result=MoltValue("none"),
+            )
+        )
         self.try_end_labels.pop()
         prior_suppress = self.try_suppress_depth
         self.try_suppress_depth = len(self.try_end_labels)
@@ -33002,6 +33237,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "EXCEPTION_MATCH_BUILTIN":
+                metadata = op.metadata or {}
+                json_ops.append(
+                    {
+                        "kind": "exception_match_builtin",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                        "s_value": metadata.get("exception_name", "Exception"),
+                        "value": int(metadata.get("exception_tag", 2)),
+                    }
+                )
             elif op.kind == "ISSUBCLASS":
                 json_ops.append(
                     {
@@ -33243,6 +33489,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "EXCEPTION_NEW_BUILTIN":
+                metadata = op.metadata or {}
+                json_ops.append(
+                    {
+                        "kind": "exception_new_builtin",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                        "s_value": metadata.get("exception_name", "Exception"),
+                        "value": int(metadata.get("exception_tag", 2)),
+                    }
+                )
             elif op.kind == "EXCEPTION_NEW_FROM_CLASS":
                 json_ops.append(
                     {
@@ -33326,18 +33583,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "TRY_START":
-                json_ops.append({"kind": "try_start"})
+                payload: dict[str, Any] = {"kind": "try_start"}
+                if op.args:
+                    payload["value"] = control_value(op)
+                json_ops.append(payload)
             elif op.kind == "TRY_END":
-                json_ops.append({"kind": "try_end"})
+                payload = {"kind": "try_end"}
+                if op.args:
+                    payload["value"] = control_value(op)
+                json_ops.append(payload)
             elif op.kind == "LABEL":
                 json_ops.append({"kind": "label", "value": control_value(op)})
             elif op.kind == "STATE_LABEL":
                 json_ops.append({"kind": "state_label", "value": control_value(op)})
             elif op.kind == "JUMP":
-                if json_ops and json_ops[-1].get("kind") == "raise":
-                    json_ops.append(
-                        {"kind": "check_exception", "value": control_value(op)}
-                    )
                 json_ops.append({"kind": "jump", "value": control_value(op)})
             elif op.kind == "PHI":
                 json_ops.append(
@@ -36866,6 +37125,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "GUARDED_GETATTR",
             "MODULE_GET_ATTR",
             "ISINSTANCE",
+            "EXCEPTION_MATCH_BUILTIN",
             "CONTAINS",
         }:
             return "reads_heap"
@@ -38168,6 +38428,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "GE",
                     "STRING_EQ",
                     "ISINSTANCE",
+                    "EXCEPTION_MATCH_BUILTIN",
                 }:
                     type_tag = BUILTIN_TYPE_TAGS["bool"]
                 elif canonical_op.kind in {"LEN", "TYPE_OF"}:
@@ -38673,6 +38934,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "IS",
             "TYPE_OF",
             "LEN",
+            "EXCEPTION_NEW_BUILTIN",
+            "EXCEPTION_MATCH_BUILTIN",
             "STORE_VAR",
             "LOAD_VAR",
         }
@@ -39858,7 +40121,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             while changed:
                 changed = False
                 for idx, op in enumerate(ops):
-                    if idx in remove_indices or op.kind not in removable_guard_producer_kinds:
+                    if (
+                        idx in remove_indices
+                        or op.kind not in removable_guard_producer_kinds
+                    ):
                         continue
                     if op.result.name == "none":
                         continue
@@ -42175,7 +42441,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 + final_fused_dict_guard_prunes
             )
             func_stats["fused_dict_guard_prunes"] += final_fused_dict_guard_prunes
-            final_predefined = self._infer_predefined_value_names(final_guard_prune_input)
+            final_predefined = self._infer_predefined_value_names(
+                final_guard_prune_input
+            )
             final_failures = self._verify_definite_assignment_in_ops(
                 rewritten_ops, predefined_value_names=final_predefined
             )
@@ -42322,24 +42590,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             out.append(op)
         if pending_check is not None:
             out.append(pending_check)
-        repaired: list[MoltOp] = []
-        for idx, op in enumerate(out):
-            repaired.append(op)
-            if op.kind not in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
-                continue
-            if idx + 1 >= len(out):
-                continue
-            next_op = out[idx + 1]
-            if next_op.kind != "JUMP" or not next_op.args:
-                continue
-            repaired.append(
-                MoltOp(
-                    kind="CHECK_EXCEPTION",
-                    args=[next_op.args[0]],
-                    result=MoltValue("none"),
-                )
-            )
-        return repaired
+        return out
 
     def _finalize_code_ids(self) -> None:
         for data in self.funcs_map.values():
@@ -42754,7 +43005,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 continue
 
             # --- Exception creation: args escape ---
-            if kind == "exception_new":
+            if kind in {"exception_new", "exception_new_builtin"}:
                 args = _get_op_args(op)
                 _mark_escaped(args)
                 continue

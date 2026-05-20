@@ -122,6 +122,78 @@ def _ops_have_runtime_intrinsic_lookup_call(
     return False
 
 
+def test_builtin_exception_constructor_uses_canonical_tagged_lane() -> None:
+    ir = compile_to_tir("def f(i):\n    return ValueError(i)\n")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    builtin_ops = [op for op in func_ops if op.get("kind") == "exception_new_builtin"]
+
+    assert builtin_ops
+    assert builtin_ops[0]["s_value"] == "ValueError"
+    assert builtin_ops[0]["value"] == 5
+    assert not any(op.get("kind") == "exception_new" for op in func_ops)
+
+
+def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
+    source = (
+        "def f(i):\n"
+        "    try:\n"
+        "        if i:\n"
+        "            raise ValueError(i)\n"
+        "    except ValueError as e:\n"
+        "        return int(str(e))\n"
+        "    else:\n"
+        "        return 0\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    try_start = next(op for op in func_ops if op.get("kind") == "try_start")
+    handler_label = try_start["value"]
+    assert isinstance(handler_label, int)
+    assert any(
+        op.get("kind") == "try_end" and op.get("value") == handler_label
+        for op in func_ops
+    )
+
+    raise_idx = next(i for i, op in enumerate(func_ops) if op.get("kind") == "raise")
+    next_control = next(
+        op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line"
+    )
+    assert next_control == {"kind": "jump", "value": handler_label}
+
+    handler_idx = next(
+        i
+        for i, op in enumerate(func_ops)
+        if op.get("kind") == "label" and op.get("value") == handler_label
+    )
+    exception_last_idx = next(
+        i
+        for i, op in enumerate(func_ops[handler_idx + 1 :], start=handler_idx + 1)
+        if op.get("kind") == "exception_last"
+    )
+    normal_label = next(
+        op["value"]
+        for op in func_ops
+        if op.get("kind") == "jump"
+        and isinstance(op.get("value"), int)
+        and op.get("value") != handler_label
+    )
+    normal_idx = next(
+        i
+        for i, op in enumerate(func_ops)
+        if op.get("kind") == "label" and op.get("value") == normal_label
+    )
+    assert handler_idx < exception_last_idx < normal_idx
+    match_ops = [op for op in func_ops if op.get("kind") == "exception_match_builtin"]
+    assert match_ops
+    assert match_ops[0]["s_value"] == "ValueError"
+    assert match_ops[0]["value"] == 5
+    assert not any(op.get("kind") == "exception_class" for op in func_ops)
+
+
 def test_zip_lowering_uses_call_bind() -> None:
     source = "print(list(zip([1, 2], [3, 4])))\n"
     assert _first_builtin_call_kind(source, "molt_zip_builtin") == "call_bind"
@@ -519,7 +591,9 @@ def test_imported_counter_list_constructor_uses_intrinsic_handle_path() -> None:
         )
     )
     main_ops = next(
-        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
     )
 
     assert any(
@@ -549,7 +623,9 @@ def test_module_counter_list_constructor_uses_intrinsic_handle_path() -> None:
         )
     )
     main_ops = next(
-        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
     )
 
     assert any(
@@ -573,7 +649,9 @@ def test_counter_string_constructor_keeps_general_constructor_path() -> None:
     )
     gen.visit(ast.parse('from collections import Counter\nc = Counter("aba")\n'))
     main_ops = next(
-        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
     )
 
     assert all(
@@ -602,12 +680,13 @@ def test_counter_index_and_len_use_intrinsic_handle_path() -> None:
         )
     )
     main_ops = next(
-        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
     )
 
     assert any(
-        op.get("kind") == "builtin_func"
-        and op.get("s_value") == "molt_counter_getitem"
+        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_counter_getitem"
         for op in main_ops
     )
     assert any(

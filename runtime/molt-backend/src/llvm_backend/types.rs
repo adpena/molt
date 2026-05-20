@@ -31,10 +31,12 @@ pub fn lower_type<'ctx>(ctx: &'ctx Context, ty: &TirType) -> BasicTypeEnum<'ctx>
         | TirType::Bytes
         | TirType::List(_)
         | TirType::Dict(_, _)
+        | TirType::Iterator(_)
         | TirType::Set(_)
         | TirType::Tuple(_)
         | TirType::Ptr(_)
-        | TirType::Func(_) => ctx.i64_type().into(),
+        | TirType::Func(_)
+        | TirType::UserClass(_) => ctx.i64_type().into(),
         // Box(inner) is still a NaN-boxed i64 at the machine level;
         // the inner type is only used for optimization decisions.
         TirType::Box(_) => ctx.i64_type().into(),

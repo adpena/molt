@@ -3087,12 +3087,10 @@ impl LuauBackend {
                             "local {idx_var}: number = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
                         ));
                     }
-                    self.emit_index_bounds_guard(
-                        &idx_var,
-                        &container,
-                        "string index out of range",
-                    );
-                    self.emit_line(&format!("local {out} = string.byte({container}, {idx_var})"));
+                    self.emit_index_bounds_guard(&idx_var, &container, "string index out of range");
+                    self.emit_line(&format!(
+                        "local {out} = string.byte({container}, {idx_var})"
+                    ));
                 }
             }
             "chr" => {
@@ -3130,6 +3128,19 @@ impl LuauBackend {
                     ));
                 } else {
                     self.emit_line(&format!("local {out} = true -- [stub: {}]", op.kind));
+                }
+            }
+            "exception_match_builtin" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(exc) = args.first() {
+                    let class_name = op.s_value.as_deref().unwrap_or("Exception");
+                    self.emit_line(&format!(
+                        "local {out} = molt_exception_match({}, \"{class_name}\")",
+                        sanitize_ident(exc)
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = false"));
                 }
             }
 
@@ -3587,7 +3598,7 @@ impl LuauBackend {
                     self.emit_line(&format!("__err_{n} = nil"));
                 }
             }
-            "exception_new" | "exception_new_from_class" => {
+            "exception_new" | "exception_new_builtin" | "exception_new_from_class" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let class_name = op.s_value.as_deref().unwrap_or("Exception");
@@ -5349,6 +5360,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                                 | "nop"
                                 | "line"
                                 | "exception_new"
+                                | "exception_new_builtin"
                                 | "exception_stack_set_depth"
                                 | "exception_stack_exit"
                                 | "tuple_new"
