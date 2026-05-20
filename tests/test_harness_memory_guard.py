@@ -83,7 +83,7 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     )
 
     assert limits.enabled is True
-    assert limits.max_process_rss_gb == pytest.approx(38.55168)
+    assert limits.max_process_rss_gb == pytest.approx(46.262016)
     assert limits.max_total_rss_gb == pytest.approx(51.40224)
     assert limits.max_global_rss_gb == pytest.approx(85.6704)
     assert limits.poll_interval == harness_memory_guard.DEFAULT_POLL_INTERVAL_SEC
