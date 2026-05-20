@@ -97,6 +97,140 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert bench_step["cmd"][bench_step["cmd"].index("--warmup") + 1] == "1"
 
 
+def test_cli_run_command_uses_memory_guard_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+
+    class FakeMemoryGuard:
+        @staticmethod
+        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
+            calls.append({"method": "limits", "prefix": prefix, "env": env})
+            return object()
+
+        @staticmethod
+        def guarded_completed_process(cmd: list[str], **kwargs: object):
+            calls.append({"method": "run", "cmd": cmd, **kwargs})
+            return subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
+
+    def fail_raw_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("guarded CLI command used raw subprocess.run")
+
+    monkeypatch.setattr(
+        cli,
+        "_load_cli_harness_memory_guard",
+        lambda cwd: FakeMemoryGuard,
+        raising=True,
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
+
+    rc = cli._run_command(
+        ["python3", "-c", "print('ok')"],
+        cwd=ROOT,
+        env={"PATH": "/usr/bin"},
+        memory_guard_prefix="MOLT_BENCH",
+    )
+
+    assert rc == 0
+    assert calls[0] == {
+        "method": "limits",
+        "prefix": "MOLT_BENCH",
+        "env": {"PATH": "/usr/bin"},
+    }
+    assert calls[1]["method"] == "run"
+    assert calls[1]["prefix"] == "MOLT_BENCH"
+    assert calls[1]["cwd"] == ROOT
+    assert calls[1]["capture_output"] is False
+
+
+def test_cli_bench_outer_process_uses_bench_memory_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+        calls.append({"cmd": cmd, **kwargs})
+        return 0
+
+    monkeypatch.setattr(cli, "_run_command", fake_run_command, raising=True)
+
+    assert cli.bench(wasm=False, bench_args=["--smoke"]) == 0
+
+    assert calls
+    assert calls[0]["memory_guard_prefix"] == "MOLT_BENCH"
+    assert "tools/bench.py" in calls[0]["cmd"]
+
+
+def test_cli_validate_uses_family_memory_guard_prefixes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import cli
+
+    prefixes: list[str] = []
+    steps = [
+        cli._ValidationStep(
+            "conformance-step",
+            ["python3", "-c", "pass"],
+            ROOT,
+            "conformance",
+            ("native",),
+            ("dev",),
+            "smoke",
+        ),
+        cli._ValidationStep(
+            "bench-step",
+            ["python3", "-c", "pass"],
+            ROOT,
+            "benchmark",
+            ("native",),
+            ("dev",),
+            "smoke",
+        ),
+        cli._ValidationStep(
+            "correctness-step",
+            ["python3", "-c", "pass"],
+            ROOT,
+            "correctness",
+            ("native",),
+            ("dev",),
+            "smoke",
+        ),
+    ]
+
+    class FakeMemoryGuard:
+        @staticmethod
+        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
+            del env
+            return {"prefix": prefix}
+
+        @staticmethod
+        def guarded_completed_process(cmd: list[str], **kwargs: object):
+            prefixes.append(str(kwargs["prefix"]))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_find_molt_root", lambda *args: ROOT, raising=True)
+    monkeypatch.setattr(
+        cli,
+        "_planned_validate_steps",
+        lambda root, suite, backend, profile: steps,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_cli_harness_memory_guard",
+        lambda cwd: FakeMemoryGuard,
+        raising=True,
+    )
+
+    assert cli.validate(suite="smoke", json_output=True) == 0
+
+    assert prefixes == ["MOLT_CONFORMANCE", "MOLT_BENCH", "MOLT_TEST_SUITE"]
+
+
 def test_tools_dev_validate_delegates_to_canonical_cli() -> None:
     res = _run_dev(["validate", "--check"])
     assert res.returncode == 0, res.stderr
