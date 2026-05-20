@@ -7533,6 +7533,45 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "ord" => {
+                if op.operands.len() != 1 {
+                    return false;
+                }
+                let ord_fn = self.ensure_runtime_i64_fn("molt_ord", 1);
+                let val_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(ord_fn, &[val_bits.into()], "ord")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "ord_at" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let ord_fn = self.ensure_runtime_i64_fn("molt_ord_at", 2);
+                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let index_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(ord_fn, &[obj_bits.into(), index_bits.into()], "ord_at")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "string_join" => {
                 if op.operands.len() != 2 {
                     return false;

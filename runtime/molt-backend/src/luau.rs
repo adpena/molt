@@ -3070,6 +3070,31 @@ impl LuauBackend {
                     ));
                 }
             }
+            "ord_at" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let container = sanitize_ident(&args[0]);
+                    let key = sanitize_ident(&args[1]);
+                    let key_is_scalar_int = self.scalar_plan.name_is_integer_family(&args[1]);
+                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
+                        || (key_is_scalar_int && op.value.is_some_and(|v| v >= 0));
+                    let idx_var = format!("__idx_{out}");
+                    if key_known_nonneg {
+                        self.emit_line(&format!("local {idx_var}: number = {key} + 1"));
+                    } else {
+                        self.emit_line(&format!(
+                            "local {idx_var}: number = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
+                        ));
+                    }
+                    self.emit_index_bounds_guard(
+                        &idx_var,
+                        &container,
+                        "string index out of range",
+                    );
+                    self.emit_line(&format!("local {out} = string.byte({container}, {idx_var})"));
+                }
+            }
             "chr" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
