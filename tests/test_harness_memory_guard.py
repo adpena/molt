@@ -32,6 +32,16 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     assert limits.child_rlimit_kb == 6 * 1024 * 1024
 
 
+def test_enabled_from_env_matches_family_override_semantics(monkeypatch) -> None:
+    monkeypatch.setenv("MOLT_MEMORY_GUARD", "0")
+    monkeypatch.delenv("MOLT_BENCH_MEMORY_GUARD", raising=False)
+
+    assert harness_memory_guard.enabled_from_env("MOLT_BENCH") is False
+
+    monkeypatch.setenv("MOLT_BENCH_MEMORY_GUARD", "1")
+    assert harness_memory_guard.enabled_from_env("MOLT_BENCH") is True
+
+
 def test_timeout_from_env_prefers_harness_prefix(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_TEST_PROCESS_TIMEOUT_SEC", "99")
     monkeypatch.setenv("MOLT_CLI_TEST_TIMEOUT_SEC", "12.5")

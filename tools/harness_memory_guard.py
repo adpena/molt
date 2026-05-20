@@ -151,6 +151,19 @@ def _env_float(
     return default
 
 
+def enabled_from_env(
+    prefix: str,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    source = _effective_env(env)
+    normalized = _normalize_prefix(prefix)
+    return _env_bool(
+        source,
+        [f"{normalized}_MEMORY_GUARD", "MOLT_MEMORY_GUARD"],
+        default=True,
+    )
+
+
 def limits_from_env(
     prefix: str,
     env: Mapping[str, str] | None = None,
@@ -158,11 +171,7 @@ def limits_from_env(
     source = _effective_env(env)
     normalized = _normalize_prefix(prefix)
     adaptive_budget = memory_guard.adaptive_memory_budget(normalized, source)
-    enabled = _env_bool(
-        source,
-        [f"{normalized}_MEMORY_GUARD", "MOLT_MEMORY_GUARD"],
-        default=True,
-    )
+    enabled = enabled_from_env(normalized, source)
     process_gb = _env_float(
         source,
         [
