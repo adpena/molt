@@ -3,6 +3,11 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use crate::PyToken;
 use crate::*;
 
+#[inline]
+fn raw_payload_total_or_null(payload_size: usize) -> Option<usize> {
+    crate::object::checked_object_total_size(payload_size)
+}
+
 pub extern "C" fn molt_header_size() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
 }
@@ -11,7 +16,9 @@ pub extern "C" fn molt_header_size() -> u64 {
 pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let size = usize_from_bits(size_bits);
-        let total_size = size + std::mem::size_of::<MoltHeader>();
+        let Some(total_size) = raw_payload_total_or_null(size) else {
+            return MoltObject::none().bits();
+        };
         let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
@@ -91,7 +98,10 @@ pub extern "C" fn molt_reuse_alloc(token: u64, size_bits: u64) -> u64 {
                 let header = crate::object::header_from_obj_ptr(ptr);
                 let existing_total = crate::object::total_size_from_header(&*header, ptr);
                 let requested_payload = usize_from_bits(size_bits);
-                let requested_total = requested_payload + std::mem::size_of::<MoltHeader>();
+                let Some(requested_total) = raw_payload_total_or_null(requested_payload) else {
+                    crate::object::dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return MoltObject::none().bits();
+                };
                 // Only reuse if the existing allocation is large enough for the
                 // requested payload. If the new allocation is larger, we must
                 // fall through to molt_alloc to get a correctly-sized block.
@@ -199,7 +209,9 @@ pub extern "C" fn molt_alloc_class(size_bits: u64, class_bits: u64) -> u64 {
             }
         }
         let size = usize_from_bits(size_bits);
-        let total_size = size + std::mem::size_of::<MoltHeader>();
+        let Some(total_size) = raw_payload_total_or_null(size) else {
+            return MoltObject::none().bits();
+        };
         let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
@@ -232,7 +244,9 @@ pub extern "C" fn molt_alloc_class_trusted(size_bits: u64, class_bits: u64) -> u
             }
         }
         let size = usize_from_bits(size_bits);
-        let total_size = size + std::mem::size_of::<MoltHeader>();
+        let Some(total_size) = raw_payload_total_or_null(size) else {
+            return MoltObject::none().bits();
+        };
         let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
@@ -265,7 +279,9 @@ pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u6
             }
         }
         let size = usize_from_bits(size_bits);
-        let total_size = size + std::mem::size_of::<MoltHeader>();
+        let Some(total_size) = raw_payload_total_or_null(size) else {
+            return MoltObject::none().bits();
+        };
         let obj_ptr = alloc_object_zeroed(_py, total_size, TYPE_ID_OBJECT);
         if obj_ptr.is_null() {
             return MoltObject::none().bits();

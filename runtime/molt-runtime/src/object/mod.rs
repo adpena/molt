@@ -1,3 +1,4 @@
+use std::alloc::Layout;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -743,14 +744,45 @@ pub(crate) fn total_size_from_header(header: &MoltHeader, _data_ptr: *mut u8) ->
     total_size_from_header_fields(header.size_class, header.cold_idx)
 }
 
+#[derive(Clone, Copy)]
+struct ObjectAllocationPlan {
+    alloc_size: usize,
+    layout: Layout,
+    size_class: u16,
+}
+
 #[inline]
-fn allocated_size_for(total_size: usize) -> usize {
-    let sc = size_class_for(total_size) as usize;
-    if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
-        SIZE_CLASS_TABLE[sc]
+pub(crate) fn checked_object_total_size(payload_size: usize) -> Option<usize> {
+    payload_size.checked_add(std::mem::size_of::<MoltHeader>())
+}
+
+#[inline]
+fn object_allocation_plan(total_size: usize) -> Option<ObjectAllocationPlan> {
+    if total_size < std::mem::size_of::<MoltHeader>() {
+        return None;
+    }
+    let size_class = size_class_for(total_size);
+    let alloc_size = if size_class != 0 {
+        SIZE_CLASS_TABLE.get(size_class as usize).copied()?
     } else {
         total_size
-    }
+    };
+    let layout = Layout::from_size_align(alloc_size, 8).ok()?;
+    Some(ObjectAllocationPlan {
+        alloc_size,
+        layout,
+        size_class,
+    })
+}
+
+#[inline]
+fn reserve_object_allocation(plan: ObjectAllocationPlan) -> bool {
+    crate::resource::with_tracker(|t| t.on_allocate(plan.alloc_size)).is_ok()
+}
+
+#[inline]
+fn release_object_allocation_reservation(plan: ObjectAllocationPlan) {
+    crate::resource::with_tracker(|t| t.on_free(plan.alloc_size));
 }
 
 /// Get the poll_fn for an object. Returns 0 if no cold header exists.
@@ -1088,11 +1120,22 @@ pub(crate) fn pending_bits_i64() -> i64 {
 
 pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id: u32) -> *mut u8 {
     crate::gil_assert();
-    let alloc_size = allocated_size_for(total_size);
-    let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
+    let Some(plan) = object_allocation_plan(total_size) else {
+        if debug_oom() {
+            eprintln!(
+                "molt OOM alloc_object_zeroed type_id={} invalid total_size={}",
+                type_id, total_size
+            );
+        }
+        return std::ptr::null_mut();
+    };
+    if !reserve_object_allocation(plan) {
+        return std::ptr::null_mut();
+    }
     unsafe {
-        let ptr = std::alloc::alloc_zeroed(layout);
+        let ptr = std::alloc::alloc_zeroed(plan.layout);
         if ptr.is_null() {
+            release_object_allocation_reservation(plan);
             if debug_oom() {
                 eprintln!(
                     "molt OOM alloc_object_zeroed type_id={} total_size={}",
@@ -1101,22 +1144,16 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
             }
             return std::ptr::null_mut();
         }
-        // Enforce resource budget before committing the allocation.
-        if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(alloc_size)) {
-            std::alloc::dealloc(ptr, layout);
-            return std::ptr::null_mut();
-        }
         profile_hit(_py, &ALLOC_COUNT);
-        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, alloc_size as u64);
+        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, plan.alloc_size as u64);
         profile_alloc_type(_py, type_id);
-        profile_alloc_type_bytes(_py, type_id, alloc_size);
+        profile_alloc_type_bytes(_py, type_id, plan.alloc_size);
         let header = ptr as *mut MoltHeader;
-        let sc = size_class_for(total_size);
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         (*header).flags = 0;
-        (*header).size_class = sc;
-        (*header).cold_idx = if sc == 0 {
+        (*header).size_class = plan.size_class;
+        (*header).cold_idx = if plan.size_class == 0 {
             alloc_cold_header(MoltColdHeader {
                 poll_fn: 0,
                 state: 0,
@@ -1143,7 +1180,15 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         );
     }
     crate::gil_assert();
-    let alloc_size = allocated_size_for(total_size);
+    let Some(plan) = object_allocation_plan(total_size) else {
+        if debug_oom() {
+            eprintln!(
+                "molt OOM alloc_object type_id={} invalid total_size={}",
+                type_id, total_size
+            );
+        }
+        return std::ptr::null_mut();
+    };
     if debug_alloc_list_builder() && type_id == TYPE_ID_LIST_BUILDER {
         let expected = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
         eprintln!(
@@ -1151,9 +1196,12 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
             total_size, expected
         );
     }
-    let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
-    let header_ptr = unsafe { std::alloc::alloc(layout) };
+    if !reserve_object_allocation(plan) {
+        return std::ptr::null_mut();
+    }
+    let header_ptr = unsafe { std::alloc::alloc(plan.layout) };
     if header_ptr.is_null() {
+        release_object_allocation_reservation(plan);
         if debug_oom() {
             eprintln!(
                 "molt OOM alloc_object type_id={} total_size={}",
@@ -1162,30 +1210,23 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         }
         return std::ptr::null_mut();
     }
-    // Enforce resource budget before committing the allocation.
-    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(alloc_size)) {
-        // Budget exceeded — return the memory to the allocator.
-        unsafe { std::alloc::dealloc(header_ptr, layout) };
-        return std::ptr::null_mut();
-    }
     profile_hit(_py, &ALLOC_COUNT);
-    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, alloc_size as u64);
+    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, plan.alloc_size as u64);
     profile_alloc_type(_py, type_id);
-    profile_alloc_type_bytes(_py, type_id, alloc_size);
+    profile_alloc_type_bytes(_py, type_id, plan.alloc_size);
     unsafe {
         // Zero the entire allocation so data fields past the header
         // start as null pointers / zero values.  This prevents the
         // deallocation path from misinterpreting stale heap data as
         // valid inner pointers (Vec*, DataclassDesc*, etc.) when an
         // object type allocates more space than it initializes.
-        std::ptr::write_bytes(header_ptr, 0, alloc_size);
+        std::ptr::write_bytes(header_ptr, 0, plan.alloc_size);
         let header = header_ptr as *mut MoltHeader;
-        let sc = size_class_for(total_size);
         (*header).type_id = type_id;
         (*header).ref_count.store(1, AtomicOrdering::Relaxed);
         // flags, size_class, cold_idx are already 0 from write_bytes
-        (*header).size_class = sc;
-        if sc == 0 {
+        (*header).size_class = plan.size_class;
+        if plan.size_class == 0 {
             (*header).cold_idx = alloc_cold_header(MoltColdHeader {
                 poll_fn: 0,
                 state: 0,
@@ -2513,6 +2554,55 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
 
 #[cfg(test)]
 mod tests {
+    use crate::object::{TYPE_ID_OBJECT, alloc_object, dec_ref_bits};
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+    #[test]
+    fn object_allocator_rejects_impossible_layout_without_panicking() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = alloc_object(_py, usize::MAX, TYPE_ID_OBJECT);
+            assert!(
+                ptr.is_null(),
+                "impossible object layout must fail closed instead of panicking"
+            );
+        });
+    }
+
+    #[test]
+    fn denied_object_allocation_does_not_poison_tracker_state() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let small_total = std::mem::size_of::<super::MoltHeader>();
+            let small_plan =
+                super::object_allocation_plan(small_total).expect("valid header-sized object");
+            let large_total = small_plan.alloc_size + 1;
+            let large_plan =
+                super::object_allocation_plan(large_total).expect("valid larger object");
+            assert!(large_plan.alloc_size > small_plan.alloc_size);
+
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(small_plan.alloc_size),
+                ..Default::default()
+            })));
+            struct TrackerReset;
+            impl Drop for TrackerReset {
+                fn drop(&mut self) {
+                    set_tracker(Box::new(UnlimitedTracker));
+                }
+            }
+            let _reset = TrackerReset;
+
+            let denied = alloc_object(_py, large_total, TYPE_ID_OBJECT);
+            assert!(denied.is_null());
+
+            let allowed = alloc_object(_py, small_total, TYPE_ID_OBJECT);
+            assert!(
+                !allowed.is_null(),
+                "denied allocation must not leave a phantom resource charge"
+            );
+            dec_ref_bits(_py, crate::MoltObject::from_ptr(allowed).bits());
+        });
+    }
+
     #[test]
     fn cold_header_slab_rejects_out_of_bounds_free() {
         use super::{ColdHeaderSlab, MoltColdHeader};

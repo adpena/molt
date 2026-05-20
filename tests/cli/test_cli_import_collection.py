@@ -8163,6 +8163,8 @@ def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
         "molt_callargs_push_pos",
         "molt_dict_getitem_borrowed",
         "molt_dict_set",
+        "molt_resource_on_allocate",
+        "molt_resource_on_free",
         "molt_tuple_getitem_borrowed",
     )
     payload.append(len(exports))
@@ -8188,6 +8190,43 @@ def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
     }
     assert cli._runtime_wasm_exports_satisfy(wasm, required)
     assert cli._runtime_wasm_missing_exports(wasm, required) == set()
+
+
+def test_runtime_wasm_resource_exports_are_not_satisfied_by_browser_fallbacks(
+    tmp_path: Path,
+) -> None:
+    def _encode_varuint(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            if value:
+                out.append(byte | 0x80)
+            else:
+                out.append(byte)
+                return bytes(out)
+
+    wasm = tmp_path / "runtime_missing_resource_exports.wasm"
+    payload = bytearray()
+    exports = (
+        "molt_call_bind_ic",
+        "molt_callargs_new",
+        "molt_callargs_push_pos",
+    )
+    payload.append(len(exports))
+    for index, name in enumerate(exports):
+        encoded = name.encode("utf-8")
+        payload.append(len(encoded))
+        payload.extend(encoded)
+        payload.append(0x00)
+        payload.append(index)
+    wasm.write_bytes(
+        b"\0asm\x01\0\0\0" + b"\x07" + _encode_varuint(len(payload)) + payload
+    )
+
+    required = {"molt_resource_on_allocate", "molt_resource_on_free"}
+    assert not cli._runtime_wasm_exports_satisfy(wasm, required)
+    assert cli._runtime_wasm_missing_exports(wasm, required) == required
 
 
 def test_run_subprocess_captured_to_tempfiles_emits_keepalive(

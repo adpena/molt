@@ -3176,7 +3176,7 @@ pub(crate) fn traceback_exception_chain_payload_bits(
 ///        MOLT_RESOURCE_MAX_ALLOCATIONS, MOLT_RESOURCE_MAX_RECURSION_DEPTH
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init_resources() {
-    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
+    use crate::resource::{ResourceLimits, install_global_limited_tracker};
     use std::time::Duration;
 
     let max_memory = std::env::var("MOLT_RESOURCE_MAX_MEMORY")
@@ -3205,7 +3205,7 @@ pub extern "C" fn molt_runtime_init_resources() {
             max_recursion_depth,
             max_operation_result_bytes: None,
         };
-        set_tracker(Box::new(LimitedTracker::new(&limits)));
+        install_global_limited_tracker(limits);
     }
 }
 

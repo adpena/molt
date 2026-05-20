@@ -248,7 +248,13 @@ pub extern "C" fn molt_scratch_alloc(size: u64) -> u64 {
     let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
         return 0;
     };
+    if crate::resource::with_tracker(|tracker| tracker.on_allocate(alloc_size)).is_err() {
+        return 0;
+    }
     let ptr = unsafe { alloc(layout) };
+    if ptr.is_null() {
+        crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
+    }
     ptr as usize as u64
 }
 
@@ -264,7 +270,46 @@ pub extern "C" fn molt_scratch_free(ptr: u64, size: u64) {
     let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
         return;
     };
+    crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
     unsafe {
         dealloc(ptr as usize as *mut u8, layout);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+    struct TrackerReset;
+
+    impl Drop for TrackerReset {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
+
+    #[test]
+    fn scratch_alloc_uses_resource_tracker_without_phantom_charge() {
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(8),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+
+        let denied = super::molt_scratch_alloc(16);
+        assert_eq!(denied, 0);
+
+        let allowed = super::molt_scratch_alloc(8);
+        assert_ne!(
+            allowed, 0,
+            "denied scratch allocation must not consume the later valid budget"
+        );
+        super::molt_scratch_free(allowed, 8);
+    }
+
+    #[test]
+    fn scratch_alloc_rejects_impossible_layout_without_panicking() {
+        let ptr = super::molt_scratch_alloc(u64::MAX);
+        assert_eq!(ptr, 0);
     }
 }
