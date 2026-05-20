@@ -518,7 +518,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_TRUSTED=1` to force trusted mode for diff runs (defaults to trusted unless `MOLT_DEV_TRUSTED=0`).
   - Default to a shorter timeout unless a test is known to be slow: `MOLT_DIFF_TIMEOUT=180` (bump per-test only when needed).
   - Optional: set `MOLT_DIFF_RLIMIT_GB=<n>` or `MOLT_DIFF_RLIMIT_MB=<n>` to override the adaptive per-process OS rlimit; set `MOLT_DIFF_RLIMIT_GB=0` only for an explicit local investigation.
-  - Optional: set `MOLT_DIFF_MEM_PER_JOB_GB=<n>` to tune auto-parallelism by memory budget (default: adaptive process-tree guard budget).
+  - Optional: set `MOLT_DIFF_MEM_PER_JOB_GB=<n>` to tune auto-parallelism by scheduler budget (default: adaptive cumulative budget divided across CPU capacity, capped below the process-tree kill ceiling).
   - Optional: set `MOLT_DIFF_MAX_JOBS=<n>` to hard-cap the auto-selected job count.
   - Optional: set `MOLT_DIFF_ORDER=auto|name|size-asc|size-desc` to control scheduling order (default: auto).
   - Optional: set `MOLT_DIFF_FAILURES=<path>` or pass `--failures-output <path>` to capture a failure queue file.

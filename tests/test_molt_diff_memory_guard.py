@@ -209,6 +209,81 @@ def test_diff_memory_guard_defaults_are_adaptive(monkeypatch) -> None:
     assert config.child_rlimit_gb == pytest.approx(102.80448)
 
 
+def test_diff_memory_guard_refresh_accounts_active_tree_rss(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "46")
+    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TREE_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
+
+    config = module._diff_memory_guard_config(accounted_rss_kb=50 * 1024 * 1024)
+
+    assert config.global_gb == pytest.approx(85.6704)
+    assert config.max_tree_gb == pytest.approx(51.40224)
+    assert config.max_process_gb == pytest.approx(46.262016)
+    assert config.child_rlimit_gb == pytest.approx(102.80448)
+
+
+def test_global_monitor_refreshes_limits_from_active_tree_rss(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "46")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_ACTIVE_DIR", str(tmp_path / "active"))
+    monkeypatch.setenv(
+        "MOLT_DIFF_MEMORY_GUARD_TRIP_FILE", str(tmp_path / "tripped.json")
+    )
+    active_dir = tmp_path / "active"
+    active_dir.mkdir()
+    (active_dir / "worker-200.json").write_text(
+        '{"pid": 200, "worker_pid": 100, "command": ["build"]}\n',
+        encoding="utf-8",
+    )
+    gb = 1024 * 1024
+    samples = {
+        200: module.memory_guard.ProcessSample(200, 1, 1 * gb, "root", pgid=200),
+        201: module.memory_guard.ProcessSample(201, 200, 25 * gb, "rustc-a", pgid=200),
+        202: module.memory_guard.ProcessSample(202, 200, 24 * gb, "rustc-b", pgid=200),
+    }
+    killed: list[int] = []
+    sample_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        module, "_terminate_pid_tree", lambda pid, grace=1.0: killed.append(pid)
+    )
+    monkeypatch.setattr(
+        module, "_record_memory_guard_sample", lambda payload: sample_payloads.append(payload)
+    )
+
+    module._DiffGlobalMemoryMonitor(module._diff_memory_guard_config())._sample_once()
+
+    assert killed == []
+    assert not (tmp_path / "tripped.json").exists()
+    assert sample_payloads
+    limits = sample_payloads[-1]["limits"]
+    assert isinstance(limits, dict)
+    assert limits["global_gb"] == pytest.approx(85.6704)
+
+
+def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "96")
+    monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 12)
+
+    config = module._diff_memory_guard_config()
+
+    assert module._memory_guard_scheduler_per_job_gb(config) == pytest.approx(7.1392)
+    assert module._memory_guard_max_jobs(config) == 12
+    assert module._default_jobs() == 12
+
+
 def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
