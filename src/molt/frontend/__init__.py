@@ -2322,6 +2322,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "DEC_REF",
             "BORROW",
             "RELEASE",
+            "EXCEPTION_NEW_BUILTIN_EMPTY",
+            "EXCEPTION_NEW_BUILTIN_ONE",
             "EXCEPTION_NEW_BUILTIN",
             "MISSING",
             "TUPLE_NEW",
@@ -5356,56 +5358,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         module_val = self.module_obj
         if self.current_func_name != "molt_main" or module_val is None:
             module_val = self._get_or_emit_module_cache(self.module_name)
-        baseline_exc = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=baseline_exc))
-        baseline_none = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=baseline_none))
-        baseline_is_none = MoltValue(self.next_var(), type_hint="bool")
         self.emit(
             MoltOp(
-                kind="IS", args=[baseline_exc, baseline_none], result=baseline_is_none
-            )
-        )
-        self.emit(
-            MoltOp(
-                kind="MODULE_DEL_GLOBAL",
+                kind="MODULE_DEL_GLOBAL_IF_PRESENT",
                 args=[module_val, name_val],
                 result=MoltValue("none"),
             )
         )
-        with self._suppress_check_exception():
-            exc_val = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            is_none = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-            self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            kind_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="EXCEPTION_KIND", args=[exc_val], result=kind_val))
-            name_err = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=["NameError"], result=name_err))
-            is_name = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="EQ", args=[kind_val, name_err], result=is_name))
-            self.emit(MoltOp(kind="IF", args=[is_name], result=MoltValue("none")))
-            self.emit(
-                MoltOp(kind="IF", args=[baseline_is_none], result=MoltValue("none"))
-            )
-            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(
-                MoltOp(
-                    kind="EXCEPTION_SET_LAST",
-                    args=[baseline_exc],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_function_defaults(
         self,
@@ -6635,10 +6594,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_exception_new_from_args(
         self, kind: str, args: list[MoltValue]
     ) -> MoltValue:
-        args_val = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=args, result=args_val))
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         if kind_tag := BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS.get(kind):
+            if not args:
+                self.emit(
+                    MoltOp(
+                        kind="EXCEPTION_NEW_BUILTIN_EMPTY",
+                        args=[],
+                        result=exc_val,
+                        metadata={"exception_name": kind, "exception_tag": kind_tag},
+                    )
+                )
+                return exc_val
+            if len(args) == 1:
+                self.emit(
+                    MoltOp(
+                        kind="EXCEPTION_NEW_BUILTIN_ONE",
+                        args=[args[0]],
+                        result=exc_val,
+                        metadata={"exception_name": kind, "exception_tag": kind_tag},
+                    )
+                )
+                return exc_val
+            args_val = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=args, result=args_val))
             self.emit(
                 MoltOp(
                     kind="EXCEPTION_NEW_BUILTIN",
@@ -6648,6 +6627,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             return exc_val
+        args_val = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=args, result=args_val))
         kind_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[kind], result=kind_val))
         self.emit(
@@ -27616,37 +27597,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         remaining = body[1:]
         if not remaining:
             return
-        with self._suppress_check_exception():
-            exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            is_none = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="IS", args=[exc_after, none_val], result=is_none))
-            if baseline_exc is None:
-                pending = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
-                self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-            else:
-                baseline_val = self._active_exception_value(baseline_exc)
-                is_same = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="IS", args=[exc_after, baseline_val], result=is_same)
-                )
-                continue_guard = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="OR", args=[is_none, is_same], result=continue_guard)
-                )
-                self.emit(
-                    MoltOp(kind="IF", args=[continue_guard], result=MoltValue("none"))
-                )
-        if baseline_exc is None:
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self._emit_guarded_body(remaining, baseline_exc)
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            return
+        skip_label = self.next_label()
+        self.emit(
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                args=[skip_label],
+                result=MoltValue("none"),
+            )
+        )
         self._emit_guarded_body(remaining, baseline_exc)
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[skip_label], result=MoltValue("none")))
 
     def _emit_finalbody(
         self,
@@ -33438,6 +33398,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "MODULE_DEL_GLOBAL_IF_PRESENT":
+                json_ops.append(
+                    {
+                        "kind": "module_del_global_if_present",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "MODULE_SET_ATTR":
                 json_ops.append(
                     {
@@ -33551,6 +33519,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "exception_new_builtin",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                        "s_value": metadata.get("exception_name", "Exception"),
+                        "value": int(metadata.get("exception_tag", 2)),
+                    }
+                )
+            elif op.kind == "EXCEPTION_NEW_BUILTIN_EMPTY":
+                metadata = op.metadata or {}
+                json_ops.append(
+                    {
+                        "kind": "exception_new_builtin_empty",
+                        "args": [],
+                        "out": op.result.name,
+                        "s_value": metadata.get("exception_name", "Exception"),
+                        "value": int(metadata.get("exception_tag", 2)),
+                    }
+                )
+            elif op.kind == "EXCEPTION_NEW_BUILTIN_ONE":
+                metadata = op.metadata or {}
+                json_ops.append(
+                    {
+                        "kind": "exception_new_builtin_one",
                         "args": [op.args[0].name],
                         "out": op.result.name,
                         "s_value": metadata.get("exception_name", "Exception"),
@@ -38992,6 +38982,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "TYPE_OF",
             "LEN",
             "EXCEPTION_NEW_BUILTIN",
+            "EXCEPTION_NEW_BUILTIN_EMPTY",
+            "EXCEPTION_NEW_BUILTIN_ONE",
             "EXCEPTION_MATCH_BUILTIN",
             "STORE_VAR",
             "LOAD_VAR",
@@ -42713,7 +42705,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ``callargs_expand_star``, ``callargs_expand_kwstar``
           - Yielded via generator state ops: ``state_yield``
           - Closure capture: ``closure_store``
-          - Exception creation: ``exception_new`` args
+          - Exception creation: ``exception_new`` args and single-arg
+            ``exception_new_builtin_one`` payloads
 
         Non-escaping (safe) uses:
           - Binary/unary arithmetic and comparison ops produce a *new* value;
@@ -43062,7 +43055,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 continue
 
             # --- Exception creation: args escape ---
-            if kind in {"exception_new", "exception_new_builtin"}:
+            if kind in {
+                "exception_new",
+                "exception_new_builtin",
+                "exception_new_builtin_one",
+            }:
                 args = _get_op_args(op)
                 _mark_escaped(args)
                 continue

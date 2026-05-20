@@ -66,6 +66,28 @@ def _resolve_python_exe(python_exe: str) -> str:
     return python_exe
 
 
+def _metadata_probe_timeout_sec() -> float:
+    raw = os.environ.get("MOLT_DIFF_METADATA_PROBE_TIMEOUT_SEC", "5").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 5.0
+    return value if value > 0 else 5.0
+
+
+def _run_metadata_probe(cmd: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return harness_memory_guard.guarded_completed_process(
+            cmd,
+            prefix="MOLT_DIFF",
+            capture_output=True,
+            text=True,
+            timeout=_metadata_probe_timeout_sec(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 @lru_cache(maxsize=1)
 def _resolve_molt_cli_python() -> str:
     override = os.environ.get("MOLT_DIFF_MOLT_PYTHON", "").strip()
@@ -85,19 +107,14 @@ def _resolve_molt_cli_python() -> str:
     for candidate in candidates:
         if not candidate.exists():
             continue
-        try:
-            probe = subprocess.run(
-                [
-                    str(candidate),
-                    "-c",
-                    "import packaging.markers, packaging.requirements",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5.0,
-            )
-        except (OSError, subprocess.TimeoutExpired):
+        probe = _run_metadata_probe(
+            [
+                str(candidate),
+                "-c",
+                "import packaging.markers, packaging.requirements",
+            ]
+        )
+        if probe is None:
             continue
         if probe.returncode == 0:
             return str(candidate)
@@ -205,13 +222,10 @@ def _parse_version(value: str) -> tuple[int, int] | None:
 
 @lru_cache(maxsize=None)
 def _python_exe_version(python_exe: str) -> tuple[int, int] | None:
-    try:
-        result = subprocess.run(
-            [python_exe, "-c", "import sys; print(sys.version_info[:2])"],
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
+    result = _run_metadata_probe(
+        [python_exe, "-c", "import sys; print(sys.version_info[:2])"]
+    )
+    if result is None:
         return None
     if result.returncode != 0:
         return None
@@ -247,13 +261,8 @@ def _molt_sys_env_for_python_exe(python_exe: str) -> dict[str, str]:
         "'version_info':[vi.major,vi.minor,vi.micro,vi.releaselevel,vi.serial]"
         "}))"
     )
-    try:
-        result = subprocess.run(
-            [python_exe, "-c", code],
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
+    result = _run_metadata_probe([python_exe, "-c", code])
+    if result is None:
         return {}
     if result.returncode != 0:
         return {}
@@ -654,8 +663,9 @@ def _ps_supports_field(field: str) -> bool:
             capture_output=True,
             text=True,
             check=False,
+            timeout=2.0,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return False
     if result.returncode != 0:
         return False
@@ -761,8 +771,9 @@ def _pid_rss_age(pid: int) -> tuple[int | None, int | None]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=2.0,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None, None
     if result.returncode != 0:
         return None, None
@@ -787,8 +798,9 @@ def _list_backend_daemon_processes() -> dict[Path, list[int]]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=2.0,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return groups
     pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
     socket_pat = re.compile(r"--socket\s+(\S+)")
@@ -822,8 +834,9 @@ def _list_orphan_diff_workers() -> list[int]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=2.0,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return []
     orphan_pids: list[int] = []
     for raw_line in result.stdout.splitlines():
@@ -864,8 +877,9 @@ def _list_process_rows() -> list[tuple[int, int, int, str]]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=2.0,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return []
 
     rows: list[tuple[int, int, int, str]] = []
@@ -1540,9 +1554,7 @@ def _bounded_positive_float_env(
     return max(0.001, value)
 
 
-def _diff_memory_guard_config(
-    *, accounted_rss_kb: int = 0
-) -> _DiffMemoryGuardConfig:
+def _diff_memory_guard_config(*, accounted_rss_kb: int = 0) -> _DiffMemoryGuardConfig:
     limits = harness_memory_guard.limits_from_env("MOLT_DIFF")
     accounted_rss_kb = max(0, accounted_rss_kb)
     current_limits = limits.current_memory_limits(accounted_rss_kb=accounted_rss_kb)

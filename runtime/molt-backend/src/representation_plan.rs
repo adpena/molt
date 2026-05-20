@@ -1476,6 +1476,8 @@ fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
             | "dict_new"
             | "exception_new"
             | "exception_new_builtin"
+            | "exception_new_builtin_empty"
+            | "exception_new_builtin_one"
             | "exception_new_from_class"
             | "frozenset_new"
             | "func_new"

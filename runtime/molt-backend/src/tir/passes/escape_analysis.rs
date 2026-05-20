@@ -352,7 +352,9 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                         escapes.insert(val, EscapeState::GlobalEscape);
                     }
                 }
-                OpCode::ModuleCacheDel | OpCode::ModuleDelGlobal => {
+                OpCode::ModuleCacheDel
+                | OpCode::ModuleDelGlobal
+                | OpCode::ModuleDelGlobalIfPresent => {
                     // Deletes mutate global module state but do not store the
                     // operand value anywhere.
                 }

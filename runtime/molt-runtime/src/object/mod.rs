@@ -123,18 +123,18 @@ use crate::{
     contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
     contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_order_ptr,
     dict_table_ptr, dict_view_dict_bits, enumerate_cached_inner, enumerate_cached_outer,
-    enumerate_index_bits, enumerate_target_bits, exception_args_bits, exception_cause_bits,
-    exception_class_bits, exception_context_bits, exception_kind_bits, exception_msg_bits,
-    exception_suppress_bits, exception_trace_bits, exception_value_bits, filter_func_bits,
-    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_closure_bits,
-    function_code_bits, function_dict_bits, generator_context_stack_drop,
-    generator_exception_stack_drop, generic_alias_args_bits, generic_alias_origin_bits,
-    io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits, iter_cached_tuple,
-    iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr, module_dict_bits,
-    module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits,
-    property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
-    reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr, set_table_ptr,
-    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
+    enumerate_index_bits, enumerate_target_bits, exception_args_bits, exception_args_payload_bits,
+    exception_cause_bits, exception_class_bits, exception_context_bits, exception_dict_bits,
+    exception_kind_bits, exception_msg_bits, exception_suppress_bits, exception_trace_bits,
+    exception_value_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
+    function_annotations_bits, function_closure_bits, function_code_bits, function_dict_bits,
+    generator_context_stack_drop, generator_exception_stack_drop, generic_alias_args_bits,
+    generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
+    iter_cached_tuple, iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr,
+    module_dict_bits, module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes,
+    property_del_bits, property_get_bits, property_set_bits, range_start_bits, range_step_bits,
+    range_stop_bits, reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr,
+    set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
     task_cancel_message_clear, thread_poll_fn_addr, traceback_payload_code_bits,
     traceback_payload_next_bits, union_type_args_bits, utf8_cache_remove, weakref_clear_for_ptr,
     ws_wait_release, zip_iters_ptr, zip_strict_bits,
@@ -2180,6 +2180,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     if exc_args_bits != 0 && !obj_from_bits(exc_args_bits).is_none() {
                         dec_ref_bits(py, exc_args_bits);
                     }
+                    let exc_args_payload_bits = exception_args_payload_bits(ptr);
+                    if exc_args_payload_bits != 0 && !obj_from_bits(exc_args_payload_bits).is_none()
+                    {
+                        dec_ref_bits(py, exc_args_payload_bits);
+                    }
                     let exc_cause_bits = exception_cause_bits(ptr);
                     if exc_cause_bits != 0 && !obj_from_bits(exc_cause_bits).is_none() {
                         dec_ref_bits(py, exc_cause_bits);
@@ -2199,6 +2204,10 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let exc_val_bits = exception_value_bits(ptr);
                     if exc_val_bits != 0 && !obj_from_bits(exc_val_bits).is_none() {
                         dec_ref_bits(py, exc_val_bits);
+                    }
+                    let exc_dict_bits = exception_dict_bits(ptr);
+                    if exc_dict_bits != 0 && !obj_from_bits(exc_dict_bits).is_none() {
+                        dec_ref_bits(py, exc_dict_bits);
                     }
                 }
                 TYPE_ID_CONTEXT_MANAGER => {

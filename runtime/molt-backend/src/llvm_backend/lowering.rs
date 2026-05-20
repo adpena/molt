@@ -3504,6 +3504,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
             }
+            OpCode::ModuleDelGlobalIfPresent => {
+                let result = self.call_runtime_2_boxed(
+                    "molt_module_del_global_if_present",
+                    op.operands[0],
+                    op.operands[1],
+                );
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
 
             // ── SCF dialect ops ──
             // Structured control flow ops are desugared into LLVM basic blocks.
@@ -6997,6 +7008,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
+            "module_del_global" | "module_del_global_if_present" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let runtime_name = if kind == "module_del_global_if_present" {
+                    "molt_module_del_global_if_present"
+                } else {
+                    "molt_module_del_global"
+                };
+                let del_fn = self.ensure_runtime_i64_fn(runtime_name, 2);
+                let module_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let attr_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let _ = self
+                    .backend
+                    .builder
+                    .build_call(del_fn, &[module_bits.into(), attr_bits.into()], kind)
+                    .unwrap();
+                true
+            }
             "dict_update" => {
                 if op.operands.len() != 2 {
                     return false;
@@ -7187,6 +7217,60 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         new_fn,
                         &[tag_val.into(), args_bits.into()],
                         "exception_new_builtin",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_new_builtin_empty" => {
+                let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
+                    return false;
+                };
+                let new_fn = self.ensure_runtime_i64_fn("molt_exception_new_builtin_empty", 1);
+                let tag_val = self
+                    .backend
+                    .context
+                    .i64_type()
+                    .const_int(*tag as u64, false);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(new_fn, &[tag_val.into()], "exception_new_builtin_empty")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_new_builtin_one" => {
+                let Some(&arg_id) = op.operands.first() else {
+                    return false;
+                };
+                let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
+                    return false;
+                };
+                let new_fn = self.ensure_runtime_i64_fn("molt_exception_new_builtin_one", 2);
+                let tag_val = self
+                    .backend
+                    .context
+                    .i64_type()
+                    .const_int(*tag as u64, false);
+                let arg_bits = self.ensure_i64(self.resolve(arg_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        new_fn,
+                        &[tag_val.into(), arg_bits.into()],
+                        "exception_new_builtin_one",
                     )
                     .unwrap()
                     .try_as_basic_value()

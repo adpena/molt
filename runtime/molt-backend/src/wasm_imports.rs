@@ -32,6 +32,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("module_cache_del", 2),
     ("module_cache_set", 3),
     ("module_del_global", 3),
+    ("module_del_global_if_present", 3),
     ("module_get_attr", 3),
     ("module_get_global", 3),
     ("module_get_name", 3),
@@ -53,6 +54,8 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("exception_message", 2),
     ("exception_new", 3),
     ("exception_new_builtin", 3),
+    ("exception_new_builtin_empty", 2),
+    ("exception_new_builtin_one", 3),
     ("exception_new_from_class", 3),
     ("exception_pending", 0),
     ("exception_pop", 0),
@@ -1102,6 +1105,10 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     // ── On-demand: module system extras ──
     ("module_cache_del", &["module_cache_del"]),
     ("module_del_global", &["module_del_global"]),
+    (
+        "module_del_global_if_present",
+        &["module_del_global_if_present"],
+    ),
     ("module_get_global", &["module_get_global"]),
     ("module_get_name", &["module_get_name"]),
     ("module_import", &["module_import"]),
@@ -1181,6 +1188,11 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("is_function_obj", &["is_function_obj"]),
     ("is_generator", &["is_generator"]),
     ("exception_new_builtin", &["exception_new_builtin"]),
+    (
+        "exception_new_builtin_empty",
+        &["exception_new_builtin_empty"],
+    ),
+    ("exception_new_builtin_one", &["exception_new_builtin_one"]),
     // Generator ops
     ("generator_close", &["generator_close"]),
     ("generator_send", &["generator_send"]),

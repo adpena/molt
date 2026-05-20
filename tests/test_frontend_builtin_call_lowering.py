@@ -127,12 +127,43 @@ def test_builtin_exception_constructor_uses_canonical_tagged_lane() -> None:
     func_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
+    builtin_ops = [
+        op for op in func_ops if op.get("kind") == "exception_new_builtin_one"
+    ]
+
+    assert builtin_ops
+    assert builtin_ops[0]["s_value"] == "ValueError"
+    assert builtin_ops[0]["value"] == 5
+    assert not any(op.get("kind") == "tuple_new" for op in func_ops)
+    assert not any(op.get("kind") == "exception_new" for op in func_ops)
+
+
+def test_empty_builtin_exception_constructor_skips_args_tuple() -> None:
+    ir = compile_to_tir("def f():\n    return ValueError()\n")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    builtin_ops = [
+        op for op in func_ops if op.get("kind") == "exception_new_builtin_empty"
+    ]
+
+    assert builtin_ops
+    assert builtin_ops[0]["s_value"] == "ValueError"
+    assert builtin_ops[0]["value"] == 5
+    assert not any(op.get("kind") == "tuple_new" for op in func_ops)
+
+
+def test_multi_arg_builtin_exception_keeps_tuple_constructor() -> None:
+    ir = compile_to_tir("def f(i):\n    return ValueError(i, i + 1)\n")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
     builtin_ops = [op for op in func_ops if op.get("kind") == "exception_new_builtin"]
 
     assert builtin_ops
     assert builtin_ops[0]["s_value"] == "ValueError"
     assert builtin_ops[0]["value"] == 5
-    assert not any(op.get("kind") == "exception_new" for op in func_ops)
+    assert any(op.get("kind") == "tuple_new" for op in func_ops)
 
 
 def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
@@ -239,6 +270,25 @@ def test_sync_try_except_splits_clean_and_pending_cleanup_lanes() -> None:
     assert any(
         func_ops[idx + 1].get("kind") == "check_exception" for idx in pop_indices
     )
+
+
+def test_module_exception_binding_cleanup_uses_safe_delete_primitive() -> None:
+    source = (
+        "try:\n"
+        "    raise ValueError('x')\n"
+        "except ValueError as exc:\n"
+        "    print(exc)\n"
+        "print('done')\n"
+    )
+    ir = compile_to_tir(source)
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    kinds = [op.get("kind") for op in main_ops]
+
+    assert "module_del_global_if_present" in kinds
+    assert "exception_kind" not in kinds
+    assert "exception_set_last" not in kinds
 
 
 def test_zip_lowering_uses_call_bind() -> None:
