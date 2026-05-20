@@ -1157,10 +1157,11 @@ STDLIB_DIRECT_CALL_MODULES = {
 
 @dataclass
 class TryScope:
-    ctx_mark: MoltValue
+    ctx_mark: MoltValue | None
     finalbody: list[ast.stmt] | None
     ctx_mark_offset: int | None = None
     done_label: int | None = None
+    needs_context_unwind: bool = True
 
 
 class MethodInfo(TypedDict):
@@ -2954,6 +2955,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if isinstance(
                 current, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith, ast.Raise)
             ):
+                return True
+            if isinstance(
+                current,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+            ):
+                continue
+            stack.extend(ast.iter_child_nodes(current))
+        return False
+
+    @staticmethod
+    def _block_needs_context_unwind(body: list[ast.stmt]) -> bool:
+        stack: list[ast.AST] = list(body)
+        while stack:
+            current = stack.pop()
+            if isinstance(current, (ast.With, ast.AsyncWith)):
                 return True
             if isinstance(
                 current,
@@ -27648,6 +27664,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_unwind_depth -= 1
 
     def _ctx_mark_arg(self, scope: TryScope) -> MoltValue:
+        if not scope.needs_context_unwind or scope.ctx_mark is None:
+            raise AssertionError("context unwind requested without a context mark")
         if scope.ctx_mark_offset is None or not self.is_async():
             return scope.ctx_mark
         res = MoltValue(self.next_var(), type_hint="int")
@@ -27659,6 +27677,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
         return res
+
+    def _emit_context_unwind_to(self, scope: TryScope, exc_val: MoltValue) -> None:
+        if not scope.needs_context_unwind:
+            return
+        ctx_arg = self._ctx_mark_arg(scope)
+        self.emit(
+            MoltOp(
+                kind="CONTEXT_UNWIND_TO",
+                args=[ctx_arg, exc_val],
+                result=MoltValue("none"),
+            )
+        )
 
     def _emit_raise_exit(self) -> None:
         if self.try_end_labels:
@@ -27774,8 +27804,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
         try_normal_label = self.next_label()
+        try_clean_cleanup_label = self.next_label()
+        try_pending_cleanup_label = self.next_label()
         try_done_label = self.next_label()
-        scope.done_label = try_done_label
+        scope.done_label = try_pending_cleanup_label
         self.try_end_labels.append(try_exc_label)
         self.emit(
             MoltOp(
@@ -27819,14 +27851,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
-        ctx_arg = self._ctx_mark_arg(scope)
-        self.emit(
-            MoltOp(
-                kind="CONTEXT_UNWIND_TO",
-                args=[ctx_arg, exc_val],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_context_unwind_to(scope, exc_val)
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
@@ -27875,7 +27900,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         emit_handlers(node.handlers)
-        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="JUMP",
+                args=[try_pending_cleanup_label],
+                result=MoltValue("none"),
+            )
+        )
 
         self.emit(
             MoltOp(
@@ -27886,6 +27917,42 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         if node.orelse:
             self._emit_guarded_body(node.orelse, None)
+            self.emit(
+                MoltOp(
+                    kind="JUMP",
+                    args=[try_pending_cleanup_label],
+                    result=MoltValue("none"),
+                )
+            )
+        else:
+            self.emit(
+                MoltOp(
+                    kind="JUMP",
+                    args=[try_clean_cleanup_label],
+                    result=MoltValue("none"),
+                )
+            )
+        self.try_handler_scopes.pop()
+        self.try_suppress_depth = prior_suppress
+        self.emit(
+            MoltOp(
+                kind="LABEL",
+                args=[try_clean_cleanup_label],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="LABEL",
+                args=[try_pending_cleanup_label],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+        self._emit_raise_if_pending(emit_exit=True)
+        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
         self.emit(
             MoltOp(
                 kind="LABEL",
@@ -27893,10 +27960,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
-        self.try_handler_scopes.pop()
-        self.try_suppress_depth = prior_suppress
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending(emit_exit=True)
         self.try_scopes.pop()
         self.unbound_check_names = unbound_snapshot_try
         self.control_flow_depth -= 1
@@ -27935,10 +27998,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # for the full rationale.
         unbound_snapshot_try = set(self.unbound_check_names)
 
-        ctx_mark = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
+        needs_context_unwind = self._block_needs_context_unwind(node.body)
+        ctx_mark: MoltValue | None = None
         ctx_mark_offset = None
-        if self.is_async():
+        if needs_context_unwind:
+            ctx_mark = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
+        if needs_context_unwind and self.is_async():
             ctx_name = f"__ctx_mark_{len(self.async_locals)}"
             ctx_mark_offset = self._async_local_offset(ctx_name)
             self.emit(
@@ -27952,6 +28018,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ctx_mark=ctx_mark,
             finalbody=node.finalbody,
             ctx_mark_offset=ctx_mark_offset,
+            needs_context_unwind=needs_context_unwind,
         )
         self.try_scopes.append(scope)
 
@@ -28027,14 +28094,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
 
         self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-        ctx_arg = self._ctx_mark_arg(scope)
-        self.emit(
-            MoltOp(
-                kind="CONTEXT_UNWIND_TO",
-                args=[ctx_arg, exc_val],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_context_unwind_to(scope, exc_val)
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
@@ -28301,10 +28361,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # try/except*: snapshot unbound_check_names — see visit_Try.
         unbound_snapshot_try_star = set(self.unbound_check_names)
 
-        ctx_mark = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
+        needs_context_unwind = self._block_needs_context_unwind(node.body)
+        ctx_mark: MoltValue | None = None
         ctx_mark_offset = None
-        if self.is_async():
+        if needs_context_unwind:
+            ctx_mark = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
+        if needs_context_unwind and self.is_async():
             ctx_name = f"__ctx_star_{len(self.async_locals)}"
             ctx_mark_offset = self._async_local_offset(ctx_name)
             self.emit(
@@ -28318,6 +28381,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ctx_mark=ctx_mark,
             finalbody=node.finalbody,
             ctx_mark_offset=ctx_mark_offset,
+            needs_context_unwind=needs_context_unwind,
         )
         self.try_scopes.append(scope)
 
@@ -28364,14 +28428,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
 
         self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-        ctx_arg = self._ctx_mark_arg(scope)
-        self.emit(
-            MoltOp(
-                kind="CONTEXT_UNWIND_TO",
-                args=[ctx_arg, exc_val],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_context_unwind_to(scope, exc_val)
         self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
 
         rest_cell = MoltValue(self.next_var(), type_hint="list")
