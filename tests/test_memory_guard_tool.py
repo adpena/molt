@@ -171,6 +171,56 @@ def test_memory_guard_defaults_adapt_to_live_memory_budget() -> None:
     assert memory_guard.DEFAULT_POLL_INTERVAL_SEC == 0.10
 
 
+def test_adaptive_budget_accounts_guarded_tree_rss_without_self_tightening() -> None:
+    budget = memory_guard.adaptive_memory_budget(
+        "MOLT_BENCH",
+        {
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "46",
+        },
+        accounted_rss_kb=50 * 1024 * 1024,
+    )
+
+    assert budget.accounted_rss_gb == pytest.approx(50.0)
+    assert budget.available_gb == pytest.approx(96.0)
+    assert budget.max_process_rss_gb == pytest.approx(46.262016)
+    assert budget.max_total_rss_gb == pytest.approx(51.40224)
+    assert budget.max_global_rss_gb == pytest.approx(85.6704)
+
+
+def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
+    seen_accounted: list[int] = []
+
+    def provider(accounted_rss_kb: int) -> memory_guard.AdaptiveMemoryBudget:
+        seen_accounted.append(accounted_rss_kb)
+        return memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=4.0,
+            max_total_rss_gb=6.0,
+            max_global_rss_gb=8.0,
+            reserve_gb=1.0,
+            physical_gb=16.0,
+            available_gb=12.0,
+            source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+        )
+
+    limits = memory_guard.resolve_memory_limits(
+        max_process_rss_kb=2 * 1024 * 1024,
+        max_total_rss_kb=3 * 1024 * 1024,
+        max_global_rss_kb=5 * 1024 * 1024,
+        adaptive_budget_provider=provider,
+        dynamic_process_rss=True,
+        dynamic_total_rss=True,
+        dynamic_global_rss=False,
+        accounted_rss_kb=12345,
+    )
+
+    assert seen_accounted == [12345]
+    assert limits.max_process_rss_kb == 4 * 1024 * 1024
+    assert limits.max_total_rss_kb == 6 * 1024 * 1024
+    assert limits.max_global_rss_kb == 5 * 1024 * 1024
+
+
 def test_memory_guard_adaptive_defaults_do_not_starve_small_hosts() -> None:
     budget = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
