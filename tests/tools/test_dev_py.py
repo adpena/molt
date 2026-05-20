@@ -45,6 +45,40 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
     ]
 
 
+def test_dev_py_clean_artifacts_dispatches_to_cleanup_tool(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_canonical_env",
+        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_repo_cmd",
+        lambda cmd, _env, *, tty: calls.append(list(cmd)),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["tools/dev.py", "clean-artifacts", "--apply"],
+        raising=True,
+    )
+
+    module.main()
+
+    assert calls == [
+        [
+            module.sys.executable,
+            "tools/artifact_cleanup.py",
+            "--apply",
+        ]
+    ]
+
+
 def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[list[str]] = []
@@ -232,7 +266,9 @@ def test_dev_py_tty_uses_guard_when_memory_guard_enabled(monkeypatch) -> None:
     monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
     monkeypatch.setattr(module, "_run_with_pty", fail_pty)
 
-    module._run_repo_cmd(["pytest", "-q"], {"MOLT_TEST_SUITE_MEMORY_GUARD": "1"}, tty=True)
+    module._run_repo_cmd(
+        ["pytest", "-q"], {"MOLT_TEST_SUITE_MEMORY_GUARD": "1"}, tty=True
+    )
 
     assert calls == [("guarded", ["pytest", "-q"])]
 
@@ -250,7 +286,9 @@ def test_dev_py_tty_can_use_pty_when_memory_guard_disabled(monkeypatch) -> None:
     monkeypatch.setattr(module, "_check_call_guarded", fail_guarded)
     monkeypatch.setattr(module, "_run_with_pty", fake_pty)
 
-    module._run_repo_cmd(["pytest", "-q"], {"MOLT_TEST_SUITE_MEMORY_GUARD": "0"}, tty=True)
+    module._run_repo_cmd(
+        ["pytest", "-q"], {"MOLT_TEST_SUITE_MEMORY_GUARD": "0"}, tty=True
+    )
 
     if module.os.name == "posix":
         assert calls == [("pty", ["pytest", "-q"])]
