@@ -565,6 +565,7 @@ if __name__ == "__main__":
     kinds = _op_kinds(ir, "__main____molt_user_main")
     assert "dict_str_int_inc" in kinds
     assert "dict_get" not in kinds
+    assert "guard_dict_shape" not in kinds
 
 
 def test_generic_attribute_dict_increment_keeps_normal_update_path():

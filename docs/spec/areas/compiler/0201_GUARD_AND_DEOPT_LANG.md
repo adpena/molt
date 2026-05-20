@@ -17,7 +17,10 @@ Type/layout:
 - `guard_layout(x, LayoutId)`
 
 Shapes and targets:
-- `guard_dict_shape(d, ShapeId)`
+- `guard_dict_shape(d, ShapeId)` where the current builtin `dict` shape comes
+  from the runtime `dict` type object's layout version; exact builtin
+  dictionaries must pass that guard without falling through the mismatch/deopt
+  counters.
 - `guard_dict_has_keys(d, [k1,k2,...])`
 - `guard_callee(site_id, symbol_id)`
 
