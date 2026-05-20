@@ -2026,17 +2026,7 @@ def _terminate_pid_tree(pid: int, *, grace: float = 1.0) -> None:
         with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGKILL)
         return
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
-    deadline = time.monotonic() + max(0.05, grace)
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.05)
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(os.getpgid(pid), signal.SIGKILL)
-    with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGKILL)
+    memory_guard.terminate_watched_processes(pid, grace=grace)
 
 
 def _reap_lingering_process_group(pgid: int, *, grace: float = 0.25) -> None:
@@ -2386,6 +2376,7 @@ class _DiffGlobalMemoryMonitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_sample_write = 0.0
+        self._trackers: dict[int, memory_guard.ProcessTreeTracker] = {}
 
     def __enter__(self) -> "_DiffGlobalMemoryMonitor":
         if not _diff_memory_guard_enabled():
@@ -2428,17 +2419,21 @@ class _DiffGlobalMemoryMonitor:
         ] = []
         for entry in entries:
             root_pid = int(entry["pid"])
-            watched = memory_guard.watched_pids(samples, root_pid)
+            tracker = self._trackers.setdefault(
+                root_pid, memory_guard.ProcessTreeTracker(root_pid)
+            )
+            watched = tracker.update(samples)
             if not watched and not _pid_alive(root_pid):
                 path = entry.get("_path")
                 if isinstance(path, str):
                     with contextlib.suppress(OSError):
                         Path(path).unlink()
+                self._trackers.pop(root_pid, None)
                 continue
             active_roots.append(root_pid)
             unique_watched.update(watched)
-            peak = memory_guard.peak_rss(samples, root_pid=root_pid)
-            total = memory_guard.total_rss(samples, root_pid=root_pid)
+            peak = memory_guard.peak_rss(samples, root_pid=root_pid, watched=watched)
+            total = memory_guard.total_rss(samples, root_pid=root_pid, watched=watched)
             tree_samples.append((root_pid, peak, total))
         if not active_roots:
             return
@@ -2558,8 +2553,22 @@ def _install_signal_cleanup_handlers() -> None:
     _SIGNAL_HANDLERS_INSTALLED = True
 
 
-def _terminate_process_tree(proc: subprocess.Popen[str], *, grace: float = 1.0) -> None:
+def _terminate_process_tree(
+    proc: subprocess.Popen[str],
+    *,
+    grace: float = 1.0,
+    tracker: memory_guard.ProcessTreeTracker | None = None,
+) -> None:
     if proc.poll() is not None:
+        if tracker is not None:
+            samples = memory_guard.sample_processes()
+            watched = tracker.update(samples)
+            memory_guard.terminate_watched_processes(
+                proc.pid,
+                samples=samples,
+                watched=watched,
+                grace=grace,
+            )
         return
     if os.name == "nt":
         with contextlib.suppress(Exception):
@@ -2576,17 +2585,19 @@ def _terminate_process_tree(proc: subprocess.Popen[str], *, grace: float = 1.0) 
             proc.wait(timeout=grace)
         return
 
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGTERM)
+    samples = memory_guard.sample_processes()
+    watched = memory_guard.watched_pids(samples, proc.pid, tracker=tracker)
+    memory_guard.terminate_watched_processes(
+        proc.pid,
+        samples=samples,
+        watched=watched,
+        grace=grace,
+    )
     try:
         proc.wait(timeout=grace)
         return
     except subprocess.TimeoutExpired:
         pass
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        pgid = os.getpgid(proc.pid)
-        os.killpg(pgid, signal.SIGKILL)
     with contextlib.suppress(Exception):
         proc.kill()
     with contextlib.suppress(Exception):
@@ -2641,6 +2652,7 @@ def _run_subprocess(
     stderr = ""
     proc: subprocess.Popen[str] | None = None
     active_path: Path | None = None
+    tracker: memory_guard.ProcessTreeTracker | None = None
     with tempfile.TemporaryFile(
         mode="w+",
         encoding="utf-8",
@@ -2660,6 +2672,7 @@ def _run_subprocess(
                 errors="surrogateescape",
                 **_popen_group_kwargs(),
             )
+            tracker = memory_guard.ProcessTreeTracker(proc.pid)
             active_path = _register_memory_guard_child(proc, cmd)
             _ACTIVE_CHILD_PIDS.add(proc.pid)
             try:
@@ -2667,20 +2680,25 @@ def _run_subprocess(
                     elapsed = time.monotonic() - started
                     if timeout is not None and elapsed >= timeout:
                         timed_out = True
-                        _terminate_process_tree(proc)
+                        _terminate_process_tree(proc, tracker=tracker)
                         break
                     trip_message = _memory_guard_trip_message()
                     if trip_message is not None:
                         guard_message = trip_message
-                        _terminate_process_tree(proc, grace=0.20)
+                        _terminate_process_tree(proc, grace=0.20, tracker=tracker)
                         break
                     samples = memory_guard.sample_processes()
-                    observed_peak = memory_guard.peak_rss(samples, root_pid=proc.pid)
+                    watched = tracker.update(samples)
+                    observed_peak = memory_guard.peak_rss(
+                        samples, root_pid=proc.pid, watched=watched
+                    )
                     if observed_peak is not None and (
                         peak is None or observed_peak.rss_kb > peak.rss_kb
                     ):
                         peak = observed_peak
-                    observed_total = memory_guard.total_rss(samples, root_pid=proc.pid)
+                    observed_total = memory_guard.total_rss(
+                        samples, root_pid=proc.pid, watched=watched
+                    )
                     if observed_total is not None and (
                         peak_total is None or observed_total.rss_kb > peak_total.rss_kb
                     ):
@@ -2696,6 +2714,7 @@ def _run_subprocess(
                         root_pid=proc.pid,
                         max_rss_kb=config.max_process_kb,
                         max_total_rss_kb=config.max_tree_kb,
+                        watched=watched,
                     )
                     if violation is not None:
                         limit_gb = (
@@ -2717,7 +2736,7 @@ def _run_subprocess(
                                 "peak_total": _memory_guard_record(peak_total),
                             }
                         )
-                        _terminate_process_tree(proc, grace=0.20)
+                        _terminate_process_tree(proc, grace=0.20, tracker=tracker)
                         break
                     if proc.poll() is not None:
                         break
@@ -2729,6 +2748,8 @@ def _run_subprocess(
             finally:
                 _ACTIVE_CHILD_PIDS.discard(proc.pid)
                 _unregister_memory_guard_child(active_path)
+                if tracker is not None:
+                    _terminate_process_tree(proc, grace=0.10, tracker=tracker)
                 _reap_lingering_process_group(proc.pid)
             with contextlib.suppress(Exception):
                 proc.wait(timeout=0.50)

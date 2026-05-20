@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
-import signal
 import subprocess
 import threading
 import time
@@ -596,15 +595,28 @@ def force_close_process_group(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
         return
     if os.name == "posix":
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(proc.pid, signal.SIGTERM)
+        tracker = memory_guard.ProcessTreeTracker(proc.pid)
+        samples = memory_guard.sample_processes()
+        watched = tracker.update(samples)
+        memory_guard.terminate_watched_processes(
+            proc.pid,
+            samples=samples,
+            watched=watched,
+            grace=0.25,
+        )
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 return
             time.sleep(0.05)
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
+        samples = memory_guard.sample_processes()
+        watched = tracker.update(samples)
+        memory_guard.terminate_watched_processes(
+            proc.pid,
+            samples=samples,
+            watched=watched,
+            grace=0.0,
+        )
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=0.5)
         return
