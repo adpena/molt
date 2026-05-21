@@ -17,6 +17,7 @@ use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::builtins::configparser::ConfigParserRuntimeState;
 use crate::builtins::csv::CsvRuntimeState;
 use crate::builtins::random_mod::RandomRuntimeState;
+use crate::builtins::sys_ext::SysRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
 use crate::call::bind::CallBindRuntimeState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
@@ -298,6 +299,7 @@ pub(crate) struct RuntimeState {
     pub(crate) configparser: Mutex<ConfigParserRuntimeState>,
     pub(crate) csv: Mutex<CsvRuntimeState>,
     pub(crate) random: Mutex<RandomRuntimeState>,
+    pub(crate) sys_ext: SysRuntimeState,
     pub(crate) c_api_module: Mutex<CApiModuleRuntimeState>,
     pub(crate) call_bind: Mutex<CallBindRuntimeState>,
     pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
@@ -390,6 +392,7 @@ impl RuntimeState {
             configparser: Mutex::new(ConfigParserRuntimeState::new()),
             csv: Mutex::new(CsvRuntimeState::new()),
             random: Mutex::new(RandomRuntimeState::new()),
+            sys_ext: SysRuntimeState::new(),
             c_api_module: Mutex::new(CApiModuleRuntimeState::new()),
             call_bind: Mutex::new(CallBindRuntimeState::new()),
             asyncgen_locals: Mutex::new(HashMap::new()),

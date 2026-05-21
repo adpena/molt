@@ -6,6 +6,7 @@ use crate::builtins::contextvars::contextvars_clear_state;
 use crate::builtins::csv::csv_clear_state;
 use crate::builtins::random_mod::random_clear_state;
 use crate::builtins::strings::clear_const_str_cache;
+use crate::builtins::sys_ext::sys_ext_clear_state;
 use crate::c_api::c_api_module_clear_state;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::builders::clear_builder_singletons;
@@ -104,6 +105,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     csv_clear_state(state);
     trace_shutdown("process_exit_clear_random_state");
     random_clear_state(state);
+    trace_shutdown("process_exit_clear_sys_ext_state");
+    sys_ext_clear_state(_py, state);
     trace_shutdown("process_exit_flush_stdio");
     flush_stdio_handles(_py, state);
     trace_shutdown("process_exit_flush_stdio_post_finalizers");
@@ -174,6 +177,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     csv_clear_state(state);
     trace_shutdown("clear_random_state");
     random_clear_state(state);
+    trace_shutdown("clear_sys_ext_state");
+    sys_ext_clear_state(_py, state);
     trace_shutdown("flush_stdio");
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_weakref_containers");
