@@ -14,8 +14,12 @@ use crate::ProcessTaskState;
 use crate::async_rt::event_loop::{EventLoopRegistry, PipeTransportRegistry};
 use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
 use crate::builtins::asyncio_core::AsyncioCoreState;
+use crate::builtins::asyncio_queue::AsyncioQueueRuntimeState;
+#[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::ConfigParserRuntimeState;
+#[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::CsvRuntimeState;
+#[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::RandomRuntimeState;
 use crate::builtins::sys_ext::SysRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
@@ -276,6 +280,7 @@ pub(crate) struct RuntimeState {
     pub(crate) task_tokens_by_id: Mutex<HashMap<u64, HashSet<PtrSlot>>>,
     pub(crate) task_cancel_messages: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) asyncio_core: AsyncioCoreState,
+    pub(crate) asyncio_queues: AsyncioQueueRuntimeState,
     pub(crate) asyncio_running_loops: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_event_loops: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_event_loop_policy: Mutex<u64>,
@@ -296,8 +301,11 @@ pub(crate) struct RuntimeState {
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
     pub(crate) contextvars: Mutex<ContextVarsState>,
+    #[cfg(not(feature = "stdlib_serial"))]
     pub(crate) configparser: Mutex<ConfigParserRuntimeState>,
+    #[cfg(not(feature = "stdlib_serial"))]
     pub(crate) csv: Mutex<CsvRuntimeState>,
+    #[cfg(not(feature = "stdlib_math"))]
     pub(crate) random: Mutex<RandomRuntimeState>,
     pub(crate) sys_ext: SysRuntimeState,
     pub(crate) c_api_module: Mutex<CApiModuleRuntimeState>,
@@ -366,6 +374,7 @@ impl RuntimeState {
             task_tokens_by_id: Mutex::new(HashMap::new()),
             task_cancel_messages: Mutex::new(HashMap::new()),
             asyncio_core: AsyncioCoreState::new(),
+            asyncio_queues: AsyncioQueueRuntimeState::new(),
             asyncio_running_loops: Mutex::new(HashMap::new()),
             asyncio_event_loops: Mutex::new(HashMap::new()),
             asyncio_event_loop_policy: Mutex::new(MoltObject::none().bits()),
@@ -389,8 +398,11 @@ impl RuntimeState {
                 finalizer: MoltObject::none().bits(),
             }),
             contextvars: Mutex::new(ContextVarsState::new()),
+            #[cfg(not(feature = "stdlib_serial"))]
             configparser: Mutex::new(ConfigParserRuntimeState::new()),
+            #[cfg(not(feature = "stdlib_serial"))]
             csv: Mutex::new(CsvRuntimeState::new()),
+            #[cfg(not(feature = "stdlib_math"))]
             random: Mutex::new(RandomRuntimeState::new()),
             sys_ext: SysRuntimeState::new(),
             c_api_module: Mutex::new(CApiModuleRuntimeState::new()),

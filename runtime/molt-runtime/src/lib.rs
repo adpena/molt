@@ -455,9 +455,9 @@ pub(crate) use crate::builtins::exceptions::{
     task_exception_depth_take, task_exception_handler_stack_drop,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
     task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_drop, task_raise_active, traceback_payload_code_bits,
-    traceback_payload_col, traceback_payload_end_col, traceback_payload_line,
-    traceback_payload_next_bits,
+    task_last_exception_contains_valid, task_last_exception_drop, task_raise_active,
+    traceback_payload_code_bits, traceback_payload_col, traceback_payload_end_col,
+    traceback_payload_line, traceback_payload_next_bits,
 };
 pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errno};
 pub use crate::builtins::fcntl::*;

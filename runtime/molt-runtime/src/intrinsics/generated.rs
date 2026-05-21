@@ -11303,36 +11303,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
     },
     IntrinsicSpec {
-        name: "molt_asyncio_queue_putter_count",
-        symbol: "molt_asyncio_queue_putter_count",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_queue_getter_count",
-        symbol: "molt_asyncio_queue_getter_count",
-        arity: 1,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_queue_add_putter",
-        symbol: "molt_asyncio_queue_add_putter",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_queue_add_getter",
-        symbol: "molt_asyncio_queue_add_getter",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_queue_notify_putters",
-        symbol: "molt_asyncio_queue_notify_putters",
-        arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_queue_notify_getters",
-        symbol: "molt_asyncio_queue_notify_getters",
-        arity: 2,
-    },
-    IntrinsicSpec {
         name: "molt_asyncio_queue_shutdown",
         symbol: "molt_asyncio_queue_shutdown",
         arity: 2,
@@ -14393,36 +14363,6 @@ fn resolve_asyncio_symbol(symbol: &str) -> Option<u64> {
         "molt_asyncio_queue_unfinished_tasks" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_asyncio_queue_unfinished_tasks",
             crate::molt_asyncio_queue_unfinished_tasks as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_queue_putter_count" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_queue_putter_count",
-            crate::molt_asyncio_queue_putter_count as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_queue_getter_count" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_queue_getter_count",
-            crate::molt_asyncio_queue_getter_count as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_queue_add_putter" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_queue_add_putter",
-            crate::molt_asyncio_queue_add_putter as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_queue_add_getter" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_queue_add_getter",
-            crate::molt_asyncio_queue_add_getter as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_queue_notify_putters" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_queue_notify_putters",
-            crate::molt_asyncio_queue_notify_putters as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_queue_notify_getters" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_queue_notify_getters",
-            crate::molt_asyncio_queue_notify_getters as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_queue_shutdown" => Some(crate::builtins::functions::runtime_fn_addr(

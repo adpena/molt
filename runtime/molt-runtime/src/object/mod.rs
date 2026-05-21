@@ -1529,6 +1529,12 @@ pub(crate) fn ptr_from_bits(bits: u64) -> *mut u8 {
     if obj.is_ptr() {
         return obj.as_ptr().unwrap_or(std::ptr::null_mut());
     }
+    if let Some(addr) = obj.as_int()
+        && addr >= 0
+        && let Some(ptr) = resolve_ptr(addr as u64)
+    {
+        return ptr;
+    }
     resolve_ptr(bits).unwrap_or(std::ptr::null_mut())
 }
 

@@ -565,18 +565,6 @@ if TYPE_CHECKING:
 
     def molt_asyncio_queue_unfinished_tasks(_handle: int) -> int: ...
 
-    def molt_asyncio_queue_putter_count(_handle: int) -> int: ...
-
-    def molt_asyncio_queue_getter_count(_handle: int) -> int: ...
-
-    def molt_asyncio_queue_add_putter(_handle: int, _waiter: Any) -> None: ...
-
-    def molt_asyncio_queue_add_getter(_handle: int, _waiter: Any) -> None: ...
-
-    def molt_asyncio_queue_notify_putters(_handle: int, _count: int) -> int: ...
-
-    def molt_asyncio_queue_notify_getters(_handle: int, _count: int) -> int: ...
-
     def molt_asyncio_queue_shutdown(_handle: int, _immediate: bool) -> None: ...
 
     def molt_asyncio_queue_is_shutdown(_handle: int) -> bool: ...
@@ -801,7 +789,10 @@ class Future:
             _debug_exc_state("future_result_before_raise")
             raise self._exception
             _debug_exc_state("future_result_after_raise")
-        return self._result
+        stored_exc = molt_asyncio_future_exception(self._fut_handle)
+        if stored_exc is not None:
+            raise stored_exc
+        return molt_asyncio_future_result(self._fut_handle)
 
     def exception(self) -> BaseException | None:
         if not molt_asyncio_future_done(self._fut_handle):
@@ -810,7 +801,7 @@ class Future:
             if self._exception is not None:
                 raise self._exception
             raise CancelledError
-        return self._exception
+        return molt_asyncio_future_exception(self._fut_handle)
 
     def add_done_callback(
         self, fn: Callable[["Future"], Any], *, context: Any | None = None
@@ -1729,24 +1720,6 @@ molt_asyncio_queue_is_shutdown = _intrinsic_require(
     "molt_asyncio_queue_is_shutdown", globals()
 )
 molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop", globals())
-molt_asyncio_queue_putter_count = _intrinsic_require(
-    "molt_asyncio_queue_putter_count", globals()
-)
-molt_asyncio_queue_getter_count = _intrinsic_require(
-    "molt_asyncio_queue_getter_count", globals()
-)
-molt_asyncio_queue_add_putter = _intrinsic_require(
-    "molt_asyncio_queue_add_putter", globals()
-)
-molt_asyncio_queue_add_getter = _intrinsic_require(
-    "molt_asyncio_queue_add_getter", globals()
-)
-molt_asyncio_queue_notify_putters = _intrinsic_require(
-    "molt_asyncio_queue_notify_putters", globals()
-)
-molt_asyncio_queue_notify_getters = _intrinsic_require(
-    "molt_asyncio_queue_notify_getters", globals()
-)
 
 _PENDING_SENTINEL: Any | None = None
 
@@ -2191,7 +2164,7 @@ class Task(Future):
                 if _DEBUG_TASKS:
                     token_id = self._token.token_id()
                     _debug_write(f"asyncio_task_done token={token_id}")
-            molt_asyncio_task_last_exception_clear(self)
+            molt_asyncio_task_last_exception_clear(coro)
         else:
             if not molt_asyncio_future_done(self._fut_handle):
                 self.set_exception(exc)
@@ -3994,10 +3967,11 @@ class _EventLoop(AbstractEventLoop):
         self._stopping = False
         if self._ready:
             self._ensure_ready_runner()
-        result: Any = None
+        completed: Future | None = None
         try:
             if isinstance(future, Future):
                 fut = future
+                completed = fut
                 if isinstance(fut, Task):
                     runner = getattr(fut, "_runner_task", None)
                     needs_runner = not getattr(fut, "_runner_spawned", True)
@@ -4010,17 +3984,19 @@ class _EventLoop(AbstractEventLoop):
                                 molt_task_register_token_owned(  # type: ignore[name-defined]
                                     runner, fut._token.token_id()
                                 )
-                        molt_block_on(runner)
+                        if getattr(fut, "_runner_spawned", True):
+                            molt_block_on(fut._wait())
+                        else:
+                            molt_block_on(runner)
                         _debug_exc_state("run_until_complete_after_block_on")
-                        result = fut.result()
-                        _debug_exc_state("run_until_complete_after_result")
                     finally:
                         _restore_token_id(prev_token_id)
                 else:
-                    result = molt_block_on(fut._wait())
+                    molt_block_on(fut._wait())
                     _debug_exc_state("run_until_complete_after_wait")
             else:
                 fut = Task(future, loop=self, _spawn_runner=False)
+                completed = fut
                 prev_token_id = _swap_current_token(fut._token)
                 try:
                     runner = fut._runner(fut.get_coro())
@@ -4031,18 +4007,25 @@ class _EventLoop(AbstractEventLoop):
                         )
                     molt_block_on(runner)
                     _debug_exc_state("run_until_complete_after_block_on")
-                    result = fut.result()
-                    _debug_exc_state("run_until_complete_after_result")
                 finally:
                     _restore_token_id(prev_token_id)
-        finally:
-            # Mark the Rust handle as stopped.
+        except BaseException:
             _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
                 self._loop_handle
             )
             self._stopping = False
             _set_running_loop(prev)
+            raise
+        _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
+            self._loop_handle
+        )
+        self._stopping = False
+        _set_running_loop(prev)
         _debug_exc_state("run_until_complete_return")
+        if completed is None:
+            return None
+        result = Future.result(completed)
+        _debug_exc_state("run_until_complete_after_result")
         return result
 
     def run_forever(self) -> None:
@@ -5158,12 +5141,10 @@ class Runner:
             raise RuntimeError("Runner loop is already running")
         if context is None:
             context = self._context
-        if context is not None:
-            task = loop.create_task(coro, context=context)
-        else:
-            task = loop.create_task(coro)
+        task = Task(coro, loop=loop, context=context, _spawn_runner=False)
         try:
-            result = loop.run_until_complete(task)
+            loop.run_until_complete(task)
+            result = task.result()
             if _DEBUG_ASYNCIO_SHUTDOWN:
                 _debug_write(
                     "asyncio_runner_run_after_complete {summary}".format(
@@ -6005,9 +5986,8 @@ class Queue:
             raise ValueError("maxsize must be >= 0")
         self._maxsize = maxsize
         self._q_handle: int = molt_asyncio_queue_new(maxsize, self._Q_TYPE)
-        # Waiter lists live in the Rust handle (getter/putter VecDeques).
-        # Do NOT create Python-side _getters/_putters deques here.
-        self._unfinished_tasks = 0
+        self._getters: _deque[Future] = _deque()
+        self._putters: _deque[Future] = _deque()
         self._finished = Event()
         self._finished.set()
         self._shutdown = False
@@ -6037,13 +6017,12 @@ class Queue:
             raise _QueueShutDown
         while self.full():
             fut = Future()
-            molt_asyncio_queue_add_putter(self._q_handle, fut)
+            self._putters.append(fut)
             try:
                 await fut
             except BaseException as exc:
                 if _is_cancelled_exc(exc):
-                    # Release Rust's reference to this waiter on cancellation.
-                    molt_asyncio_queue_notify_putters(self._q_handle, 1)
+                    _asyncio_waiters_remove(self._putters, fut)
                 raise
             if molt_asyncio_queue_is_shutdown(self._q_handle):
                 raise _QueueShutDown
@@ -6057,12 +6036,13 @@ class Queue:
         self._put_nowait(item)
 
     def _put_nowait(self, item: Any) -> None:
-        self._unfinished_tasks += 1
         molt_asyncio_queue_put_nowait(self._q_handle, item)
         if self._finished.is_set():
             self._finished.clear()
-        if int(molt_asyncio_queue_getter_count(self._q_handle)) > 0:
-            molt_asyncio_queue_notify_getters(self._q_handle, 1)
+        if self._getters:
+            delivered = molt_asyncio_queue_get_nowait(self._q_handle)
+            if not self._wakeup_next(self._getters, delivered):
+                self._put(delivered)
         else:
             self._put(item)
 
@@ -6075,13 +6055,12 @@ class Queue:
         if molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         fut = Future()
-        molt_asyncio_queue_add_getter(self._q_handle, fut)
+        self._getters.append(fut)
         try:
             return await fut
         except BaseException as exc:
             if _is_cancelled_exc(exc):
-                # Release Rust's reference to this waiter on cancellation.
-                molt_asyncio_queue_notify_getters(self._q_handle, 1)
+                _asyncio_waiters_remove(self._getters, fut)
             raise
 
     def get_nowait(self) -> Any:
@@ -6094,19 +6073,30 @@ class Queue:
     def _get_nowait(self) -> Any:
         item = self._get()
         molt_asyncio_queue_get_nowait(self._q_handle)
-        if int(molt_asyncio_queue_putter_count(self._q_handle)) > 0:
-            molt_asyncio_queue_notify_putters(self._q_handle, 1)
+        if self._putters:
+            self._wakeup_next(self._putters, None)
         return item
 
     def _get(self) -> Any:
         return self._queue.popleft()
 
+    def _wakeup_next(self, waiters: Any, result: Any) -> bool:
+        while waiters:
+            fut = waiters.popleft()
+            if not fut.done():
+                fut.set_result(result)
+                return True
+        return False
+
+    def _wakeup_all_exception(self, waiters: Any, exc: BaseException) -> None:
+        while waiters:
+            fut = waiters.popleft()
+            if not fut.done():
+                fut.set_exception(exc)
+
     def task_done(self) -> None:
-        if self._unfinished_tasks <= 0:
-            raise ValueError("task_done() called too many times")
-        self._unfinished_tasks -= 1
         molt_asyncio_queue_task_done(self._q_handle)
-        if self._unfinished_tasks == 0:
+        if int(molt_asyncio_queue_unfinished_tasks(self._q_handle)) == 0:
             self._finished.set()
 
     async def join(self) -> None:
@@ -6117,12 +6107,9 @@ class Queue:
         def shutdown(self) -> None:
             self._shutdown = True
             molt_asyncio_queue_shutdown(self._q_handle, False)
-            n_getters = int(molt_asyncio_queue_getter_count(self._q_handle))
-            if n_getters > 0:
-                molt_asyncio_queue_notify_getters(self._q_handle, n_getters)
-            n_putters = int(molt_asyncio_queue_putter_count(self._q_handle))
-            if n_putters > 0:
-                molt_asyncio_queue_notify_putters(self._q_handle, n_putters)
+            exc = _QueueShutDown()
+            self._wakeup_all_exception(self._getters, exc)
+            self._wakeup_all_exception(self._putters, exc)
 
     def __repr__(self) -> str:
         size = self.qsize()

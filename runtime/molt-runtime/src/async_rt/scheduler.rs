@@ -34,8 +34,8 @@ use crate::{
     runtime_state, seq_vec_ref, set_task_raise_active, task_exception_baseline_store,
     task_exception_baseline_take, task_exception_depth_store, task_exception_depth_take,
     task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_store, task_exception_stack_take, task_raise_active, thread_poll_fn_addr,
-    to_i64, with_gil,
+    task_exception_stack_store, task_exception_stack_take, task_last_exception_contains_valid,
+    task_raise_active, thread_poll_fn_addr, to_i64, with_gil,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3319,7 +3319,7 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if trace_task_result() {
         eprintln!("molt task_result mark_done ptr=0x{:x}", task_ptr as usize);
     }
-    if !exception_pending(_py) {
+    if !task_last_exception_contains_valid(_py, task_ptr) && !exception_pending(_py) {
         crate::task_last_exception_drop(_py, task_ptr);
     }
     let _guard = task_queue_lock().lock().unwrap();
@@ -3989,6 +3989,14 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             trace_step("clear_block_on_flag");
             task_mark_done(_py, task_ptr);
             trace_step("task_mark_done");
+            clear_task_token(_py, task_ptr);
+            trace_step("clear_task_token");
+            runtime_state(_py).sleep_queue().cancel_task(_py, task_ptr);
+            trace_step("cancel_task_sleep");
+            let _ = task_take_wake_pending(task_ptr);
+            trace_step("clear_wake_pending");
+            let _ = wake_await_waiters(_py, task_ptr);
+            trace_step("wake_await_waiters");
             BLOCK_ON_TASK.with(|cell| cell.set(std::ptr::null_mut()));
             trace_step("clear_block_on_task");
             set_task_raise_active(prev_raise);

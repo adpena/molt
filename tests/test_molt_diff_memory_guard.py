@@ -352,6 +352,26 @@ def test_diff_memory_guard_global_disable_is_ignored(monkeypatch) -> None:
     assert module._diff_memory_guard_enabled() is True
 
 
+def test_diff_stdlib_profile_ignores_ambient_build_profile() -> None:
+    module = _load_diff_module()
+    profile, error = module._diff_stdlib_profile(
+        {
+            "MOLT_STDLIB_PROFILE": "micro",
+        }
+    )
+
+    assert profile is None
+    assert error is None
+
+
+def test_diff_stdlib_profile_rejects_invalid_values() -> None:
+    module = _load_diff_module()
+    profile, error = module._diff_stdlib_profile({"MOLT_DIFF_STDLIB_PROFILE": "wide"})
+
+    assert profile is None
+    assert error == "MOLT_DIFF_STDLIB_PROFILE must be 'micro' or 'full'"
+
+
 def test_diff_rlimit_defaults_to_adaptive_process_budget(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")

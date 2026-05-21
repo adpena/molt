@@ -13,6 +13,9 @@ try:
     asyncio.set_event_loop(loop)
     result = loop.run_until_complete(main())
     print(result, loop.is_running())
+    task = loop.create_task(main())
+    task_result = loop.run_until_complete(task)
+    print(task_result, task.result(), task.done(), loop.is_running())
 finally:
     loop.close()
     asyncio.set_event_loop(None)

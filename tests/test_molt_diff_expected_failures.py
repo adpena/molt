@@ -496,10 +496,13 @@ def test_run_batch_compile_build_success_resets_failure_budget(
 ) -> None:
     module = _load_diff_module()
     resets = {"count": 0}
+    seen_params: list[dict[str, object]] = []
 
     class _Client:
         def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
             assert op == "build"
+            assert isinstance(params, dict)
+            seen_params.append(dict(params))
             return {
                 "id": 1,
                 "ok": True,
@@ -536,6 +539,26 @@ def test_run_batch_compile_build_success_resets_failure_budget(
     assert stdout == "ok"
     assert stderr == ""
     assert resets["count"] == 1
+    assert "stdlib_profile" not in seen_params[0]
+
+    rc, stdout, stderr, error = module._run_batch_compile_build(
+        env={"MOLT_CODEC": "msgpack", "MOLT_DIFF_STDLIB_PROFILE": "full"},
+        file_path="tests/differential/basic/arith.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "arith_molt",
+        build_profile="dev",
+        no_cache=False,
+        rebuild=False,
+        request_timeout=8.0,
+        strict_mode=False,
+    )
+
+    assert error is None
+    assert rc == 0
+    assert stdout == "ok"
+    assert stderr == ""
+    assert resets["count"] == 2
+    assert seen_params[1]["stdlib_profile"] == "full"
 
 
 def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
@@ -700,6 +723,53 @@ def test_run_molt_build_only_uses_build_profile_flag(
             "fs,env,time,random",
         ]
     ]
+
+
+def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    seen_cmds: list[list[str]] = []
+    diff_root = tmp_path / "diff-root"
+    target_root = tmp_path / "target-root"
+
+    def fake_run_with_optional_time(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setenv("MOLT_DIFF_STDLIB_PROFILE", "full")
+    monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
+    monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+
+    stdout, stderr, rc = module.run_molt_build_only(
+        "tests/differential/stdlib/unicodedata_basic.py",
+        "dev",
+    )
+
+    assert (stdout, stderr, rc) == ("", "", 0)
+    cmd = seen_cmds[0]
+    assert cmd[cmd.index("--stdlib-profile") + 1] == "full"
 
 
 def test_diff_root_defaults_to_repo_tmp_diff_when_ext_root_unset(

@@ -1226,6 +1226,9 @@ struct FunctionPreanalysis {
     if_to_end_if: BTreeMap<usize, usize>,
     if_to_else: BTreeMap<usize, usize>,
     else_to_end_if: BTreeMap<usize, usize>,
+    label_ids: Vec<i64>,
+    state_label_ids: BTreeSet<i64>,
+    shared_resume_label_ids: BTreeSet<i64>,
     state_ids: Vec<i64>,
     resume_states: BTreeSet<i64>,
     function_exception_label_id: Option<i64>,
@@ -1554,9 +1557,13 @@ fn preanalyze_function_ir(
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
     let mut state_ids = Vec::new();
     let mut seen_state_ids: BTreeSet<i64> = BTreeSet::new();
+    let mut label_ids = Vec::new();
+    let mut seen_label_ids: BTreeSet<i64> = BTreeSet::new();
+    let mut state_label_ids = BTreeSet::new();
     let mut resume_states = BTreeSet::new();
     let mut exception_label_ids = BTreeSet::new();
     let mut label_positions = Vec::new();
+    let const_int_map = crate::build_const_int_map(&func_ir.ops);
     let (int_like_vars, bool_like_vars, float_like_vars, str_like_vars, none_like_vars) =
         representation_plan.scalar_name_sets();
 
@@ -1643,6 +1650,11 @@ fn preanalyze_function_ir(
                     if seen_state_ids.insert(state_id) {
                         state_ids.push(state_id);
                     }
+                    if matches!(op.kind.as_str(), "label" | "state_label")
+                        && seen_label_ids.insert(state_id)
+                    {
+                        label_ids.push(state_id);
+                    }
                     if matches!(
                         op.kind.as_str(),
                         "state_transition"
@@ -1652,6 +1664,9 @@ fn preanalyze_function_ir(
                             | "state_label"
                     ) {
                         resume_states.insert(state_id);
+                    }
+                    if op.kind == "state_label" {
+                        state_label_ids.insert(state_id);
                     }
                     if matches!(op.kind.as_str(), "label" | "state_label") {
                         label_positions.push((idx, state_id));
@@ -1930,7 +1945,40 @@ fn preanalyze_function_ir(
         .rev()
         .find_map(|(_, id)| exception_label_ids.contains(&id).then_some(id));
 
-    let const_int_map = crate::build_const_int_map(&func_ir.ops);
+    let label_id_set: BTreeSet<i64> = label_ids.iter().copied().collect();
+    let mut shared_resume_label_ids = state_label_ids.clone();
+    for op in &func_ir.ops {
+        let pending_arg = match op.kind.as_str() {
+            "state_transition" => {
+                let Some(args) = op.args.as_ref() else {
+                    continue;
+                };
+                match args.as_slice() {
+                    [_, pending_state] => Some(pending_state),
+                    [_, _, pending_state] => Some(pending_state),
+                    _ => None,
+                }
+            }
+            "chan_send_yield" => op.args.as_ref().and_then(|args| args.get(2)),
+            "chan_recv_yield" => op.args.as_ref().and_then(|args| args.get(1)),
+            _ => None,
+        };
+        let Some(pending_arg) = pending_arg else {
+            continue;
+        };
+        let Some(&pending_state_id) = const_int_map.get(pending_arg) else {
+            continue;
+        };
+        resume_states.insert(pending_state_id);
+        assert!(
+            label_id_set.contains(&pending_state_id),
+            "function {} stores pending resume state {} from {} but has no matching label/state_label",
+            func_ir.name,
+            pending_state_id,
+            op.kind.as_str(),
+        );
+        shared_resume_label_ids.insert(pending_state_id);
+    }
 
     // Scope arena eligibility: detect alloc ops marked arena_eligible.
     let mut has_arena_eligible = false;
@@ -1956,6 +2004,9 @@ fn preanalyze_function_ir(
         if_to_end_if,
         if_to_else,
         else_to_end_if,
+        label_ids,
+        state_label_ids,
+        shared_resume_label_ids,
         state_ids,
         resume_states,
         function_exception_label_id,
@@ -1973,6 +2024,14 @@ fn preanalyze_function_ir(
         scalar_slot_exclusion_unsafe,
         direct_field_store_ops,
     }
+}
+
+#[cfg(feature = "native-backend")]
+fn next_check_exception_target(ops: &[OpIR], op_idx: usize) -> Option<i64> {
+    ops.iter()
+        .skip(op_idx + 1)
+        .find(|op| op.kind == "check_exception")
+        .and_then(|op| op.value)
 }
 
 #[cfg(feature = "native-backend")]
@@ -2218,7 +2277,10 @@ impl SimpleBackend {
             if_to_end_if,
             if_to_else,
             else_to_end_if,
-            state_ids,
+            label_ids,
+            state_label_ids: _state_label_ids,
+            shared_resume_label_ids,
+            state_ids: _state_ids,
             resume_states,
             function_exception_label_id,
             exception_label_ids,
@@ -2237,8 +2299,9 @@ impl SimpleBackend {
         } = preanalyze_function_ir(&func_ir, return_alias_summaries, &representation_plan);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
+        let returns_value = has_ret || stateful;
 
-        if has_ret {
+        if returns_value {
             self.ctx
                 .func
                 .signature
@@ -2347,7 +2410,8 @@ impl SimpleBackend {
         let mut tracked_obj_vars_set: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut entry_vars: BTreeMap<String, Value> = BTreeMap::new();
-        let mut state_blocks = BTreeMap::new();
+        let mut label_blocks = BTreeMap::new();
+        let mut resume_blocks = BTreeMap::new();
         let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
         let mut reachable_blocks: BTreeSet<Block> = BTreeSet::new();
         // Cranelift SSA-variable correctness relies on sealing blocks once all predecessors
@@ -2495,7 +2559,7 @@ impl SimpleBackend {
         };
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
-        if has_ret {
+        if returns_value {
             builder.append_block_param(master_return_block, types::I64);
         }
         let entry_param_values: Vec<Value> = param_types
@@ -3054,10 +3118,24 @@ impl SimpleBackend {
         seal_block_once(&mut builder, &mut sealed_blocks, entry_block);
         sealed_blocks.insert(entry_block);
 
-        for state_id in state_ids {
-            state_blocks
-                .entry(state_id)
+        // Keep textual control-flow labels and persisted resume states in
+        // disjoint block maps. A numeric ready-continuation state may collide
+        // with a regular label emitted later in the same function; only labels
+        // that are themselves persisted as pending resume states share blocks.
+        for label_id in label_ids {
+            label_blocks
+                .entry(label_id)
                 .or_insert_with(|| builder.create_block());
+        }
+        for state_id in resume_states.iter().copied() {
+            let block = if shared_resume_label_ids.contains(&state_id) {
+                *label_blocks
+                    .entry(state_id)
+                    .or_insert_with(|| builder.create_block())
+            } else {
+                builder.create_block()
+            };
+            resume_blocks.insert(state_id, block);
         }
         let ops = &func_ir.ops;
         let mut label_join_slots: BTreeMap<i64, Vec<String>> = BTreeMap::new();
@@ -21230,6 +21308,9 @@ impl SimpleBackend {
                     }
                 }
                 "state_switch" => {
+                    // Resume state belongs to the poll closure object passed
+                    // to the native poll function, not to any user-visible
+                    // local named `self` inside async methods.
                     let self_ptr = builder.block_params(entry_block)[0];
                     // State lives in the cold header (HashMap) — call through
                     // the C API instead of an inline memory load.
@@ -21252,7 +21333,7 @@ impl SimpleBackend {
                     let fallback_block = builder.create_block();
                     let mut switch = Switch::new();
                     for id in sorted_states {
-                        let block = state_blocks[&id];
+                        let block = resume_blocks[&id];
                         switch.set_entry((id as u64) as u128, block);
                         reachable_blocks.insert(block);
                     }
@@ -21335,21 +21416,7 @@ impl SimpleBackend {
                         )
                     };
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        "self",
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Self not found");
-                    let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
+                    let self_ptr = builder.block_params(entry_block)[0];
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
                     let set_state_ref = import_func_ref(
@@ -21376,10 +21443,44 @@ impl SimpleBackend {
                     let poll_call = builder.ins().call(local_poll, &[*future]);
                     let res = builder.inst_results(poll_call)[0];
 
+                    if let Some(target_id) = next_check_exception_target(ops, op_idx)
+                        && let Some(&target_block) = label_blocks.get(&target_id)
+                    {
+                        let fallthrough = builder.create_block();
+                        reachable_blocks.insert(target_block);
+                        reachable_blocks.insert(fallthrough);
+                        let exc_call = builder.ins().call(local_exc_pending_fast, &[]);
+                        let pending_exc = builder.inst_results(exc_call)[0];
+                        let has_exception = builder.ins().icmp_imm(IntCC::NotEqual, pending_exc, 0);
+                        brif_block(
+                            &mut builder,
+                            has_exception,
+                            target_block,
+                            &[],
+                            fallthrough,
+                            &[],
+                        );
+                        if sealed_blocks.insert(fallthrough) {
+                            maybe_debug_seal(
+                                "state_transition_exception_fallthrough",
+                                op_idx,
+                                fallthrough,
+                            );
+                            seal_block_once(&mut builder, &mut sealed_blocks, fallthrough);
+                        }
+                        switch_to_block_with_rebind(
+                            &mut builder,
+                            fallthrough,
+                            &mut is_block_filled,
+                            true,
+                        );
+                        is_block_filled = false;
+                    }
+
                     let pending_const = builder.ins().iconst(types::I64, pending_bits());
                     let is_pending = builder.ins().icmp(IntCC::Equal, res, pending_const);
 
-                    let next_block = state_blocks[&next_state_id];
+                    let next_block = resume_blocks[&next_state_id];
                     let pending_path = builder.create_block();
                     let ready_path = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
@@ -21485,21 +21586,7 @@ impl SimpleBackend {
                     )
                     .expect("Yield pair not found");
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        "self",
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Self not found");
-                    let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
+                    let self_ptr = builder.block_params(entry_block)[0];
 
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     let set_state_yield = import_func_ref(
@@ -21514,7 +21601,7 @@ impl SimpleBackend {
                     builder.ins().call(set_state_yield, &[self_ptr, state_val]);
 
                     reachable_blocks.insert(master_return_block);
-                    if has_ret {
+                    if returns_value {
                         // Suspension returns an owned value to the caller; explicitly
                         // retain it here so downstream cleanup/control-flow lowering cannot
                         // invalidate yielded data before next()/send()/throw() unwraps it.
@@ -21524,7 +21611,7 @@ impl SimpleBackend {
                         jump_block(&mut builder, master_return_block, &[]);
                     }
 
-                    let next_block = state_blocks[&next_state_id];
+                    let next_block = resume_blocks[&next_state_id];
                     if reachable_blocks.contains(&next_block) {
                         switch_to_block_with_rebind(
                             &mut builder,
@@ -21581,21 +21668,7 @@ impl SimpleBackend {
                     )
                     .expect("Pending state not found");
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        "self",
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Self not found");
-                    let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
+                    let self_ptr = builder.block_params(entry_block)[0];
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
                     let set_state_csend1 = import_func_ref(
@@ -21622,10 +21695,44 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*chan, *val]);
                     let res = builder.inst_results(call)[0];
 
+                    if let Some(target_id) = next_check_exception_target(ops, op_idx)
+                        && let Some(&target_block) = label_blocks.get(&target_id)
+                    {
+                        let fallthrough = builder.create_block();
+                        reachable_blocks.insert(target_block);
+                        reachable_blocks.insert(fallthrough);
+                        let exc_call = builder.ins().call(local_exc_pending_fast, &[]);
+                        let pending_exc = builder.inst_results(exc_call)[0];
+                        let has_exception = builder.ins().icmp_imm(IntCC::NotEqual, pending_exc, 0);
+                        brif_block(
+                            &mut builder,
+                            has_exception,
+                            target_block,
+                            &[],
+                            fallthrough,
+                            &[],
+                        );
+                        if sealed_blocks.insert(fallthrough) {
+                            maybe_debug_seal(
+                                "chan_send_exception_fallthrough",
+                                op_idx,
+                                fallthrough,
+                            );
+                            seal_block_once(&mut builder, &mut sealed_blocks, fallthrough);
+                        }
+                        switch_to_block_with_rebind(
+                            &mut builder,
+                            fallthrough,
+                            &mut is_block_filled,
+                            true,
+                        );
+                        is_block_filled = false;
+                    }
+
                     let pending_const = builder.ins().iconst(types::I64, pending_bits());
                     let is_pending = builder.ins().icmp(IntCC::Equal, res, pending_const);
 
-                    let next_block = state_blocks[&next_state_id];
+                    let next_block = resume_blocks[&next_state_id];
                     let ready_path = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(ready_path, current_block);
@@ -21719,21 +21826,7 @@ impl SimpleBackend {
                     )
                     .expect("Pending state not found");
                     let next_state_id = op.value.unwrap_or(0);
-                    let self_bits = *var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        "self",
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Self not found");
-                    let self_ptr = unbox_ptr_value(&mut builder, self_bits, &nbc);
+                    let self_ptr = builder.block_params(entry_block)[0];
 
                     let pending_state_id = unbox_int(&mut builder, pending_state_bits, &nbc);
                     let set_state_crecv1 = import_func_ref(
@@ -21760,10 +21853,44 @@ impl SimpleBackend {
                     let call = builder.ins().call(local_callee, &[*chan]);
                     let res = builder.inst_results(call)[0];
 
+                    if let Some(target_id) = next_check_exception_target(ops, op_idx)
+                        && let Some(&target_block) = label_blocks.get(&target_id)
+                    {
+                        let fallthrough = builder.create_block();
+                        reachable_blocks.insert(target_block);
+                        reachable_blocks.insert(fallthrough);
+                        let exc_call = builder.ins().call(local_exc_pending_fast, &[]);
+                        let pending_exc = builder.inst_results(exc_call)[0];
+                        let has_exception = builder.ins().icmp_imm(IntCC::NotEqual, pending_exc, 0);
+                        brif_block(
+                            &mut builder,
+                            has_exception,
+                            target_block,
+                            &[],
+                            fallthrough,
+                            &[],
+                        );
+                        if sealed_blocks.insert(fallthrough) {
+                            maybe_debug_seal(
+                                "chan_recv_exception_fallthrough",
+                                op_idx,
+                                fallthrough,
+                            );
+                            seal_block_once(&mut builder, &mut sealed_blocks, fallthrough);
+                        }
+                        switch_to_block_with_rebind(
+                            &mut builder,
+                            fallthrough,
+                            &mut is_block_filled,
+                            true,
+                        );
+                        is_block_filled = false;
+                    }
+
                     let pending_const = builder.ins().iconst(types::I64, pending_bits());
                     let is_pending = builder.ins().icmp(IntCC::Equal, res, pending_const);
 
-                    let next_block = state_blocks[&next_state_id];
+                    let next_block = resume_blocks[&next_state_id];
                     let ready_path = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(ready_path, current_block);
@@ -23765,7 +23892,7 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let raise_call = builder.ins().call(raise_ref, &[]);
-                        if has_ret {
+                        if returns_value {
                             let raise_results = builder.inst_results(raise_call);
                             let err_val = if raise_results.is_empty() {
                                 builder.ins().iconst(types::I64, box_none())
@@ -24634,7 +24761,7 @@ impl SimpleBackend {
                         );
                         builder.ins().call(trace_exit_ref, &[]);
                     }
-                    if has_ret {
+                    if returns_value {
                         let none_bits = builder.ins().iconst(types::I64, box_none());
                         builder.ins().return_(&[none_bits]);
                     } else {
@@ -24687,7 +24814,7 @@ impl SimpleBackend {
                         );
                         builder.ins().call(trace_exit_ref, &[]);
                     }
-                    if has_ret {
+                    if returns_value {
                         let none_bits = builder.ins().iconst(types::I64, box_none());
                         builder.ins().return_(&[none_bits]);
                     } else {
@@ -27977,14 +28104,14 @@ impl SimpleBackend {
                     let target_id = op.value.unwrap_or(0);
                     if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok() {
                         eprintln!(
-                            "[CHECK_EXC] func={} op={} target_id={} found_in_state_blocks={}",
+                            "[CHECK_EXC] func={} op={} target_id={} found_in_label_blocks={}",
                             func_ir.name,
                             op_idx,
                             target_id,
-                            state_blocks.contains_key(&target_id)
+                            label_blocks.contains_key(&target_id)
                         );
                     }
-                    let Some(&target_block) = state_blocks.get(&target_id) else {
+                    let Some(&target_block) = label_blocks.get(&target_id) else {
                         // Orphaned check_exception (handler stripped by IR pass) — skip.
                         continue;
                     };
@@ -32382,22 +32509,26 @@ impl SimpleBackend {
                 }
                 "closure_load" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Object not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
-                    let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
+                    let obj_ptr = if stateful && args.first().map(String::as_str) == Some("self") {
+                        builder.block_params(entry_block)[0]
+                    } else {
+                        let obj = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("Object not found");
+                        unbox_ptr_value(&mut builder, *obj, &nbc)
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -32415,20 +32546,6 @@ impl SimpleBackend {
                 }
                 "closure_store" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Object not found");
                     let val = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
@@ -32444,7 +32561,25 @@ impl SimpleBackend {
                     )
                     .expect("Value not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
-                    let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
+                    let obj_ptr = if stateful && args.first().map(String::as_str) == Some("self") {
+                        builder.block_params(entry_block)[0]
+                    } else {
+                        let obj = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("Object not found");
+                        unbox_ptr_value(&mut builder, *obj, &nbc)
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -33847,7 +33982,7 @@ impl SimpleBackend {
                             }
                         }
                         reachable_blocks.insert(master_return_block);
-                        if has_ret {
+                        if returns_value {
                             let none_bits = builder.ins().iconst(types::I64, box_none());
                             jump_block(&mut builder, master_return_block, &[none_bits]);
                         } else {
@@ -34032,7 +34167,7 @@ impl SimpleBackend {
                         }
                     }
                     reachable_blocks.insert(master_return_block);
-                    if has_ret {
+                    if returns_value {
                         jump_block(&mut builder, master_return_block, &[ret_val]);
                     } else {
                         jump_block(&mut builder, master_return_block, &[]);
@@ -34128,7 +34263,7 @@ impl SimpleBackend {
                         }
                     }
                     reachable_blocks.insert(master_return_block);
-                    if has_ret {
+                    if returns_value {
                         let none_bits = builder.ins().iconst(types::I64, box_none());
                         jump_block(&mut builder, master_return_block, &[none_bits]);
                     } else {
@@ -34138,7 +34273,7 @@ impl SimpleBackend {
                 }
                 "jump" => {
                     let target_id = op.value.unwrap_or(0);
-                    let target_block = state_blocks[&target_id];
+                    let target_block = label_blocks[&target_id];
                     if let Some(block) = builder.current_block() {
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
                         let cleanup = drain_cleanup_tracked_dedup(
@@ -34226,7 +34361,7 @@ impl SimpleBackend {
                 "br_if" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let target_id = op.value.unwrap_or(0);
-                    let target_block = state_blocks[&target_id];
+                    let target_block = label_blocks[&target_id];
                     let origin_block = builder
                         .current_block()
                         .expect("br_if requires an active block");
@@ -34455,7 +34590,7 @@ impl SimpleBackend {
                 }
                 "label" | "state_label" => {
                     let label_id = op.value.unwrap_or(0);
-                    let block = state_blocks[&label_id];
+                    let block = label_blocks[&label_id];
                     let is_function_exception_label = Some(label_id) == function_exception_label_id;
                     let label_live_join_vars: BTreeMap<String, Variable> = label_join_slots
                         .get(&label_id)
@@ -34477,9 +34612,9 @@ impl SimpleBackend {
                     // Prevent normal fallthrough into the function-level exception handler.
                     if is_function_exception_label && !is_block_filled {
                         reachable_blocks.insert(master_return_block);
-                        if has_ret {
-                            let zero = builder.ins().iconst(types::I64, 0);
-                            jump_block(&mut builder, master_return_block, &[zero]);
+                        if returns_value {
+                            let none_bits = builder.ins().iconst(types::I64, box_none());
+                            jump_block(&mut builder, master_return_block, &[none_bits]);
                         } else {
                             jump_block(&mut builder, master_return_block, &[]);
                         }
@@ -35213,9 +35348,9 @@ impl SimpleBackend {
                     builder.ins().call(local_dec_ref_obj, &[*val]);
                 }
             }
-            if has_ret {
-                let zero = builder.ins().iconst(types::I64, 0);
-                jump_block(&mut builder, master_return_block, &[zero]);
+            if returns_value {
+                let none_bits = builder.ins().iconst(types::I64, box_none());
+                jump_block(&mut builder, master_return_block, &[none_bits]);
             } else {
                 jump_block(&mut builder, master_return_block, &[]);
             }
@@ -35258,7 +35393,7 @@ impl SimpleBackend {
             builder.ins().call(local_arena_free, &[arena_ptr]);
         }
 
-        let final_res = if has_ret {
+        let final_res = if returns_value {
             let res = builder.block_params(master_return_block)[0];
             Some(res)
         } else {
@@ -36105,6 +36240,11 @@ mod tests {
         assert_eq!(analysis.if_to_else.get(&1), Some(&3));
         assert_eq!(analysis.else_to_end_if.get(&3), Some(&4));
         assert_eq!(analysis.state_ids, vec![7, 42]);
+        assert_eq!(analysis.label_ids, vec![42]);
+        assert!(analysis.state_label_ids.contains(&42));
+        assert!(!analysis.state_label_ids.contains(&7));
+        assert!(analysis.shared_resume_label_ids.contains(&42));
+        assert!(!analysis.shared_resume_label_ids.contains(&7));
         assert!(analysis.resume_states.contains(&7));
         assert!(analysis.resume_states.contains(&42));
         assert_eq!(analysis.function_exception_label_id, Some(42));
@@ -36213,6 +36353,107 @@ mod tests {
         assert!(
             analysis.resume_states.contains(&302),
             "channel receive ready continuations are stored in object state and must dispatch",
+        );
+    }
+
+    #[test]
+    fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
+        let func = FunctionIR {
+            name: "resume_label_collision".to_string(),
+            params: vec!["self".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "state_label".to_string(),
+                    value: Some(12),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("pending_state".to_string()),
+                    value: Some(12),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_transition".to_string(),
+                    args: Some(vec![
+                        "future".to_string(),
+                        "await_slot".to_string(),
+                        "pending_state".to_string(),
+                    ]),
+                    value: Some(13),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(13),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert_eq!(analysis.label_ids, vec![12, 13]);
+        assert!(analysis.resume_states.contains(&12));
+        assert!(analysis.resume_states.contains(&13));
+        assert!(analysis.state_label_ids.contains(&12));
+        assert!(analysis.shared_resume_label_ids.contains(&12));
+        assert!(
+            !analysis.state_label_ids.contains(&13),
+            "a plain label with the same numeric id as a ready continuation must not share its resume block",
+        );
+        assert!(
+            !analysis.shared_resume_label_ids.contains(&13),
+            "a plain label collision is not a persisted pending label and must stay separate",
+        );
+    }
+
+    #[test]
+    fn preanalysis_marks_pending_plain_labels_as_shared_resume_entries() {
+        let func = FunctionIR {
+            name: "pending_plain_label".to_string(),
+            params: vec!["self".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("pending_state".to_string()),
+                    value: Some(12),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_transition".to_string(),
+                    args: Some(vec![
+                        "future".to_string(),
+                        "await_slot".to_string(),
+                        "pending_state".to_string(),
+                    ]),
+                    value: Some(13),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(12),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert_eq!(analysis.label_ids, vec![12]);
+        assert!(analysis.resume_states.contains(&12));
+        assert!(analysis.resume_states.contains(&13));
+        assert!(!analysis.state_label_ids.contains(&12));
+        assert!(analysis.shared_resume_label_ids.contains(&12));
+        assert!(
+            !analysis.shared_resume_label_ids.contains(&13),
+            "ready-continuation states use dedicated resume blocks unless a textual label is actually persisted",
         );
     }
 
