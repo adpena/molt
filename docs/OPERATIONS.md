@@ -442,6 +442,10 @@ uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec
   freshness, daemon staleness checks, and native link inputs must use these
   aliases, including target-triple-specific aliases, so `micro` and `full`
   builds cannot overwrite or stale-check each other through the scratch name.
+  The `micro` profile includes collection and filesystem/tempfile intrinsics
+  because core/default-profile stdlib imports such as `collections.abc`,
+  `copyreg`, `runpy`, and `tempfile` must link against a coherent intrinsic
+  surface.
 - **Backend daemon**: native backend compiles use a persistent daemon by
   default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift cold-start. Tune
   startup with `MOLT_BACKEND_DAEMON_START_TIMEOUT`. The daemon enforces bounded

@@ -19,3 +19,17 @@ def test_exception_object_slots_are_runtime_owned() -> None:
     assert "clear_exceptions_runtime_state" in (
         ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
     ).read_text(encoding="utf-8")
+
+
+def test_module_object_slots_are_runtime_owned() -> None:
+    text = (ROOT / "runtime/molt-runtime/src/builtins/modules.rs").read_text(
+        encoding="utf-8"
+    )
+    statics = re.findall(r"^\s*static\s+([A-Z0-9_]+)\s*:\s*AtomicU64", text, re.M)
+
+    assert statics == ["TRACE_LAST_OP"]
+    assert "struct ModulesRuntimeState" in text
+    assert "modules_clear_runtime_state" in text
+    assert "clear_modules_runtime_state" in (
+        ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
+    ).read_text(encoding="utf-8")

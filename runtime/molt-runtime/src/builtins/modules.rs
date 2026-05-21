@@ -210,14 +210,80 @@ fn module_bits_are_module_like(bits: u64) -> bool {
     ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT
 }
 
+const MODULES_OBJECT_SLOT_COUNT: usize = 15;
+
+pub(crate) struct ModulesRuntimeState {
+    copyreg_dispatch_table_bits: AtomicU64,
+    copyreg_extension_registry_bits: AtomicU64,
+    copyreg_inverted_registry_bits: AtomicU64,
+    copyreg_extension_cache_bits: AtomicU64,
+    copyreg_constructor_registry_bits: AtomicU64,
+    runpy_import_dunder_name: AtomicU64,
+    module_path_name: AtomicU64,
+    module_name_name: AtomicU64,
+    module_file_name: AtomicU64,
+    module_package_name: AtomicU64,
+    module_cached_name: AtomicU64,
+    module_spec_name: AtomicU64,
+    module_doc_name: AtomicU64,
+    module_loader_name: AtomicU64,
+    sys_argv_name: AtomicU64,
+}
+
+impl ModulesRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            copyreg_dispatch_table_bits: AtomicU64::new(0),
+            copyreg_extension_registry_bits: AtomicU64::new(0),
+            copyreg_inverted_registry_bits: AtomicU64::new(0),
+            copyreg_extension_cache_bits: AtomicU64::new(0),
+            copyreg_constructor_registry_bits: AtomicU64::new(0),
+            runpy_import_dunder_name: AtomicU64::new(0),
+            module_path_name: AtomicU64::new(0),
+            module_name_name: AtomicU64::new(0),
+            module_file_name: AtomicU64::new(0),
+            module_package_name: AtomicU64::new(0),
+            module_cached_name: AtomicU64::new(0),
+            module_spec_name: AtomicU64::new(0),
+            module_doc_name: AtomicU64::new(0),
+            module_loader_name: AtomicU64::new(0),
+            sys_argv_name: AtomicU64::new(0),
+        }
+    }
+
+    fn object_slots(&self) -> [&AtomicU64; MODULES_OBJECT_SLOT_COUNT] {
+        [
+            &self.copyreg_dispatch_table_bits,
+            &self.copyreg_extension_registry_bits,
+            &self.copyreg_inverted_registry_bits,
+            &self.copyreg_extension_cache_bits,
+            &self.copyreg_constructor_registry_bits,
+            &self.runpy_import_dunder_name,
+            &self.module_path_name,
+            &self.module_name_name,
+            &self.module_file_name,
+            &self.module_package_name,
+            &self.module_cached_name,
+            &self.module_spec_name,
+            &self.module_doc_name,
+            &self.module_loader_name,
+            &self.sys_argv_name,
+        ]
+    }
+}
+
+fn modules_state(_py: &PyToken<'_>) -> &'static ModulesRuntimeState {
+    &runtime_state(_py).modules
+}
+
+pub(crate) fn modules_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+    crate::gil_assert();
+    let slots = state.modules.object_slots();
+    crate::state::cache::clear_atomic_slots(_py, &slots);
+}
+
 static TRACE_LAST_OP: AtomicU64 = AtomicU64::new(0);
 static TRACE_SIGTRAP_INSTALLED: AtomicBool = AtomicBool::new(false);
-static COPYREG_DISPATCH_TABLE_BITS: AtomicU64 = AtomicU64::new(0);
-static COPYREG_EXTENSION_REGISTRY_BITS: AtomicU64 = AtomicU64::new(0);
-static COPYREG_INVERTED_REGISTRY_BITS: AtomicU64 = AtomicU64::new(0);
-static COPYREG_EXTENSION_CACHE_BITS: AtomicU64 = AtomicU64::new(0);
-static COPYREG_CONSTRUCTOR_REGISTRY_BITS: AtomicU64 = AtomicU64::new(0);
-static RUNPY_IMPORT_DUNDER_NAME: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn trace_sigtrap_handler(sig: i32) {
@@ -1157,7 +1223,11 @@ unsafe fn runpy_import_via_builtins(_py: &PyToken<'_>, name: &str) -> Result<Opt
             return Ok(None);
         };
         let missing = missing_bits(_py);
-        let import_name_bits = intern_static_name(_py, &RUNPY_IMPORT_DUNDER_NAME, b"__import__");
+        let import_name_bits = intern_static_name(
+            _py,
+            &modules_state(_py).runpy_import_dunder_name,
+            b"__import__",
+        );
         let import_bits = molt_getattr_builtin(builtins_bits, import_name_bits, missing);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
@@ -1246,8 +1316,7 @@ unsafe fn runpy_module_dict_ptr(_py: &PyToken<'_>, module_bits: u64) -> Result<*
 
 unsafe fn runpy_module_is_package(_py: &PyToken<'_>, module_dict_ptr: *mut u8) -> bool {
     unsafe {
-        static MODULE_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-        let path_name = intern_static_name(_py, &MODULE_PATH_NAME, b"__path__");
+        let path_name = intern_static_name(_py, &modules_state(_py).module_path_name, b"__path__");
         if let Some(bits) = dict_get_in_place(_py, module_dict_ptr, path_name) {
             return !obj_from_bits(bits).is_none();
         }
@@ -1262,14 +1331,6 @@ unsafe fn runpy_apply_module_metadata(
     target_name: &str,
 ) -> Result<(), u64> {
     unsafe {
-        static MODULE_NAME_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_FILE_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_PACKAGE_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_CACHED_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_DOC_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-
         let target_name_ptr = alloc_string(_py, target_name.as_bytes());
         if target_name_ptr.is_null() {
             return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
@@ -1278,13 +1339,26 @@ unsafe fn runpy_apply_module_metadata(
         dict_set_str_key_bits(_py, out_ptr, "__name__", target_name_bits)?;
         dec_ref_bits(_py, target_name_bits);
 
+        let module_state = modules_state(_py);
         let specials: [(&str, &[u8], &AtomicU64); 6] = [
-            ("__file__", b"__file__", &MODULE_FILE_NAME),
-            ("__package__", b"__package__", &MODULE_PACKAGE_NAME),
-            ("__cached__", b"__cached__", &MODULE_CACHED_NAME),
-            ("__spec__", b"__spec__", &MODULE_SPEC_NAME),
-            ("__doc__", b"__doc__", &MODULE_DOC_NAME),
-            ("__loader__", b"__loader__", &MODULE_LOADER_NAME),
+            ("__file__", b"__file__", &module_state.module_file_name),
+            (
+                "__package__",
+                b"__package__",
+                &module_state.module_package_name,
+            ),
+            (
+                "__cached__",
+                b"__cached__",
+                &module_state.module_cached_name,
+            ),
+            ("__spec__", b"__spec__", &module_state.module_spec_name),
+            ("__doc__", b"__doc__", &module_state.module_doc_name),
+            (
+                "__loader__",
+                b"__loader__",
+                &module_state.module_loader_name,
+            ),
         ];
         for (public_name, interned, slot) in specials {
             let key_bits = intern_static_name(_py, slot, interned);
@@ -1294,7 +1368,7 @@ unsafe fn runpy_apply_module_metadata(
         }
 
         // Keep __name__ lookup warm for metadata reads in repeated runs.
-        let _ = intern_static_name(_py, &MODULE_NAME_NAME, b"__name__");
+        let _ = intern_static_name(_py, &module_state.module_name_name, b"__name__");
         Ok(())
     }
 }
@@ -2739,7 +2813,6 @@ unsafe fn runpy_restore_sys_modules_swap(
 
 unsafe fn runpy_sys_argv_list_bits(_py: &PyToken<'_>) -> Result<Option<u64>, u64> {
     unsafe {
-        static SYS_ARGV_NAME: AtomicU64 = AtomicU64::new(0);
         let Some(sys_bits) = runpy_sys_module_bits(_py) else {
             return Ok(None);
         };
@@ -2749,7 +2822,7 @@ unsafe fn runpy_sys_argv_list_bits(_py: &PyToken<'_>) -> Result<Option<u64>, u64
         if object_type_id(sys_ptr) != TYPE_ID_MODULE {
             return Ok(None);
         }
-        let argv_name_bits = intern_static_name(_py, &SYS_ARGV_NAME, b"argv");
+        let argv_name_bits = intern_static_name(_py, &modules_state(_py).sys_argv_name, b"argv");
         if obj_from_bits(argv_name_bits).is_none() {
             return if exception_pending(_py) {
                 Err(MoltObject::none().bits())
@@ -2974,23 +3047,21 @@ pub extern "C" fn molt_runpy_run_module(
             }
         };
         let alter_sys = is_truthy(_py, obj_from_bits(alter_sys_bits));
-        if alter_sys {
-            let sys_path = unsafe { runpy_sys_path_entries(_py) };
-            if let Some((source_path, import_name, package_name)) =
-                runpy_resolve_module_source(&mod_name, &sys_path)
-            {
-                return unsafe {
-                    runpy_run_module_from_resolved_source(
-                        _py,
-                        &source_path,
-                        &import_name,
-                        &package_name,
-                        requested_run_name.as_deref(),
-                        init_dict_ptr,
-                        true,
-                    )
-                };
-            }
+        let sys_path = unsafe { runpy_sys_path_entries(_py) };
+        if let Some((source_path, import_name, package_name)) =
+            runpy_resolve_module_source(&mod_name, &sys_path)
+        {
+            return unsafe {
+                runpy_run_module_from_resolved_source(
+                    _py,
+                    &source_path,
+                    &import_name,
+                    &package_name,
+                    requested_run_name.as_deref(),
+                    init_dict_ptr,
+                    alter_sys,
+                )
+            };
         }
         let mut import_name = mod_name.clone();
         let mut module_bits = match unsafe { runpy_import_module_bits(_py, &import_name) } {
@@ -3326,7 +3397,7 @@ fn copyreg_set_slot_bits(_py: &PyToken<'_>, slot: &AtomicU64) -> u64 {
 }
 
 fn copyreg_dispatch_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
-    let bits = copyreg_dict_slot_bits(_py, &COPYREG_DISPATCH_TABLE_BITS);
+    let bits = copyreg_dict_slot_bits(_py, &modules_state(_py).copyreg_dispatch_table_bits);
     let ptr = obj_from_bits(bits).as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
@@ -3337,7 +3408,7 @@ fn copyreg_dispatch_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
 }
 
 fn copyreg_extension_registry_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
-    let bits = copyreg_dict_slot_bits(_py, &COPYREG_EXTENSION_REGISTRY_BITS);
+    let bits = copyreg_dict_slot_bits(_py, &modules_state(_py).copyreg_extension_registry_bits);
     let ptr = obj_from_bits(bits).as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
@@ -3348,7 +3419,7 @@ fn copyreg_extension_registry_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
 }
 
 fn copyreg_inverted_registry_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
-    let bits = copyreg_dict_slot_bits(_py, &COPYREG_INVERTED_REGISTRY_BITS);
+    let bits = copyreg_dict_slot_bits(_py, &modules_state(_py).copyreg_inverted_registry_bits);
     let ptr = obj_from_bits(bits).as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
@@ -3359,7 +3430,7 @@ fn copyreg_inverted_registry_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
 }
 
 fn copyreg_extension_cache_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
-    let bits = copyreg_dict_slot_bits(_py, &COPYREG_EXTENSION_CACHE_BITS);
+    let bits = copyreg_dict_slot_bits(_py, &modules_state(_py).copyreg_extension_cache_bits);
     let ptr = obj_from_bits(bits).as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
@@ -3370,7 +3441,7 @@ fn copyreg_extension_cache_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
 }
 
 fn copyreg_constructor_registry_ptr(_py: &PyToken<'_>) -> Option<*mut u8> {
-    let bits = copyreg_set_slot_bits(_py, &COPYREG_CONSTRUCTOR_REGISTRY_BITS);
+    let bits = copyreg_set_slot_bits(_py, &modules_state(_py).copyreg_constructor_registry_bits);
     let ptr = obj_from_bits(bits).as_ptr()?;
     unsafe {
         if object_type_id(ptr) != TYPE_ID_SET {
@@ -3515,11 +3586,15 @@ fn copyreg_reconstructor_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copyreg_bootstrap() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let dispatch_bits = copyreg_dict_slot_bits(_py, &COPYREG_DISPATCH_TABLE_BITS);
-        let extension_bits = copyreg_dict_slot_bits(_py, &COPYREG_EXTENSION_REGISTRY_BITS);
-        let inverted_bits = copyreg_dict_slot_bits(_py, &COPYREG_INVERTED_REGISTRY_BITS);
-        let cache_bits = copyreg_dict_slot_bits(_py, &COPYREG_EXTENSION_CACHE_BITS);
-        let constructor_bits = copyreg_set_slot_bits(_py, &COPYREG_CONSTRUCTOR_REGISTRY_BITS);
+        let module_state = modules_state(_py);
+        let dispatch_bits = copyreg_dict_slot_bits(_py, &module_state.copyreg_dispatch_table_bits);
+        let extension_bits =
+            copyreg_dict_slot_bits(_py, &module_state.copyreg_extension_registry_bits);
+        let inverted_bits =
+            copyreg_dict_slot_bits(_py, &module_state.copyreg_inverted_registry_bits);
+        let cache_bits = copyreg_dict_slot_bits(_py, &module_state.copyreg_extension_cache_bits);
+        let constructor_bits =
+            copyreg_set_slot_bits(_py, &module_state.copyreg_constructor_registry_bits);
         if obj_from_bits(dispatch_bits).is_none()
             || obj_from_bits(extension_bits).is_none()
             || obj_from_bits(inverted_bits).is_none()
@@ -5013,6 +5088,7 @@ pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     struct ModuleCacheRestore {
         name_bits: u64,
@@ -5053,6 +5129,52 @@ mod tests {
                 dec_ref_bits(_py, self.name_bits);
             });
         }
+    }
+
+    #[test]
+    fn modules_runtime_state_is_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            let dispatch_bits =
+                copyreg_dict_slot_bits(_py, &state.modules.copyreg_dispatch_table_bits);
+            assert_ne!(dispatch_bits, 0);
+            assert_ne!(
+                state
+                    .modules
+                    .copyreg_dispatch_table_bits
+                    .load(Ordering::Acquire),
+                0
+            );
+            let constructors_bits =
+                copyreg_set_slot_bits(_py, &state.modules.copyreg_constructor_registry_bits);
+            assert_ne!(constructors_bits, 0);
+            assert_ne!(
+                state
+                    .modules
+                    .copyreg_constructor_registry_bits
+                    .load(Ordering::Acquire),
+                0
+            );
+            let import_name =
+                intern_static_name(_py, &state.modules.runpy_import_dunder_name, b"__import__");
+            assert_ne!(import_name, 0);
+            assert_ne!(
+                state
+                    .modules
+                    .runpy_import_dunder_name
+                    .load(Ordering::Acquire),
+                0
+            );
+
+            modules_clear_runtime_state(_py, state);
+
+            for slot in state.modules.object_slots() {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+        });
     }
 
     #[test]
