@@ -539,8 +539,15 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                         } else {
                             0
                         };
-                        let vec = vec![fill; total];
-                        let storage_ptr = crate::object::layout::ListBoolStorage::from_vec(vec);
+                        let Some(storage_ptr) =
+                            crate::object::layout::ListBoolStorage::filled(total, fill)
+                        else {
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "list allocation failed",
+                            );
+                        };
                         let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
                             + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
                             + std::mem::size_of::<u64>(); // padding
@@ -560,8 +567,15 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
                     // enabling direct memory loads in the native backend's inline
                     // getitem/setitem paths.
                     if let Some(int_val) = val_obj.as_int() {
-                        let vec = vec![int_val; total];
-                        let storage_ptr = crate::object::layout::ListIntStorage::from_vec(vec);
+                        let Some(storage_ptr) =
+                            crate::object::layout::ListIntStorage::filled(total, int_val)
+                        else {
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "list allocation failed",
+                            );
+                        };
                         let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
                             + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
                             + std::mem::size_of::<u64>(); // padding
@@ -612,16 +626,12 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
             }
             TYPE_ID_LIST_BOOL => {
                 let elems = crate::object::layout::list_bool_vec_ref(ptr);
-                let total = match elems.len().checked_mul(times) {
-                    Some(total) => total,
-                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
-                };
                 let src = elems.as_slice();
-                let mut combined = Vec::with_capacity(total);
-                for _ in 0..times {
-                    combined.extend_from_slice(src);
-                }
-                let storage_ptr = crate::object::layout::ListBoolStorage::from_vec(combined);
+                let Some(storage_ptr) =
+                    crate::object::layout::ListBoolStorage::repeated_slice(src, times)
+                else {
+                    return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+                };
                 let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
                     + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
                     + std::mem::size_of::<u64>();
@@ -635,18 +645,11 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
             }
             TYPE_ID_LIST_INT => {
                 let elems = crate::object::layout::list_int_vec_ref(ptr);
-                let total = match elems.len().checked_mul(times) {
-                    Some(total) => total,
-                    None => return raise_exception::<_>(_py, "MemoryError", "out of memory"),
+                let Some(storage_ptr) =
+                    crate::object::layout::ListIntStorage::repeated_slice(elems.as_slice(), times)
+                else {
+                    return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
                 };
-                // ListIntSliceRef stores raw (data, len) — reconstruct a
-                // slice for bulk copy without depending on Vec layout.
-                let src = std::slice::from_raw_parts(elems.iter().as_slice().as_ptr(), elems.len());
-                let mut combined = Vec::with_capacity(total);
-                for _ in 0..times {
-                    combined.extend_from_slice(src);
-                }
-                let storage_ptr = crate::object::layout::ListIntStorage::from_vec(combined);
                 let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
                     + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
                     + std::mem::size_of::<u64>();
