@@ -3,9 +3,9 @@ use crate::object::{HEADER_FLAG_COROUTINE, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF, N
 use molt_obj_model::MoltObject;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
@@ -21,10 +21,7 @@ use crate::builtins::methods::{
 };
 use crate::*;
 
-static PROPERTY_DOCS: OnceLock<Mutex<HashMap<PtrSlot, u64>>> = OnceLock::new();
-static PROPERTY_DOC_NAME: AtomicU64 = AtomicU64::new(0);
-static ATTR_SITE_NAME_CACHE: OnceLock<Mutex<HashMap<u64, u64>>> = OnceLock::new();
-static GENERIC_ALIAS_MRO_ENTRIES: AtomicU64 = AtomicU64::new(0);
+const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 5;
 
 /// Result-level inline cache entry for attribute lookups.
 /// Caches the full lookup result alongside the attribute name to skip
@@ -43,12 +40,51 @@ struct AttrICEntry {
     class_bits: u64,
 }
 
-static ATTR_IC_RESULT_CACHE: OnceLock<Mutex<HashMap<u64, AttrICEntry>>> = OnceLock::new();
+pub(crate) struct AttributesRuntimeState {
+    property_docs: Mutex<HashMap<PtrSlot, u64>>,
+    property_doc_name: AtomicU64,
+    attr_site_name_cache: Mutex<HashMap<u64, u64>>,
+    generic_alias_mro_entries: AtomicU64,
+    attr_ic_result_cache: Mutex<HashMap<u64, AttrICEntry>>,
+    bytes_fromhex: AtomicU64,
+    bytearray_fromhex: AtomicU64,
+    memoryview_from_flags: AtomicU64,
+}
+
+impl AttributesRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            property_docs: Mutex::new(HashMap::new()),
+            property_doc_name: AtomicU64::new(0),
+            attr_site_name_cache: Mutex::new(HashMap::new()),
+            generic_alias_mro_entries: AtomicU64::new(0),
+            attr_ic_result_cache: Mutex::new(HashMap::new()),
+            bytes_fromhex: AtomicU64::new(0),
+            bytearray_fromhex: AtomicU64::new(0),
+            memoryview_from_flags: AtomicU64::new(0),
+        }
+    }
+
+    fn object_slots(&self) -> [&AtomicU64; ATTRIBUTES_OBJECT_SLOT_COUNT] {
+        [
+            &self.property_doc_name,
+            &self.generic_alias_mro_entries,
+            &self.bytes_fromhex,
+            &self.bytearray_fromhex,
+            &self.memoryview_from_flags,
+        ]
+    }
+}
+
 static ATTR_LOOKUP_TRACE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static ATTR_LOOKUP_TRACE_LINES: AtomicUsize = AtomicUsize::new(0);
 
-fn attr_ic_result_cache() -> &'static Mutex<HashMap<u64, AttrICEntry>> {
-    ATTR_IC_RESULT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn attributes_state(_py: &PyToken<'_>) -> &'static AttributesRuntimeState {
+    &crate::runtime_state(_py).attributes
+}
+
+fn attr_ic_result_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, AttrICEntry>> {
+    &attributes_state(_py).attr_ic_result_cache
 }
 
 struct AttrLookupTraceGuard {
@@ -87,12 +123,12 @@ fn is_task_trampoline_attr_name(attr_name: &str) -> bool {
     )
 }
 
-fn property_docs() -> &'static Mutex<HashMap<PtrSlot, u64>> {
-    PROPERTY_DOCS.get_or_init(|| Mutex::new(HashMap::new()))
+fn property_docs(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, u64>> {
+    &attributes_state(_py).property_docs
 }
 
-pub(crate) fn clear_property_docs(_py: &PyToken<'_>) {
-    let mut guard = property_docs().lock().unwrap();
+fn clear_property_docs(_py: &PyToken<'_>, attributes: &AttributesRuntimeState) {
+    let mut guard = attributes.property_docs.lock().unwrap();
     let old = std::mem::take(&mut *guard);
     drop(guard);
     for (_ptr, bits) in old {
@@ -102,12 +138,13 @@ pub(crate) fn clear_property_docs(_py: &PyToken<'_>) {
     }
 }
 
-fn attr_site_name_cache() -> &'static Mutex<HashMap<u64, u64>> {
-    ATTR_SITE_NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn attr_site_name_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
+    &attributes_state(_py).attr_site_name_cache
 }
 
-pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
-    let mut cache = attr_site_name_cache()
+fn clear_attr_site_name_cache(_py: &PyToken<'_>, attributes: &AttributesRuntimeState) {
+    let mut cache = attributes
+        .attr_site_name_cache
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     for (_site, bits) in cache.drain() {
@@ -116,7 +153,8 @@ pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
         }
     }
     // Also clear the result IC cache.
-    let mut rc = attr_ic_result_cache()
+    let mut rc = attributes
+        .attr_ic_result_cache
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     for (_site, entry) in rc.drain() {
@@ -130,6 +168,18 @@ pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
             dec_ref_bits(_py, entry.class_bits);
         }
     }
+}
+
+pub(crate) fn attributes_clear_runtime_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) {
+    crate::gil_assert();
+    let attributes = &state.attributes;
+    clear_attr_site_name_cache(_py, attributes);
+    clear_property_docs(_py, attributes);
+    let slots = attributes.object_slots();
+    crate::state::cache::clear_atomic_slots(_py, &slots);
 }
 
 fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
@@ -161,7 +211,7 @@ unsafe fn attr_ic_class_bits(obj_ptr: *mut u8, type_id: u32) -> u64 {
 
 unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8]) -> Option<u64> {
     unsafe {
-        let mut cache = attr_site_name_cache()
+        let mut cache = attr_site_name_cache(_py)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if let Some(bits) = cache.get(&site_id).copied() {
@@ -187,7 +237,7 @@ unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8])
 }
 
 fn property_doc_bits(_py: &PyToken<'_>, prop_ptr: *mut u8) -> u64 {
-    if let Some(bits) = property_docs()
+    if let Some(bits) = property_docs(_py)
         .lock()
         .unwrap()
         .get(&PtrSlot(prop_ptr))
@@ -203,7 +253,8 @@ fn property_doc_bits(_py: &PyToken<'_>, prop_ptr: *mut u8) -> u64 {
     if let Some(get_ptr) = obj_from_bits(get_bits).as_ptr()
         && unsafe { object_type_id(get_ptr) } == TYPE_ID_FUNCTION
     {
-        let doc_bits = intern_static_name(_py, &PROPERTY_DOC_NAME, b"__doc__");
+        let doc_bits =
+            intern_static_name(_py, &attributes_state(_py).property_doc_name, b"__doc__");
         if let Some(bits) = unsafe { function_attr_bits(_py, get_ptr, doc_bits) } {
             inc_ref_bits(_py, bits);
             return bits;
@@ -213,7 +264,7 @@ fn property_doc_bits(_py: &PyToken<'_>, prop_ptr: *mut u8) -> u64 {
 }
 
 fn property_doc_set(_py: &PyToken<'_>, prop_ptr: *mut u8, val_bits: u64) {
-    let mut guard = property_docs().lock().unwrap();
+    let mut guard = property_docs(_py).lock().unwrap();
     let key = PtrSlot(prop_ptr);
     if obj_from_bits(val_bits).is_none() {
         if let Some(old_bits) = guard.remove(&key) {
@@ -609,9 +660,12 @@ unsafe fn type_attr_lookup_ptr_inner(
             }
             if class_bits == builtins.bytes {
                 if name == "fromhex" {
-                    static BYTES_FROMHEX: AtomicU64 = AtomicU64::new(0);
-                    let func_bits =
-                        builtin_func_bits(_py, &BYTES_FROMHEX, fn_addr!(molt_bytes_fromhex), 2);
+                    let func_bits = builtin_func_bits(
+                        _py,
+                        &attributes_state(_py).bytes_fromhex,
+                        fn_addr!(molt_bytes_fromhex),
+                        2,
+                    );
                     let bound = molt_bound_method_new(func_bits, class_bits);
                     return Some(bound);
                 }
@@ -624,10 +678,9 @@ unsafe fn type_attr_lookup_ptr_inner(
             }
             if class_bits == builtins.bytearray {
                 if name == "fromhex" {
-                    static BYTEARRAY_FROMHEX: AtomicU64 = AtomicU64::new(0);
                     let func_bits = builtin_func_bits(
                         _py,
-                        &BYTEARRAY_FROMHEX,
+                        &attributes_state(_py).bytearray_fromhex,
                         fn_addr!(molt_bytearray_fromhex),
                         2,
                     );
@@ -642,10 +695,9 @@ unsafe fn type_attr_lookup_ptr_inner(
                 }
             }
             if class_bits == builtins.memoryview && name == "_from_flags" {
-                static MEMORYVIEW_FROM_FLAGS: AtomicU64 = AtomicU64::new(0);
                 let func_bits = builtin_func_bits(
                     _py,
-                    &MEMORYVIEW_FROM_FLAGS,
+                    &attributes_state(_py).memoryview_from_flags,
                     fn_addr!(molt_memoryview_from_flags),
                     2,
                 );
@@ -1385,10 +1437,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
             let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
             match name.as_str() {
                 "_from_flags" => {
-                    static MEMORYVIEW_FROM_FLAGS: AtomicU64 = AtomicU64::new(0);
                     let func_bits = builtin_func_bits(
                         _py,
-                        &MEMORYVIEW_FROM_FLAGS,
+                        &attributes_state(_py).memoryview_from_flags,
                         fn_addr!(molt_memoryview_from_flags),
                         2,
                     );
@@ -1524,7 +1575,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 "__mro_entries__" => {
                     let func_bits = builtin_func_bits(
                         _py,
-                        &GENERIC_ALIAS_MRO_ENTRIES,
+                        &attributes_state(_py).generic_alias_mro_entries,
                         fn_addr!(molt_generic_alias_mro_entries),
                         2,
                     );
@@ -1810,10 +1861,13 @@ pub(crate) unsafe fn attr_lookup_ptr(
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
         {
             if name == "fromhex" {
-                static BYTES_FROMHEX: AtomicU64 = AtomicU64::new(0);
                 let builtins = builtin_classes(_py);
-                let func_bits =
-                    builtin_func_bits(_py, &BYTES_FROMHEX, fn_addr!(molt_bytes_fromhex), 2);
+                let func_bits = builtin_func_bits(
+                    _py,
+                    &attributes_state(_py).bytes_fromhex,
+                    fn_addr!(molt_bytes_fromhex),
+                    2,
+                );
                 let bound = molt_bound_method_new(func_bits, builtins.bytes);
                 return Some(bound);
             }
@@ -1833,10 +1887,13 @@ pub(crate) unsafe fn attr_lookup_ptr(
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
         {
             if name == "fromhex" {
-                static BYTEARRAY_FROMHEX: AtomicU64 = AtomicU64::new(0);
                 let builtins = builtin_classes(_py);
-                let func_bits =
-                    builtin_func_bits(_py, &BYTEARRAY_FROMHEX, fn_addr!(molt_bytearray_fromhex), 2);
+                let func_bits = builtin_func_bits(
+                    _py,
+                    &attributes_state(_py).bytearray_fromhex,
+                    fn_addr!(molt_bytearray_fromhex),
+                    2,
+                );
                 let bound = molt_bound_method_new(func_bits, builtins.bytearray);
                 return Some(bound);
             }
@@ -4973,7 +5030,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                 {
                     let class_bits = attr_ic_class_bits(obj_ptr, type_id);
                     let current_version = global_type_version();
-                    let cache = attr_ic_result_cache()
+                    let cache = attr_ic_result_cache(_py)
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
                     if let Some(entry) = cache.get(&site_id)
@@ -5046,7 +5103,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                             let current_version = global_type_version();
                             inc_ref_bits(_py, name_bits);
                             inc_ref_bits(_py, out);
-                            let mut cache = attr_ic_result_cache()
+                            let mut cache = attr_ic_result_cache(_py)
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner());
                             if let Some(old) = cache.insert(
@@ -5493,4 +5550,61 @@ pub extern "C" fn molt_del_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             attr_error(_py, type_name(_py, obj), &attr_name) as u64
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AttrICEntry, attributes_clear_runtime_state};
+    use crate::{MoltObject, PtrSlot, PyToken, alloc_string, runtime_state};
+    use std::sync::atomic::Ordering;
+
+    fn string_bits(_py: &PyToken<'_>, label: &[u8]) -> u64 {
+        let ptr = alloc_string(_py, label);
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    #[test]
+    fn attributes_runtime_state_is_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            attributes_clear_runtime_state(_py, state);
+            let attributes = &state.attributes;
+
+            attributes.property_docs.lock().unwrap().insert(
+                PtrSlot(std::ptr::null_mut()),
+                string_bits(_py, b"property-doc"),
+            );
+            attributes
+                .attr_site_name_cache
+                .lock()
+                .unwrap()
+                .insert(17, string_bits(_py, b"site-name"));
+            attributes.attr_ic_result_cache.lock().unwrap().insert(
+                23,
+                AttrICEntry {
+                    name_bits: string_bits(_py, b"ic-name"),
+                    result_bits: string_bits(_py, b"ic-result"),
+                    type_version: 1,
+                    obj_type_id: 2,
+                    class_bits: string_bits(_py, b"ic-class"),
+                },
+            );
+
+            for (idx, slot) in attributes.object_slots().iter().enumerate() {
+                let label = format!("attributes-slot-{idx}");
+                slot.store(string_bits(_py, label.as_bytes()), Ordering::Release);
+            }
+
+            attributes_clear_runtime_state(_py, state);
+
+            assert!(attributes.property_docs.lock().unwrap().is_empty());
+            assert!(attributes.attr_site_name_cache.lock().unwrap().is_empty());
+            assert!(attributes.attr_ic_result_cache.lock().unwrap().is_empty());
+            for slot in attributes.object_slots() {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+        });
+    }
 }
