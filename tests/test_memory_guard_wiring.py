@@ -166,6 +166,7 @@ GUARDED_ENTRYPOINTS = {
     "src/molt/cli.py": (
         "_load_cli_harness_memory_guard",
         "guarded_completed_process",
+        "guarded_completed_process_to_tempfiles",
         "MOLT_BENCH",
         "MOLT_CONFORMANCE",
         "MOLT_DIFF",
@@ -187,8 +188,15 @@ def test_default_memory_guard_wiring_for_harness_entrypoints() -> None:
 def test_legacy_shell_entrypoints_enter_guarded_python_wrappers() -> None:
     required = {
         "bench/run_all.sh": ("tools/guarded_exec.py", "MOLT_BENCH", "TMPDIR"),
-        "bench/scripts/run_stack.sh": ("tools/guarded_exec.py", "MOLT_GUARDED_STACK_INNER"),
-        "bench/scripts/run_db_stub.sh": ("tools/guarded_exec.py", "MOLT_BENCH", "TMPDIR"),
+        "bench/scripts/run_stack.sh": (
+            "tools/guarded_exec.py",
+            "MOLT_GUARDED_STACK_INNER",
+        ),
+        "bench/scripts/run_db_stub.sh": (
+            "tools/guarded_exec.py",
+            "MOLT_BENCH",
+            "TMPDIR",
+        ),
         "deploy/scripts/deploy.sh": ("tools/guarded_exec.py", "MOLT_DEPLOY"),
         "tools/scripts/compile-bench-wasm.sh": ("tools/guarded_exec.py", "MOLT_BENCH"),
         "tools/scripts/molt-compile-check.sh": (

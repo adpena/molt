@@ -138,12 +138,8 @@ def test_limits_from_env_canonicalizes_implausible_overrides(monkeypatch) -> Non
 
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
 
-    assert limits.max_process_rss_gb == pytest.approx(
-        85.6704
-    )
-    assert limits.max_total_rss_gb == pytest.approx(
-        85.6704
-    )
+    assert limits.max_process_rss_gb == pytest.approx(85.6704)
+    assert limits.max_total_rss_gb == pytest.approx(85.6704)
     assert limits.max_global_rss_gb == pytest.approx(85.6704)
     assert limits.child_rlimit_gb == pytest.approx(85.6704)
 
@@ -537,6 +533,105 @@ def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> N
 
     assert result.returncode == -9
     assert "memory_guard: command exited with SIGKILL status (-9)" in result.stderr
+
+
+def test_guarded_completed_process_to_tempfiles_refreshes_dynamic_limits(
+    monkeypatch,
+) -> None:
+    budget_calls: list[int] = []
+    terminated: list[int] = []
+
+    class FakeProc:
+        pid = 4242
+        returncode: int | None = None
+        stdin = None
+
+        def __init__(self, command, **kwargs):  # type: ignore[no-untyped-def]
+            self.command = list(command)
+            self.stdout_file = kwargs["stdout"]
+            self.stderr_file = kwargs["stderr"]
+            self.wait_count = 0
+            self.stdout_file.write(b"partial\n")
+            self.stdout_file.flush()
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            self.wait_count += 1
+            if self.wait_count == 1:
+                if timeout is not None:
+                    harness_memory_guard.time.sleep(timeout)
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    def fake_budget(prefix, environ=None, *, accounted_rss_kb=0):
+        del environ
+        assert prefix == "MOLT_CLI"
+        budget_calls.append(accounted_rss_kb)
+        return harness_memory_guard.memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=4,
+            max_total_rss_gb=5,
+            max_global_rss_gb=6,
+            reserve_gb=1,
+            physical_gb=16,
+            available_gb=12,
+            source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+        )
+
+    def fake_samples():
+        return {
+            4242: harness_memory_guard.memory_guard.ProcessSample(
+                pid=4242,
+                ppid=1,
+                pgid=4242,
+                rss_kb=6 * 1024 * 1024,
+                command="molt-backend fake",
+            )
+        }
+
+    monkeypatch.setattr(harness_memory_guard.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "adaptive_memory_budget",
+        fake_budget,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        fake_samples,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "terminate_watched_processes",
+        lambda root_pid, **kwargs: terminated.append(root_pid),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.001,
+        adaptive_prefix="MOLT_CLI",
+        dynamic_process_rss=True,
+        dynamic_total_rss=True,
+        dynamic_global_rss=True,
+        dynamic_child_rlimit=True,
+    )
+
+    result = harness_memory_guard.guarded_completed_process_to_tempfiles(
+        ["molt-backend", "fake"],
+        prefix="MOLT_CLI",
+        limits=limits,
+    )
+
+    assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
+    assert result.stdout == b"partial\n"
+    assert b"molt memory guard: RSS limit exceeded" in result.stderr
+    assert 6 * 1024 * 1024 in budget_calls
+    assert terminated == [4242]
 
 
 def test_guarded_completed_process_can_be_disabled(monkeypatch) -> None:
