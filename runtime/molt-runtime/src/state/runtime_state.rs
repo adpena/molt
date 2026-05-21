@@ -26,6 +26,7 @@ use crate::builtins::csv::CsvRuntimeState;
 use crate::builtins::itertools::ItertoolsRuntimeState;
 #[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::RandomRuntimeState;
+use crate::builtins::signal_ext::{SignalRuntimeState, signal_runtime_state_publish};
 use crate::builtins::sys_ext::SysRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
 use crate::call::bind::CallBindRuntimeState;
@@ -340,6 +341,7 @@ pub(crate) struct RuntimeState {
     pub(crate) process_registry: ProcessRegistry,
     #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
     pub(crate) socket_state: SocketRuntimeState,
+    pub(crate) signal: SignalRuntimeState,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) start_time: OnceLock<Instant>,
@@ -443,6 +445,7 @@ impl RuntimeState {
             process_registry: ProcessRegistry::new(),
             #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
             socket_state: SocketRuntimeState::new(),
+            signal: SignalRuntimeState::new(),
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
             start_time: OnceLock::new(),
@@ -700,6 +703,7 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     let ptr = Box::into_raw(state);
     RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
     let state_ref = unsafe { &*ptr };
+    signal_runtime_state_publish(state_ref);
     trace_runtime_init("state_allocated");
     {
         let py = gil.token();
