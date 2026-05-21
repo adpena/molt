@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+TOOLS_ROOT = REPO_ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 def _logs_root(project_root: Path) -> Path:
@@ -29,13 +37,18 @@ def _run_command(
 ) -> subprocess.CompletedProcess[str]:
     if verbose:
         print(f"Running: {subprocess.list2cmdline(cmd)}")
-    return subprocess.run(
+    guard_env = harness_memory_guard.canonical_harness_env(env, repo_root=REPO_ROOT)
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_CLOUDFLARE",
+        guard_env,
+        repo_root=REPO_ROOT,
+    )
+    return context.run(
         cmd,
         cwd=cwd,
-        env=env,
+        env=guard_env,
         capture_output=True,
         text=True,
-        check=False,
     )
 
 

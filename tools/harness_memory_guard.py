@@ -199,6 +199,30 @@ def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return merged
 
 
+def canonical_harness_env(
+    env: Mapping[str, str] | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> dict[str, str]:
+    """Return a subprocess env with repo-local artifact/cache defaults installed."""
+
+    root = (repo_root or _REPO_ROOT).resolve()
+    merged = dict(os.environ) if env is None else dict(env)
+    ext_root = Path(merged.get("MOLT_EXT_ROOT", str(root))).expanduser()
+    if not ext_root.is_absolute():
+        ext_root = root / ext_root
+    ext_root = ext_root.resolve()
+    merged.setdefault("MOLT_EXT_ROOT", str(ext_root))
+    merged.setdefault("CARGO_TARGET_DIR", str(ext_root / "target"))
+    merged.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", merged["CARGO_TARGET_DIR"])
+    merged.setdefault("MOLT_CACHE", str(ext_root / ".molt_cache"))
+    merged.setdefault("MOLT_DIFF_ROOT", str(ext_root / "tmp" / "diff"))
+    merged.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
+    merged.setdefault("UV_CACHE_DIR", str(ext_root / ".uv-cache"))
+    merged.setdefault("TMPDIR", str(ext_root / "tmp"))
+    return merged
+
+
 def _artifact_root_from_env(env: Mapping[str, str] | None) -> Path:
     source = _effective_env(env)
     explicit = source.get("MOLT_EXT_ROOT")
@@ -571,12 +595,14 @@ def guarded_completed_process(
 
 def batch_process_group_kwargs(
     limits: HarnessMemoryLimits | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
-    resolved_limits = limits or limits_from_env("MOLT")
+    resolved_limits = limits or limits_from_env("MOLT", env)
     if not resolved_limits.enabled or os.name != "posix":
         return {}
     kwargs: dict[str, object] = {"start_new_session": True}
-    child_rlimit_kb = resolved_limits.current_child_rlimit_kb()
+    child_rlimit_kb = resolved_limits.current_child_rlimit_kb(env)
     if child_rlimit_kb is not None:
         kwargs["preexec_fn"] = _child_resource_limit_preexec(
             child_rlimit_kb
@@ -852,6 +878,108 @@ def repo_process_sentinel(
         drain_max_runtime_sec=drain_max_runtime_sec,
         suppress_auto_guard=suppress_auto_guard,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessExecutionContext:
+    prefix: str
+    repo_root: Path
+    env: Mapping[str, str]
+    limits: HarnessMemoryLimits
+    artifact_root: Path
+
+    @classmethod
+    def from_env(
+        cls,
+        prefix: str,
+        env: Mapping[str, str] | None = None,
+        *,
+        repo_root: Path | None = None,
+        artifact_root: Path | None = None,
+        limits: HarnessMemoryLimits | None = None,
+    ) -> "HarnessExecutionContext":
+        root = (repo_root or _REPO_ROOT).resolve()
+        canonical_env = canonical_harness_env(env, repo_root=root)
+        resolved_limits = limits or limits_from_env(prefix, canonical_env)
+        resolved_artifact_root = artifact_root or _artifact_root_from_env(
+            canonical_env
+        )
+        return cls(
+            prefix=_normalize_prefix(prefix),
+            repo_root=root,
+            env=canonical_env,
+            limits=resolved_limits,
+            artifact_root=resolved_artifact_root,
+        )
+
+    @property
+    def memory_guard(self) -> dict[str, object]:
+        return limits_summary(self.limits)
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        env: Mapping[str, str] | None = None,
+        input: str | None = None,
+        capture_output: bool = True,
+        text: bool = True,
+        timeout: float | None = None,
+        stream: str = "",
+    ) -> GuardedCompletedProcess:
+        command_env = self.env if env is None else canonical_harness_env(
+            env,
+            repo_root=self.repo_root,
+        )
+        limits = self.limits if env is None else limits_from_env(
+            self.prefix,
+            command_env,
+        )
+        return guarded_completed_process(
+            command,
+            prefix=self.prefix,
+            cwd=cwd,
+            env=command_env,
+            input=input,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+            limits=limits,
+            stream=stream,
+        )
+
+    def process_group_kwargs(self) -> dict[str, object]:
+        return batch_process_group_kwargs(self.limits, env=self.env)
+
+    def force_close_process_group(self, proc: subprocess.Popen[str]) -> None:
+        force_close_process_group(proc)
+
+    def start_repo_sentinel(
+        self,
+        *,
+        label: str,
+        drain_on_exit: bool = True,
+        drain_grace_sec: float = 0.25,
+        drain_until_clean_sec: float = 0.3,
+        drain_max_runtime_sec: float = 5.0,
+        suppress_auto_guard: bool = True,
+    ) -> RepoProcessMemorySentinel | None:
+        if not self.limits.enabled or _sentinel_active():
+            return None
+        sentinel = repo_process_sentinel(
+            repo_root=self.repo_root,
+            artifact_root=self.artifact_root,
+            label=label,
+            limits=self.limits,
+            drain_on_exit=drain_on_exit,
+            drain_grace_sec=drain_grace_sec,
+            drain_until_clean_sec=drain_until_clean_sec,
+            drain_max_runtime_sec=drain_max_runtime_sec,
+            suppress_auto_guard=suppress_auto_guard,
+        )
+        sentinel.__enter__()
+        return sentinel
 
 
 @dataclass(frozen=True, slots=True)

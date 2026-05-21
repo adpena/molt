@@ -3,6 +3,25 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 export MOLT_REPO_ROOT="$ROOT"
+export MOLT_EXT_ROOT="${MOLT_EXT_ROOT:-$ROOT}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+export MOLT_DIFF_CARGO_TARGET_DIR="${MOLT_DIFF_CARGO_TARGET_DIR:-$CARGO_TARGET_DIR}"
+export MOLT_CACHE="${MOLT_CACHE:-$ROOT/.molt_cache}"
+export MOLT_DIFF_ROOT="${MOLT_DIFF_ROOT:-$ROOT/tmp/diff}"
+export MOLT_DIFF_TMPDIR="${MOLT_DIFF_TMPDIR:-$ROOT/tmp}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT/.uv-cache}"
+export TMPDIR="${TMPDIR:-$ROOT/tmp}"
+mkdir -p "$ROOT/tmp" "$ROOT/logs" "$ROOT/bench/results"
+
+if [[ "${MOLT_GUARDED_STACK_INNER:-0}" != "1" ]]; then
+  export MOLT_GUARDED_STACK_INNER=1
+  exec python3 "$ROOT/tools/guarded_exec.py" \
+    --prefix MOLT_BENCH \
+    --cwd "$ROOT" \
+    --timeout-env MOLT_DEMO_STACK_TIMEOUT_SEC \
+    -- \
+    bash "$0" "$@"
+fi
 
 # Use uv for reproducible demo deps when available.
 if command -v uv >/dev/null 2>&1; then
@@ -40,7 +59,7 @@ else
 fi
 SERVER_THREADS="${MOLT_SERVER_THREADS:-2}"
 SERVER_KEEPALIVE="${MOLT_SERVER_KEEPALIVE:-15}"
-SERVER_PID_FILE="/tmp/molt_gunicorn.pid"
+SERVER_PID_FILE="$ROOT/tmp/molt_gunicorn.pid"
 
 if [[ "$SERVER" == "auto" ]]; then
   if "${RUN_PY[@]}" - <<'PY'
@@ -88,11 +107,11 @@ if [[ -n "${MOLT_DEMO_DB_PATH:-}" ]]; then
 fi
 
 # Start worker
-$WORKER_CMD > /tmp/molt_worker.log 2>&1 &
+$WORKER_CMD > "$ROOT/logs/molt_worker.log" 2>&1 &
 WORKER_PID=$!
 trap 'kill $WORKER_PID 2>/dev/null || true' EXIT
 export MOLT_DEMO_WORKER_PID="$WORKER_PID"
-METRICS_PATH="${MOLT_DEMO_METRICS_PATH:-/tmp/molt_demo_metrics.jsonl}"
+METRICS_PATH="${MOLT_DEMO_METRICS_PATH:-$ROOT/bench/results/molt_demo_metrics.jsonl}"
 rm -f "$METRICS_PATH"
 export MOLT_DEMO_METRICS_PATH="$METRICS_PATH"
 
@@ -159,7 +178,7 @@ case "$SERVER" in
     ;;
 esac
 
-"${SERVER_CMD[@]}" > /tmp/molt_django.log 2>&1 &
+"${SERVER_CMD[@]}" > "$ROOT/logs/molt_django.log" 2>&1 &
 DJ_PID=$!
 trap 'kill $WORKER_PID $DJ_PID 2>/dev/null || true' EXIT
 export MOLT_DEMO_SERVER_PID="$DJ_PID"

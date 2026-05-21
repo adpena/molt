@@ -41,7 +41,8 @@ uv run --python 3.12 python3 manage.py runserver
 bench/scripts/run_stack.sh
 ```
 Artifacts land in `bench/results/` (k6 JSON + markdown summary).
-Worker metrics land in `/tmp/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_PATH` is set.
+Worker metrics land in `bench/results/molt_demo_metrics.jsonl` unless `MOLT_DEMO_METRICS_PATH` is set.
+Worker/server logs land in `logs/molt_worker.log` and `logs/molt_django.log`.
 Set `MOLT_FAKE_DB_DELAY_MS` to simulate base DB latency,
 `MOLT_FAKE_DB_DECODE_US_PER_ROW` to simulate per-row decode cost, and
 `MOLT_FAKE_DB_CPU_ITERS` to simulate per-row CPU work.

@@ -415,7 +415,12 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
 
 class _BenchBatchBuildServer:
     def __init__(self, env: dict[str, str]) -> None:
-        self._limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+        self._guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
+            "MOLT_BENCH",
+            env,
+            repo_root=REPO_ROOT,
+        )
+        self._limits = self._guard_context.limits
         self._client = BatchCompileServerClient(
             [
                 "uv",
@@ -429,14 +434,7 @@ class _BenchBatchBuildServer:
             ],
             cwd=REPO_ROOT,
             env=env,
-            process_group_kwargs=harness_memory_guard.batch_process_group_kwargs(
-                self._limits
-            ),
-            force_close=(
-                harness_memory_guard.force_close_process_group
-                if self._limits.enabled
-                else None
-            ),
+            guard_context=self._guard_context,
             reader_name="molt-bench-batch-server-reader",
         )
 

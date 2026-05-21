@@ -13,7 +13,7 @@ Usage:
 """
 
 import json
-import subprocess
+import os
 import sys
 import time
 from pathlib import Path
@@ -26,8 +26,14 @@ SIZE_LABELS = ["1K", "64K", "1M"]
 ITERATIONS = 100
 
 SCRIPT_DIR = Path(__file__).parent
+ROOT = SCRIPT_DIR.parents[1]
 DEPLOY_DIR = SCRIPT_DIR.parent / "cloudflare"
 DOCS_DIR = SCRIPT_DIR.parent.parent / "docs" / "benchmarks"
+TOOLS_ROOT = ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 def benchmark_js_ops():
@@ -141,15 +147,23 @@ def benchmark_js_ops():
 def run_js_benchmark():
     """Run the JS scalar benchmark via Node.js."""
     script = benchmark_js_ops()
-    tmp_path = "/tmp/molt_bench_simd.js"
+    tmp_dir = ROOT / "tmp" / "deploy" / "benchmark_simd"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / "molt_bench_simd.js"
     with open(tmp_path, "w") as f:
         f.write(script)
 
+    env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=ROOT)
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_BENCH",
+        env,
+        repo_root=ROOT,
+    )
     try:
-        result = subprocess.run(
-            ["node", tmp_path],
-            capture_output=True,
-            text=True,
+        result = context.run(
+            ["node", str(tmp_path)],
+            cwd=ROOT,
+            env=env,
             timeout=300,
         )
         if result.returncode != 0:
@@ -158,9 +172,6 @@ def run_js_benchmark():
         return json.loads(result.stdout)
     except FileNotFoundError:
         print("Node.js not found -- skipping JS benchmarks", file=sys.stderr)
-        return None
-    except subprocess.TimeoutExpired:
-        print("JS benchmark timed out", file=sys.stderr)
         return None
 
 

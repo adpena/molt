@@ -2837,12 +2837,17 @@ class _BatchCompileServerClient(BatchCompileServerClient):
             "molt.cli",
             "internal-batch-build-server",
         ]
+        guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
+            "MOLT_DIFF",
+            env,
+            repo_root=Path(_repo_root()),
+        )
         super().__init__(
             cmd,
             cwd=Path(_repo_root()),
             env=env,
             reader_name="molt-diff-batch-server-reader",
-            process_group_kwargs=_popen_group_kwargs(),
+            guard_context=guard_context,
             force_close=lambda proc: _terminate_process_tree(proc, grace=0.35),
         )
 
