@@ -4,6 +4,7 @@ use crate::async_rt::sockets::socket_runtime_state_clear;
 use crate::builtins::asyncio_queue::asyncio_queue_clear_state;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
+use crate::builtins::concurrent::concurrent_clear_runtime_state;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::configparser_clear_state;
 use crate::builtins::contextvars::contextvars_clear_state;
@@ -106,6 +107,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     shutdown_started_runtime_workers(_py, state);
     trace_shutdown("process_exit_drain_process_registry");
     state.process_registry.drain_for_teardown();
+    trace_shutdown("process_exit_clear_concurrent_runtime_state");
+    concurrent_clear_runtime_state(_py, state);
     #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
     {
         trace_shutdown("process_exit_clear_socket_state");
@@ -206,6 +209,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     shutdown_started_runtime_workers(_py, state);
     trace_shutdown("drain_process_registry");
     state.process_registry.drain_for_teardown();
+    trace_shutdown("clear_concurrent_runtime_state");
+    concurrent_clear_runtime_state(_py, state);
     #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
     {
         trace_shutdown("clear_socket_state");

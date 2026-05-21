@@ -13,7 +13,7 @@ use crate::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -77,26 +77,79 @@ struct ThreadPoolState {
 
 // ── Handle-id counter ─────────────────────────────────────────────────────
 
-static NEXT_POOL_ID: AtomicI64 = AtomicI64::new(1);
-static NEXT_FUTURE_ID: AtomicI64 = AtomicI64::new(1);
-
-fn next_pool_id() -> i64 {
-    NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed)
+pub(crate) struct ConcurrentRuntimeState {
+    next_pool_id: AtomicI64,
+    next_future_id: AtomicI64,
+    pools: Mutex<HashMap<i64, ThreadPoolState>>,
+    futures: Mutex<HashMap<i64, SharedFuture>>,
 }
 
-fn next_future_id() -> i64 {
-    NEXT_FUTURE_ID.fetch_add(1, Ordering::Relaxed)
+impl ConcurrentRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_pool_id: AtomicI64::new(1),
+            next_future_id: AtomicI64::new(1),
+            pools: Mutex::new(HashMap::new()),
+            futures: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
-// ── Process-wide handle storage ──────────────────────────────────────────
-//
-// These maps are process-wide so that handles created on the main thread
-// are visible to worker threads (required for concurrent.futures).
+fn concurrent_state(_py: &PyToken<'_>) -> &'static ConcurrentRuntimeState {
+    &crate::runtime_state(_py).concurrent
+}
 
-static POOL_REGISTRY: LazyLock<Mutex<HashMap<i64, ThreadPoolState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static FUTURE_REGISTRY: LazyLock<Mutex<HashMap<i64, SharedFuture>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+fn next_pool_id(_py: &PyToken<'_>) -> i64 {
+    concurrent_state(_py)
+        .next_pool_id
+        .fetch_add(1, Ordering::Relaxed)
+}
+
+fn next_future_id(_py: &PyToken<'_>) -> i64 {
+    concurrent_state(_py)
+        .next_future_id
+        .fetch_add(1, Ordering::Relaxed)
+}
+
+fn pool_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, ThreadPoolState>> {
+    &concurrent_state(_py).pools
+}
+
+fn future_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, SharedFuture>> {
+    &concurrent_state(_py).futures
+}
+
+pub(crate) fn concurrent_clear_runtime_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::RuntimeState,
+) {
+    crate::gil_assert();
+    let pools = {
+        let mut pools = state.concurrent.pools.lock().unwrap();
+        std::mem::take(&mut *pools)
+    };
+    {
+        let mut futures = state.concurrent.futures.lock().unwrap();
+        futures.clear();
+    }
+    state.concurrent.next_pool_id.store(1, Ordering::Release);
+    state.concurrent.next_future_id.store(1, Ordering::Release);
+    if pools.is_empty() {
+        return;
+    }
+    let mut workers = Vec::new();
+    for (_, mut pool) in pools {
+        pool.shutdown = true;
+        for _ in 0..pool.max_workers {
+            let _ = pool.sender.send(None);
+        }
+        workers.extend(pool._workers);
+    }
+    let _release = GilReleaseGuard::new();
+    for worker in workers {
+        let _ = worker.join();
+    }
+}
 
 // ── Worker thread loop ────────────────────────────────────────────────────
 //
@@ -202,8 +255,8 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
             handles.push(h);
         }
 
-        let id = next_pool_id();
-        POOL_REGISTRY.lock().unwrap().insert(
+        let id = next_pool_id(_py);
+        pool_registry(_py).lock().unwrap().insert(
             id,
             ThreadPoolState {
                 sender,
@@ -231,10 +284,10 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
         };
 
         let future_shared = Arc::new(Mutex::new(FutureState::new()));
-        let future_id = next_future_id();
+        let future_id = next_future_id(_py);
 
         let sent = {
-            let map = POOL_REGISTRY.lock().unwrap();
+            let map = pool_registry(_py).lock().unwrap();
             if let Some(pool) = map.get(&pool_id) {
                 if pool.shutdown {
                     false
@@ -259,8 +312,8 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
             );
         }
 
-        // Store in FUTURE_REGISTRY keyed by future_id.
-        FUTURE_REGISTRY
+        // Store in this runtime's future registry keyed by future_id.
+        future_registry(_py)
             .lock()
             .unwrap()
             .insert(future_id, future_shared);
@@ -283,7 +336,7 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
         };
         let wait = is_truthy(_py, obj_from_bits(wait_bits));
 
-        let pool = POOL_REGISTRY.lock().unwrap().remove(&pool_id);
+        let pool = pool_registry(_py).lock().unwrap().remove(&pool_id);
         if let Some(mut pool) = pool {
             pool.shutdown = true;
             // Send shutdown sentinels for each worker.
@@ -311,8 +364,8 @@ pub extern "C" fn molt_concurrent_threadpool_drop(handle_bits: u64) -> u64 {
 
 // ── Future intrinsics ─────────────────────────────────────────────────────
 
-fn get_future(id: i64) -> Option<SharedFuture> {
-    FUTURE_REGISTRY.lock().unwrap().get(&id).cloned()
+fn get_future(_py: &PyToken<'_>, id: i64) -> Option<SharedFuture> {
+    future_registry(_py).lock().unwrap().get(&id).cloned()
 }
 
 fn wait_for_future(future: &SharedFuture, timeout_secs: Option<f64>) -> Result<(), ()> {
@@ -339,7 +392,7 @@ pub extern "C" fn molt_concurrent_future_result(handle_bits: u64, timeout_bits: 
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
         };
-        let future = match get_future(id) {
+        let future = match get_future(_py, id) {
             Some(f) => f,
             None => return raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
         };
@@ -382,7 +435,7 @@ pub extern "C" fn molt_concurrent_future_exception(handle_bits: u64, timeout_bit
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
         };
-        let future = match get_future(id) {
+        let future = match get_future(_py, id) {
             Some(f) => f,
             None => return raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
         };
@@ -423,7 +476,7 @@ pub extern "C" fn molt_concurrent_future_done(handle_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
         };
-        match get_future(id) {
+        match get_future(_py, id) {
             None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
             Some(f) => {
                 let state = f.lock().unwrap();
@@ -440,7 +493,7 @@ pub extern "C" fn molt_concurrent_future_cancelled(handle_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
         };
-        match get_future(id) {
+        match get_future(_py, id) {
             None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
             Some(f) => {
                 let state = f.lock().unwrap();
@@ -457,7 +510,7 @@ pub extern "C" fn molt_concurrent_future_cancel(handle_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
         };
-        match get_future(id) {
+        match get_future(_py, id) {
             None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
             Some(f) => {
                 let mut state = f.lock().unwrap();
@@ -479,7 +532,7 @@ pub extern "C" fn molt_concurrent_future_running(handle_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
         };
-        match get_future(id) {
+        match get_future(_py, id) {
             None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
             Some(f) => {
                 let state = f.lock().unwrap();
@@ -496,7 +549,7 @@ pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
         };
-        match get_future(id) {
+        match get_future(_py, id) {
             None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
             Some(f) => {
                 let mut state = f.lock().unwrap();
@@ -520,7 +573,7 @@ pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_
 pub extern "C" fn molt_concurrent_future_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            FUTURE_REGISTRY.lock().unwrap().remove(&id);
+            future_registry(_py).lock().unwrap().remove(&id);
         }
         MoltObject::none().bits()
     })
@@ -564,6 +617,7 @@ pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: 
         // should wrap this as a generator for true lazy iteration.
         use std::time::Instant;
         let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t));
+        let futures = future_registry(_py);
 
         let mut completed_bits = Vec::with_capacity(future_ids.len());
         let mut pending: Vec<i64> = future_ids;
@@ -576,7 +630,7 @@ pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: 
                 }
                 let mut still_pending = Vec::new();
                 for id in pending {
-                    let future = FUTURE_REGISTRY.lock().unwrap().get(&id).cloned();
+                    let future = futures.lock().unwrap().get(&id).cloned();
                     if let Some(f) = future {
                         let done = f.lock().unwrap().is_done();
                         if done {
@@ -646,6 +700,7 @@ pub extern "C" fn molt_concurrent_wait(
 
         use std::time::Instant;
         let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t));
+        let futures_registry = future_registry(_py);
 
         let done_ids: Vec<i64>;
         let not_done_ids: Vec<i64>;
@@ -654,7 +709,7 @@ pub extern "C" fn molt_concurrent_wait(
             let _release = GilReleaseGuard::new();
             loop {
                 let all_done = future_ids.iter().all(|id| {
-                    FUTURE_REGISTRY
+                    futures_registry
                         .lock()
                         .unwrap()
                         .get(id)
@@ -662,7 +717,7 @@ pub extern "C" fn molt_concurrent_wait(
                         .unwrap_or(true)
                 });
                 let any_done = future_ids.iter().any(|id| {
-                    FUTURE_REGISTRY
+                    futures_registry
                         .lock()
                         .unwrap()
                         .get(id)
@@ -670,7 +725,7 @@ pub extern "C" fn molt_concurrent_wait(
                         .unwrap_or(false)
                 });
                 let any_exception = future_ids.iter().any(|id| {
-                    FUTURE_REGISTRY
+                    futures_registry
                         .lock()
                         .unwrap()
                         .get(id)
@@ -697,7 +752,7 @@ pub extern "C" fn molt_concurrent_wait(
             done_ids = future_ids
                 .iter()
                 .filter(|id| {
-                    FUTURE_REGISTRY
+                    futures_registry
                         .lock()
                         .unwrap()
                         .get(id)
@@ -709,7 +764,7 @@ pub extern "C" fn molt_concurrent_wait(
             not_done_ids = future_ids
                 .iter()
                 .filter(|id| {
-                    !FUTURE_REGISTRY
+                    !futures_registry
                         .lock()
                         .unwrap()
                         .get(id)
@@ -746,6 +801,55 @@ pub extern "C" fn molt_concurrent_wait(
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FutureState, concurrent_clear_runtime_state, molt_concurrent_threadpool_new,
+        molt_concurrent_threadpool_shutdown, next_future_id,
+    };
+    use crate::{MoltObject, obj_from_bits, runtime_state, to_i64};
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn concurrent_runtime_state_is_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            concurrent_clear_runtime_state(_py, state);
+
+            let one_worker = MoltObject::from_int(1).bits();
+            let first_pool = molt_concurrent_threadpool_new(one_worker);
+            let second_pool = molt_concurrent_threadpool_new(one_worker);
+            assert_eq!(to_i64(obj_from_bits(first_pool)), Some(1));
+            assert_eq!(to_i64(obj_from_bits(second_pool)), Some(2));
+            assert_eq!(state.concurrent.pools.lock().unwrap().len(), 2);
+
+            let future_id = next_future_id(_py);
+            state
+                .concurrent
+                .futures
+                .lock()
+                .unwrap()
+                .insert(future_id, Arc::new(Mutex::new(FutureState::new())));
+            assert_eq!(future_id, 1);
+            assert_eq!(state.concurrent.futures.lock().unwrap().len(), 1);
+
+            concurrent_clear_runtime_state(_py, state);
+            assert!(state.concurrent.pools.lock().unwrap().is_empty());
+            assert!(state.concurrent.futures.lock().unwrap().is_empty());
+            assert_eq!(state.concurrent.next_pool_id.load(Ordering::Acquire), 1);
+            assert_eq!(state.concurrent.next_future_id.load(Ordering::Acquire), 1);
+
+            let reset_pool = molt_concurrent_threadpool_new(one_worker);
+            assert_eq!(to_i64(obj_from_bits(reset_pool)), Some(1));
+            let true_bits = MoltObject::from_bool(true).bits();
+            let false_bits = MoltObject::from_bool(false).bits();
+            let _ = molt_concurrent_threadpool_shutdown(reset_pool, true_bits, false_bits);
+        });
+    }
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────

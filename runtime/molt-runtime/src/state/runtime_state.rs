@@ -17,6 +17,7 @@ use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
 use crate::async_rt::sockets::SocketRuntimeState;
 use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::builtins::asyncio_queue::AsyncioQueueRuntimeState;
+use crate::builtins::concurrent::ConcurrentRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::ConfigParserRuntimeState;
 use crate::builtins::copy_mod::CopyMemoRuntimeState;
@@ -311,6 +312,7 @@ pub(crate) struct RuntimeState {
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
     pub(crate) contextvars: Mutex<ContextVarsState>,
+    pub(crate) concurrent: ConcurrentRuntimeState,
     pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
     pub(crate) functools: FunctoolsRuntimeState,
     pub(crate) io: IoRuntimeState,
@@ -418,6 +420,7 @@ impl RuntimeState {
                 finalizer: MoltObject::none().bits(),
             }),
             contextvars: Mutex::new(ContextVarsState::new()),
+            concurrent: ConcurrentRuntimeState::new(),
             copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
             functools: FunctoolsRuntimeState::new(),
             io: IoRuntimeState::new(),
