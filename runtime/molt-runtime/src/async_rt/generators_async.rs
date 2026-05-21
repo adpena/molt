@@ -400,22 +400,12 @@ pub(crate) fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits:
             runtime_state(_py).io_poller().cancel_waiter(task_ptr);
         }
     }
-    let waiters = await_waiters_take(_py, task_ptr);
+    let waiter_count = wake_await_waiters(_py, task_ptr);
     if async_trace_enabled() {
         eprintln!(
             "molt async trace: cancel_future_waiters task=0x{:x} count={}",
-            task_ptr as usize,
-            waiters.len()
+            task_ptr as usize, waiter_count
         );
-        for waiter in &waiters {
-            eprintln!(
-                "molt async trace: cancel_future_wake waiter=0x{:x} task=0x{:x}",
-                waiter.0 as usize, task_ptr as usize
-            );
-        }
-    }
-    for waiter in waiters {
-        wake_task_ptr(_py, waiter.0);
     }
     wake_task_ptr(_py, task_ptr);
 }
@@ -1831,16 +1821,12 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
                     task_ptr as usize
                 );
             }
-            let waiters = await_waiters_take(_py, task_ptr);
+            let waiter_count = wake_await_waiters(_py, task_ptr);
             if async_trace_enabled() || promise_trace_enabled() {
                 eprintln!(
                     "molt async trace: promise_wake task=0x{:x} waiters={}",
-                    task_ptr as usize,
-                    waiters.len()
+                    task_ptr as usize, waiter_count
                 );
-            }
-            for waiter in waiters {
-                wake_task_ptr(_py, waiter.0);
             }
             MoltObject::none().bits()
         })
@@ -1873,16 +1859,12 @@ pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: 
                     task_ptr as usize
                 );
             }
-            let waiters = await_waiters_take(_py, task_ptr);
+            let waiter_count = wake_await_waiters(_py, task_ptr);
             if async_trace_enabled() || promise_trace_enabled() {
                 eprintln!(
                     "molt async trace: promise_wake task=0x{:x} waiters={}",
-                    task_ptr as usize,
-                    waiters.len()
+                    task_ptr as usize, waiter_count
                 );
-            }
-            for waiter in waiters {
-                wake_task_ptr(_py, waiter.0);
             }
             MoltObject::none().bits()
         })

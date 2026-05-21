@@ -16,7 +16,7 @@ use std::os::windows::io::AsRawSocket;
 
 #[cfg(molt_has_net_io)]
 use super::sockets::{socket_ptr_from_bits_or_fd, socket_ref_inc, with_socket_mut};
-use super::{await_waiters_take, wake_task_ptr};
+use super::wake_await_waiters;
 use crate::require_net_capability;
 use crate::{
     GilGuard, GilReleaseGuard, MoltObject, PtrSlot, PyToken, dec_ref_bits, header_from_obj_ptr,
@@ -313,10 +313,7 @@ impl IoPoller {
         }
         for (future, mask) in ready {
             self.mark_ready(future, mask);
-            let waiters = await_waiters_take(_py, future.0);
-            for waiter in waiters {
-                wake_task_ptr(_py, waiter.0);
-            }
+            let _ = wake_await_waiters(_py, future.0);
         }
     }
 }
@@ -731,10 +728,7 @@ impl IoPoller {
             self.deregister_entry(entry);
             for future in ready_futures {
                 self.mark_ready(future, IO_EVENT_ERROR);
-                let tasks = await_waiters_take(_py, future.0);
-                for waiter in tasks {
-                    wake_task_ptr(_py, waiter.0);
-                }
+                let _ = wake_await_waiters(_py, future.0);
             }
         }
     }
@@ -974,19 +968,12 @@ fn io_worker(poller: Arc<IoPoller>) {
             let gil = GilGuard::new();
             let py = gil.token();
             for (future, mask, socket_id, debug_fd) in ready_futures {
-                let waiters = await_waiters_take(&py, future.0);
+                let waiter_count = wake_await_waiters(&py, future.0);
                 if trace_io_poller() {
                     eprintln!(
                         "molt io poller: ready future=0x{:x} socket=0x{:x} fd={} mask={} waiters={}",
-                        future.0 as usize,
-                        socket_id,
-                        debug_fd,
-                        mask,
-                        waiters.len()
+                        future.0 as usize, socket_id, debug_fd, mask, waiter_count
                     );
-                }
-                for waiter in waiters {
-                    wake_task_ptr(&py, waiter.0);
                 }
             }
         }

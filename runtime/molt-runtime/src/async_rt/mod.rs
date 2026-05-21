@@ -47,8 +47,8 @@ pub(crate) use cancellation::{
 pub(crate) use scheduler::{
     AsyncHangProbe, CURRENT_TASK, CompileGovernorSnapshot, CompileRateLimiter, MoltScheduler,
     MoltTask, OptLevel, SleepQueue, async_trace_enabled, asyncgen_registry, await_waiter_clear,
-    await_waiter_register, await_waiters, await_waiters_take, block_on_wait_spec,
-    compile_rate_limiter, current_task_key, current_task_ptr, fn_ptr_code_get, fn_ptr_code_set,
+    await_waiter_register, await_waiters, block_on_wait_spec, compile_rate_limiter,
+    current_task_key, current_task_ptr, fn_ptr_code_get, fn_ptr_code_set,
     instant_from_monotonic_secs, molt_asyncio_child_watcher_add, molt_asyncio_child_watcher_clear,
     molt_asyncio_child_watcher_pop, molt_asyncio_child_watcher_remove, molt_asyncio_enter_task,
     molt_asyncio_event_loop_get, molt_asyncio_event_loop_get_current,
@@ -68,7 +68,7 @@ pub(crate) use scheduler::{
     monotonic_now_nanos, monotonic_now_secs, record_async_poll, task_exception_depths,
     task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, task_mark_done,
     task_result_drop, task_result_get, task_result_store, task_waiting_on, task_waiting_on_future,
-    wake_task_ptr,
+    wake_await_waiters, wake_task_ptr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

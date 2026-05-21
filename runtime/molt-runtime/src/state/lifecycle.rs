@@ -4,6 +4,7 @@ use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_doc
 use crate::builtins::strings::clear_const_str_cache;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::builders::clear_builder_singletons;
+use crate::object::dec_ref_ptr;
 use crate::object::utf8_cache::{
     UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
     clear_utf8_count_tls,
@@ -357,6 +358,9 @@ pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) {
 
 fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
+    state.asyncio_core.clear(_py);
+    clear_await_graph_state(_py, state);
+    clear_native_task_states(_py, state);
     let stacks = {
         let mut guard = state.task_exception_stacks.lock().unwrap();
         let old = std::mem::take(&mut *guard);
@@ -368,6 +372,10 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
                 dec_ref_bits(_py, bits);
             }
         }
+    }
+    {
+        let mut guard = state.task_exception_handler_stacks.lock().unwrap();
+        let _ = std::mem::take(&mut *guard);
     }
     {
         let mut guard = state.task_exception_depths.lock().unwrap();
@@ -409,6 +417,10 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
     }
     {
         let mut guard = state.task_tokens.lock().unwrap();
+        let _ = std::mem::take(&mut *guard);
+    }
+    {
+        let mut guard = state.task_tokens_by_id.lock().unwrap();
         let _ = std::mem::take(&mut *guard);
     }
     {
@@ -478,7 +490,64 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
             dec_ref_bits(_py, bits);
         }
     }
+    {
+        let mut guard = state.asyncio_event_waiter_index.lock().unwrap();
+        let _ = std::mem::take(&mut *guard);
+    }
     NEXT_CANCEL_TOKEN_ID.store(2, AtomicOrdering::SeqCst);
+}
+
+fn clear_await_graph_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let edges = {
+        let mut waiting = state.task_waiting_on.lock().unwrap();
+        let old = std::mem::take(&mut *waiting);
+        state.await_waiters.lock().unwrap().clear();
+        state.await_waiter_index.lock().unwrap().clear();
+        old
+    };
+    for (waiter, awaited) in edges {
+        unsafe {
+            dec_ref_ptr(_py, awaited.0);
+            dec_ref_ptr(_py, waiter.0);
+        }
+    }
+}
+
+fn clear_native_task_states(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let thread_tasks = {
+            let mut guard = state.thread_tasks.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        for task in thread_tasks.into_values() {
+            task.cancelled.store(true, AtomicOrdering::Release);
+            if let Some(bits) = task.result.lock().unwrap().take() {
+                dec_ref_bits(_py, bits);
+            }
+            if let Some(bits) = task.exception.lock().unwrap().take() {
+                dec_ref_bits(_py, bits);
+            }
+            task.condvar.notify_all();
+        }
+    }
+
+    let process_tasks = {
+        let mut guard = state.process_tasks.lock().unwrap();
+        std::mem::take(&mut *guard)
+    };
+    for (future, task) in process_tasks {
+        task.cancelled.store(true, AtomicOrdering::Release);
+        let mut wait_future = task.process.wait_future.lock().unwrap();
+        if wait_future.map(|slot| slot.0) == Some(future.0) {
+            *wait_future = None;
+        }
+        drop(wait_future);
+        #[cfg(not(target_arch = "wasm32"))]
+        task.process.condvar.notify_all();
+    }
 }
 
 fn clear_module_cache(_py: &PyToken<'_>, state: &RuntimeState) {
