@@ -6,7 +6,6 @@
 
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
 type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
@@ -147,35 +146,57 @@ pub extern "C" fn __molt_logging_attr_lookup_ptr_allow_missing(
     })
 }
 
-// Interning slot for attribute names used by the logging crate.
-// Currently only "write" is interned.
-static INTERN_WRITE: AtomicU64 = AtomicU64::new(0);
+fn unsupported_logging_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
+    let key = String::from_utf8_lossy(key);
+    raise_exception::<u64>(
+        _py,
+        "RuntimeError",
+        &format!("molt-runtime-logging requested unsupported interned static name {key:?}"),
+    )
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_logging_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        let slot = &INTERN_WRITE;
-        // Fast path: already interned.
-        let cached = slot.load(Ordering::Acquire);
-        if cached != 0 {
-            return cached;
-        }
-        // Slow path: allocate and cache.
-        let ptr = alloc_string(_py, key);
-        let bits = if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        };
-        match slot.compare_exchange(0, bits, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => bits,
-            Err(existing) => {
-                if let Some(p) = MoltObject::from_bits(bits).as_ptr() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(p).bits());
-                }
-                existing
-            }
-        }
+        crate::state::cache::intern_bridge_write_name(_py, key)
+            .unwrap_or_else(|| unsupported_logging_intern_name(_py, key))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::__molt_logging_intern_static_name;
+    use crate::{clear_exception, exception_pending, runtime_state};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn logging_bridge_interns_write_name_in_runtime_state() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_exception(_py);
+            let key = b"write";
+            let bits = __molt_logging_intern_static_name(key.as_ptr(), key.len());
+            assert!(!exception_pending(_py));
+            assert_eq!(
+                runtime_state(_py)
+                    .interned
+                    .write_name
+                    .load(Ordering::Acquire),
+                bits
+            );
+        });
+    }
+
+    #[test]
+    fn logging_bridge_rejects_unknown_intern_name() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_exception(_py);
+            let key = b"flush";
+            let _ = __molt_logging_intern_static_name(key.as_ptr(), key.len());
+            assert!(exception_pending(_py));
+            clear_exception(_py);
+        });
+    }
 }

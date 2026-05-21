@@ -38,7 +38,7 @@ use crate::{
     runtime_state,
 };
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 use super::{
     RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache,
@@ -850,109 +850,8 @@ fn drain_heap_tls() {
 
 fn clear_interned_names(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
-    let slots = interned_name_slots(state);
+    let slots = state.interned.slots();
     clear_atomic_slots(_py, &slots);
-}
-
-fn interned_name_slots(state: &RuntimeState) -> Vec<&AtomicU64> {
-    vec![
-        &state.interned.bases_name,
-        &state.interned.mro_name,
-        &state.interned.get_name,
-        &state.interned.set_name,
-        &state.interned.delete_name,
-        &state.interned.set_name_method,
-        &state.interned.getattr_name,
-        &state.interned.getattribute_name,
-        &state.interned.call_name,
-        &state.interned.await_name,
-        &state.interned.init_name,
-        &state.interned.init_subclass_name,
-        &state.interned.new_name,
-        &state.interned.instancecheck_name,
-        &state.interned.subclasscheck_name,
-        &state.interned.enter_name,
-        &state.interned.exit_name,
-        &state.interned.setattr_name,
-        &state.interned.delattr_name,
-        &state.interned.write_name,
-        &state.interned.flush_name,
-        &state.interned.sys_name,
-        &state.interned.sys_version_info,
-        &state.interned.sys_version,
-        &state.interned.stdout_name,
-        &state.interned.modules_name,
-        &state.interned.all_name,
-        &state.interned.fspath_name,
-        &state.interned.dict_name,
-        &state.interned.slots_name,
-        &state.interned.weakref_name,
-        &state.interned.molt_dict_data_name,
-        &state.interned.class_name,
-        &state.interned.annotations_name,
-        &state.interned.annotate_name,
-        &state.interned.field_offsets_name,
-        &state.interned.molt_layout_size,
-        &state.interned.float_name,
-        &state.interned.index_name,
-        &state.interned.int_name,
-        &state.interned.round_name,
-        &state.interned.floor_name,
-        &state.interned.ceil_name,
-        &state.interned.trunc_name,
-        &state.interned.repr_name,
-        &state.interned.str_name,
-        &state.interned.format_name,
-        &state.interned.qualname_name,
-        &state.interned.name_name,
-        &state.interned.obj_name,
-        &state.interned.f_lasti_name,
-        &state.interned.f_code_name,
-        &state.interned.f_lineno_name,
-        &state.interned.tb_frame_name,
-        &state.interned.tb_lineno_name,
-        &state.interned.tb_next_name,
-        &state.interned.molt_arg_names,
-        &state.interned.molt_posonly,
-        &state.interned.molt_kwonly_names,
-        &state.interned.molt_vararg,
-        &state.interned.molt_varkw,
-        &state.interned.molt_closure_size,
-        &state.interned.molt_is_coroutine,
-        &state.interned.molt_is_generator,
-        &state.interned.molt_is_async_generator,
-        &state.interned.molt_bind_kind,
-        &state.interned.defaults_name,
-        &state.interned.kwdefaults_name,
-        &state.interned.abstractmethods_name,
-        &state.interned.lt_name,
-        &state.interned.le_name,
-        &state.interned.gt_name,
-        &state.interned.ge_name,
-        &state.interned.eq_name,
-        &state.interned.ne_name,
-        &state.interned.add_name,
-        &state.interned.radd_name,
-        &state.interned.mul_name,
-        &state.interned.rmul_name,
-        &state.interned.sub_name,
-        &state.interned.rsub_name,
-        &state.interned.truediv_name,
-        &state.interned.rtruediv_name,
-        &state.interned.floordiv_name,
-        &state.interned.rfloordiv_name,
-        &state.interned.or_name,
-        &state.interned.ror_name,
-        &state.interned.and_name,
-        &state.interned.rand_name,
-        &state.interned.xor_name,
-        &state.interned.rxor_name,
-        &state.interned.iadd_name,
-        &state.interned.isub_name,
-        &state.interned.ior_name,
-        &state.interned.iand_name,
-        &state.interned.ixor_name,
-    ]
 }
 
 fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
@@ -971,7 +870,7 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_special_cache, clear_worker_thread_state};
+    use super::{clear_interned_names, clear_special_cache, clear_worker_thread_state};
     use crate::{MoltObject, alloc_string, runtime_state};
     use std::sync::atomic::Ordering;
 
@@ -1018,6 +917,29 @@ mod tests {
                     .load(Ordering::Acquire),
                 0
             );
+        });
+    }
+
+    #[test]
+    fn clear_interned_names_releases_every_manifest_slot() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            clear_interned_names(_py, state);
+
+            let slots = state.interned.slots();
+            for (index, slot) in slots.iter().enumerate() {
+                let name = format!("interned-name-slot-{index}");
+                let ptr = alloc_string(_py, name.as_bytes());
+                assert!(!ptr.is_null());
+                slot.store(MoltObject::from_ptr(ptr).bits(), Ordering::Release);
+            }
+
+            clear_interned_names(_py, state);
+
+            for slot in slots {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
         });
     }
 }
