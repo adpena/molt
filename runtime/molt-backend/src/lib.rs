@@ -2309,11 +2309,22 @@ fn parse_truthy_env(raw: &str) -> bool {
 fn compute_function_has_ret(functions: &[FunctionIR]) -> BTreeMap<String, bool> {
     functions
         .iter()
-        .map(|func| {
-            let has_ret = func.ops.iter().any(|op| op.kind == "ret");
-            (func.name.clone(), has_ret)
-        })
+        .map(|func| (func.name.clone(), function_requires_value_return(func)))
         .collect()
+}
+
+pub(crate) fn function_requires_value_return(func: &FunctionIR) -> bool {
+    func.ops.iter().any(|op| {
+        matches!(
+            op.kind.as_str(),
+            "ret"
+                | "state_switch"
+                | "state_transition"
+                | "state_yield"
+                | "chan_send_yield"
+                | "chan_recv_yield"
+        )
+    })
 }
 
 #[cfg(feature = "native-backend")]
@@ -4824,6 +4835,33 @@ mod tests {
 
         assert_eq!(result.get("user_func"), Some(&false));
         assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
+    }
+
+    #[test]
+    fn compute_function_has_ret_treats_state_machines_as_value_returning() {
+        let result = compute_function_has_ret(&[FunctionIR {
+            name: "raises_only_coroutine_poll".to_string(),
+            params: vec!["self".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "state_switch".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["i64".to_string()]),
+            source_file: None,
+            is_extern: false,
+        }]);
+
+        assert_eq!(
+            result.get("raises_only_coroutine_poll"),
+            Some(&true),
+            "poll functions are always invoked through the i64 poll ABI even when every user path raises",
+        );
     }
 
     #[test]

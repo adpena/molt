@@ -1495,6 +1495,15 @@ def _diff_build_profile() -> str:
     return "dev"
 
 
+def _diff_stdlib_profile(env: dict[str, str]) -> tuple[str | None, str | None]:
+    raw = env.get("MOLT_DIFF_STDLIB_PROFILE", "").strip().lower()
+    if not raw:
+        return None, None
+    if raw not in {"micro", "full"}:
+        return None, "MOLT_DIFF_STDLIB_PROFILE must be 'micro' or 'full'"
+    return raw, None
+
+
 def _diff_prune_every() -> int:
     return max(0, _parse_int_env("MOLT_DIFF_PRUNE_EVERY", 32))
 
@@ -2923,6 +2932,9 @@ def _run_batch_compile_build(
     extra_params: dict[str, object] | None = None,
 ) -> tuple[int, str, str, str | None]:
     diff_caps = env.get("MOLT_DIFF_CAPABILITIES", "fs,env,time,random")
+    stdlib_profile, stdlib_profile_error = _diff_stdlib_profile(env)
+    if stdlib_profile_error is not None:
+        return 2, "", stdlib_profile_error, None
     params: dict[str, object] = {
         "file_path": file_path,
         "profile": build_profile,
@@ -2935,6 +2947,8 @@ def _run_batch_compile_build(
         "env_overrides": env,
         "codec": env.get("MOLT_CODEC", "msgpack"),
     }
+    if stdlib_profile is not None:
+        params["stdlib_profile"] = stdlib_profile
     if diff_caps:
         params["capabilities"] = diff_caps
     if extra_params:
@@ -3244,6 +3258,17 @@ def _run_molt(
     if _diff_force_rebuild():
         rebuild = True
     env.setdefault("MOLT_SYS_EXECUTABLE", _resolve_python_exe(sys.executable))
+    stdlib_profile, stdlib_profile_error = _diff_stdlib_profile(env)
+    if stdlib_profile_error is not None:
+        _record_rss_metrics(
+            file_path,
+            build_metrics=None,
+            run_metrics=None,
+            build_rc=2,
+            run_rc=None,
+            status="build_invalid_stdlib_profile",
+        )
+        return None, stdlib_profile_error, 2
     ver = sys.version_info
     env.setdefault(
         "MOLT_SYS_VERSION_INFO",
@@ -3324,6 +3349,8 @@ def _run_molt(
             build_cmd.append("--no-cache")
         if rebuild:
             build_cmd.append("--rebuild")
+        if stdlib_profile is not None:
+            build_cmd.extend(["--stdlib-profile", stdlib_profile])
         codec = env.get("MOLT_CODEC")
         if codec:
             build_cmd.extend(["--codec", codec])

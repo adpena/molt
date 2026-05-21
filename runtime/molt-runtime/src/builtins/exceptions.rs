@@ -1453,6 +1453,19 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
+pub(crate) fn task_last_exception_contains_valid(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+    crate::gil_assert();
+    if ptr.is_null() {
+        return false;
+    }
+    task_last_exceptions(_py)
+        .lock()
+        .unwrap()
+        .get(&PtrSlot(ptr))
+        .copied()
+        .is_some_and(exception_slot_is_valid)
+}
+
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     record_exception_with_caller_frame(_py, ptr, false);
 }

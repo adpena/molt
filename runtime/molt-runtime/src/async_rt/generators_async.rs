@@ -269,7 +269,14 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                     return raise_cancelled_with_message::<i64>(_py, current_task);
                 }
             }
-            let poll_pending = exception_pending(_py);
+            let awaited_exception =
+                if res != pending_bits_i64() && !current_task.is_null() && ptr != current_task {
+                    let guard = task_last_exceptions(_py).lock().unwrap();
+                    guard.get(&PtrSlot(ptr)).copied()
+                } else {
+                    None
+                };
+            let poll_pending = exception_pending(_py) || awaited_exception.is_some();
             if res != pending_bits_i64() {
                 if !poll_pending {
                     crate::task_last_exception_drop(_py, ptr);
@@ -284,10 +291,6 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 && !current_task.is_null()
                 && ptr != current_task
             {
-                let awaited_exception = {
-                    let guard = task_last_exceptions(_py).lock().unwrap();
-                    guard.get(&PtrSlot(ptr)).copied()
-                };
                 if let Some(exc_ptr) = awaited_exception {
                     let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
                     inc_ref_bits(_py, exc_bits);

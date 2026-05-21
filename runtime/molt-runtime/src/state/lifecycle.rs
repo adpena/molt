@@ -1,9 +1,13 @@
 use crate::PyToken;
+use crate::builtins::asyncio_queue::asyncio_queue_clear_state;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
+#[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::configparser_clear_state;
 use crate::builtins::contextvars::contextvars_clear_state;
+#[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::csv_clear_state;
+#[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::random_clear_state;
 use crate::builtins::strings::clear_const_str_cache;
 use crate::builtins::sys_ext::sys_ext_clear_state;
@@ -93,18 +97,26 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     shutdown_started_runtime_workers(_py, state);
     trace_shutdown("process_exit_clear_task_state");
     clear_task_state(_py, state);
+    trace_shutdown("process_exit_clear_asyncio_queue_state");
+    asyncio_queue_clear_state(_py, state);
     trace_shutdown("process_exit_clear_exception_state");
     clear_exception_state(_py);
     trace_shutdown("process_exit_run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("process_exit_clear_contextvars_state");
     contextvars_clear_state(_py, state);
-    trace_shutdown("process_exit_clear_configparser_state");
-    configparser_clear_state(_py, state);
-    trace_shutdown("process_exit_clear_csv_state");
-    csv_clear_state(state);
-    trace_shutdown("process_exit_clear_random_state");
-    random_clear_state(state);
+    #[cfg(not(feature = "stdlib_serial"))]
+    {
+        trace_shutdown("process_exit_clear_configparser_state");
+        configparser_clear_state(_py, state);
+        trace_shutdown("process_exit_clear_csv_state");
+        csv_clear_state(state);
+    }
+    #[cfg(not(feature = "stdlib_math"))]
+    {
+        trace_shutdown("process_exit_clear_random_state");
+        random_clear_state(state);
+    }
     trace_shutdown("process_exit_clear_sys_ext_state");
     sys_ext_clear_state(_py, state);
     trace_shutdown("process_exit_flush_stdio");
@@ -165,18 +177,26 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_async_hang_probe(state);
     trace_shutdown("clear_task_state");
     clear_task_state(_py, state);
+    trace_shutdown("clear_asyncio_queue_state");
+    asyncio_queue_clear_state(_py, state);
     trace_shutdown("clear_exception_state");
     clear_exception_state(_py);
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("clear_contextvars_state");
     contextvars_clear_state(_py, state);
-    trace_shutdown("clear_configparser_state");
-    configparser_clear_state(_py, state);
-    trace_shutdown("clear_csv_state");
-    csv_clear_state(state);
-    trace_shutdown("clear_random_state");
-    random_clear_state(state);
+    #[cfg(not(feature = "stdlib_serial"))]
+    {
+        trace_shutdown("clear_configparser_state");
+        configparser_clear_state(_py, state);
+        trace_shutdown("clear_csv_state");
+        csv_clear_state(state);
+    }
+    #[cfg(not(feature = "stdlib_math"))]
+    {
+        trace_shutdown("clear_random_state");
+        random_clear_state(state);
+    }
     trace_shutdown("clear_sys_ext_state");
     sys_ext_clear_state(_py, state);
     trace_shutdown("flush_stdio");
