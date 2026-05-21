@@ -49,7 +49,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use super::{
     RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache,
-    runtime_extension_states_clear_and_drop,
+    cache::clear_runtime_static_names, runtime_extension_states_clear_and_drop,
 };
 
 thread_local! {
@@ -296,6 +296,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_interned_names(_py, state);
     trace_shutdown("clear_method_cache");
     clear_method_cache(_py, state);
+    trace_shutdown("clear_runtime_static_names");
+    clear_runtime_static_names(_py, state);
     trace_shutdown("clear_call_bind_ic_cache");
     clear_call_bind_ic_cache();
     trace_shutdown("clear_attributes_runtime_state");
@@ -361,7 +363,9 @@ fn trace_shutdown(step: &str) {
 pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
     PARSE_ARENA.with(|arena| arena.borrow_mut().reset());
-    let _ = state;
+    state
+        .importlib_default_meta_path_bootstrapped
+        .store(false, AtomicOrdering::Release);
 }
 
 fn clear_asyncgen_registry(state: &RuntimeState) {

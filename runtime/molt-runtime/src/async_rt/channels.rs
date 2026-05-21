@@ -35,7 +35,7 @@ use crate::{
 #[cfg(molt_has_net_io)]
 use crate::{
     alloc_string, exception_pending, intern_static_name, is_missing_bits, missing_bits,
-    molt_getattr_builtin, raise_os_error, string_obj_to_owned,
+    molt_getattr_builtin, raise_os_error, runtime_static_name_slot, string_obj_to_owned,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{molt_db_exec_host, molt_db_query_host};
@@ -2436,10 +2436,12 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
                 "server ssl requires a context with certfile/keyfile",
             );
         }
-        static CERTFILE_NAME: AtomicU64 = AtomicU64::new(0);
-        static KEYFILE_NAME: AtomicU64 = AtomicU64::new(0);
-        let certfile = match tls_server_ssl_attr_string(_py, ssl_bits, &CERTFILE_NAME, b"certfile")
-        {
+        let certfile = match tls_server_ssl_attr_string(
+            _py,
+            ssl_bits,
+            runtime_static_name_slot(_py, b"certfile"),
+            b"certfile",
+        ) {
             Ok(Some(value)) => value,
             Ok(None) => {
                 return raise_exception::<u64>(
@@ -2450,7 +2452,12 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
             }
             Err(bits) => return bits,
         };
-        let keyfile = match tls_server_ssl_attr_string(_py, ssl_bits, &KEYFILE_NAME, b"keyfile") {
+        let keyfile = match tls_server_ssl_attr_string(
+            _py,
+            ssl_bits,
+            runtime_static_name_slot(_py, b"keyfile"),
+            b"keyfile",
+        ) {
             Ok(Some(value)) => value,
             Ok(None) => {
                 return raise_exception::<u64>(

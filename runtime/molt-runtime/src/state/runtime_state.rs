@@ -43,8 +43,8 @@ use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::{
     AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, InternedNames,
-    MethodCache, MoltObject, MoltScheduler, ProcessRegistry, PtrSlot, PyToken, SleepQueue,
-    default_cancel_tokens,
+    MethodCache, MoltObject, MoltScheduler, ProcessRegistry, PtrSlot, PyToken, RuntimeStaticNames,
+    SleepQueue, default_cancel_tokens,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ThreadPool, ThreadTaskState, sleep_worker};
@@ -264,11 +264,13 @@ impl SpecialCache {
 pub(crate) struct RuntimeState {
     pub(crate) builtin_classes: std::sync::atomic::AtomicPtr<BuiltinClasses>,
     pub(crate) interned: InternedNames,
+    pub(crate) runtime_static_names: RuntimeStaticNames,
     pub(crate) method_cache: MethodCache,
     pub(crate) special_cache: SpecialCache,
     pub(crate) last_exception: AtomicPtr<u8>,
     pub(crate) last_exception_pending: AtomicBool,
     pub(crate) module_cache: Mutex<HashMap<String, u64>>,
+    pub(crate) importlib_default_meta_path_bootstrapped: AtomicBool,
     pub(crate) intrinsic_registry_module: AtomicPtr<u8>,
     pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
     pub(crate) exceptions: ExceptionsRuntimeState,
@@ -374,11 +376,13 @@ impl RuntimeState {
         Self {
             builtin_classes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             interned: InternedNames::new(),
+            runtime_static_names: RuntimeStaticNames::new(),
             method_cache: MethodCache::new(),
             special_cache: SpecialCache::new(),
             last_exception: AtomicPtr::new(std::ptr::null_mut()),
             last_exception_pending: AtomicBool::new(false),
             module_cache: Mutex::new(HashMap::new()),
+            importlib_default_meta_path_bootstrapped: AtomicBool::new(false),
             intrinsic_registry_module: AtomicPtr::new(std::ptr::null_mut()),
             exception_type_cache: Mutex::new(HashMap::new()),
             exceptions: ExceptionsRuntimeState::new(),
