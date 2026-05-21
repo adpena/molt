@@ -17,6 +17,7 @@ use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::builtins::asyncio_queue::AsyncioQueueRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::ConfigParserRuntimeState;
+use crate::builtins::copy_mod::CopyMemoRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::CsvRuntimeState;
 #[cfg(not(feature = "stdlib_math"))]
@@ -301,6 +302,7 @@ pub(crate) struct RuntimeState {
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
     pub(crate) contextvars: Mutex<ContextVarsState>,
+    pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
     #[cfg(not(feature = "stdlib_serial"))]
     pub(crate) configparser: Mutex<ConfigParserRuntimeState>,
     #[cfg(not(feature = "stdlib_serial"))]
@@ -398,6 +400,7 @@ impl RuntimeState {
                 finalizer: MoltObject::none().bits(),
             }),
             contextvars: Mutex::new(ContextVarsState::new()),
+            copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
             #[cfg(not(feature = "stdlib_serial"))]
             configparser: Mutex::new(ConfigParserRuntimeState::new()),
             #[cfg(not(feature = "stdlib_serial"))]
