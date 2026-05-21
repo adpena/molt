@@ -1,7 +1,7 @@
 Title: Runtime State Lifecycle and Shutdown
 Status: Draft
 Owner: runtime
-Last Updated: 2026-04-30
+Last Updated: 2026-05-21
 
 ## Summary
 Molt's runtime uses process-global caches (builtins, interned names, module and
@@ -48,6 +48,8 @@ Introduce a `RuntimeState` struct that owns all runtime-global state:
 - Module/exception caches and last-exception tracking.
 - Hash secret and capability cache.
 - Async registries and task metadata maps.
+- Context variable defaults, per-thread frames, token ownership, and copied
+  context snapshots.
 
 Expose a single global pointer (fast path) to the active RuntimeState:
 - `molt_runtime_init()` allocates and initializes the state, then publishes
@@ -83,7 +85,12 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   hard-exit, while `molt_runtime_shutdown()` remains the explicit embedding
   teardown API.
 - `RuntimeState` now owns builtin classes, interned/method caches, module/exception caches,
-  hash/capability state, async registries, and argv storage (no lazy_static globals).
+  hash/capability state, async registries, context variable state, and argv storage
+  (no lazy_static globals for those domains).
+- Context variable defaults, per-thread frame maps, reset tokens, and copied
+  context snapshots live under `RuntimeState.contextvars`; full shutdown and
+  process-exit finalization clear that state after `atexit` callbacks. Default-only
+  `ContextVar.get()` reads do not allocate per-thread context state.
 - TLS guard drains per-thread caches on thread exit; scheduler/sleep worker threads
   still participate in shutdown cleanup and are joined before teardown completes.
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive

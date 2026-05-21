@@ -176,6 +176,42 @@ pub(crate) struct AsyncGenHooks {
     pub(crate) finalizer: u64,
 }
 
+pub(crate) struct ContextVarsThreadState {
+    pub(crate) frames: Vec<HashMap<i64, u64>>,
+    pub(crate) tokens: HashMap<i64, (i64, u64, bool)>,
+    pub(crate) contexts: HashMap<i64, HashMap<i64, u64>>,
+}
+
+impl ContextVarsThreadState {
+    pub(crate) fn new() -> Self {
+        Self {
+            frames: vec![HashMap::new()],
+            tokens: HashMap::new(),
+            contexts: HashMap::new(),
+        }
+    }
+}
+
+pub(crate) struct ContextVarsState {
+    pub(crate) next_var_handle: i64,
+    pub(crate) next_token_handle: i64,
+    pub(crate) next_context_handle: i64,
+    pub(crate) var_defaults: HashMap<i64, u64>,
+    pub(crate) threads: HashMap<thread::ThreadId, ContextVarsThreadState>,
+}
+
+impl ContextVarsState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_var_handle: 1,
+            next_token_handle: 1,
+            next_context_handle: 1,
+            var_defaults: HashMap::new(),
+            threads: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PythonVersionInfo {
     pub(crate) major: i64,
@@ -253,6 +289,7 @@ pub(crate) struct RuntimeState {
     pub(crate) await_waiter_index: Mutex<HashMap<PtrSlot, AwaitWaiterIndex>>,
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
+    pub(crate) contextvars: Mutex<ContextVarsState>,
     pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
     pub(crate) gen_locals: Mutex<HashMap<u64, GenLocalsEntry>>,
     pub(crate) weakrefs: Mutex<WeakRefRegistry>,
@@ -339,6 +376,7 @@ impl RuntimeState {
                 firstiter: MoltObject::none().bits(),
                 finalizer: MoltObject::none().bits(),
             }),
+            contextvars: Mutex::new(ContextVarsState::new()),
             asyncgen_locals: Mutex::new(HashMap::new()),
             gen_locals: Mutex::new(HashMap::new()),
             weakrefs: Mutex::new(WeakRefRegistry::new()),
