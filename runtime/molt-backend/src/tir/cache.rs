@@ -13,13 +13,20 @@
 //! def456|functions/def456.bin|abc123|1679900001
 //! ```
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v1";
+const DEFAULT_MEMORY_CACHE_BYTES_FALLBACK: usize = 64 * 1024 * 1024;
+const DEFAULT_MEMORY_CACHE_AVAILABLE_BYTES_MIN: usize = 8 * 1024 * 1024;
+const DEFAULT_MEMORY_CACHE_BYTES_MIN: usize = 32 * 1024 * 1024;
+const DEFAULT_MEMORY_CACHE_BYTES_MAX: usize = 512 * 1024 * 1024;
+const DEFAULT_MEMORY_CACHE_AVAILABLE_DIVISOR: usize = 128;
+const DEFAULT_MEMORY_CACHE_TOTAL_DIVISOR: usize = 512;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -35,6 +42,18 @@ pub struct CompilationCache {
 
     /// In-memory index: `content_hash` → [`CacheEntry`].
     index: HashMap<String, CacheEntry>,
+
+    /// Bytes currently retained in `CacheEntry::data`.
+    memory_bytes: usize,
+
+    /// Maximum bytes retained in-memory. Disk cache entries remain indexed.
+    max_memory_bytes: usize,
+
+    /// Monotonic logical clock for in-memory LRU eviction.
+    memory_clock: u64,
+
+    /// LRU queue ordered by `(memory_stamp, content_hash)`.
+    memory_order: BinaryHeap<Reverse<(u64, String)>>,
 }
 
 /// A single entry in the compilation cache.
@@ -50,6 +69,8 @@ pub struct CacheEntry {
     pub last_access: u64,
     /// Cached artifact bytes — `None` until loaded on demand.
     pub(crate) data: Option<Vec<u8>>,
+    /// Logical LRU stamp for in-memory artifact bytes.
+    pub(crate) memory_stamp: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -62,9 +83,18 @@ impl CompilationCache {
     /// Attempts to load the persisted index from disk; silently proceeds with
     /// an empty in-memory cache if the index does not exist or is unreadable.
     pub fn open(cache_dir: PathBuf) -> Self {
+        Self::open_with_memory_limit(cache_dir, default_memory_cache_limit_bytes())
+    }
+
+    /// Create or open a compilation cache with an explicit in-memory cap.
+    pub fn open_with_memory_limit(cache_dir: PathBuf, max_memory_bytes: usize) -> Self {
         let mut cache = Self {
             cache_dir,
             index: HashMap::new(),
+            memory_bytes: 0,
+            max_memory_bytes,
+            memory_clock: 0,
+            memory_order: BinaryHeap::new(),
         };
         cache.load_index();
         cache
@@ -107,26 +137,33 @@ impl CompilationCache {
         let now = unix_now();
         if let Some(entry) = self.index.get_mut(content_hash) {
             entry.last_access = now;
-            // Return in-memory copy if available.
-            if let Some(ref bytes) = entry.data {
-                return Some(bytes.clone());
+        } else {
+            return None;
+        }
+
+        if let Some(bytes) = self
+            .index
+            .get(content_hash)
+            .and_then(|entry| entry.data.clone())
+        {
+            self.touch_memory_entry(content_hash);
+            return Some(bytes);
+        }
+
+        // Lazily load from disk. Guard against partial/corrupted reads:
+        // an empty file is treated as a cache miss (artifact writes are
+        // atomic via rename, so an empty file means something went wrong).
+        let path = self.index.get(content_hash)?.artifact_path.clone();
+        match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => {
+                self.store_memory_data(content_hash, bytes.clone());
+                Some(bytes)
             }
-            // Lazily load from disk.  Guard against partial/corrupted reads:
-            // an empty file is treated as a cache miss (artifact writes are
-            // atomic via rename, so an empty file means something went wrong).
-            let path = entry.artifact_path.clone();
-            match std::fs::read(&path) {
-                Ok(bytes) if !bytes.is_empty() => {
-                    entry.data = Some(bytes.clone());
-                    return Some(bytes);
-                }
-                _ => {
-                    // Missing, unreadable, or zero-length — treat as cache miss.
-                    return None;
-                }
+            _ => {
+                // Missing, unreadable, or zero-length — treat as cache miss.
+                None
             }
         }
-        None
     }
 
     /// Store a compilation artifact in memory and on disk.
@@ -151,14 +188,30 @@ impl CompilationCache {
             return;
         }
 
-        let entry = CacheEntry {
+        if let Some(previous) = self.index.remove(content_hash)
+            && let Some(bytes) = previous.data
+        {
+            self.memory_bytes = self.memory_bytes.saturating_sub(bytes.len());
+        }
+
+        let mut entry = CacheEntry {
             content_hash: content_hash.to_owned(),
             artifact_path,
             dependencies: deps,
             last_access: unix_now(),
-            data: Some(artifact.to_vec()),
+            data: None,
+            memory_stamp: 0,
         };
+        if artifact.len() <= self.max_memory_bytes && self.max_memory_bytes > 0 {
+            self.memory_clock = self.memory_clock.wrapping_add(1);
+            entry.memory_stamp = self.memory_clock;
+            entry.data = Some(artifact.to_vec());
+            self.memory_bytes = self.memory_bytes.saturating_add(artifact.len());
+            self.memory_order
+                .push(Reverse((entry.memory_stamp, content_hash.to_owned())));
+        }
         self.index.insert(content_hash.to_owned(), entry);
+        self.evict_memory();
     }
 
     /// Invalidate cache entries whose dependency hashes appear in
@@ -170,20 +223,35 @@ impl CompilationCache {
         let changed: std::collections::HashSet<&str> =
             changed_hashes.iter().map(String::as_str).collect();
 
+        let mut removed_bytes = 0usize;
         self.index.retain(|_hash, entry| {
-            !entry
+            let keep = !entry
                 .dependencies
                 .iter()
-                .any(|d| changed.contains(d.as_str()))
+                .any(|d| changed.contains(d.as_str()));
+            if !keep && let Some(bytes) = &entry.data {
+                removed_bytes = removed_bytes.saturating_add(bytes.len());
+            }
+            keep
         });
+        self.memory_bytes = self.memory_bytes.saturating_sub(removed_bytes);
+        self.compact_memory_order_if_needed();
     }
 
     /// Remove entries that have not been accessed within the last
     /// `max_age_secs` seconds.
     pub fn evict_stale(&mut self, max_age_secs: u64) {
         let now = unix_now();
-        self.index
-            .retain(|_hash, entry| now.saturating_sub(entry.last_access) <= max_age_secs);
+        let mut removed_bytes = 0usize;
+        self.index.retain(|_hash, entry| {
+            let keep = now.saturating_sub(entry.last_access) <= max_age_secs;
+            if !keep && let Some(bytes) = &entry.data {
+                removed_bytes = removed_bytes.saturating_add(bytes.len());
+            }
+            keep
+        });
+        self.memory_bytes = self.memory_bytes.saturating_sub(removed_bytes);
+        self.compact_memory_order_if_needed();
     }
 
     /// Persist the cache index to `cache_dir/index.txt`.
@@ -257,6 +325,7 @@ impl CompilationCache {
                     dependencies,
                     last_access,
                     data: None, // loaded on demand
+                    memory_stamp: 0,
                 },
             );
         }
@@ -266,6 +335,85 @@ impl CompilationCache {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.index.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn memory_bytes(&self) -> usize {
+        self.memory_bytes
+    }
+
+    fn touch_memory_entry(&mut self, content_hash: &str) {
+        let Some(entry) = self.index.get_mut(content_hash) else {
+            return;
+        };
+        if entry.data.is_none() {
+            return;
+        }
+        self.memory_clock = self.memory_clock.wrapping_add(1);
+        entry.memory_stamp = self.memory_clock;
+        self.memory_order
+            .push(Reverse((entry.memory_stamp, content_hash.to_owned())));
+    }
+
+    fn store_memory_data(&mut self, content_hash: &str, bytes: Vec<u8>) {
+        if self.max_memory_bytes == 0 || bytes.len() > self.max_memory_bytes {
+            if let Some(entry) = self.index.get_mut(content_hash)
+                && let Some(previous) = entry.data.take()
+            {
+                self.memory_bytes = self.memory_bytes.saturating_sub(previous.len());
+                entry.memory_stamp = 0;
+            }
+            return;
+        }
+
+        let Some(entry) = self.index.get_mut(content_hash) else {
+            return;
+        };
+        if let Some(previous) = entry.data.take() {
+            self.memory_bytes = self.memory_bytes.saturating_sub(previous.len());
+        }
+        self.memory_clock = self.memory_clock.wrapping_add(1);
+        entry.memory_stamp = self.memory_clock;
+        self.memory_bytes = self.memory_bytes.saturating_add(bytes.len());
+        entry.data = Some(bytes);
+        self.memory_order
+            .push(Reverse((entry.memory_stamp, content_hash.to_owned())));
+        self.evict_memory();
+    }
+
+    fn evict_memory(&mut self) {
+        while self.memory_bytes > self.max_memory_bytes {
+            let Some(Reverse((stamp, content_hash))) = self.memory_order.pop() else {
+                break;
+            };
+            let is_live = self
+                .index
+                .get(&content_hash)
+                .is_some_and(|entry| entry.memory_stamp == stamp && entry.data.is_some());
+            if !is_live {
+                continue;
+            }
+            if let Some(entry) = self.index.get_mut(&content_hash)
+                && let Some(bytes) = entry.data.take()
+            {
+                self.memory_bytes = self.memory_bytes.saturating_sub(bytes.len());
+                entry.memory_stamp = 0;
+            }
+        }
+        self.compact_memory_order_if_needed();
+    }
+
+    fn compact_memory_order_if_needed(&mut self) {
+        if self.memory_order.len() <= self.index.len().saturating_mul(8).saturating_add(32) {
+            return;
+        }
+        let mut compacted = BinaryHeap::new();
+        for (hash, entry) in &self.index {
+            if entry.data.is_some() {
+                compacted.push(Reverse((entry.memory_stamp, hash.clone())));
+            }
+        }
+        self.memory_order = compacted;
     }
 }
 
@@ -317,6 +465,84 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+fn default_memory_cache_limit_bytes() -> usize {
+    if let Some(bytes) = env_cache_limit_bytes("MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES") {
+        return bytes;
+    }
+    if let Some(mib) = env_cache_limit_bytes("MOLT_BACKEND_TIR_CACHE_MEMORY_MB") {
+        return mib.saturating_mul(1024 * 1024);
+    }
+    if let Some(bytes) = usable_memory_budget_bytes_from_env() {
+        return (bytes / DEFAULT_MEMORY_CACHE_AVAILABLE_DIVISOR).clamp(
+            DEFAULT_MEMORY_CACHE_AVAILABLE_BYTES_MIN,
+            DEFAULT_MEMORY_CACHE_BYTES_MAX,
+        );
+    }
+    total_memory_bytes()
+        .map(|bytes| {
+            (bytes / DEFAULT_MEMORY_CACHE_TOTAL_DIVISOR).clamp(
+                DEFAULT_MEMORY_CACHE_BYTES_MIN,
+                DEFAULT_MEMORY_CACHE_BYTES_MAX,
+            )
+        })
+        .unwrap_or(DEFAULT_MEMORY_CACHE_BYTES_FALLBACK)
+}
+
+fn env_cache_limit_bytes(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+}
+
+fn usable_memory_budget_bytes_from_env() -> Option<usize> {
+    let available_gb = env_cache_limit_gb(&[
+        "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+        "MOLT_CLI_MEMORY_AVAILABLE_GB",
+        "MOLT_CLI_MEM_AVAILABLE_GB",
+        "MOLT_MEMORY_AVAILABLE_GB",
+        "MOLT_MEM_AVAILABLE_GB",
+    ])?;
+    let reserve_gb = env_cache_limit_gb(&[
+        "MOLT_BACKEND_MEMORY_RESERVE_GB",
+        "MOLT_CLI_MEMORY_RESERVE_GB",
+        "MOLT_CLI_MEM_RESERVE_GB",
+        "MOLT_MEMORY_RESERVE_GB",
+        "MOLT_MEM_RESERVE_GB",
+    ])
+    .unwrap_or(0.0);
+    let usable_gb = (available_gb - reserve_gb).max(0.0);
+    if usable_gb <= 0.0 {
+        return Some(0);
+    }
+    Some((usable_gb * 1024.0 * 1024.0 * 1024.0) as usize)
+}
+
+fn env_cache_limit_gb(names: &[&str]) -> Option<f64> {
+    names.iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0)
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn total_memory_bytes() -> Option<usize> {
+    unsafe {
+        let pages = libc::sysconf(libc::_SC_PHYS_PAGES);
+        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
+        if pages <= 0 || page_size <= 0 {
+            return None;
+        }
+        (pages as usize).checked_mul(page_size as usize)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+fn total_memory_bytes() -> Option<usize> {
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -341,6 +567,10 @@ mod tests {
         CompilationCache::open(tmp_cache_dir())
     }
 
+    fn make_cache_with_memory_limit(max_memory_bytes: usize) -> CompilationCache {
+        CompilationCache::open_with_memory_limit(tmp_cache_dir(), max_memory_bytes)
+    }
+
     fn hash(func_name: &str, body: &[u8]) -> String {
         CompilationCache::compute_hash_with_signature(func_name, &[], None, body)
     }
@@ -348,6 +578,57 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    const CACHE_ENV_NAMES: &[&str] = &[
+        "MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES",
+        "MOLT_BACKEND_TIR_CACHE_MEMORY_MB",
+        "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+        "MOLT_CLI_MEMORY_AVAILABLE_GB",
+        "MOLT_CLI_MEM_AVAILABLE_GB",
+        "MOLT_MEMORY_AVAILABLE_GB",
+        "MOLT_MEM_AVAILABLE_GB",
+        "MOLT_BACKEND_MEMORY_RESERVE_GB",
+        "MOLT_CLI_MEMORY_RESERVE_GB",
+        "MOLT_CLI_MEM_RESERVE_GB",
+        "MOLT_MEMORY_RESERVE_GB",
+        "MOLT_MEM_RESERVE_GB",
+    ];
+
+    struct EnvRestore {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvRestore {
+        fn apply(updates: &[(&'static str, &'static str)]) -> Self {
+            let saved = CACHE_ENV_NAMES
+                .iter()
+                .map(|name| (*name, std::env::var(name).ok()))
+                .collect::<Vec<_>>();
+            unsafe {
+                for name in CACHE_ENV_NAMES {
+                    std::env::remove_var(name);
+                }
+                for (name, value) in updates {
+                    std::env::set_var(name, value);
+                }
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            unsafe {
+                for (name, value) in &self.saved {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    } else {
+                        std::env::remove_var(name);
+                    }
+                }
+            }
+        }
     }
 
     /// 1. put + get round-trip (in-memory)
@@ -361,6 +642,131 @@ mod tests {
         let result = cache.get(&hash);
 
         assert_eq!(result, Some(artifact.to_vec()));
+    }
+
+    #[test]
+    fn memory_cache_evicts_lru_bytes_without_dropping_disk_index() {
+        let mut cache = make_cache_with_memory_limit(8);
+        let h1 = hash("fn_1", b"body 1");
+        let h2 = hash("fn_2", b"body 2");
+        let h3 = hash("fn_3", b"body 3");
+
+        cache.put(&h1, b"1111", vec![]);
+        cache.put(&h2, b"2222", vec![]);
+        assert_eq!(cache.memory_bytes(), 8);
+
+        cache.put(&h3, b"3333", vec![]);
+        assert_eq!(
+            cache.len(),
+            3,
+            "memory eviction must preserve disk index entries"
+        );
+        assert!(
+            cache.memory_bytes() <= 8,
+            "in-memory artifact bytes must stay under the configured cap"
+        );
+        assert!(
+            cache
+                .index
+                .get(&h1)
+                .is_some_and(|entry| entry.data.is_none()),
+            "least-recently-used artifact bytes should be evicted first"
+        );
+
+        assert_eq!(cache.get(&h1), Some(b"1111".to_vec()));
+        assert_eq!(cache.len(), 3);
+        assert!(cache.memory_bytes() <= 8);
+    }
+
+    #[test]
+    fn memory_cache_does_not_retain_oversized_artifacts() {
+        let mut cache = make_cache_with_memory_limit(4);
+        let hash = hash("large_func", b"body");
+
+        cache.put(&hash, b"artifact-too-large", vec![]);
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.memory_bytes(), 0);
+        assert!(
+            cache
+                .index
+                .get(&hash)
+                .is_some_and(|entry| entry.data.is_none())
+        );
+        assert_eq!(cache.get(&hash), Some(b"artifact-too-large".to_vec()));
+        assert_eq!(
+            cache.memory_bytes(),
+            0,
+            "oversized disk hits must not be retained in memory"
+        );
+    }
+
+    #[test]
+    fn replacing_cache_entry_updates_memory_byte_accounting() {
+        let mut cache = make_cache_with_memory_limit(64);
+        let hash = hash("replace_func", b"body");
+
+        cache.put(&hash, b"old", vec![]);
+        assert_eq!(cache.memory_bytes(), 3);
+
+        cache.put(&hash, b"new-data", vec![]);
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.memory_bytes(), 8);
+        assert_eq!(cache.get(&hash), Some(b"new-data".to_vec()));
+        assert_eq!(cache.memory_bytes(), 8);
+    }
+
+    #[test]
+    fn invalidate_and_stale_eviction_update_memory_byte_accounting() {
+        let mut cache = make_cache_with_memory_limit(64);
+        let dep_hash = hash("dep_func", b"dep body");
+        let caller_hash = hash("caller_func", b"caller body");
+        let stale_hash = hash("stale_func", b"stale body");
+
+        cache.put(&dep_hash, b"dep", vec![]);
+        cache.put(&caller_hash, b"caller", vec![dep_hash.clone()]);
+        cache.put(&stale_hash, b"stale", vec![]);
+        assert_eq!(
+            cache.memory_bytes(),
+            b"dep".len() + b"caller".len() + b"stale".len()
+        );
+
+        cache.invalidate(std::slice::from_ref(&dep_hash));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.memory_bytes(), b"dep".len() + b"stale".len());
+
+        cache.index.get_mut(&stale_hash).unwrap().last_access = 1;
+        cache.evict_stale(60);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.memory_bytes(), b"dep".len());
+    }
+
+    #[test]
+    fn explicit_memory_cache_env_overrides_adaptive_default() {
+        let _guard = env_lock().lock().expect("env lock");
+        let _env = EnvRestore::apply(&[
+            ("MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES", "12345"),
+            ("MOLT_MEMORY_AVAILABLE_GB", "1"),
+            ("MOLT_MEMORY_RESERVE_GB", "1"),
+        ]);
+        let limit = default_memory_cache_limit_bytes();
+        assert_eq!(limit, 12345);
+    }
+
+    #[test]
+    fn memory_cache_default_uses_available_memory_after_reserve() {
+        let _guard = env_lock().lock().expect("env lock");
+        let _env = EnvRestore::apply(&[
+            ("MOLT_MEMORY_AVAILABLE_GB", "4"),
+            ("MOLT_MEMORY_RESERVE_GB", "2"),
+        ]);
+        let limit = default_memory_cache_limit_bytes();
+        assert_eq!(
+            limit,
+            16 * 1024 * 1024,
+            "2 GiB usable memory divided by the adaptive cache divisor"
+        );
     }
 
     #[test]
@@ -581,6 +987,7 @@ mod tests {
                 dependencies: vec![],
                 last_access: unix_now(),
                 data: None,
+                memory_stamp: 0,
             },
         );
         assert_eq!(cache.get(&hash), None);
