@@ -32,6 +32,8 @@ const PROCESS_STDIO_PIPE: i32 = 1;
 const PROCESS_STDIO_DEVNULL: i32 = 2;
 const PROCESS_STDIO_STDOUT: i32 = -2;
 const PROCESS_STDIO_FD_BASE: i32 = 1 << 30;
+#[cfg(not(target_arch = "wasm32"))]
+const PROCESS_PIPE_MAX_QUEUED_BYTES_ENV: &str = "MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn trace_process_spawn() -> bool {
@@ -42,6 +44,20 @@ fn trace_process_spawn() -> bool {
             Some("1")
         )
     })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn process_pipe_max_queued_bytes() -> usize {
+    std::env::var(PROCESS_PIPE_MAX_QUEUED_BYTES_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(super::channels::default_stream_max_queued_bytes)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn new_process_pipe_stream() -> u64 {
+    super::channels::stream_new_with_byte_budget(0, process_pipe_max_queued_bytes())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -697,7 +713,6 @@ fn spawn_process_reader(mut reader: impl Read + Send + 'static, stream_bits: u64
             return;
         }
         let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
-        let sender = stream.sender.clone();
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
@@ -726,12 +741,14 @@ fn spawn_process_reader(mut reader: impl Read + Send + 'static, stream_bits: u64
                             );
                         }
                     }
-                    let _ = sender.send(bytes);
+                    if !super::channels::stream_enqueue_bytes_blocking(stream, bytes) {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
         }
-        stream.closed.store(true, AtomicOrdering::Release);
+        super::channels::stream_close_local(stream);
         unsafe {
             molt_stream_drop(stream_bits);
         }
@@ -754,6 +771,7 @@ fn spawn_process_writer(mut writer: impl Write + Send + 'static, stream_bits: u6
         loop {
             match receiver.recv_timeout(Duration::from_millis(50)) {
                 Ok(bytes) => {
+                    super::channels::stream_release_queued_bytes(stream, bytes.len());
                     if bytes.is_empty() {
                         continue;
                     }
@@ -899,17 +917,17 @@ pub unsafe extern "C" fn molt_process_spawn(
             }
 
             let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
-                molt_stream_new(0)
+                new_process_pipe_stream()
             } else {
                 0
             };
             let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
-                molt_stream_new(0)
+                new_process_pipe_stream()
             } else {
                 0
             };
             let mut stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
-                molt_stream_new(0)
+                new_process_pipe_stream()
             } else {
                 0
             };
@@ -1265,17 +1283,17 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             apply_child_memory_rlimit(&mut cmd);
 
             let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
-                molt_stream_new(0)
+                new_process_pipe_stream()
             } else {
                 0
             };
             let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
-                molt_stream_new(0)
+                new_process_pipe_stream()
             } else {
                 0
             };
             let mut stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
-                molt_stream_new(0)
+                new_process_pipe_stream()
             } else {
                 0
             };
