@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -593,6 +595,213 @@ def guarded_completed_process(
     )
 
 
+def _guard_violation_bytes_message(
+    violation: memory_guard.RssViolation,
+    limit_gb: float | None,
+) -> bytes:
+    rss_gb = violation.rss_kb / (1024 * 1024)
+    scope = getattr(violation, "scope", "process")
+    limit = "unknown" if limit_gb is None else f"{limit_gb:.2f}GB"
+    command = str(getattr(violation, "command", "")).strip()
+    message = (
+        "\n"
+        f"molt memory guard: RSS limit exceeded scope={scope} "
+        f"pid={violation.pid} rss={rss_gb:.2f}GB limit={limit}"
+        + (f" command={command}" if command else "")
+        + "\n"
+    )
+    return message.encode("utf-8", errors="replace")
+
+
+def _subprocess_keepalive_interval_secs() -> float | None:
+    raw = os.environ.get("MOLT_SUBPROCESS_KEEPALIVE_SECS", "20").strip()
+    if raw in {"", "0", "off", "false"}:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return 20.0
+    return value if value > 0 else None
+
+
+def _terminate_guarded_bytes_process(
+    proc: subprocess.Popen[bytes],
+    tracker: memory_guard.ProcessTreeTracker | None,
+    *,
+    grace: float,
+) -> None:
+    if tracker is None:
+        proc.kill()
+        return
+    samples = memory_guard.sample_processes()
+    watched = tracker.update(samples)
+    memory_guard.terminate_watched_processes(
+        proc.pid,
+        samples=samples,
+        watched=watched,
+        grace=grace,
+    )
+
+
+def guarded_completed_process_to_tempfiles(
+    command: Sequence[str],
+    *,
+    prefix: str,
+    input: bytes | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+    progress_label: str | None = None,
+    limits: HarnessMemoryLimits | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a guarded command while capturing stdout/stderr through temp files.
+
+    This preserves the shared memory-guard contract for commands whose
+    descendants may inherit stdout/stderr and keep pipe handles open after the
+    direct child exits.
+    """
+
+    resolved_limits = limits or limits_from_env(prefix, env)
+    guard_enabled = bool(resolved_limits.enabled)
+    popen_kwargs: dict[str, object] = {}
+    if guard_enabled:
+        popen_kwargs.update(batch_process_group_kwargs(resolved_limits, env=env))
+
+    sentinel_scope = (
+        _auto_repo_sentinel(prefix=prefix, env=env, limits=resolved_limits)
+        if guard_enabled
+        else contextlib.nullcontext(None)
+    )
+    with sentinel_scope:
+        with (
+            tempfile.TemporaryFile() as stdout_file,
+            tempfile.TemporaryFile() as stderr_file,
+        ):
+            proc = subprocess.Popen(
+                list(command),
+                stdout=stdout_file,
+                stderr=stderr_file,
+                cwd=cwd,
+                env=dict(env) if env is not None else None,
+                stdin=subprocess.PIPE if input is not None else None,
+                **popen_kwargs,
+            )
+            tracker = (
+                memory_guard.ProcessTreeTracker(proc.pid) if guard_enabled else None
+            )
+            if input is not None and proc.stdin is not None:
+                try:
+                    proc.stdin.write(input)
+                finally:
+                    proc.stdin.close()
+            keepalive_interval = (
+                _subprocess_keepalive_interval_secs()
+                if progress_label is not None
+                else None
+            )
+            started = time.monotonic()
+            next_keepalive = (
+                started + keepalive_interval if keepalive_interval is not None else None
+            )
+            next_guard_sample = (
+                started + max(0.01, resolved_limits.poll_interval)
+                if guard_enabled
+                else None
+            )
+            while True:
+                now = time.monotonic()
+                remaining = None if timeout is None else timeout - (now - started)
+                if remaining is not None and remaining <= 0:
+                    _terminate_guarded_bytes_process(proc, tracker, grace=0.0)
+                    proc.wait()
+                    assert timeout is not None
+                    raise subprocess.TimeoutExpired(list(command), timeout)
+                wait_timeout = remaining
+                if next_keepalive is not None:
+                    keepalive_wait = max(0.0, next_keepalive - now)
+                    wait_timeout = (
+                        keepalive_wait
+                        if wait_timeout is None
+                        else min(wait_timeout, keepalive_wait)
+                    )
+                if next_guard_sample is not None:
+                    guard_wait = max(0.0, next_guard_sample - now)
+                    wait_timeout = (
+                        guard_wait
+                        if wait_timeout is None
+                        else min(wait_timeout, guard_wait)
+                    )
+                try:
+                    returncode = proc.wait(timeout=wait_timeout)
+                    break
+                except subprocess.TimeoutExpired:
+                    now = time.monotonic()
+                    if next_guard_sample is not None and now >= next_guard_sample:
+                        assert tracker is not None
+                        samples = memory_guard.sample_processes()
+                        watched = tracker.update(samples)
+                        observed_total = memory_guard.total_rss(
+                            samples,
+                            root_pid=proc.pid,
+                            watched=watched,
+                        )
+                        current_limits = resolved_limits.current_memory_limits(
+                            env,
+                            accounted_rss_kb=(
+                                0 if observed_total is None else observed_total.rss_kb
+                            ),
+                        )
+                        violation = memory_guard.find_rss_violation(
+                            samples,
+                            root_pid=proc.pid,
+                            max_rss_kb=current_limits.max_process_rss_kb,
+                            max_total_rss_kb=current_limits.max_total_rss_kb,
+                            watched=watched,
+                        )
+                        if violation is not None:
+                            limit_gb = (
+                                current_limits.max_total_rss_gb
+                                if getattr(violation, "scope", "") == "process_tree"
+                                else current_limits.max_process_rss_gb
+                            )
+                            stderr_file.write(
+                                _guard_violation_bytes_message(violation, limit_gb)
+                            )
+                            stderr_file.flush()
+                            _terminate_guarded_bytes_process(
+                                proc,
+                                tracker,
+                                grace=0.25,
+                            )
+                            with contextlib.suppress(Exception):
+                                proc.wait(timeout=1.0)
+                            returncode = memory_guard.GUARD_RETURN_CODE
+                            break
+                        next_guard_sample = now + max(
+                            0.01,
+                            resolved_limits.poll_interval,
+                        )
+                        continue
+                    if next_keepalive is not None and now >= next_keepalive:
+                        assert keepalive_interval is not None
+                        elapsed = now - started
+                        print(
+                            f"{progress_label} still running... ({elapsed:.0f}s)",
+                            file=sys.stderr,
+                        )
+                        next_keepalive = now + keepalive_interval
+                        continue
+                    if timeout is not None and now - started >= timeout:
+                        _terminate_guarded_bytes_process(proc, tracker, grace=0.0)
+                        proc.wait()
+                        raise subprocess.TimeoutExpired(list(command), timeout)
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read()
+            stderr = stderr_file.read()
+    return subprocess.CompletedProcess(list(command), returncode, stdout, stderr)
+
+
 def batch_process_group_kwargs(
     limits: HarnessMemoryLimits | None = None,
     *,
@@ -604,9 +813,7 @@ def batch_process_group_kwargs(
     kwargs: dict[str, object] = {"start_new_session": True}
     child_rlimit_kb = resolved_limits.current_child_rlimit_kb(env)
     if child_rlimit_kb is not None:
-        kwargs["preexec_fn"] = _child_resource_limit_preexec(
-            child_rlimit_kb
-        )
+        kwargs["preexec_fn"] = _child_resource_limit_preexec(child_rlimit_kb)
     return kwargs
 
 
@@ -901,9 +1108,7 @@ class HarnessExecutionContext:
         root = (repo_root or _REPO_ROOT).resolve()
         canonical_env = canonical_harness_env(env, repo_root=root)
         resolved_limits = limits or limits_from_env(prefix, canonical_env)
-        resolved_artifact_root = artifact_root or _artifact_root_from_env(
-            canonical_env
-        )
+        resolved_artifact_root = artifact_root or _artifact_root_from_env(canonical_env)
         return cls(
             prefix=_normalize_prefix(prefix),
             repo_root=root,
@@ -928,13 +1133,21 @@ class HarnessExecutionContext:
         timeout: float | None = None,
         stream: str = "",
     ) -> GuardedCompletedProcess:
-        command_env = self.env if env is None else canonical_harness_env(
-            env,
-            repo_root=self.repo_root,
+        command_env = (
+            self.env
+            if env is None
+            else canonical_harness_env(
+                env,
+                repo_root=self.repo_root,
+            )
         )
-        limits = self.limits if env is None else limits_from_env(
-            self.prefix,
-            command_env,
+        limits = (
+            self.limits
+            if env is None
+            else limits_from_env(
+                self.prefix,
+                command_env,
+            )
         )
         return guarded_completed_process(
             command,
