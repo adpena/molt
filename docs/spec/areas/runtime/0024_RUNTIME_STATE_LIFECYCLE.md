@@ -55,6 +55,7 @@ Introduce a `RuntimeState` struct that owns all runtime-global state:
   `csv` reader/writer handles, dialect registry, field-size limit, and
   `random.Random` generator handles.
 - C-API extension module metadata and per-module state registries.
+- Call binding provenance state for heap-backed `CallArgs` builders.
 
 Expose a single global pointer (fast path) to the active RuntimeState:
 - `molt_runtime_init()` allocates and initializes the state, then publishes
@@ -98,9 +99,11 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   `ContextVar.get()` reads do not allocate per-thread context state.
 - Fallback `configparser`, `csv`, and `random` registries plus C-API module
   metadata/state registries live under `RuntimeState` and are cleared during
-  shutdown and executable process-exit finalization. Their per-runtime handle
-  counters and registries reset with a new runtime state, so stale handles
-  cannot address process-lifetime parser/CSV/RNG or extension-module state.
+  shutdown and executable process-exit finalization. `CallArgs` builder
+  provenance registries are also runtime-scoped instead of process-global.
+  Their per-runtime handle counters and registries reset with a new runtime
+  state, so stale handles cannot address process-lifetime parser/CSV/RNG,
+  extension-module, or call-binding state.
 - TLS guard drains per-thread caches on thread exit; scheduler/sleep worker threads
   still participate in shutdown cleanup and are joined before teardown completes.
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive
