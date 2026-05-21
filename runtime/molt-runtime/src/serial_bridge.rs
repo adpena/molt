@@ -93,13 +93,7 @@ extern "C" fn bridge_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            let len = bytes.len();
-            let ptr = Box::into_raw(bytes) as *const u8;
-            unsafe {
-                *out_ptr = ptr;
-                *out_len = len;
-            }
-            1
+            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
         }
         None => 0,
     }
@@ -110,13 +104,7 @@ extern "C" fn bridge_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
-        let len = bytes.len();
-        let ptr = Box::into_raw(bytes) as *const u8;
-        unsafe {
-            *out_ptr = ptr;
-            *out_len = len;
-        }
-        1
+        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
     })
 }
 
@@ -277,12 +265,12 @@ extern "C" fn bridge_to_bigint(
                 Sign::Plus => 1i32,
             };
             let boxed = bytes.into_boxed_slice();
-            let len = boxed.len();
-            let ptr = Box::into_raw(boxed) as *const u8;
+            let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+            if ok == 0 {
+                return 0;
+            }
             unsafe {
                 *out_sign = sign_i32;
-                *out_ptr = ptr;
-                *out_len = len;
             }
             1
         }
@@ -335,12 +323,12 @@ extern "C" fn bridge_bigint_ref(
         Sign::Plus => 1i32,
     };
     let boxed = bytes.into_boxed_slice();
-    let len = boxed.len();
-    let raw_ptr = Box::into_raw(boxed) as *const u8;
+    let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+    if ok == 0 {
+        return 0;
+    }
     unsafe {
         *out_sign = sign_i32;
-        *out_ptr = raw_ptr;
-        *out_len = len;
     }
     1
 }
@@ -359,12 +347,12 @@ extern "C" fn bridge_bigint_from_f64_trunc(
         Sign::Plus => 1i32,
     };
     let boxed = bytes.into_boxed_slice();
-    let len = boxed.len();
-    let raw_ptr = Box::into_raw(boxed) as *const u8;
+    let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+    if ok == 0 {
+        return 0;
+    }
     unsafe {
         *out_sign = sign_i32;
-        *out_ptr = raw_ptr;
-        *out_len = len;
     }
     1
 }
@@ -424,12 +412,12 @@ extern "C" fn bridge_index_bigint_from_obj(
                     Sign::Plus => 1i32,
                 };
                 let boxed = bytes.into_boxed_slice();
-                let len = boxed.len();
-                let ptr = Box::into_raw(boxed) as *const u8;
+                let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+                if ok == 0 {
+                    return 0;
+                }
                 unsafe {
                     *out_sign = sign_i32;
-                    *out_ptr = ptr;
-                    *out_len = len;
                 }
                 1
             }
@@ -528,13 +516,7 @@ extern "C" fn bridge_class_name_for_error(
 ) -> i32 {
     let name = _class_name_for_error(type_bits);
     let bytes = name.into_bytes().into_boxed_slice();
-    let len = bytes.len();
-    let ptr = Box::into_raw(bytes) as *const u8;
-    unsafe {
-        *out_ptr = ptr;
-        *out_len = len;
-    }
-    1
+    crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
 }
 
 extern "C" fn bridge_type_of_bits(val_bits: u64) -> u64 {
@@ -559,13 +541,7 @@ extern "C" fn bridge_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mu
         let obj = obj_from_bits(bits);
         let s = _format_obj(_py, obj);
         let bytes = s.into_bytes().into_boxed_slice();
-        let len = bytes.len();
-        let ptr = Box::into_raw(bytes) as *const u8;
-        unsafe {
-            *out_ptr = ptr;
-            *out_len = len;
-        }
-        1
+        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
     })
 }
 
@@ -578,13 +554,7 @@ extern "C" fn bridge_format_obj_str(
         let obj = obj_from_bits(bits);
         let s = _format_obj_str(_py, obj);
         let bytes = s.into_bytes().into_boxed_slice();
-        let len = bytes.len();
-        let ptr = Box::into_raw(bytes) as *const u8;
-        unsafe {
-            *out_ptr = ptr;
-            *out_len = len;
-        }
-        1
+        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
     })
 }
 
@@ -706,13 +676,7 @@ extern "C" fn bridge_dict_order_clone(
 ) -> i32 {
     let order = unsafe { crate::builtins::containers::dict_order(ptr) }.clone();
     let boxed = order.into_boxed_slice();
-    let len = boxed.len();
-    let raw = Box::into_raw(boxed) as *const u64;
-    unsafe {
-        *out_ptr = raw;
-        *out_len = len;
-    }
-    1
+    crate::bridge_buffer::export_u64_box(boxed, out_ptr, out_len)
 }
 
 // ---------------------------------------------------------------------------

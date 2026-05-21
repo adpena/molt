@@ -113,13 +113,7 @@ pub extern "C" fn __molt_crypto_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            let len = bytes.len();
-            let ptr = Box::into_raw(bytes) as *const u8;
-            unsafe {
-                *out_ptr = ptr;
-                *out_len = len;
-            }
-            1
+            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
         }
         None => 0,
     }
@@ -135,13 +129,7 @@ pub extern "C" fn __molt_crypto_type_name(
         let obj = obj_from_bits(bits);
         let name = type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
-        let len = bytes.len();
-        let ptr = Box::into_raw(bytes) as *const u8;
-        unsafe {
-            *out_ptr = ptr;
-            *out_len = len;
-        }
-        1
+        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
     })
 }
 
@@ -251,12 +239,12 @@ pub extern "C" fn __molt_crypto_index_bigint_from_obj(
                     Sign::Plus => 1i32,
                 };
                 let boxed = bytes.into_boxed_slice();
-                let len = boxed.len();
-                let ptr = Box::into_raw(boxed) as *const u8;
+                let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+                if ok == 0 {
+                    return 0;
+                }
                 unsafe {
                     *out_sign = sign_i32;
-                    *out_ptr = ptr;
-                    *out_len = len;
                 }
                 1
             }

@@ -150,12 +150,7 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_http_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                out_ptr as *mut u8,
-                out_len,
-            ))
-        };
+        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -334,12 +329,7 @@ pub fn format_obj_str(_py: &CoreGilToken, obj: MoltObject) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_http_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                out_ptr as *mut u8,
-                out_len,
-            ))
-        };
+        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         String::new()
@@ -431,12 +421,7 @@ pub fn env_state_get(key: &str) -> Option<String> {
     let ok =
         unsafe { __molt_http_env_state_get(key.as_ptr(), key.len(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                out_ptr as *mut u8,
-                out_len,
-            ))
-        };
+        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
