@@ -131,6 +131,13 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   finalization. Final socket reference release unregisters native fd mappings
   before closing the socket, so dropped unclosed sockets cannot leave stale
   process-lifetime fd-to-pointer entries.
+- Signal handler slots, pending-delivery flags, and wakeup fd state are
+  runtime-scoped through `RuntimeState.signal`. The raw C signal handler uses
+  only a signal-safe atomic pointer to the active runtime-owned atomics; it
+  does not own state. Installing Python-level handlers retains callable
+  references, `getsignal()` returns owned callable references, and shutdown
+  releases installed handlers after `atexit` while resetting wakeup/pending
+  state.
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive
   runtime teardown; object pointer resolution consults the registry to satisfy
   strict provenance tooling.

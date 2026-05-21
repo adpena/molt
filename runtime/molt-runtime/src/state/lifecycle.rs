@@ -14,6 +14,7 @@ use crate::builtins::csv::csv_clear_state;
 use crate::builtins::itertools::itertools_clear_state;
 #[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::random_clear_state;
+use crate::builtins::signal_ext::signal_clear_state;
 use crate::builtins::strings::clear_const_str_cache;
 use crate::builtins::sys_ext::sys_ext_clear_state;
 use crate::c_api::c_api_module_clear_state;
@@ -115,6 +116,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     clear_exception_state(_py);
     trace_shutdown("process_exit_run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    trace_shutdown("process_exit_clear_signal_state");
+    signal_clear_state(_py, state);
     trace_shutdown("process_exit_clear_contextvars_state");
     contextvars_clear_state(_py, state);
     trace_shutdown("process_exit_clear_copy_memo_state");
@@ -209,6 +212,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_exception_state(_py);
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    trace_shutdown("clear_signal_state");
+    signal_clear_state(_py, state);
     trace_shutdown("clear_contextvars_state");
     contextvars_clear_state(_py, state);
     trace_shutdown("clear_copy_memo_state");
