@@ -63,6 +63,11 @@ REPO_SCOPED_PROCESS_TOKENS = tuple(
             "/target/debug/",
             "/target/dev-fast/",
             "/target/release-fast/",
+            "/tmp/",
+            "/dist/",
+            "/build/",
+            "/wasm/",
+            "/bench/results/",
             "/tests/molt_diff.py",
             *GUARDED_ENTRYPOINT_TOKENS,
         )
@@ -172,9 +177,10 @@ def process_groups(
     root: Path,
     self_pid: int | None = None,
     self_pgid: int | None = None,
+    known_pgids: set[int] | None = None,
 ) -> list[ProcessGroup]:
     grouped: dict[int, list[memory_guard.ProcessSample]] = {}
-    matched: set[int] = set()
+    matched: set[int] = set() if known_pgids is None else set(known_pgids)
     for sample in samples.values():
         pgid = sample.pgid if sample.pgid is not None else sample.pid
         if self_pgid is not None and pgid == self_pgid:
@@ -182,6 +188,23 @@ def process_groups(
         grouped.setdefault(pgid, []).append(sample)
         if is_molt_process(sample, root=root, self_pid=self_pid):
             matched.add(pgid)
+    changed = True
+    while changed:
+        changed = False
+        matched_pids = {
+            sample.pid
+            for pgid in matched
+            for sample in grouped.get(pgid, ())
+        }
+        if not matched_pids:
+            break
+        for sample in samples.values():
+            pgid = sample.pgid if sample.pgid is not None else sample.pid
+            if self_pgid is not None and pgid == self_pgid:
+                continue
+            if pgid not in matched and sample.ppid in matched_pids:
+                matched.add(pgid)
+                changed = True
     groups = [
         ProcessGroup(
             pgid=pgid,
@@ -442,13 +465,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     stream = sys.stdout if args.json else sys.stderr
     started = time.monotonic()
     clean_since: float | None = None
+    known_pgids: set[int] = set()
     while True:
         groups = process_groups(
             memory_guard.sample_processes(),
             root=root,
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
+            known_pgids=known_pgids,
         )
+        known_pgids.update(group.pgid for group in groups)
         current_limits = _resolved_limits_from_args(
             args,
             accounted_rss_kb=sum(group.total_rss_kb for group in groups),

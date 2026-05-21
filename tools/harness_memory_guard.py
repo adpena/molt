@@ -888,6 +888,7 @@ class RepoProcessMemorySentinel:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._baseline_pgids: set[int] = set()
+        self._observed_pgids: set[int] = set()
         self._terminated_pgids: set[int] = set()
         self.tripped = False
         self.events_path = artifact_root / "memory_guard" / f"{label}_sentinel.jsonl"
@@ -931,17 +932,28 @@ class RepoProcessMemorySentinel:
         while not self._stop.wait(self._limits.poll_interval):
             self.scan_once()
 
-    def _current_groups(self) -> list[process_sentinel.ProcessGroup]:
-        return process_sentinel.process_groups(
+    def _current_groups(
+        self,
+        *,
+        update_observed: bool = True,
+    ) -> list[process_sentinel.ProcessGroup]:
+        groups = process_sentinel.process_groups(
             memory_guard.sample_processes(),
             root=self._repo_root,
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
+            known_pgids=self._observed_pgids,
         )
+        if update_observed:
+            self._observed_pgids.update(group.pgid for group in groups)
+        return groups
 
     def _current_group_pgids(self) -> set[int]:
         try:
-            return {group.pgid for group in self._current_groups()}
+            return {
+                group.pgid
+                for group in self._current_groups(update_observed=False)
+            }
         except Exception as exc:  # noqa: BLE001
             self._record(
                 {
