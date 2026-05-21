@@ -26,16 +26,31 @@ def _load_regrtest_module():
 
 def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     module = _load_regrtest_module()
+    contexts: list[dict[str, object]] = []
     calls: list[dict[str, object]] = []
 
-    def fake_guard(command, **kwargs):
+    class FakeContext:
+        def run(self, command, **kwargs):
+            calls.append({"command": command, **kwargs})
+            return subprocess.CompletedProcess(command, 17, "stdout\n", "stderr\n")
+
+    def fake_from_env(prefix, env, **kwargs):
+        contexts.append({"prefix": prefix, "env": env, **kwargs})
+        return FakeContext()
+
+    def fail_direct_guard(command, **kwargs):
         calls.append({"command": command, **kwargs})
-        return subprocess.CompletedProcess(command, 17, "stdout\n", "stderr\n")
+        raise AssertionError("regrtest must use HarnessExecutionContext")
 
     monkeypatch.setattr(
         module.harness_memory_guard,
+        "HarnessExecutionContext",
+        type("FakeHarnessExecutionContext", (), {"from_env": staticmethod(fake_from_env)}),
+    )
+    monkeypatch.setattr(
+        module.harness_memory_guard,
         "guarded_completed_process",
-        fake_guard,
+        fail_direct_guard,
     )
     log = io.StringIO()
 
@@ -48,13 +63,83 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     )
 
     assert rc == 17
-    assert calls[0]["prefix"] == "MOLT_REGRTEST"
+    assert contexts[0]["prefix"] == "MOLT_REGRTEST"
+    assert contexts[0]["repo_root"] == module.REPO_ROOT
+    assert contexts[0]["env"]["X"] == "1"
+    assert contexts[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
+    assert contexts[0]["env"]["CARGO_TARGET_DIR"] == str(module.REPO_ROOT / "target")
+    assert contexts[0]["env"]["TMPDIR"] == str(module.REPO_ROOT / "tmp")
     assert calls[0]["cwd"] == Path("/tmp")
-    assert calls[0]["env"] == {"X": "1"}
+    assert calls[0]["env"]["X"] == "1"
     text = log.getvalue()
     assert "cmd: python -c pass" in text
     assert "stdout" in text
     assert "stderr" in text
+
+
+def test_build_env_canonicalizes_repo_local_artifact_roots(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_regrtest_module()
+    monkeypatch.setenv("MOLT_EXT_ROOT", "/ambient")
+    monkeypatch.setenv("CARGO_TARGET_DIR", "/ambient/target")
+    config = module.RegrtestConfig(
+        repo_root=tmp_path,
+        cpython_dir=tmp_path / "cpython",
+        cpython_branch="v3.12.x",
+        host_python="python",
+        use_uv=False,
+        uv_project=None,
+        uv_python=[],
+        uv_prepare=False,
+        uv_add=[],
+        molt_cmd=["python", "-m", "molt.cli", "run"],
+        molt_capabilities=None,
+        molt_shim_path=tmp_path / "shim.py",
+        output_root=tmp_path,
+        output_dir=tmp_path,
+        skip_file=None,
+        workers=1,
+        rerun_failures=False,
+        match=[],
+        match_file=None,
+        ignore=[],
+        ignore_file=None,
+        resources=[],
+        timeout=None,
+        junit_xml=tmp_path / "junit.xml",
+        tests=[],
+        regrtest_args=[],
+        enable_coverage=False,
+        coverage_source=[],
+        coverage_dir=tmp_path / "coverage",
+        stdlib_version="3.12",
+        stdlib_source="sys",
+        matrix_path=tmp_path / "matrix.md",
+        matrix_format="json",
+        type_matrix_path=tmp_path / "types.md",
+        semantics_matrix_path=tmp_path / "semantics.md",
+        diff_enabled=False,
+        diff_paths=[],
+        diff_python_version=None,
+        core_only=False,
+        core_file=tmp_path / "core.txt",
+        property_tests=None,
+        rust_coverage=False,
+        rust_coverage_dir=tmp_path / "rust",
+        dry_run=False,
+        allow_clone=False,
+    )
+
+    env = module.build_env(config)
+
+    assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
+    assert env["CARGO_TARGET_DIR"] == str(tmp_path / "target")
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
+    assert env["PYTHONHASHSEED"] == "0"
 
 
 def test_write_summary_records_memory_guard(tmp_path: Path) -> None:

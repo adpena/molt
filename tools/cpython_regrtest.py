@@ -12,7 +12,7 @@ import shutil
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 from xml.etree import ElementTree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +21,9 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+
+
+REGRTEST_MEMORY_PREFIX = "MOLT_REGRTEST"
 
 
 @dataclass
@@ -465,18 +468,23 @@ def run_command(
     cmd: list[str],
     *,
     cwd: Path | None,
-    env: dict[str, str] | None,
+    env: Mapping[str, str] | None,
     log_handle,
     dry_run: bool,
 ) -> int:
     log_line(log_handle, f"cmd: {shlex.join(cmd)}")
     if dry_run:
         return 0
-    result = harness_memory_guard.guarded_completed_process(
+    command_env = canonical_regrtest_env(REPO_ROOT, env)
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        REGRTEST_MEMORY_PREFIX,
+        command_env,
+        repo_root=REPO_ROOT,
+    )
+    result = context.run(
         cmd,
-        prefix="MOLT_REGRTEST",
         cwd=cwd,
-        env=env,
+        env=command_env,
         capture_output=True,
         text=True,
     )
@@ -984,6 +992,7 @@ def finalize_coverage(
 def run_rust_coverage(
     config: RegrtestConfig,
     *,
+    env: Mapping[str, str] | None,
     log_handle,
 ) -> RustCoverageSummary | None:
     if not config.rust_coverage:
@@ -1017,9 +1026,17 @@ def run_rust_coverage(
             available=False,
             message=message,
         )
-    check = harness_memory_guard.guarded_completed_process(
+    command_env = canonical_regrtest_env(config.repo_root, env)
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        REGRTEST_MEMORY_PREFIX,
+        command_env,
+        repo_root=config.repo_root,
+        artifact_root=config.output_dir,
+    )
+    check = context.run(
         ["cargo", "llvm-cov", "--version"],
-        prefix="MOLT_REGRTEST",
+        cwd=config.repo_root,
+        env=command_env,
         capture_output=True,
         text=True,
     )
@@ -1040,7 +1057,7 @@ def run_rust_coverage(
     rc = run_command(
         cmd,
         cwd=config.repo_root,
-        env=None,
+        env=command_env,
         log_handle=log_handle,
         dry_run=False,
     )
@@ -1401,9 +1418,34 @@ def write_root_summary(output_root: Path, runs: list[dict]) -> None:
     md_path.write_text("\n".join(lines))
 
 
+def canonical_regrtest_env(
+    repo_root: Path,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    run_env = os.environ.copy()
+    overrides = dict(env or {})
+    run_env.update(overrides)
+    root = repo_root.resolve()
+    defaults = {
+        "MOLT_EXT_ROOT": str(root),
+        "CARGO_TARGET_DIR": str(root / "target"),
+        "MOLT_CACHE": str(root / ".molt_cache"),
+        "MOLT_DIFF_ROOT": str(root / "tmp" / "diff"),
+        "MOLT_DIFF_TMPDIR": str(root / "tmp"),
+        "UV_CACHE_DIR": str(root / ".uv-cache"),
+        "TMPDIR": str(root / "tmp"),
+        "PYTHONHASHSEED": "0",
+    }
+    for key, value in defaults.items():
+        if key not in overrides:
+            run_env[key] = value
+    if "MOLT_DIFF_CARGO_TARGET_DIR" not in overrides:
+        run_env["MOLT_DIFF_CARGO_TARGET_DIR"] = run_env["CARGO_TARGET_DIR"]
+    return run_env
+
+
 def build_env(config: RegrtestConfig) -> dict[str, str]:
-    env = os.environ.copy()
-    env.setdefault("PYTHONHASHSEED", "0")
+    env = canonical_regrtest_env(config.repo_root)
     if config.molt_capabilities is not None:
         env["MOLT_CAPABILITIES"] = config.molt_capabilities
     return env
@@ -1450,7 +1492,14 @@ def run_regrtest(
     )
     log_path = output_dir / "regrtest.log"
     with log_path.open("w", encoding="utf-8") as log_handle:
-        limits = harness_memory_guard.limits_from_env("MOLT_REGRTEST")
+        env = build_env(run_config)
+        context = harness_memory_guard.HarnessExecutionContext.from_env(
+            REGRTEST_MEMORY_PREFIX,
+            env,
+            repo_root=run_config.repo_root,
+            artifact_root=run_config.output_dir,
+        )
+        limits = context.limits
         log_line(log_handle, f"output_dir={output_dir}")
         with harness_memory_guard.repo_process_sentinel(
             repo_root=run_config.repo_root,
@@ -1483,7 +1532,6 @@ def run_regrtest(
                 skip_modules,
                 host_cmd,
             )
-            env = build_env(run_config)
             cpython_lib = run_config.cpython_dir / "Lib"
             existing_path = env.get("PYTHONPATH", "")
             if existing_path:
@@ -1537,7 +1585,11 @@ def run_regrtest(
             prop_rc = run_property_tests(
                 run_config, host_cmd, env=env, log_handle=log_handle
             )
-            rust_summary = run_rust_coverage(run_config, log_handle=log_handle)
+            rust_summary = run_rust_coverage(
+                run_config,
+                env=env,
+                log_handle=log_handle,
+            )
             diff_rc = diff_summary.returncode if diff_summary else 0
             rust_rc = rust_summary.returncode if rust_summary else 0
             final_rc = max(regrtest_rc, prop_rc, diff_rc, rust_rc)
