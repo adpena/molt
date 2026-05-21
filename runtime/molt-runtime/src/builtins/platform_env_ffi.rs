@@ -139,7 +139,7 @@ pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_name() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        init_atomic_bits(_py, &OS_NAME_CACHE, || {
+        init_platform_cached_owned_bits(_py, &platform_state(_py).os_name_cache, || {
             let ptr = alloc_string(_py, os_name_str().as_bytes());
             if ptr.is_null() {
                 MoltObject::none().bits()
@@ -153,7 +153,7 @@ pub extern "C" fn molt_os_name() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_platform() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        init_atomic_bits(_py, &SYS_PLATFORM_CACHE, || {
+        init_platform_cached_owned_bits(_py, &platform_state(_py).sys_platform_cache, || {
             let ptr = alloc_string(_py, sys_platform_str().as_bytes());
             if ptr.is_null() {
                 MoltObject::none().bits()
@@ -660,7 +660,7 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_errno_constants() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        init_atomic_bits(_py, &ERRNO_CONSTANTS_CACHE, || {
+        init_platform_cached_owned_bits(_py, &platform_state(_py).errno_constants_cache, || {
             let constants = collect_errno_constants();
             let mut pairs = Vec::with_capacity(constants.len() * 2);
             let mut reverse_pairs = Vec::with_capacity(constants.len() * 2);
@@ -716,7 +716,7 @@ pub extern "C" fn molt_errno_constants() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_constants() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        init_atomic_bits(_py, &SOCKET_CONSTANTS_CACHE, || {
+        init_platform_cached_owned_bits(_py, &platform_state(_py).socket_constants_cache, || {
             let constants = socket_constants();
             let mut pairs = Vec::with_capacity(constants.len() * 2);
             let mut owned_bits = Vec::with_capacity(constants.len() * 2);

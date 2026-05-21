@@ -1055,6 +1055,64 @@ fn float_value_for_mixed(
 }
 
 #[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn emit_float_numeric_compare(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    vars: &BTreeMap<String, Variable>,
+    float_primary_vars: &BTreeSet<String>,
+    int_primary_vars: &BTreeSet<String>,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+    nbc: &crate::NanBoxConsts,
+    box_int_mask_var: Variable,
+    box_int_tag_var: Variable,
+    lhs_name: &str,
+    rhs_name: &str,
+    cc: FloatCC,
+) -> (Value, Value) {
+    let lhs_f = float_value_for_mixed(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        vars,
+        float_primary_vars,
+        int_primary_vars,
+        int_like_vars,
+        bool_like_vars,
+        nbc,
+        box_int_mask_var,
+        box_int_tag_var,
+        lhs_name,
+    );
+    let rhs_f = float_value_for_mixed(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        vars,
+        float_primary_vars,
+        int_primary_vars,
+        int_like_vars,
+        bool_like_vars,
+        nbc,
+        box_int_mask_var,
+        box_int_tag_var,
+        rhs_name,
+    );
+    let cmp = builder.ins().fcmp(cc, lhs_f, rhs_f);
+    let raw_bool = builder.ins().uextend(types::I64, cmp);
+    let boxed_bool = box_bool_value(builder, cmp, nbc);
+    (boxed_bool, raw_bool)
+}
+
+#[cfg(feature = "native-backend")]
 fn collect_slot_backed_join_names(
     ops: &[OpIR],
     exception_label_ids: &BTreeSet<i64>,
@@ -2572,6 +2630,39 @@ impl SimpleBackend {
             scalar_fast_paths_enabled
                 && !op_prefers_integer_runtime_lane(op)
                 && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
+        };
+        let name_is_numeric_scalar = |name: &str| {
+            int_like_vars.contains(name)
+                || bool_like_vars.contains(name)
+                || float_like_vars.contains(name)
+                || int_primary_vars.contains(name)
+                || float_primary_vars.contains(name)
+        };
+        let name_is_integer_scalar = |name: &str| {
+            int_like_vars.contains(name)
+                || bool_like_vars.contains(name)
+                || int_primary_vars.contains(name)
+                || bool_primary_vars.contains(name)
+        };
+        let one_raw_int_compare_operand_is_safe =
+            |lhs_raw: bool, rhs_raw: bool, lhs: &str, rhs: &str| {
+                (lhs_raw && name_is_integer_scalar(rhs)) || (rhs_raw && name_is_integer_scalar(lhs))
+            };
+        let op_prefers_float_numeric_lane = |op: &OpIR| {
+            if !scalar_fast_paths_enabled || op_prefers_integer_runtime_lane(op) {
+                return false;
+            }
+            let Some(args) = op.args.as_ref() else {
+                return false;
+            };
+            let (Some(lhs), Some(rhs)) = (args.first(), args.get(1)) else {
+                return false;
+            };
+            let has_float_operand = float_like_vars.contains(lhs)
+                || float_like_vars.contains(rhs)
+                || float_primary_vars.contains(lhs)
+                || float_primary_vars.contains(rhs);
+            has_float_operand && name_is_numeric_scalar(lhs) && name_is_numeric_scalar(rhs)
         };
         let op_prefers_str_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
@@ -18663,11 +18754,37 @@ impl SimpleBackend {
                     // ops branch directly on the raw value, eliminating NaN-box
                     // round-trips (box_bool_value + band+icmp extraction).
                     let mut lt_raw_bool: Option<Value> = None;
-                    let res = if let (Some(lr), Some(rr)) = (lr, rr) {
+                    let res = if op_prefers_float_numeric_lane(&op) {
+                        let (boxed, raw) = emit_float_numeric_compare(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &float_primary_vars,
+                            &int_primary_vars,
+                            &int_like_vars,
+                            &bool_like_vars,
+                            &nbc,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                            &args[0],
+                            &args[1],
+                            FloatCC::LessThan,
+                        );
+                        lt_raw_bool = Some(raw);
+                        boxed
+                    } else if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
                         lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if lr.is_some() || rr.is_some() {
+                    } else if one_raw_int_compare_operand_is_safe(
+                        lr.is_some(),
+                        rr.is_some(),
+                        &args[0],
+                        &args[1],
+                    ) {
                         // One-operand: unbox only the non-raw side
                         let lv = lr.unwrap_or_else(|| {
                             let lhs = var_get_boxed_overflow_safe(
@@ -18882,11 +18999,37 @@ impl SimpleBackend {
                     let lr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
                     let rr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut le_raw_bool: Option<Value> = None;
-                    let res = if let (Some(lr), Some(rr)) = (lr, rr) {
+                    let res = if op_prefers_float_numeric_lane(&op) {
+                        let (boxed, raw) = emit_float_numeric_compare(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &float_primary_vars,
+                            &int_primary_vars,
+                            &int_like_vars,
+                            &bool_like_vars,
+                            &nbc,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                            &args[0],
+                            &args[1],
+                            FloatCC::LessThanOrEqual,
+                        );
+                        le_raw_bool = Some(raw);
+                        boxed
+                    } else if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
                         le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if lr.is_some() || rr.is_some() {
+                    } else if one_raw_int_compare_operand_is_safe(
+                        lr.is_some(),
+                        rr.is_some(),
+                        &args[0],
+                        &args[1],
+                    ) {
                         let lv = lr.unwrap_or_else(|| {
                             let lhs = var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -19108,11 +19251,37 @@ impl SimpleBackend {
                     let rhs_shadow =
                         int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut gt_raw_bool: Option<Value> = None;
-                    let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
+                    let res = if op_prefers_float_numeric_lane(&op) {
+                        let (boxed, raw) = emit_float_numeric_compare(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &float_primary_vars,
+                            &int_primary_vars,
+                            &int_like_vars,
+                            &bool_like_vars,
+                            &nbc,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                            &args[0],
+                            &args[1],
+                            FloatCC::GreaterThan,
+                        );
+                        gt_raw_bool = Some(raw);
+                        boxed
+                    } else if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if lhs_shadow.is_some() || rhs_shadow.is_some() {
+                    } else if one_raw_int_compare_operand_is_safe(
+                        lhs_shadow.is_some(),
+                        rhs_shadow.is_some(),
+                        &args[0],
+                        &args[1],
+                    ) {
                         // One operand raw, one boxed: unbox only the non-raw side.
                         let lv = lhs_shadow.unwrap_or_else(|| {
                             let lhs = var_get_boxed_overflow_safe(
@@ -19333,11 +19502,37 @@ impl SimpleBackend {
                     let rhs_shadow =
                         int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut ge_raw_bool: Option<Value> = None;
-                    let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
+                    let res = if op_prefers_float_numeric_lane(&op) {
+                        let (boxed, raw) = emit_float_numeric_compare(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &float_primary_vars,
+                            &int_primary_vars,
+                            &int_like_vars,
+                            &bool_like_vars,
+                            &nbc,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                            &args[0],
+                            &args[1],
+                            FloatCC::GreaterThanOrEqual,
+                        );
+                        ge_raw_bool = Some(raw);
+                        boxed
+                    } else if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if lhs_shadow.is_some() || rhs_shadow.is_some() {
+                    } else if one_raw_int_compare_operand_is_safe(
+                        lhs_shadow.is_some(),
+                        rhs_shadow.is_some(),
+                        &args[0],
+                        &args[1],
+                    ) {
                         // One operand raw, one boxed: unbox only the non-raw side.
                         let lv = lhs_shadow.unwrap_or_else(|| {
                             let lhs = var_get_boxed_overflow_safe(
@@ -19560,13 +19755,39 @@ impl SimpleBackend {
                     let eq_lr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
                     let eq_rr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut eq_raw_bool: Option<Value> = None;
-                    let res = if let (Some(lr), Some(rr)) = (eq_lr, eq_rr) {
+                    let res = if op_prefers_float_numeric_lane(&op) {
+                        let (boxed, raw) = emit_float_numeric_compare(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &float_primary_vars,
+                            &int_primary_vars,
+                            &int_like_vars,
+                            &bool_like_vars,
+                            &nbc,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                            &args[0],
+                            &args[1],
+                            FloatCC::Equal,
+                        );
+                        eq_raw_bool = Some(raw);
+                        boxed
+                    } else if let (Some(lr), Some(rr)) = (eq_lr, eq_rr) {
                         // Both operands have raw int shadows: direct icmp,
                         // no unboxing needed.
                         let cmp = builder.ins().icmp(IntCC::Equal, lr, rr);
                         eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if eq_lr.is_some() || eq_rr.is_some() {
+                    } else if one_raw_int_compare_operand_is_safe(
+                        eq_lr.is_some(),
+                        eq_rr.is_some(),
+                        &args[0],
+                        &args[1],
+                    ) {
                         // One operand raw, one boxed: unbox only the non-raw side.
                         let lv = eq_lr.unwrap_or_else(|| {
                             let lhs = var_get_boxed_overflow_safe(
@@ -19764,12 +19985,38 @@ impl SimpleBackend {
                     let ne_lr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
                     let ne_rr = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
                     let mut ne_raw_bool: Option<Value> = None;
-                    let res = if let (Some(lr), Some(rr)) = (ne_lr, ne_rr) {
+                    let res = if op_prefers_float_numeric_lane(&op) {
+                        let (boxed, raw) = emit_float_numeric_compare(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &float_primary_vars,
+                            &int_primary_vars,
+                            &int_like_vars,
+                            &bool_like_vars,
+                            &nbc,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                            &args[0],
+                            &args[1],
+                            FloatCC::NotEqual,
+                        );
+                        ne_raw_bool = Some(raw);
+                        boxed
+                    } else if let (Some(lr), Some(rr)) = (ne_lr, ne_rr) {
                         // Both operands have raw int shadows: direct icmp.
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lr, rr);
                         ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if ne_lr.is_some() || ne_rr.is_some() {
+                    } else if one_raw_int_compare_operand_is_safe(
+                        ne_lr.is_some(),
+                        ne_rr.is_some(),
+                        &args[0],
+                        &args[1],
+                    ) {
                         // One operand raw, one boxed.
                         let lv = ne_lr.unwrap_or_else(|| {
                             let lhs = var_get_boxed_overflow_safe(

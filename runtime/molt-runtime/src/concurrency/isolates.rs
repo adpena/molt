@@ -26,16 +26,18 @@ use crate::builtins::modules::molt_module_cache_get;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::call::dispatch::call_callable1;
 #[cfg(not(target_arch = "wasm32"))]
+use crate::object::native_handle::{native_handle_arc, native_handle_new};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::state::{
     RuntimeState, clear_thread_runtime_state, runtime_reset_for_init, runtime_teardown_isolate,
     set_thread_runtime_state, touch_tls_guard,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    TYPE_ID_BYTES, alloc_bytes, alloc_string, alloc_tuple, bits_from_ptr, bytes_data, bytes_len,
-    dec_ref_bits, exception_pending, format_exception_with_traceback, has_capability, inc_ref_bits,
-    is_truthy, molt_exception_clear, molt_exception_last, molt_module_get_attr, obj_from_bits,
-    object_type_id, ptr_from_bits, release_ptr, string_obj_to_owned, to_i64,
+    TYPE_ID_BYTES, alloc_bytes, alloc_string, alloc_tuple, bytes_data, bytes_len, dec_ref_bits,
+    exception_pending, format_exception_with_traceback, has_capability, inc_ref_bits, is_truthy,
+    molt_exception_clear, molt_exception_last, molt_module_get_attr, obj_from_bits, object_type_id,
+    ptr_from_bits, string_obj_to_owned, to_i64,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -151,16 +153,7 @@ const THREAD_STACK_SIZE_MIN: usize = 32 * 1024;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn thread_handle_from_bits(bits: u64) -> Option<Arc<MoltThreadHandle>> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
-    unsafe {
-        let arc = Arc::from_raw(ptr as *const MoltThreadHandle);
-        let cloned = arc.clone();
-        let _ = Arc::into_raw(arc);
-        Some(cloned)
-    }
+    native_handle_arc(bits)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -555,8 +548,11 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
             }
         };
         handle.set_join_handle(join);
-        let raw = Arc::into_raw(handle) as *mut u8;
-        bits_from_ptr(raw)
+        let handle_bits = native_handle_new(_py, handle);
+        if handle_bits == 0 {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        handle_bits
     })
 }
 
@@ -626,8 +622,11 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
             }
         };
         handle.set_join_handle(join);
-        let raw = Arc::into_raw(handle) as *mut u8;
-        bits_from_ptr(raw)
+        let handle_bits = native_handle_new(_py, handle);
+        if handle_bits == 0 {
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        handle_bits
     })
 }
 
@@ -759,17 +758,12 @@ pub unsafe extern "C" fn molt_thread_stack_size_set(size_bits: u64) -> u64 {
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime and not already dropped.
 pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let ptr = ptr_from_bits(handle_bits);
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            release_ptr(ptr);
-            let _ = Arc::from_raw(ptr as *const MoltThreadHandle);
-            MoltObject::none().bits()
-        })
-    }
+    crate::with_gil_entry_nopanic!(_py, {
+        if thread_handle_from_bits(handle_bits).is_none() {
+            return raise_exception::<_>(_py, "TypeError", "invalid thread handle");
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
