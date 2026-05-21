@@ -703,7 +703,10 @@ pub use crate::object::{
 };
 #[allow(unused_imports)]
 pub(crate) use crate::provenance::{release_ptr, reset_ptr_registry, resolve_ptr};
-pub(crate) use crate::state::cache::{InternedNames, MethodCache, intern_static_name};
+pub(crate) use crate::state::cache::{
+    InternedNames, MethodCache, RuntimeStaticNames, intern_runtime_static_name, intern_static_name,
+    runtime_static_name_slot,
+};
 pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
