@@ -448,6 +448,15 @@ uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec
   request/job/cache state by default; tune with
   `MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES`, `MOLT_BACKEND_DAEMON_MAX_JOBS`,
   and `MOLT_BACKEND_DAEMON_CACHE_MB`.
+- **Backend TIR cache memory**: `runtime/molt-backend` keeps TIR artifact bytes
+  in an LRU in-memory cache while preserving the disk-backed cache index under
+  `MOLT_CACHE`. The default cap is adaptive: explicit
+  `MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES` wins, then
+  `MOLT_BACKEND_TIR_CACHE_MEMORY_MB`, then propagated memory-guard
+  availability/reserve env (`MOLT_MEMORY_AVAILABLE_GB`,
+  `MOLT_MEMORY_RESERVE_GB`, and `MOLT_CLI_*` aliases), otherwise total
+  physical memory. Disk hits for oversized artifacts are returned without
+  retaining them in RAM.
 - **One-shot backend stdin limit**: non-daemon backend IR reads from stdin are
   bounded by `MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES` and default to the same
   512 MiB ceiling as daemon requests. Msgpack and NDJSON stdin paths stream
