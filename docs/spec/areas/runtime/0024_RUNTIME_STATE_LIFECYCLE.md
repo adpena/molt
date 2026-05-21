@@ -101,6 +101,9 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   metadata/state registries live under `RuntimeState` and are cleared during
   shutdown and executable process-exit finalization. `CallArgs` builder
   provenance registries are also runtime-scoped instead of process-global.
+  Special descriptor cache slots, including function `__code__`/`__globals__`
+  descriptors, are cleared through the same lifecycle path as the rest of
+  `RuntimeState.special_cache`.
   Their per-runtime handle counters and registries reset with a new runtime
   state, so stale handles cannot address process-lifetime parser/CSV/RNG,
   extension-module, or call-binding state.
