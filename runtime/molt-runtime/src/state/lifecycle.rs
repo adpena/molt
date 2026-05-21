@@ -1,6 +1,7 @@
 use crate::PyToken;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
+use crate::builtins::contextvars::contextvars_clear_state;
 use crate::builtins::strings::clear_const_str_cache;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::builders::clear_builder_singletons;
@@ -91,6 +92,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     clear_exception_state(_py);
     trace_shutdown("process_exit_run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    trace_shutdown("process_exit_clear_contextvars_state");
+    contextvars_clear_state(_py, state);
     trace_shutdown("process_exit_flush_stdio");
     flush_stdio_handles(_py, state);
     trace_shutdown("process_exit_flush_stdio_post_finalizers");
@@ -149,6 +152,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_exception_state(_py);
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    trace_shutdown("clear_contextvars_state");
+    contextvars_clear_state(_py, state);
     trace_shutdown("flush_stdio");
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_weakref_containers");
