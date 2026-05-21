@@ -7,12 +7,12 @@
 //!
 //! ## Architecture
 //!
-//! Two thread-local handle tables encode the connection/cursor state machine:
+//! One RuntimeState-owned handle table encodes the connection/cursor state machine:
 //!
-//! * `CONNECTIONS` maps an `i64` connection handle to a `ConnectionState`
+//! * `connections` maps an `i64` connection handle to a `ConnectionState`
 //!   that wraps a `rusqlite::Connection` plus DB-API metadata (autocommit,
 //!   pending transaction flag, total_changes baseline).
-//! * `CURSORS` maps an `i64` cursor handle to a `CursorState` that holds a
+//! * `cursors` maps an `i64` cursor handle to a `CursorState` that holds a
 //!   reference to its parent connection by handle id, the buffered result
 //!   set produced by the last `execute*` call, and the latest values for
 //!   `description`, `rowcount`, and `lastrowid`.
@@ -39,24 +39,25 @@ use crate::{
 use molt_db::{SqliteConn, SqliteOpenMode, rusqlite};
 use rusqlite::ErrorCode;
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ---------------------------------------------------------------------------
 // State containers
 // ---------------------------------------------------------------------------
 
-static NEXT_CONN_ID: AtomicI64 = AtomicI64::new(1);
-static NEXT_CURSOR_ID: AtomicI64 = AtomicI64::new(1);
-
-fn next_conn_id() -> i64 {
-    NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed)
+fn next_conn_id(_py: &PyToken<'_>) -> i64 {
+    sqlite_state(_py)
+        .next_conn_id
+        .fetch_add(1, Ordering::Relaxed)
 }
 
-fn next_cursor_id() -> i64 {
-    NEXT_CURSOR_ID.fetch_add(1, Ordering::Relaxed)
+fn next_cursor_id(_py: &PyToken<'_>) -> i64 {
+    sqlite_state(_py)
+        .next_cursor_id
+        .fetch_add(1, Ordering::Relaxed)
 }
 
 /// One row materialized from the SQLite result set, parameterized over
@@ -94,7 +95,7 @@ struct ConnectionState {
 struct CursorState {
     /// Parent connection handle id.  We keep an id (not a reference) so the
     /// borrow checker stays out of our way; lookups go through the
-    /// thread-local `CONNECTIONS` map on each call.
+    /// RuntimeState-owned `connections` map on each call.
     conn_id: i64,
     rows: Vec<MaterializedRow>,
     /// Index into `rows` of the next row to be returned by `fetchone` /
@@ -113,11 +114,64 @@ struct CursorState {
     arraysize: i64,
 }
 
-thread_local! {
-    static CONNECTIONS: RefCell<HashMap<i64, ConnectionState>> =
-        RefCell::new(HashMap::new());
-    static CURSORS: RefCell<HashMap<i64, CursorState>> =
-        RefCell::new(HashMap::new());
+struct SqliteRuntimeState {
+    next_conn_id: AtomicI64,
+    next_cursor_id: AtomicI64,
+    connections: Mutex<HashMap<i64, ConnectionState>>,
+    cursors: Mutex<HashMap<i64, CursorState>>,
+}
+
+impl SqliteRuntimeState {
+    fn new() -> Self {
+        Self {
+            next_conn_id: AtomicI64::new(1),
+            next_cursor_id: AtomicI64::new(1),
+            connections: Mutex::new(HashMap::new()),
+            cursors: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn clear(&self) {
+        self.cursors.lock().unwrap().clear();
+        self.connections.lock().unwrap().clear();
+    }
+}
+
+unsafe extern "C" fn sqlite_runtime_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(SqliteRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn sqlite_runtime_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (&*(ptr as *const SqliteRuntimeState)).clear();
+    }
+}
+
+unsafe extern "C" fn sqlite_runtime_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut SqliteRuntimeState));
+    }
+}
+
+fn sqlite_state(_py: &PyToken<'_>) -> &'static SqliteRuntimeState {
+    let ptr = crate::state::runtime_extension_state_get_or_init(
+        crate::state::runtime_state::runtime_state(_py),
+        b"molt-runtime/sqlite3/v1",
+        sqlite_runtime_state_init,
+        sqlite_runtime_state_clear,
+        sqlite_runtime_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "molt sqlite runtime state initialization failed"
+    );
+    unsafe { &*(ptr as *const SqliteRuntimeState) }
 }
 
 // ---------------------------------------------------------------------------
@@ -289,31 +343,29 @@ fn with_connection<R>(
     handle: i64,
     f: impl FnOnce(&mut ConnectionState) -> Result<R, rusqlite::Error>,
 ) -> Result<R, u64> {
-    let result = CONNECTIONS.with(|map| {
-        let mut borrow = map.borrow_mut();
-        let state = match borrow.get_mut(&handle) {
-            Some(s) => s,
+    let result = {
+        let sqlite = sqlite_state(_py);
+        let mut connections = sqlite.connections.lock().unwrap();
+        let state = match connections.get_mut(&handle) {
+            Some(state) => state,
             None => {
-                return Err(Either::Left(raise_exception::<u64>(
+                return Err(raise_exception::<u64>(
                     _py,
                     "RuntimeError",
                     "Connection is not valid",
-                )));
+                ));
             }
         };
         if state.closed {
-            return Err(Either::Left(raise_exception::<u64>(
+            return Err(raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "__ProgrammingError__ Cannot operate on a closed database.",
-            )));
+            ));
         }
-        f(state).map_err(Either::Right)
-    });
-    result.map_err(|e| match e {
-        Either::Left(bits) => bits,
-        Either::Right(err) => raise_sqlite_error(_py, &err),
-    })
+        f(state)
+    };
+    result.map_err(|err| raise_sqlite_error(_py, &err))
 }
 
 fn with_cursor<R>(
@@ -321,23 +373,18 @@ fn with_cursor<R>(
     handle: i64,
     f: impl FnOnce(&mut CursorState) -> Result<R, &'static str>,
 ) -> Result<R, u64> {
-    let result = CURSORS.with(|map| {
-        let mut borrow = map.borrow_mut();
-        let state = match borrow.get_mut(&handle) {
-            Some(s) => s,
-            None => return Err("invalid cursor handle"),
-        };
-        if state.closed {
-            return Err("__ProgrammingError__ Cannot operate on a closed cursor.");
+    let result: Result<R, &'static str> = {
+        let sqlite = sqlite_state(_py);
+        let mut cursors = sqlite.cursors.lock().unwrap();
+        match cursors.get_mut(&handle) {
+            Some(state) if state.closed => {
+                Err("__ProgrammingError__ Cannot operate on a closed cursor.")
+            }
+            Some(state) => f(state),
+            None => Err("invalid cursor handle"),
         }
-        f(state)
-    });
+    };
     result.map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", msg))
-}
-
-enum Either<L, R> {
-    Left(L),
-    Right(R),
 }
 
 /// Determine whether a SQL statement is a DML/SELECT-style query that
@@ -496,18 +543,16 @@ pub extern "C" fn molt_sqlite3_connect(database_bits: u64) -> u64 {
         };
 
         let total_changes = conn.connection().total_changes() as i64;
-        let id = next_conn_id();
-        CONNECTIONS.with(|map| {
-            map.borrow_mut().insert(
-                id,
-                ConnectionState {
-                    conn,
-                    in_transaction: false,
-                    last_total_changes: total_changes,
-                    closed: false,
-                },
-            );
-        });
+        let id = next_conn_id(_py);
+        sqlite_state(_py).connections.lock().unwrap().insert(
+            id,
+            ConnectionState {
+                conn,
+                in_transaction: false,
+                last_total_changes: total_changes,
+                closed: false,
+            },
+        );
         MoltObject::from_int(id).bits()
     })
 }
@@ -524,11 +569,12 @@ pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
         // and finalizes any prepared statements still attached to it.  Cursors
         // referencing this connection become "stale" — they'll surface a
         // ProgrammingError on next use, mirroring CPython.
-        let state_was_present = CONNECTIONS.with(|map| {
-            let mut borrow = map.borrow_mut();
-            let removed = borrow.remove(&id);
-            removed.is_some()
-        });
+        let state_was_present = sqlite_state(_py)
+            .connections
+            .lock()
+            .unwrap()
+            .remove(&id)
+            .is_some();
         if !state_was_present {
             return raise_exception::<u64>(
                 _py,
@@ -587,10 +633,13 @@ pub extern "C" fn molt_sqlite3_in_transaction(handle_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
         };
-        let in_txn = CONNECTIONS.with(|map| {
-            let borrow = map.borrow();
-            borrow.get(&id).map(|s| s.in_transaction).unwrap_or(false)
-        });
+        let in_txn = sqlite_state(_py)
+            .connections
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.in_transaction)
+            .unwrap_or(false);
         MoltObject::from_bool(in_txn).bits()
     })
 }
@@ -627,10 +676,13 @@ pub extern "C" fn molt_sqlite3_cursor(handle_bits: u64) -> u64 {
             None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
         };
         // Validate the connection exists and is open.
-        let exists = CONNECTIONS.with(|map| {
-            let borrow = map.borrow();
-            borrow.get(&conn_id).map(|s| !s.closed).unwrap_or(false)
-        });
+        let exists = sqlite_state(_py)
+            .connections
+            .lock()
+            .unwrap()
+            .get(&conn_id)
+            .map(|s| !s.closed)
+            .unwrap_or(false);
         if !exists {
             return raise_exception::<u64>(
                 _py,
@@ -638,22 +690,20 @@ pub extern "C" fn molt_sqlite3_cursor(handle_bits: u64) -> u64 {
                 "__ProgrammingError__ Cannot operate on a closed database.",
             );
         }
-        let id = next_cursor_id();
-        CURSORS.with(|map| {
-            map.borrow_mut().insert(
-                id,
-                CursorState {
-                    conn_id,
-                    rows: Vec::new(),
-                    cursor_pos: 0,
-                    description: None,
-                    rowcount: -1,
-                    lastrowid: None,
-                    closed: false,
-                    arraysize: 1,
-                },
-            );
-        });
+        let id = next_cursor_id(_py);
+        sqlite_state(_py).cursors.lock().unwrap().insert(
+            id,
+            CursorState {
+                conn_id,
+                rows: Vec::new(),
+                cursor_pos: 0,
+                description: None,
+                rowcount: -1,
+                lastrowid: None,
+                closed: false,
+                arraysize: 1,
+            },
+        );
         MoltObject::from_int(id).bits()
     })
 }
@@ -665,14 +715,11 @@ pub extern "C" fn molt_sqlite3_cursor_close(cursor_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
         };
-        CURSORS.with(|map| {
-            let mut borrow = map.borrow_mut();
-            if let Some(state) = borrow.get_mut(&id) {
-                state.closed = true;
-                state.rows.clear();
-                state.description = None;
-            }
-        });
+        if let Some(state) = sqlite_state(_py).cursors.lock().unwrap().get_mut(&id) {
+            state.closed = true;
+            state.rows.clear();
+            state.description = None;
+        }
         MoltObject::none().bits()
     })
 }
@@ -684,9 +731,7 @@ pub extern "C" fn molt_sqlite3_cursor_drop(cursor_bits: u64) -> u64 {
             Some(v) => v,
             None => return MoltObject::none().bits(),
         };
-        CURSORS.with(|map| {
-            map.borrow_mut().remove(&id);
-        });
+        sqlite_state(_py).cursors.lock().unwrap().remove(&id);
         MoltObject::none().bits()
     })
 }
@@ -715,41 +760,42 @@ pub extern "C" fn molt_sqlite3_execute(cursor_bits: u64, sql_bits: u64, params_b
 
         // Look up the cursor's parent connection id without holding the
         // cursor borrow while we run the statement.
-        let conn_id = CURSORS.with(|map| -> Result<i64, u64> {
-            let borrow = map.borrow();
-            let state = borrow.get(&cursor_id).ok_or_else(|| {
-                raise_exception::<u64>(_py, "RuntimeError", "invalid cursor handle")
-            })?;
-            if state.closed {
-                return Err(raise_exception::<u64>(
+        let sqlite = sqlite_state(_py);
+        let conn_id: Result<i64, u64> = {
+            let cursors = sqlite.cursors.lock().unwrap();
+            match cursors.get(&cursor_id) {
+                Some(state) if state.closed => Err(raise_exception::<u64>(
                     _py,
                     "RuntimeError",
                     "__ProgrammingError__ Cannot operate on a closed cursor.",
-                ));
+                )),
+                Some(state) => Ok(state.conn_id),
+                None => Err(raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid cursor handle",
+                )),
             }
-            Ok(state.conn_id)
-        });
+        };
         let conn_id = match conn_id {
             Ok(v) => v,
             Err(bits) => return bits,
         };
 
-        let exec_result: Result<(), rusqlite::Error> = CONNECTIONS.with(|cmap| {
-            let mut cborrow = cmap.borrow_mut();
-            let conn_state = cborrow.get_mut(&conn_id).ok_or_else(|| {
+        let exec_result: Result<(), rusqlite::Error> = (|| {
+            let mut connections = sqlite.connections.lock().unwrap();
+            let conn_state = connections.get_mut(&conn_id).ok_or_else(|| {
                 rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
                     Some("Connection is closed".into()),
                 )
             })?;
-            CURSORS.with(|map| -> Result<(), rusqlite::Error> {
-                let mut borrow = map.borrow_mut();
-                let cursor = borrow
-                    .get_mut(&cursor_id)
-                    .expect("cursor id was validated above");
-                execute_statement(conn_state, &sql, &params, cursor)
-            })
-        });
+            let mut cursors = sqlite.cursors.lock().unwrap();
+            let cursor = cursors
+                .get_mut(&cursor_id)
+                .expect("cursor id was validated above");
+            execute_statement(conn_state, &sql, &params, cursor)
+        })();
 
         match exec_result {
             Ok(()) => MoltObject::from_int(cursor_id).bits(),
@@ -807,51 +853,52 @@ pub extern "C" fn molt_sqlite3_executemany(
             }
         }
 
-        let conn_id = CURSORS.with(|map| -> Result<i64, u64> {
-            let borrow = map.borrow();
-            let state = borrow.get(&cursor_id).ok_or_else(|| {
-                raise_exception::<u64>(_py, "RuntimeError", "invalid cursor handle")
-            })?;
-            if state.closed {
-                return Err(raise_exception::<u64>(
+        let sqlite = sqlite_state(_py);
+        let conn_id: Result<i64, u64> = {
+            let cursors = sqlite.cursors.lock().unwrap();
+            match cursors.get(&cursor_id) {
+                Some(state) if state.closed => Err(raise_exception::<u64>(
                     _py,
                     "RuntimeError",
                     "__ProgrammingError__ Cannot operate on a closed cursor.",
-                ));
+                )),
+                Some(state) => Ok(state.conn_id),
+                None => Err(raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid cursor handle",
+                )),
             }
-            Ok(state.conn_id)
-        });
+        };
         let conn_id = match conn_id {
             Ok(v) => v,
             Err(bits) => return bits,
         };
 
-        let exec_result: Result<i64, rusqlite::Error> = CONNECTIONS.with(|cmap| {
-            let mut cborrow = cmap.borrow_mut();
-            let conn_state = cborrow.get_mut(&conn_id).ok_or_else(|| {
+        let exec_result: Result<i64, rusqlite::Error> = (|| {
+            let mut connections = sqlite.connections.lock().unwrap();
+            let conn_state = connections.get_mut(&conn_id).ok_or_else(|| {
                 rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
                     Some("Connection is closed".into()),
                 )
             })?;
-            CURSORS.with(|map| -> Result<i64, rusqlite::Error> {
-                let mut borrow = map.borrow_mut();
-                let cursor = borrow
-                    .get_mut(&cursor_id)
-                    .expect("cursor id was validated above");
-                let mut total: i64 = 0;
-                for params in all_params.iter() {
-                    execute_statement(conn_state, &sql, params, cursor)?;
-                    if cursor.rowcount > 0 {
-                        total += cursor.rowcount;
-                    }
+            let mut cursors = sqlite.cursors.lock().unwrap();
+            let cursor = cursors
+                .get_mut(&cursor_id)
+                .expect("cursor id was validated above");
+            let mut total: i64 = 0;
+            for params in all_params.iter() {
+                execute_statement(conn_state, &sql, params, cursor)?;
+                if cursor.rowcount > 0 {
+                    total += cursor.rowcount;
                 }
-                cursor.rowcount = total;
-                cursor.rows.clear();
-                cursor.cursor_pos = 0;
-                Ok(total)
-            })
-        });
+            }
+            cursor.rowcount = total;
+            cursor.rows.clear();
+            cursor.cursor_pos = 0;
+            Ok(total)
+        })();
 
         match exec_result {
             Ok(_) => MoltObject::from_int(cursor_id).bits(),
@@ -872,20 +919,23 @@ pub extern "C" fn molt_sqlite3_executescript(cursor_bits: u64, script_bits: u64)
             None => return raise_exception::<u64>(_py, "TypeError", "script must be a string"),
         };
 
-        let conn_id = CURSORS.with(|map| -> Result<i64, u64> {
-            let borrow = map.borrow();
-            let state = borrow.get(&cursor_id).ok_or_else(|| {
-                raise_exception::<u64>(_py, "RuntimeError", "invalid cursor handle")
-            })?;
-            if state.closed {
-                return Err(raise_exception::<u64>(
+        let sqlite = sqlite_state(_py);
+        let conn_id: Result<i64, u64> = {
+            let cursors = sqlite.cursors.lock().unwrap();
+            match cursors.get(&cursor_id) {
+                Some(state) if state.closed => Err(raise_exception::<u64>(
                     _py,
                     "RuntimeError",
                     "__ProgrammingError__ Cannot operate on a closed cursor.",
-                ));
+                )),
+                Some(state) => Ok(state.conn_id),
+                None => Err(raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "invalid cursor handle",
+                )),
             }
-            Ok(state.conn_id)
-        });
+        };
         let conn_id = match conn_id {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -893,9 +943,9 @@ pub extern "C" fn molt_sqlite3_executescript(cursor_bits: u64, script_bits: u64)
 
         // executescript implicitly commits any open transaction before running
         // the script (CPython parity).
-        let res: Result<(), rusqlite::Error> = CONNECTIONS.with(|cmap| {
-            let mut cborrow = cmap.borrow_mut();
-            let conn_state = cborrow.get_mut(&conn_id).ok_or_else(|| {
+        let res: Result<(), rusqlite::Error> = (|| {
+            let mut connections = sqlite.connections.lock().unwrap();
+            let conn_state = connections.get_mut(&conn_id).ok_or_else(|| {
                 rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
                     Some("Connection is closed".into()),
@@ -910,17 +960,15 @@ pub extern "C" fn molt_sqlite3_executescript(cursor_bits: u64, script_bits: u64)
             // script contains explicit BEGIN.  Inspect the connection.
             conn_state.in_transaction = !conn_state.conn.connection().is_autocommit();
             Ok(())
-        });
+        })();
 
         // Reset cursor result state so subsequent fetches return nothing.
-        CURSORS.with(|map| {
-            if let Some(cursor) = map.borrow_mut().get_mut(&cursor_id) {
-                cursor.rows.clear();
-                cursor.cursor_pos = 0;
-                cursor.rowcount = -1;
-                cursor.description = None;
-            }
-        });
+        if let Some(cursor) = sqlite.cursors.lock().unwrap().get_mut(&cursor_id) {
+            cursor.rows.clear();
+            cursor.cursor_pos = 0;
+            cursor.rowcount = -1;
+            cursor.description = None;
+        }
 
         match res {
             Ok(()) => MoltObject::from_int(cursor_id).bits(),
@@ -1060,10 +1108,12 @@ pub extern "C" fn molt_sqlite3_lastrowid(cursor_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
         };
-        let val = CURSORS.with(|map| {
-            let borrow = map.borrow();
-            borrow.get(&cursor_id).and_then(|s| s.lastrowid)
-        });
+        let val = sqlite_state(_py)
+            .cursors
+            .lock()
+            .unwrap()
+            .get(&cursor_id)
+            .and_then(|s| s.lastrowid);
         match val {
             Some(v) => MoltObject::from_int(v).bits(),
             None => MoltObject::none().bits(),
@@ -1078,10 +1128,13 @@ pub extern "C" fn molt_sqlite3_rowcount(cursor_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
         };
-        let val = CURSORS.with(|map| {
-            let borrow = map.borrow();
-            borrow.get(&cursor_id).map(|s| s.rowcount).unwrap_or(-1)
-        });
+        let val = sqlite_state(_py)
+            .cursors
+            .lock()
+            .unwrap()
+            .get(&cursor_id)
+            .map(|s| s.rowcount)
+            .unwrap_or(-1);
         MoltObject::from_int(val).bits()
     })
 }
@@ -1093,12 +1146,13 @@ pub extern "C" fn molt_sqlite3_arraysize_get(cursor_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
         };
-        let val = CURSORS.with(|map| {
-            map.borrow()
-                .get(&cursor_id)
-                .map(|s| s.arraysize)
-                .unwrap_or(1)
-        });
+        let val = sqlite_state(_py)
+            .cursors
+            .lock()
+            .unwrap()
+            .get(&cursor_id)
+            .map(|s| s.arraysize)
+            .unwrap_or(1);
         MoltObject::from_int(val).bits()
     })
 }
@@ -1114,11 +1168,14 @@ pub extern "C" fn molt_sqlite3_arraysize_set(cursor_bits: u64, size_bits: u64) -
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "size must be an integer"),
         };
-        CURSORS.with(|map| {
-            if let Some(s) = map.borrow_mut().get_mut(&cursor_id) {
-                s.arraysize = size.max(1);
-            }
-        });
+        if let Some(s) = sqlite_state(_py)
+            .cursors
+            .lock()
+            .unwrap()
+            .get_mut(&cursor_id)
+        {
+            s.arraysize = size.max(1);
+        }
         MoltObject::none().bits()
     })
 }
@@ -1130,11 +1187,12 @@ pub extern "C" fn molt_sqlite3_description(cursor_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
         };
-        let names = CURSORS.with(|map| {
-            map.borrow()
-                .get(&cursor_id)
-                .and_then(|s| s.description.clone())
-        });
+        let names = sqlite_state(_py)
+            .cursors
+            .lock()
+            .unwrap()
+            .get(&cursor_id)
+            .and_then(|s| s.description.clone());
         let Some(names) = names else {
             return MoltObject::none().bits();
         };
