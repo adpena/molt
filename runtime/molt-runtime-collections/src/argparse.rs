@@ -17,19 +17,19 @@ use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, dec_ref_bits,
     is_truthy, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64, type_name,
 };
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Handle ID counter
 // ---------------------------------------------------------------------------
 
-static NEXT_HANDLE_ID: AtomicI64 = AtomicI64::new(1);
-
 fn next_handle_id() -> i64 {
-    NEXT_HANDLE_ID.fetch_add(1, Ordering::Relaxed)
+    argparse_state()
+        .next_handle_id
+        .fetch_add(1, Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -555,13 +555,65 @@ fn apply_flag_value_multi(
 }
 
 // ---------------------------------------------------------------------------
-// Thread-local handle registry
+// Runtime-scoped handle registry
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static PARSER_HANDLES: RefCell<HashMap<i64, ParserState>> = RefCell::new(HashMap::new());
-    static GROUP_HANDLES: RefCell<HashMap<i64, (i64, usize)>> = RefCell::new(HashMap::new());
-    // Maps group_handle_id -> (parser_handle_id, mutex_group_idx)
+struct ArgparseRuntimeState {
+    next_handle_id: AtomicI64,
+    parser_handles: Mutex<HashMap<i64, ParserState>>,
+    // Maps group_handle_id -> (parser_handle_id, mutex_group_idx).
+    group_handles: Mutex<HashMap<i64, (i64, usize)>>,
+}
+
+impl ArgparseRuntimeState {
+    fn new() -> Self {
+        Self {
+            next_handle_id: AtomicI64::new(1),
+            parser_handles: Mutex::new(HashMap::new()),
+            group_handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn clear(&self) {
+        self.parser_handles.lock().unwrap().clear();
+        self.group_handles.lock().unwrap().clear();
+    }
+}
+
+unsafe extern "C" fn argparse_runtime_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(ArgparseRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn argparse_runtime_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (&*(ptr as *const ArgparseRuntimeState)).clear();
+    }
+}
+
+unsafe extern "C" fn argparse_runtime_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut ArgparseRuntimeState));
+    }
+}
+
+fn argparse_state() -> &'static ArgparseRuntimeState {
+    let ptr = crate::bridge::runtime_state_get_or_init(
+        b"molt-runtime-collections/argparse/v1",
+        argparse_runtime_state_init,
+        argparse_runtime_state_clear,
+        argparse_runtime_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "molt argparse runtime state initialization failed"
+    );
+    unsafe { &*(ptr as *const ArgparseRuntimeState) }
 }
 
 // ---------------------------------------------------------------------------
@@ -696,10 +748,11 @@ pub extern "C" fn molt_argparse_parser_new(
         let description = opt_str(description_bits);
         let epilog = opt_str(epilog_bits);
         let id = next_handle_id();
-        PARSER_HANDLES.with(|map| {
-            map.borrow_mut()
-                .insert(id, ParserState::new(prog, description, epilog));
-        });
+        argparse_state()
+            .parser_handles
+            .lock()
+            .unwrap()
+            .insert(id, ParserState::new(prog, description, epilog));
         MoltObject::from_int(id).bits()
     })
 }
@@ -792,15 +845,15 @@ pub extern "C" fn molt_argparse_add_argument(
             mutex_group: -1,
         };
 
-        let ok = PARSER_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            if let Some(state) = borrow.get_mut(&id) {
+        let ok = {
+            let mut parsers = argparse_state().parser_handles.lock().unwrap();
+            if let Some(state) = parsers.get_mut(&id) {
                 state.add_argument(def);
                 true
             } else {
                 false
             }
-        });
+        };
 
         if ok {
             MoltObject::none().bits()
@@ -822,10 +875,12 @@ pub extern "C" fn molt_argparse_parse_args(handle_bits: u64, args_bits: u64) -> 
             Err(bits) => return bits,
         };
 
-        let result = PARSER_HANDLES.with(|map| {
-            let borrow = map.borrow();
-            borrow.get(&id).map(|state| state.parse_args_vec(&raw))
-        });
+        let result = argparse_state()
+            .parser_handles
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|state| state.parse_args_vec(&raw));
 
         let Some(parse_result) = result else {
             return raise_exception::<u64>(_py, "ValueError", "argparse handle not found");
@@ -844,7 +899,12 @@ pub extern "C" fn molt_argparse_format_help(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
-        let help = PARSER_HANDLES.with(|map| map.borrow().get(&id).map(|s| s.help()));
+        let help = argparse_state()
+            .parser_handles
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.help());
         let Some(text) = help else {
             return raise_exception::<u64>(_py, "ValueError", "argparse handle not found");
         };
@@ -861,7 +921,12 @@ pub extern "C" fn molt_argparse_format_usage(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid argparse handle");
         };
-        let usage = PARSER_HANDLES.with(|map| map.borrow().get(&id).map(|s| s.usage()));
+        let usage = argparse_state()
+            .parser_handles
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|s| s.usage());
         let Some(text) = usage else {
             return raise_exception::<u64>(_py, "ValueError", "argparse handle not found");
         };
@@ -897,9 +962,9 @@ pub extern "C" fn molt_argparse_add_subparsers(
         let dest = opt_str(dest_bits);
 
         let group_id = next_handle_id();
-        let ok = PARSER_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            if let Some(state) = borrow.get_mut(&id) {
+        let ok = {
+            let mut parsers = argparse_state().parser_handles.lock().unwrap();
+            if let Some(state) = parsers.get_mut(&id) {
                 state.sub_group = Some(SubGroup {
                     title,
                     dest,
@@ -909,15 +974,17 @@ pub extern "C" fn molt_argparse_add_subparsers(
             } else {
                 false
             }
-        });
+        };
         if !ok {
             return raise_exception::<u64>(_py, "ValueError", "argparse handle not found");
         }
         // Encode (parser_id, "subgroup") in the group handle using a negative sentinel.
-        GROUP_HANDLES.with(|map| {
-            // We repurpose group_handles as: group_id -> (parser_id, usize::MAX)
-            map.borrow_mut().insert(group_id, (id, usize::MAX));
-        });
+        // We repurpose group_handles as: group_id -> (parser_id, usize::MAX).
+        argparse_state()
+            .group_handles
+            .lock()
+            .unwrap()
+            .insert(group_id, (id, usize::MAX));
         MoltObject::from_int(group_id).bits()
     })
 }
@@ -939,30 +1006,37 @@ pub extern "C" fn molt_argparse_add_parser(
         let _ = help; // stored in sub-parser description if desired
 
         // Look up which parser this group belongs to.
-        let parent_id = GROUP_HANDLES.with(|map| map.borrow().get(&group_id).map(|(pid, _)| *pid));
+        let parent_id = argparse_state()
+            .group_handles
+            .lock()
+            .unwrap()
+            .get(&group_id)
+            .map(|(pid, _)| *pid);
         let Some(parent_id) = parent_id else {
             return raise_exception::<u64>(_py, "ValueError", "subparser group not found");
         };
 
         // Create a new sub-parser handle.
         let sub_id = next_handle_id();
-        PARSER_HANDLES.with(|map| {
-            map.borrow_mut()
-                .insert(sub_id, ParserState::new(Some(name.clone()), None, None));
-        });
+        argparse_state()
+            .parser_handles
+            .lock()
+            .unwrap()
+            .insert(sub_id, ParserState::new(Some(name.clone()), None, None));
 
         // Register in parent's sub_group.
-        let ok = PARSER_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            if let Some(sg) = borrow
+        let ok = {
+            let mut parsers = argparse_state().parser_handles.lock().unwrap();
+            if let Some(sg) = parsers
                 .get_mut(&parent_id)
                 .and_then(|state| state.sub_group.as_mut())
             {
                 sg.parsers.insert(name, sub_id);
-                return true;
+                true
+            } else {
+                false
             }
-            false
-        });
+        };
         if !ok {
             return raise_exception::<u64>(_py, "ValueError", "parent parser not found");
         }
@@ -981,9 +1055,9 @@ pub extern "C" fn molt_argparse_add_mutually_exclusive(
         };
         let required = is_truthy(_py, obj_from_bits(required_bits));
         let group_id = next_handle_id();
-        let mutex_idx = PARSER_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            borrow.get_mut(&id).map(|state| {
+        let mutex_idx = {
+            let mut parsers = argparse_state().parser_handles.lock().unwrap();
+            parsers.get_mut(&id).map(|state| {
                 let idx = state.mutex_groups.len();
                 state.mutex_groups.push(MutexGroup {
                     required,
@@ -991,13 +1065,15 @@ pub extern "C" fn molt_argparse_add_mutually_exclusive(
                 });
                 idx
             })
-        });
+        };
         let Some(idx) = mutex_idx else {
             return raise_exception::<u64>(_py, "ValueError", "argparse handle not found");
         };
-        GROUP_HANDLES.with(|map| {
-            map.borrow_mut().insert(group_id, (id, idx));
-        });
+        argparse_state()
+            .group_handles
+            .lock()
+            .unwrap()
+            .insert(group_id, (id, idx));
         MoltObject::from_int(group_id).bits()
     })
 }
@@ -1018,7 +1094,12 @@ pub extern "C" fn molt_argparse_group_add_argument(
         let Some(group_id) = to_i64(obj_from_bits(group_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid group handle");
         };
-        let info = GROUP_HANDLES.with(|map| map.borrow().get(&group_id).copied());
+        let info = argparse_state()
+            .group_handles
+            .lock()
+            .unwrap()
+            .get(&group_id)
+            .copied();
         let Some((parser_id, mutex_idx)) = info else {
             return raise_exception::<u64>(_py, "ValueError", "group handle not found");
         };
@@ -1078,9 +1159,9 @@ pub extern "C" fn molt_argparse_group_add_argument(
             mutex_group: mutex_idx as i64,
         };
 
-        let ok = PARSER_HANDLES.with(|map| {
-            let mut borrow = map.borrow_mut();
-            if let Some(state) = borrow.get_mut(&parser_id) {
+        let ok = {
+            let mut parsers = argparse_state().parser_handles.lock().unwrap();
+            if let Some(state) = parsers.get_mut(&parser_id) {
                 let arg_idx = state.args.len();
                 state.args.push(def);
                 if mutex_idx < state.mutex_groups.len() {
@@ -1090,7 +1171,7 @@ pub extern "C" fn molt_argparse_group_add_argument(
             } else {
                 false
             }
-        });
+        };
 
         if ok {
             MoltObject::none().bits()
@@ -1104,9 +1185,7 @@ pub extern "C" fn molt_argparse_group_add_argument(
 pub extern "C" fn molt_argparse_parser_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            PARSER_HANDLES.with(|map| {
-                map.borrow_mut().remove(&id);
-            });
+            argparse_state().parser_handles.lock().unwrap().remove(&id);
         }
         MoltObject::none().bits()
     })
