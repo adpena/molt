@@ -11,6 +11,7 @@ use super::{
 
 use crate::IoPoller;
 use crate::ProcessTaskState;
+use crate::async_rt::event_loop::{EventLoopRegistry, PipeTransportRegistry};
 use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
 use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
@@ -212,6 +213,8 @@ pub(crate) struct RuntimeState {
     pub(crate) capabilities: OnceLock<HashSet<String>>,
     pub(crate) trusted: OnceLock<bool>,
     pub(crate) async_hang_probe: OnceLock<Option<AsyncHangProbe>>,
+    pub(crate) event_loop_registry: EventLoopRegistry,
+    pub(crate) pipe_transport_registry: PipeTransportRegistry,
     pub(crate) cancel_tokens: Mutex<HashMap<u64, CancelTokenEntry>>,
     pub(crate) task_tokens: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) task_tokens_by_id: Mutex<HashMap<u64, HashSet<PtrSlot>>>,
@@ -291,6 +294,8 @@ impl RuntimeState {
             capabilities: OnceLock::new(),
             trusted: OnceLock::new(),
             async_hang_probe: OnceLock::new(),
+            event_loop_registry: EventLoopRegistry::new(),
+            pipe_transport_registry: PipeTransportRegistry::new(),
             cancel_tokens: Mutex::new(default_cancel_tokens()),
             task_tokens: Mutex::new(HashMap::new()),
             task_tokens_by_id: Mutex::new(HashMap::new()),
