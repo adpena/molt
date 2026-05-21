@@ -13,6 +13,12 @@ pub mod tmp;
 use std::borrow::Cow;
 use std::sync::{Arc, RwLock};
 
+const VFS_BUNDLE_DEFAULT_MAX_BYTES: usize = 256 * 1024 * 1024;
+const VFS_BUNDLE_DEFAULT_MAX_ENTRIES: usize = 100_000;
+const VFS_BUNDLE_DEFAULT_MAX_PATH_BYTES: usize = 16 * 1024 * 1024;
+const VFS_BUNDLE_MAX_ENTRY_BYTES: usize = 64 * 1024 * 1024;
+const VFS_BUNDLE_MAX_PATH_BYTES: usize = 4096;
+
 /// Errors from VFS operations.
 #[derive(Debug, Clone)]
 pub enum VfsError {
@@ -26,6 +32,107 @@ pub enum VfsError {
     SeekNotSupported,
     IoError(String),
     CapabilityDenied(String),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct VfsLoadQuota {
+    max_total_bytes: usize,
+    max_entries: usize,
+    max_path_bytes: usize,
+    max_entry_bytes: usize,
+    total_bytes: usize,
+    entries: usize,
+    path_bytes: usize,
+}
+
+impl VfsLoadQuota {
+    pub(crate) fn from_env() -> Self {
+        Self {
+            max_total_bytes: env_usize("MOLT_VFS_BUNDLE_MAX_BYTES", VFS_BUNDLE_DEFAULT_MAX_BYTES),
+            max_entries: env_usize(
+                "MOLT_VFS_BUNDLE_MAX_ENTRIES",
+                VFS_BUNDLE_DEFAULT_MAX_ENTRIES,
+            ),
+            max_path_bytes: env_usize(
+                "MOLT_VFS_BUNDLE_MAX_PATH_BYTES",
+                VFS_BUNDLE_DEFAULT_MAX_PATH_BYTES,
+            ),
+            max_entry_bytes: env_usize(
+                "MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES",
+                VFS_BUNDLE_MAX_ENTRY_BYTES,
+            ),
+            total_bytes: 0,
+            entries: 0,
+            path_bytes: 0,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test(max_total_bytes: usize, max_entries: usize, max_path_bytes: usize) -> Self {
+        Self {
+            max_total_bytes,
+            max_entries,
+            max_path_bytes,
+            max_entry_bytes: max_total_bytes.max(1),
+            total_bytes: 0,
+            entries: 0,
+            path_bytes: 0,
+        }
+    }
+
+    pub(crate) fn reserve_entry(&mut self, path: &str, data_len: usize) -> Result<(), VfsError> {
+        if path.len() > VFS_BUNDLE_MAX_PATH_BYTES || data_len > self.max_entry_bytes {
+            return Err(VfsError::QuotaExceeded);
+        }
+        let next_entries = self.entries.checked_add(1).ok_or(VfsError::QuotaExceeded)?;
+        let next_path_bytes = self
+            .path_bytes
+            .checked_add(path.len())
+            .ok_or(VfsError::QuotaExceeded)?;
+        let next_total_bytes = self
+            .total_bytes
+            .checked_add(data_len)
+            .ok_or(VfsError::QuotaExceeded)?;
+        if next_entries > self.max_entries
+            || next_path_bytes > self.max_path_bytes
+            || next_total_bytes > self.max_total_bytes
+        {
+            return Err(VfsError::QuotaExceeded);
+        }
+        self.entries = next_entries;
+        self.path_bytes = next_path_bytes;
+        self.total_bytes = next_total_bytes;
+        Ok(())
+    }
+
+    fn reserve_additional_bytes(&mut self, bytes: usize) -> Result<(), VfsError> {
+        let next_total_bytes = self
+            .total_bytes
+            .checked_add(bytes)
+            .ok_or(VfsError::QuotaExceeded)?;
+        if next_total_bytes > self.max_total_bytes {
+            return Err(VfsError::QuotaExceeded);
+        }
+        self.total_bytes = next_total_bytes;
+        Ok(())
+    }
+
+    #[cfg(feature = "vfs_bundle_tar")]
+    fn check_blob_len(&self, len: usize) -> Result<(), VfsError> {
+        if len > self.max_total_bytes {
+            Err(VfsError::QuotaExceeded)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 impl std::fmt::Display for VfsError {
@@ -206,7 +313,10 @@ impl VfsState {
 
 /// Walk a directory recursively, returning `(relative_path, contents)` pairs
 /// suitable for [`BundleFs::from_entries`].
-fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
+fn read_dir_recursive(
+    base: &str,
+    quota: &mut VfsLoadQuota,
+) -> Result<Vec<(String, Vec<u8>)>, VfsError> {
     use std::path::Path;
 
     let mut result = Vec::new();
@@ -216,25 +326,34 @@ fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(err) => return Err(VfsError::IoError(err.to_string())),
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path.to_string_lossy().into_owned());
-            } else if path.is_file()
-                && let Ok(data) = std::fs::read(&path)
-            {
+            } else if path.is_file() {
+                let expected_len = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|meta| usize::try_from(meta.len()).ok())
+                    .unwrap_or(0);
                 let rel = path
                     .strip_prefix(base_path)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .into_owned();
+                quota.reserve_entry(&rel, expected_len)?;
+                let data =
+                    std::fs::read(&path).map_err(|err| VfsError::IoError(err.to_string()))?;
+                if data.len() > expected_len {
+                    quota.reserve_additional_bytes(data.len() - expected_len)?;
+                }
                 result.push((rel, data));
             }
         }
     }
-    result
+    Ok(result)
 }
 
 /// Lazily build a [`VfsState`] from environment variables.
@@ -250,11 +369,16 @@ fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
 use std::sync::Mutex;
 
 type InjectedBundleEntries = Vec<(String, Vec<u8>)>;
+struct InjectedBundleState {
+    entries: InjectedBundleEntries,
+    quota: VfsLoadQuota,
+    error: Option<VfsError>,
+}
 
 /// Global slot for bundle data injected by the host before `_start`.
 /// On Cloudflare Workers, worker.js writes the tar/entry data here
 /// via `molt_vfs_inject_bundle` before calling the WASM entry point.
-static INJECTED_BUNDLE: Mutex<Option<InjectedBundleEntries>> = Mutex::new(None);
+static INJECTED_BUNDLE: Mutex<Option<InjectedBundleState>> = Mutex::new(None);
 
 /// Host calls this to inject bundle entries before `_start`.
 /// Each entry is (path, content). Called from JS or the WASM host.
@@ -273,23 +397,35 @@ pub unsafe extern "C" fn molt_vfs_inject_entry(
     if path_ptr.is_null() || (data_len > 0 && data_ptr.is_null()) {
         return;
     }
-    if path_len > 4096 || data_len > 64 * 1024 * 1024 {
+    if path_len > VFS_BUNDLE_MAX_PATH_BYTES {
         return;
     }
     let path = unsafe { std::slice::from_raw_parts(path_ptr, path_len) };
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
     let path_str = String::from_utf8_lossy(path).to_string();
+    let mut guard = INJECTED_BUNDLE.lock().unwrap();
+    let state = guard.get_or_insert_with(|| InjectedBundleState {
+        entries: Vec::new(),
+        quota: VfsLoadQuota::from_env(),
+        error: None,
+    });
+    if state.error.is_some() {
+        return;
+    }
     if path_str.is_empty()
         || path_str.starts_with('/')
         || path_str.contains("..")
         || path_str.contains('\0')
     {
+        state.error = Some(VfsError::IoError("invalid injected VFS path".to_string()));
         return; // reject unsafe paths
     }
-    let mut guard = INJECTED_BUNDLE.lock().unwrap();
-    guard
-        .get_or_insert_with(Vec::new)
-        .push((path_str, data.to_vec()));
+    if let Err(err) = state.quota.reserve_entry(&path_str, data_len) {
+        state.entries.clear();
+        state.error = Some(err);
+        return;
+    }
+    state.entries.push((path_str, data.to_vec()));
 }
 
 /// Host calls this to signal all entries have been injected.
@@ -297,44 +433,71 @@ pub unsafe extern "C" fn molt_vfs_inject_entry(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vfs_inject_finish() -> i32 {
     let guard = INJECTED_BUNDLE.lock().unwrap();
-    guard.as_ref().map_or(0, |v| v.len() as i32)
+    guard.as_ref().map_or(0, |state| {
+        if state.error.is_some() {
+            -1
+        } else {
+            state.entries.len() as i32
+        }
+    })
 }
 
 /// Load VFS from injected entries (WASM) or environment (native).
 pub(crate) fn load_vfs() -> Option<VfsState> {
+    match load_vfs_inner() {
+        Ok(state) => state,
+        Err(err) => panic!("failed to load VFS bundle: {err}"),
+    }
+}
+
+fn load_vfs_inner() -> Result<Option<VfsState>, VfsError> {
     // Check for injected bundle first (WASM path)
     let injected = INJECTED_BUNDLE.lock().unwrap().take();
-    if let Some(entries) = injected
-        && !entries.is_empty()
-    {
-        let mut mt = MountTable::new();
-        mt.add_mount("/bundle", Arc::new(bundle::BundleFs::from_entries(entries)));
-        let quota_mb = std::env::var("MOLT_VFS_TMP_QUOTA_MB")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64);
-        mt.add_mount("/tmp", Arc::new(tmp::TmpFs::new(quota_mb)));
-        mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
-        return Some(VfsState::from_table(mt));
+    if let Some(state) = injected {
+        if let Some(err) = state.error {
+            return Err(err);
+        }
+        if !state.entries.is_empty() {
+            let mut mt = MountTable::new();
+            mt.add_mount(
+                "/bundle",
+                Arc::new(bundle::BundleFs::from_entries(state.entries)),
+            );
+            let quota_mb = std::env::var("MOLT_VFS_TMP_QUOTA_MB")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(64);
+            mt.add_mount("/tmp", Arc::new(tmp::TmpFs::new(quota_mb)));
+            mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
+            return Ok(Some(VfsState::from_table(mt)));
+        }
     }
 
     // Native path: load from MOLT_VFS_BUNDLE env var
-    let bundle_path = std::env::var("MOLT_VFS_BUNDLE").ok()?;
+    let Some(bundle_path) = std::env::var("MOLT_VFS_BUNDLE").ok() else {
+        return Ok(None);
+    };
 
     let mut mt = MountTable::new();
+    let mut quota = VfsLoadQuota::from_env();
 
     // /bundle from tar or directory
     if std::path::Path::new(&bundle_path).is_dir() {
-        let entries = read_dir_recursive(&bundle_path);
+        let entries = read_dir_recursive(&bundle_path, &mut quota)?;
         mt.add_mount("/bundle", Arc::new(bundle::BundleFs::from_entries(entries)));
     } else if bundle_path.ends_with(".tar") {
         #[cfg(feature = "vfs_bundle_tar")]
         {
-            if let Ok(tar_bytes) = std::fs::read(&bundle_path)
-                && let Ok(b) = bundle::BundleFs::from_tar(&tar_bytes)
-            {
-                mt.add_mount("/bundle", Arc::new(b));
-            }
+            let tar_len = std::fs::metadata(&bundle_path)
+                .ok()
+                .and_then(|meta| usize::try_from(meta.len()).ok())
+                .unwrap_or(0);
+            quota.check_blob_len(tar_len)?;
+            let tar_bytes =
+                std::fs::read(&bundle_path).map_err(|err| VfsError::IoError(err.to_string()))?;
+            let b = bundle::BundleFs::from_tar_with_quota(&tar_bytes, &mut quota)
+                .map_err(VfsError::IoError)?;
+            mt.add_mount("/bundle", Arc::new(b));
         }
     }
 
@@ -348,7 +511,7 @@ pub(crate) fn load_vfs() -> Option<VfsState> {
     // /dev pseudo-devices
     mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
 
-    Some(VfsState::from_table(mt))
+    Ok(Some(VfsState::from_table(mt)))
 }
 
 #[cfg(test)]
@@ -490,6 +653,26 @@ mod tests {
         let fs = TmpFs::new(0);
         assert!(matches!(
             fs.open_write("file.txt", b"data"),
+            Err(VfsError::QuotaExceeded)
+        ));
+    }
+
+    #[test]
+    fn vfs_load_quota_rejects_cumulative_bytes() {
+        let mut quota = VfsLoadQuota::new_for_test(5, 10, 100);
+        quota.reserve_entry("a.txt", 3).unwrap();
+        assert!(matches!(
+            quota.reserve_entry("b.txt", 3),
+            Err(VfsError::QuotaExceeded)
+        ));
+    }
+
+    #[test]
+    fn vfs_load_quota_rejects_entry_count() {
+        let mut quota = VfsLoadQuota::new_for_test(100, 1, 100);
+        quota.reserve_entry("a.txt", 1).unwrap();
+        assert!(matches!(
+            quota.reserve_entry("b.txt", 1),
             Err(VfsError::QuotaExceeded)
         ));
     }
@@ -678,13 +861,29 @@ mod tests {
         std::fs::write(dir.join("a/mid.txt"), b"M").unwrap();
         std::fs::write(dir.join("a/b/bot.txt"), b"B").unwrap();
 
-        let entries = super::read_dir_recursive(dir.to_str().unwrap());
+        let mut quota = VfsLoadQuota::new_for_test(1024, 8, 1024);
+        let entries = super::read_dir_recursive(dir.to_str().unwrap(), &mut quota).unwrap();
         assert_eq!(entries.len(), 3);
 
         let map: std::collections::HashMap<String, Vec<u8>> = entries.into_iter().collect();
         assert_eq!(map.get("top.txt").unwrap(), b"T");
         assert_eq!(map.get("a/mid.txt").unwrap(), b"M");
         assert_eq!(map.get("a/b/bot.txt").unwrap(), b"B");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_dir_recursive_enforces_entry_count_quota() {
+        let dir = std::env::temp_dir().join("molt_vfs_test_readdir_quota");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"A").unwrap();
+        std::fs::write(dir.join("b.txt"), b"B").unwrap();
+
+        let mut quota = VfsLoadQuota::new_for_test(1024, 1, 1024);
+        let result = super::read_dir_recursive(dir.to_str().unwrap(), &mut quota);
+        assert!(matches!(result, Err(VfsError::QuotaExceeded)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
