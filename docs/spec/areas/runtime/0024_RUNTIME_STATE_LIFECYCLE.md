@@ -104,6 +104,9 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   Special descriptor cache slots, including function `__code__`/`__globals__`
   descriptors, are cleared through the same lifecycle path as the rest of
   `RuntimeState.special_cache`.
+  Resource tracker factories and current-thread tracker state are reset at
+  lifecycle shutdown boundaries so memory/time limits cannot leak into the
+  next runtime in an embedding process.
   Their per-runtime handle counters and registries reset with a new runtime
   state, so stale handles cannot address process-lifetime parser/CSV/RNG,
   extension-module, or call-binding state.

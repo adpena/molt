@@ -112,6 +112,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     c_api_module_clear_state(_py, state);
     trace_shutdown("process_exit_clear_runtime_extension_states");
     runtime_extension_states_clear_and_drop(state);
+    trace_shutdown("process_exit_clear_resource_state");
+    crate::resource::clear_resource_state();
     trace_shutdown("process_exit_done");
 }
 
@@ -233,6 +235,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
         trace_shutdown("reset_ptr_registry");
         reset_ptr_registry();
     }
+    trace_shutdown("clear_resource_state");
+    crate::resource::clear_resource_state();
     trace_shutdown("done");
 }
 
