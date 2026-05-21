@@ -33,3 +33,22 @@ def test_module_object_slots_are_runtime_owned() -> None:
     assert "clear_modules_runtime_state" in (
         ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
     ).read_text(encoding="utf-8")
+
+
+def test_platform_object_slots_are_runtime_owned() -> None:
+    text = (ROOT / "runtime/molt-runtime/src/builtins/platform.rs").read_text(
+        encoding="utf-8"
+    )
+
+    for name in [
+        "ERRNO_CONSTANTS_CACHE",
+        "SOCKET_CONSTANTS_CACHE",
+        "OS_NAME_CACHE",
+        "SYS_PLATFORM_CACHE",
+    ]:
+        assert f"static {name}: AtomicU64" not in text
+    assert "struct PlatformRuntimeState" in text
+    assert "platform_clear_runtime_state" in text
+    assert "clear_platform_runtime_state" in (
+        ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
+    ).read_text(encoding="utf-8")

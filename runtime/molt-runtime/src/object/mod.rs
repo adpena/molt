@@ -40,6 +40,7 @@ pub mod gil;
 pub mod inline_cache;
 pub(crate) mod layout;
 pub(crate) mod memoryview;
+pub(crate) mod native_handle;
 pub(crate) mod ops;
 pub(crate) mod ops_arith;
 pub(crate) mod ops_builtins;
@@ -92,17 +93,17 @@ use crate::{
     TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
     TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
     TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
-    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_OBJECT, TYPE_ID_PROPERTY,
-    TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
-    TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP, asyncgen_call_finalizer,
-    asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove, asyncgen_running_bits,
-    asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop, asyncio_gather_poll_fn_addr,
-    asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr, asyncio_ready_runner_task_drop,
-    asyncio_server_accept_loop_poll_fn_addr, asyncio_server_accept_loop_task_drop,
-    asyncio_sock_accept_poll_fn_addr, asyncio_sock_accept_task_drop,
-    asyncio_sock_connect_poll_fn_addr, asyncio_sock_connect_task_drop,
-    asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_into_task_drop,
-    asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
+    TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NATIVE_HANDLE, TYPE_ID_OBJECT,
+    TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD,
+    TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP,
+    asyncgen_call_finalizer, asyncgen_gen_bits, asyncgen_pending_bits, asyncgen_registry_remove,
+    asyncgen_running_bits, asyncio_fd_watcher_poll_fn_addr, asyncio_fd_watcher_task_drop,
+    asyncio_gather_poll_fn_addr, asyncio_gather_task_drop, asyncio_ready_runner_poll_fn_addr,
+    asyncio_ready_runner_task_drop, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_server_accept_loop_task_drop, asyncio_sock_accept_poll_fn_addr,
+    asyncio_sock_accept_task_drop, asyncio_sock_connect_poll_fn_addr,
+    asyncio_sock_connect_task_drop, asyncio_sock_recv_into_poll_fn_addr,
+    asyncio_sock_recv_into_task_drop, asyncio_sock_recv_poll_fn_addr, asyncio_sock_recv_task_drop,
     asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_into_task_drop,
     asyncio_sock_recvfrom_poll_fn_addr, asyncio_sock_recvfrom_task_drop,
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendall_task_drop,
@@ -2222,6 +2223,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     if next_bits != 0 && !obj_from_bits(next_bits).is_none() {
                         dec_ref_bits(py, next_bits);
                     }
+                }
+                TYPE_ID_NATIVE_HANDLE => {
+                    native_handle::native_handle_drop(ptr);
                 }
                 TYPE_ID_EXCEPTION => {
                     let exc_kind_bits = exception_kind_bits(ptr);

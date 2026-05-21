@@ -31,6 +31,7 @@ use crate::builtins::io::IoRuntimeState;
 use crate::builtins::itertools::ItertoolsRuntimeState;
 use crate::builtins::modules::ModulesRuntimeState;
 use crate::builtins::operator::OperatorRuntimeState;
+use crate::builtins::platform::PlatformRuntimeState;
 #[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::RandomRuntimeState;
 use crate::builtins::signal_ext::{SignalRuntimeState, signal_runtime_state_publish};
@@ -324,6 +325,7 @@ pub(crate) struct RuntimeState {
     pub(crate) io: IoRuntimeState,
     pub(crate) modules: ModulesRuntimeState,
     pub(crate) operator: OperatorRuntimeState,
+    pub(crate) platform: PlatformRuntimeState,
     pub(crate) types: TypesRuntimeState,
     #[cfg(not(feature = "stdlib_itertools"))]
     pub(crate) itertools: ItertoolsRuntimeState,
@@ -436,6 +438,7 @@ impl RuntimeState {
             io: IoRuntimeState::new(),
             modules: ModulesRuntimeState::new(),
             operator: OperatorRuntimeState::new(),
+            platform: PlatformRuntimeState::new(),
             types: TypesRuntimeState::new(),
             #[cfg(not(feature = "stdlib_itertools"))]
             itertools: ItertoolsRuntimeState::new(),

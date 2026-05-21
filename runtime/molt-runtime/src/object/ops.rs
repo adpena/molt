@@ -7718,6 +7718,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_ZIP => Cow::Borrowed("zip"),
                 TYPE_ID_MAP => Cow::Borrowed("map"),
                 TYPE_ID_FILTER => Cow::Borrowed("filter"),
+                TYPE_ID_NATIVE_HANDLE => Cow::Borrowed("native_handle"),
                 TYPE_ID_CLASSMETHOD => Cow::Borrowed("classmethod"),
                 TYPE_ID_STATICMETHOD => Cow::Borrowed("staticmethod"),
                 TYPE_ID_PROPERTY => Cow::Borrowed("property"),
