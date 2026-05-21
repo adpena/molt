@@ -3,11 +3,10 @@
 // Intrinsic implementations for asyncio.Queue, asyncio.PriorityQueue, and
 // asyncio.LifoQueue.
 //
-// Handle model: global `LazyLock<Mutex<HashMap<i64, QueueState>>>` keyed by an
-// atomically-issued handle ID, returned to Python as a NaN-boxed integer.
-// Uses a global registry (not thread-local) so handles are visible across all
-// threads. The GIL serializes all Python-level access, so the Mutex is always
-// uncontended.
+// Handle model: runtime-owned `Mutex<HashMap<i64, QueueState>>` keyed by an
+// atomically-issued per-runtime handle ID, returned to Python as a NaN-boxed
+// integer. The registry is scoped to `RuntimeState`, so runtime teardown and
+// isolate reset release all queued object references deterministically.
 //
 // Queue types:
 //   0 = FIFO  (VecDeque, popleft)
@@ -17,27 +16,20 @@
 // Refcount protocol:
 // - Items pushed into the queue are inc_ref'd; items popped are returned without
 //   extra inc_ref (caller takes ownership of the reference the queue held).
-// - Waiter bits (Future objects) are inc_ref'd on registration, dec_ref'd on
-//   notification or cleanup.
+// - Future waiters are owned by the Python Queue object. Rust owns only the
+//   data-structure state that must survive as an intrinsic-backed primitive.
 //
 // WASM compatibility: ALL intrinsics in this module are pure data structure
 // operations with no I/O, no file descriptors, no platform-specific syscalls,
 // and no std::time usage. They compile and run correctly on all targets
 // including wasm32-wasi and wasm32-unknown-unknown — no `#[cfg]` gating required.
 
+use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{LazyLock, Mutex};
-
-// ─── Handle counter ──────────────────────────────────────────────────────────
-
-static NEXT_QUEUE_HANDLE: AtomicI64 = AtomicI64::new(1);
-
-fn next_queue_handle() -> i64 {
-    NEXT_QUEUE_HANDLE.fetch_add(1, Ordering::Relaxed)
-}
 
 // ─── Queue type discriminator ────────────────────────────────────────────────
 
@@ -134,10 +126,6 @@ struct QueueState {
     queue_type: QueueType,
     /// Number of unfinished tasks (incremented on put, decremented on task_done).
     unfinished_tasks: i64,
-    /// Waiting putter Future bits.
-    putters: VecDeque<u64>,
-    /// Waiting getter Future bits.
-    getters: VecDeque<u64>,
     /// Whether shutdown() has been called.
     shutdown: bool,
     /// Whether shutdown(immediate=True) was called.
@@ -153,8 +141,6 @@ impl QueueState {
             maxsize,
             queue_type,
             unfinished_tasks: 0,
-            putters: VecDeque::new(),
-            getters: VecDeque::new(),
             shutdown: false,
             shutdown_immediate: false,
         }
@@ -207,20 +193,68 @@ impl QueueState {
             QueueType::Priority => self.priority_items.drain().map(|r| r.0.0).collect(),
         }
     }
+
+    fn clear_refs(&mut self, _py: &PyToken<'_>) {
+        for item in self.drain_all() {
+            dec_ref_bits(_py, item);
+        }
+    }
 }
 
-// ─── Global registry ─────────────────────────────────────────────────────────
+// ─── Runtime-owned registry ──────────────────────────────────────────────────
 
-static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<i64, QueueState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) struct AsyncioQueueRuntimeState {
+    next_queue_handle: AtomicI64,
+    queues: Mutex<HashMap<i64, QueueState>>,
+}
+
+impl AsyncioQueueRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_queue_handle: AtomicI64::new(1),
+            queues: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn next_queue_handle(&self) -> i64 {
+        self.next_queue_handle.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn reset_next_queue_handle(&self) {
+        self.next_queue_handle.store(1, Ordering::Relaxed);
+    }
+}
+
+fn queue_runtime_state(_py: &PyToken<'_>) -> &'static AsyncioQueueRuntimeState {
+    &runtime_state(_py).asyncio_queues
+}
+
+pub(crate) fn asyncio_queue_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let queues = {
+        let mut queues = state
+            .asyncio_queues
+            .queues
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *queues)
+    };
+    state.asyncio_queues.reset_next_queue_handle();
+    for (_, mut queue) in queues {
+        queue.clear_refs(_py);
+    }
+}
 
 /// Execute a closure with mutable access to the queue state for the given handle.
 /// Returns `None` if the handle is not found.
-fn with_queue<F, R>(handle: i64, f: F) -> Option<R>
+fn with_queue<F, R>(_py: &PyToken<'_>, handle: i64, f: F) -> Option<R>
 where
     F: FnOnce(&mut QueueState) -> R,
 {
-    let mut map = QUEUE_REGISTRY.lock().unwrap();
+    let mut map = queue_runtime_state(_py)
+        .queues
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     map.get_mut(&handle).map(f)
 }
 
@@ -264,10 +298,12 @@ pub extern "C" fn molt_asyncio_queue_new(maxsize_bits: u64, queue_type_bits: u64
             }
         };
 
-        let handle = next_queue_handle();
-        QUEUE_REGISTRY
+        let state = queue_runtime_state(_py);
+        let handle = state.next_queue_handle();
+        state
+            .queues
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(handle, QueueState::new(maxsize, queue_type));
         MoltObject::from_int(handle).bits()
     })
@@ -288,7 +324,7 @@ pub extern "C" fn molt_asyncio_queue_put_nowait(handle_bits: u64, item_bits: u64
         // if we end up not storing (error path), we dec_ref it back.
         inc_ref_bits(_py, item_bits);
 
-        let result = with_queue(handle, |state| {
+        let result = with_queue(_py, handle, |state| {
             if state.shutdown {
                 return Err("QueueShutDown");
             }
@@ -330,7 +366,7 @@ pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
-        let result = with_queue(handle, |state| {
+        let result = with_queue(_py, handle, |state| {
             if let Some(item) = state.get() {
                 // Item was inc_ref'd when put; caller now owns that reference.
                 Ok(item)
@@ -358,7 +394,7 @@ pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_queue_qsize(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let Some(size) = with_queue(handle, |state| state.qsize() as i64) else {
+        let Some(size) = with_queue(_py, handle, |state| state.qsize() as i64) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
         };
         MoltObject::from_int(size).bits()
@@ -370,7 +406,7 @@ pub extern "C" fn molt_asyncio_queue_qsize(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_queue_maxsize(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let Some(maxsize) = with_queue(handle, |state| state.maxsize as i64) else {
+        let Some(maxsize) = with_queue(_py, handle, |state| state.maxsize as i64) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
         };
         MoltObject::from_int(maxsize).bits()
@@ -382,7 +418,7 @@ pub extern "C" fn molt_asyncio_queue_maxsize(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_queue_empty(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let Some(empty) = with_queue(handle, |state| state.is_empty()) else {
+        let Some(empty) = with_queue(_py, handle, |state| state.is_empty()) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
         };
         MoltObject::from_bool(empty).bits()
@@ -394,7 +430,7 @@ pub extern "C" fn molt_asyncio_queue_empty(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_queue_full(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let Some(full) = with_queue(handle, |state| state.is_full()) else {
+        let Some(full) = with_queue(_py, handle, |state| state.is_full()) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
         };
         MoltObject::from_bool(full).bits()
@@ -410,7 +446,7 @@ pub extern "C" fn molt_asyncio_queue_task_done(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
-        let result = with_queue(handle, |state| {
+        let result = with_queue(_py, handle, |state| {
             if state.unfinished_tasks <= 0 {
                 return Err(());
             }
@@ -433,132 +469,10 @@ pub extern "C" fn molt_asyncio_queue_task_done(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_queue_unfinished_tasks(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let Some(count) = with_queue(handle, |state| state.unfinished_tasks) else {
+        let Some(count) = with_queue(_py, handle, |state| state.unfinished_tasks) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
         };
         MoltObject::from_int(count).bits()
-    })
-}
-
-/// Return the number of waiting putters.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_putter_count(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = handle_from_bits(handle_bits);
-        let Some(count) = with_queue(handle, |state| state.putters.len() as i64) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
-        };
-        MoltObject::from_int(count).bits()
-    })
-}
-
-/// Return the number of waiting getters.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_getter_count(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = handle_from_bits(handle_bits);
-        let Some(count) = with_queue(handle, |state| state.getters.len() as i64) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
-        };
-        MoltObject::from_int(count).bits()
-    })
-}
-
-/// Register a putter waiter (Future bits). The waiter is inc_ref'd.
-///
-/// Returns `MoltObject::none()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_add_putter(handle_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = handle_from_bits(handle_bits);
-        inc_ref_bits(_py, waiter_bits);
-
-        let result = with_queue(handle, |state| {
-            state.putters.push_back(waiter_bits);
-        });
-
-        if result.is_none() {
-            dec_ref_bits(_py, waiter_bits);
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
-        }
-        MoltObject::none().bits()
-    })
-}
-
-/// Register a getter waiter (Future bits). The waiter is inc_ref'd.
-///
-/// Returns `MoltObject::none()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_add_getter(handle_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = handle_from_bits(handle_bits);
-        inc_ref_bits(_py, waiter_bits);
-
-        let result = with_queue(handle, |state| {
-            state.getters.push_back(waiter_bits);
-        });
-
-        if result.is_none() {
-            dec_ref_bits(_py, waiter_bits);
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
-        }
-        MoltObject::none().bits()
-    })
-}
-
-/// Wake up to `count` putters by popping them from the front of the putters
-/// deque. Each woken putter is dec_ref'd (the Python shim is responsible for
-/// calling `Future.set_result` on them before they are released here).
-///
-/// Returns the number of putters actually notified (NaN-boxed int).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_notify_putters(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = handle_from_bits(handle_bits);
-        let count = to_i64(obj_from_bits(count_bits)).unwrap_or(1).max(0) as usize;
-
-        let waiters: Vec<u64> = {
-            let mut map = QUEUE_REGISTRY.lock().unwrap();
-            let Some(state) = map.get_mut(&handle) else {
-                return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
-            };
-            let n = count.min(state.putters.len());
-            state.putters.drain(..n).collect()
-        };
-
-        let notified = waiters.len() as i64;
-        // Dec-ref each waiter outside the lock.
-        for w in waiters {
-            dec_ref_bits(_py, w);
-        }
-        MoltObject::from_int(notified).bits()
-    })
-}
-
-/// Wake up to `count` getters by popping them from the front of the getters
-/// deque. Each woken getter is dec_ref'd.
-///
-/// Returns the number of getters actually notified (NaN-boxed int).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_notify_getters(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = handle_from_bits(handle_bits);
-        let count = to_i64(obj_from_bits(count_bits)).unwrap_or(1).max(0) as usize;
-
-        let waiters: Vec<u64> = {
-            let mut map = QUEUE_REGISTRY.lock().unwrap();
-            let Some(state) = map.get_mut(&handle) else {
-                return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
-            };
-            let n = count.min(state.getters.len());
-            state.getters.drain(..n).collect()
-        };
-
-        let notified = waiters.len() as i64;
-        for w in waiters {
-            dec_ref_bits(_py, w);
-        }
-        MoltObject::from_int(notified).bits()
     })
 }
 
@@ -574,9 +488,12 @@ pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: 
         let handle = handle_from_bits(handle_bits);
         let immediate = is_truthy(_py, obj_from_bits(immediate_bits));
 
-        // Collect items and waiters to dec_ref outside the lock.
-        let (items_to_free, putters_to_free, getters_to_free) = {
-            let mut map = QUEUE_REGISTRY.lock().unwrap();
+        // Collect drained items to dec_ref outside the lock.
+        let items_to_free = {
+            let mut map = queue_runtime_state(_py)
+                .queues
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let Some(state) = map.get_mut(&handle) else {
                 return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
             };
@@ -590,24 +507,11 @@ pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: 
                 Vec::new()
             };
 
-            // On shutdown, all waiting putters and getters should be woken
-            // (the Python shim will set QueueShutDown on them).
-            let putters: Vec<u64> = state.putters.drain(..).collect();
-            let getters: Vec<u64> = state.getters.drain(..).collect();
-
-            (items, putters, getters)
+            items
         };
 
-        // Dec-ref drained items.
         for item in items_to_free {
             dec_ref_bits(_py, item);
-        }
-        // Dec-ref waiters.
-        for w in putters_to_free {
-            dec_ref_bits(_py, w);
-        }
-        for w in getters_to_free {
-            dec_ref_bits(_py, w);
         }
 
         MoltObject::none().bits()
@@ -619,37 +523,83 @@ pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: 
 pub extern "C" fn molt_asyncio_queue_is_shutdown(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let Some(shut) = with_queue(handle, |state| state.shutdown) else {
+        let Some(shut) = with_queue(_py, handle, |state| state.shutdown) else {
             return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
         };
         MoltObject::from_bool(shut).bits()
     })
 }
 
-/// Drop and clean up a queue handle. All remaining items and waiters are dec_ref'd.
+/// Drop and clean up a queue handle. All remaining items are dec_ref'd.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
 
-        let removed = QUEUE_REGISTRY.lock().unwrap().remove(&handle);
+        let removed = queue_runtime_state(_py)
+            .queues
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&handle);
 
         if let Some(mut state) = removed {
-            // Dec-ref all remaining items.
-            let items = state.drain_all();
-            for item in items {
-                dec_ref_bits(_py, item);
-            }
-            // Dec-ref all waiting putters.
-            for w in state.putters.drain(..) {
-                dec_ref_bits(_py, w);
-            }
-            // Dec-ref all waiting getters.
-            for w in state.getters.drain(..) {
-                dec_ref_bits(_py, w);
-            }
+            state.clear_refs(_py);
         }
 
         MoltObject::none().bits()
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering as AtomicOrdering;
+
+    fn ref_count(ptr: *mut u8) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn asyncio_queue_state_is_runtime_scoped_and_clearable() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            asyncio_queue_clear_state(_py, state);
+
+            let handle_bits = molt_asyncio_queue_new(
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_int(0).bits(),
+            );
+            assert_eq!(to_i64(obj_from_bits(handle_bits)), Some(1));
+            assert_eq!(state.asyncio_queues.queues.lock().unwrap().len(), 1);
+
+            let item_ptr = alloc_string(_py, b"asyncio-queue-state-item");
+            let item_bits = MoltObject::from_ptr(item_ptr).bits();
+            let item_refs_initial = ref_count(item_ptr);
+            assert!(obj_from_bits(molt_asyncio_queue_put_nowait(handle_bits, item_bits)).is_none());
+            assert_eq!(ref_count(item_ptr), item_refs_initial + 1);
+
+            asyncio_queue_clear_state(_py, state);
+
+            assert!(state.asyncio_queues.queues.lock().unwrap().is_empty());
+            assert_eq!(ref_count(item_ptr), item_refs_initial);
+
+            let handle2_bits = molt_asyncio_queue_new(
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_int(0).bits(),
+            );
+            assert_eq!(to_i64(obj_from_bits(handle2_bits)), Some(1));
+            asyncio_queue_clear_state(_py, state);
+
+            dec_ref_bits(_py, item_bits);
+            assert!(!exception_pending(_py));
+        });
+    }
 }

@@ -2150,7 +2150,7 @@ impl WasmBackend {
             default_trampoline_spec.insert(func_ir.name.clone(), spec);
             function_has_ret.insert(
                 func_ir.name.clone(),
-                func_ir.ops.iter().any(|op| op.kind == "ret"),
+                crate::function_requires_value_return(func_ir),
             );
         }
 
