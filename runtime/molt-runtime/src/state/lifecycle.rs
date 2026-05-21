@@ -3,6 +3,7 @@ use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
 use crate::builtins::configparser::configparser_clear_state;
 use crate::builtins::contextvars::contextvars_clear_state;
+use crate::builtins::csv::csv_clear_state;
 use crate::builtins::random_mod::random_clear_state;
 use crate::builtins::strings::clear_const_str_cache;
 use crate::call::bind::clear_call_bind_ic_cache;
@@ -98,6 +99,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     contextvars_clear_state(_py, state);
     trace_shutdown("process_exit_clear_configparser_state");
     configparser_clear_state(_py, state);
+    trace_shutdown("process_exit_clear_csv_state");
+    csv_clear_state(state);
     trace_shutdown("process_exit_clear_random_state");
     random_clear_state(state);
     trace_shutdown("process_exit_flush_stdio");
@@ -162,6 +165,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     contextvars_clear_state(_py, state);
     trace_shutdown("clear_configparser_state");
     configparser_clear_state(_py, state);
+    trace_shutdown("clear_csv_state");
+    csv_clear_state(state);
     trace_shutdown("clear_random_state");
     random_clear_state(state);
     trace_shutdown("flush_stdio");

@@ -1,7 +1,7 @@
+use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::MutexGuard;
 
 // ── Quoting mode constants (mirroring CPython _csv.c) ────────────────────────
 const QUOTE_MINIMAL: i64 = 0;
@@ -13,21 +13,6 @@ const QUOTE_NOTNULL: i64 = 5;
 
 // ── Default field-size limit (131072, matching CPython) ───────────────────────
 const DEFAULT_FIELD_SIZE_LIMIT: i64 = 131_072;
-
-// ── Thread-local storage: field size limit and per-thread handle tables ───────
-thread_local! {
-    static FIELD_SIZE_LIMIT: RefCell<i64> = const { RefCell::new(DEFAULT_FIELD_SIZE_LIMIT) };
-    static READER_HANDLES: RefCell<HashMap<i64, ReaderState>> = RefCell::new(HashMap::new());
-    static WRITER_HANDLES: RefCell<HashMap<i64, WriterState>> = RefCell::new(HashMap::new());
-    static DIALECT_REGISTRY: RefCell<DialectRegistry> = RefCell::new(default_dialect_registry());
-}
-
-// ── Monotonic handle-ID counter ───────────────────────────────────────────────
-static NEXT_HANDLE_ID: AtomicI64 = AtomicI64::new(1);
-
-fn next_handle_id() -> i64 {
-    NEXT_HANDLE_ID.fetch_add(1, Ordering::Relaxed)
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dialect config stored inside each reader / writer handle.
@@ -158,6 +143,39 @@ struct ReaderState {
 
 struct WriterState {
     dialect: Dialect,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Runtime-owned CSV state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct CsvRuntimeState {
+    next_handle_id: i64,
+    field_size_limit: i64,
+    reader_handles: HashMap<i64, ReaderState>,
+    writer_handles: HashMap<i64, WriterState>,
+    dialect_registry: DialectRegistry,
+}
+
+impl CsvRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_handle_id: 1,
+            field_size_limit: DEFAULT_FIELD_SIZE_LIMIT,
+            reader_handles: HashMap::new(),
+            writer_handles: HashMap::new(),
+            dialect_registry: default_dialect_registry(),
+        }
+    }
+}
+
+fn csv_state(_py: &PyToken<'_>) -> MutexGuard<'static, CsvRuntimeState> {
+    runtime_state(_py).csv.lock().unwrap()
+}
+
+pub(crate) fn csv_clear_state(state: &RuntimeState) {
+    let mut guard = state.csv.lock().unwrap();
+    *guard = CsvRuntimeState::new();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -979,8 +997,9 @@ pub extern "C" fn molt_csv_quote_notnull() -> u64 {
 pub extern "C" fn molt_csv_field_size_limit(new_limit_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let new_obj = obj_from_bits(new_limit_bits);
-        let old = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
-        if !new_obj.is_none() {
+        let new_limit = if new_obj.is_none() {
+            None
+        } else {
             let Some(new_val) = to_i64(new_obj) else {
                 return raise_exception::<u64>(_py, "TypeError", "limit must be an integer");
             };
@@ -991,10 +1010,16 @@ pub extern "C" fn molt_csv_field_size_limit(new_limit_bits: u64) -> u64 {
                     "field size limit must be a non-negative integer",
                 );
             }
-            FIELD_SIZE_LIMIT.with(|lim| {
-                *lim.borrow_mut() = new_val;
-            });
-        }
+            Some(new_val)
+        };
+        let old = {
+            let mut state = csv_state(_py);
+            let old = state.field_size_limit;
+            if let Some(new_val) = new_limit {
+                state.field_size_limit = new_val;
+            }
+            old
+        };
         MoltObject::from_int(old).bits()
     })
 }
@@ -1046,9 +1071,7 @@ pub extern "C" fn molt_csv_register_dialect(
         if let Err(bits) = validate_dialect(_py, &dialect) {
             return bits;
         }
-        DIALECT_REGISTRY.with(|registry| {
-            registry.borrow_mut().insert(name, dialect);
-        });
+        csv_state(_py).dialect_registry.insert(name, dialect);
         MoltObject::none().bits()
     })
 }
@@ -1059,7 +1082,7 @@ pub extern "C" fn molt_csv_unregister_dialect(name_bits: u64) -> u64 {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
         };
-        let removed = DIALECT_REGISTRY.with(|registry| registry.borrow_mut().remove(&name));
+        let removed = csv_state(_py).dialect_registry.remove(&name);
         if removed.is_none() {
             return raise_exception::<u64>(_py, "ValueError", "unknown dialect");
         }
@@ -1070,7 +1093,7 @@ pub extern "C" fn molt_csv_unregister_dialect(name_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_csv_list_dialects() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let names = DIALECT_REGISTRY.with(|registry| registry.borrow().names());
+        let names = csv_state(_py).dialect_registry.names();
         let mut bits_vec = Vec::with_capacity(names.len());
         for name in names {
             let ptr = alloc_string(_py, name.as_bytes());
@@ -1095,7 +1118,7 @@ pub extern "C" fn molt_csv_get_dialect(name_bits: u64) -> u64 {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
         };
-        let dialect = DIALECT_REGISTRY.with(|registry| registry.borrow().get(&name).cloned());
+        let dialect = csv_state(_py).dialect_registry.get(&name).cloned();
         let Some(dialect) = dialect else {
             return raise_exception::<u64>(_py, "ValueError", "unknown dialect");
         };
@@ -1224,10 +1247,13 @@ pub extern "C" fn molt_csv_reader_new(
             strict,
             lineterminator: "\r\n".to_string(),
         };
-        let id = next_handle_id();
-        READER_HANDLES.with(|map| {
-            map.borrow_mut().insert(id, ReaderState { dialect });
-        });
+        let id = {
+            let mut state = csv_state(_py);
+            let id = state.next_handle_id;
+            state.next_handle_id += 1;
+            state.reader_handles.insert(id, ReaderState { dialect });
+            id
+        };
         MoltObject::from_int(id).bits()
     })
 }
@@ -1244,10 +1270,12 @@ pub extern "C" fn molt_csv_reader_parse_line(handle_bits: u64, line_bits: u64) -
         let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "line must be str");
         };
-        let field_limit = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
+        let field_limit = csv_state(_py).field_size_limit;
 
-        let dialect =
-            READER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
+        let dialect = csv_state(_py)
+            .reader_handles
+            .get(&handle_id)
+            .map(|s| s.dialect.clone());
         let Some(dialect) = dialect else {
             return raise_exception::<u64>(_py, "ValueError", "csv reader handle not found");
         };
@@ -1291,10 +1319,12 @@ pub extern "C" fn molt_csv_reader_parse_lines(handle_bits: u64, text_bits: u64) 
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "text must be str");
         };
-        let field_limit = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
+        let field_limit = csv_state(_py).field_size_limit;
 
-        let dialect =
-            READER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
+        let dialect = csv_state(_py)
+            .reader_handles
+            .get(&handle_id)
+            .map(|s| s.dialect.clone());
         let Some(dialect) = dialect else {
             return raise_exception::<u64>(_py, "ValueError", "csv reader handle not found");
         };
@@ -1371,9 +1401,7 @@ pub extern "C" fn molt_csv_reader_parse_lines(handle_bits: u64, text_bits: u64) 
 pub extern "C" fn molt_csv_reader_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            READER_HANDLES.with(|map| {
-                map.borrow_mut().remove(&id);
-            });
+            csv_state(_py).reader_handles.remove(&id);
         }
         MoltObject::none().bits()
     })
@@ -1453,10 +1481,13 @@ pub extern "C" fn molt_csv_writer_new(
             strict: false,
             lineterminator,
         };
-        let id = next_handle_id();
-        WRITER_HANDLES.with(|map| {
-            map.borrow_mut().insert(id, WriterState { dialect });
-        });
+        let id = {
+            let mut state = csv_state(_py);
+            let id = state.next_handle_id;
+            state.next_handle_id += 1;
+            state.writer_handles.insert(id, WriterState { dialect });
+            id
+        };
         MoltObject::from_int(id).bits()
     })
 }
@@ -1470,8 +1501,10 @@ pub extern "C" fn molt_csv_writer_writerow(handle_bits: u64, row_bits: u64) -> u
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid csv writer handle");
         };
-        let dialect =
-            WRITER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
+        let dialect = csv_state(_py)
+            .writer_handles
+            .get(&handle_id)
+            .map(|s| s.dialect.clone());
         let Some(dialect) = dialect else {
             return raise_exception::<u64>(_py, "ValueError", "csv writer handle not found");
         };
@@ -1499,8 +1532,10 @@ pub extern "C" fn molt_csv_writer_writerows(handle_bits: u64, rows_bits: u64) ->
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid csv writer handle");
         };
-        let dialect =
-            WRITER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
+        let dialect = csv_state(_py)
+            .writer_handles
+            .get(&handle_id)
+            .map(|s| s.dialect.clone());
         let Some(dialect) = dialect else {
             return raise_exception::<u64>(_py, "ValueError", "csv writer handle not found");
         };
@@ -1546,9 +1581,7 @@ pub extern "C" fn molt_csv_writer_writerows(handle_bits: u64, rows_bits: u64) ->
 pub extern "C" fn molt_csv_writer_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            WRITER_HANDLES.with(|map| {
-                map.borrow_mut().remove(&id);
-            });
+            csv_state(_py).writer_handles.remove(&id);
         }
         MoltObject::none().bits()
     })
@@ -1697,7 +1730,7 @@ pub extern "C" fn molt_csv_has_header(sample_bits: u64) -> u64 {
         };
 
         let dialect = sniff_dialect(&sample, None);
-        let field_limit = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
+        let field_limit = csv_state(_py).field_size_limit;
         let rows = match parse_sample_rows(&sample, &dialect, field_limit) {
             Ok(rows) => rows,
             Err(err) => return raise_csv_parse_error(_py, err),
@@ -1979,4 +2012,101 @@ pub extern "C" fn molt_csv_dialect_lookup_name(name_bits: u64) -> u64 {
         }
         raise_exception::<u64>(_py, "csv.Error", "unknown dialect")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exception_pending;
+
+    #[test]
+    fn csv_state_is_runtime_scoped_and_clearable() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(py, {
+            let state = runtime_state(py);
+            csv_clear_state(state);
+
+            let old_limit = molt_csv_field_size_limit(MoltObject::from_int(64).bits());
+            assert_eq!(
+                to_i64(obj_from_bits(old_limit)),
+                Some(DEFAULT_FIELD_SIZE_LIMIT)
+            );
+
+            let comma_bits = alloc_char_bits(py, ',').unwrap();
+            let quote_bits = alloc_char_bits(py, '"').unwrap();
+            let reader_bits = molt_csv_reader_new(
+                comma_bits,
+                quote_bits,
+                MoltObject::none().bits(),
+                MoltObject::from_bool(true).bits(),
+                MoltObject::from_bool(false).bits(),
+                MoltObject::from_int(QUOTE_MINIMAL).bits(),
+                MoltObject::from_bool(false).bits(),
+            );
+            dec_ref_bits(py, comma_bits);
+            dec_ref_bits(py, quote_bits);
+            assert_eq!(to_i64(obj_from_bits(reader_bits)), Some(1));
+
+            let comma_bits = alloc_char_bits(py, ',').unwrap();
+            let quote_bits = alloc_char_bits(py, '"').unwrap();
+            let writer_bits = molt_csv_writer_new(
+                comma_bits,
+                quote_bits,
+                MoltObject::none().bits(),
+                MoltObject::from_bool(true).bits(),
+                MoltObject::from_int(QUOTE_MINIMAL).bits(),
+                MoltObject::none().bits(),
+            );
+            dec_ref_bits(py, comma_bits);
+            dec_ref_bits(py, quote_bits);
+            assert_eq!(to_i64(obj_from_bits(writer_bits)), Some(2));
+
+            {
+                let guard = state.csv.lock().unwrap();
+                assert_eq!(guard.next_handle_id, 3);
+                assert_eq!(guard.field_size_limit, 64);
+                assert_eq!(guard.reader_handles.len(), 1);
+                assert_eq!(guard.writer_handles.len(), 1);
+                assert_eq!(
+                    guard.dialect_registry.names(),
+                    vec![
+                        "excel".to_string(),
+                        "excel-tab".to_string(),
+                        "unix".to_string()
+                    ]
+                );
+            }
+
+            csv_clear_state(state);
+            {
+                let guard = state.csv.lock().unwrap();
+                assert_eq!(guard.next_handle_id, 1);
+                assert_eq!(guard.field_size_limit, DEFAULT_FIELD_SIZE_LIMIT);
+                assert!(guard.reader_handles.is_empty());
+                assert!(guard.writer_handles.is_empty());
+                assert_eq!(guard.dialect_registry.names().len(), 3);
+            }
+
+            let comma_bits = alloc_char_bits(py, ',').unwrap();
+            let quote_bits = alloc_char_bits(py, '"').unwrap();
+            let second_reader_bits = molt_csv_reader_new(
+                comma_bits,
+                quote_bits,
+                MoltObject::none().bits(),
+                MoltObject::from_bool(true).bits(),
+                MoltObject::from_bool(false).bits(),
+                MoltObject::from_int(QUOTE_MINIMAL).bits(),
+                MoltObject::from_bool(false).bits(),
+            );
+            dec_ref_bits(py, comma_bits);
+            dec_ref_bits(py, quote_bits);
+            assert_eq!(to_i64(obj_from_bits(second_reader_bits)), Some(1));
+
+            csv_clear_state(state);
+            assert!(!exception_pending(py));
+        });
+    }
 }
