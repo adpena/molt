@@ -26,6 +26,7 @@ pub(crate) use recursion::{
 };
 #[cfg(any(
     feature = "sqlite",
+    feature = "stdlib_compression",
     feature = "stdlib_collections",
     feature = "stdlib_logging_ext"
 ))]
