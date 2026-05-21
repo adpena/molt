@@ -125,17 +125,15 @@ pub fn release_ptr(ptr: *mut u8) -> Option<u64> {
     if ptr.is_null() {
         return None;
     }
-    #[cfg(not(debug_assertions))]
-    {
-        Some(ptr as u64)
-    }
-    #[cfg(debug_assertions)]
-    {
-        let addr = ptr.expose_provenance() as u64;
-        let shard = ptr_registry().shard(addr);
+    let addr = ptr.expose_provenance() as u64;
+    if let Some(registry) = PTR_REGISTRY.get() {
+        let shard = registry.shard(addr);
         let mut guard = shard.write().expect("pointer registry lock poisoned");
-        guard.remove(&addr).map(|_| addr)
+        if guard.remove(&addr).is_some() {
+            return Some(addr);
+        }
     }
+    Some(addr)
 }
 
 pub fn reset_ptr_registry() {
@@ -508,5 +506,22 @@ mod tests {
         unsafe {
             drop(Box::from_raw(ptr));
         }
+    }
+
+    #[test]
+    fn release_ptr_removes_registered_entry() {
+        reset_ptr_registry();
+        let boxed = Box::new(123u8);
+        let ptr = Box::into_raw(boxed);
+        let addr = register_ptr(ptr);
+        assert_eq!(resolve_ptr(addr), Some(ptr));
+
+        assert_eq!(release_ptr(ptr), Some(addr));
+        assert_eq!(resolve_ptr(addr), None);
+
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
+        reset_ptr_registry();
     }
 }

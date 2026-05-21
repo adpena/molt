@@ -81,7 +81,7 @@ use crate::builtins::{
     functools::functools_drop_instance, operator::operator_drop_instance,
     types::types_drop_instance,
 };
-use crate::provenance::{register_ptr, release_ptr, resolve_ptr};
+use crate::provenance::{release_ptr, resolve_ptr};
 use crate::{
     ALLOC_BYTES_DICT, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING, ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE,
     ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
@@ -1534,7 +1534,7 @@ pub(crate) fn ptr_from_bits(bits: u64) -> *mut u8 {
 
 #[inline(always)]
 pub(crate) fn bits_from_ptr(ptr: *mut u8) -> u64 {
-    register_ptr(ptr)
+    MoltObject::from_ptr(ptr).bits()
 }
 
 /// # Safety
