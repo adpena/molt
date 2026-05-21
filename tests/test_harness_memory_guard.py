@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -827,6 +828,44 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     events = sentinel.events_path.read_text(encoding="utf-8")
     assert "repo_process_guard_drained" in events
     assert "drain_on_exit" in events
+
+
+def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    @contextlib.contextmanager
+    def fake_repo_process_sentinel(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        yield object()
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        fake_repo_process_sentinel,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_artifact_root_from_env",
+        lambda env: tmp_path,
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.001,
+    )
+
+    with harness_memory_guard._auto_repo_sentinel(
+        prefix="MOLT_BUILD",
+        env={},
+        limits=limits,
+    ):
+        pass
+
+    assert captured["drain_on_exit"] is False
+    assert captured["suppress_auto_guard"] is False
 
 
 def test_repo_process_sentinel_remembers_observed_child_groups(

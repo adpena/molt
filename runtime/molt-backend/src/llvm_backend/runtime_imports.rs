@@ -413,6 +413,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         for name in &[
             "molt_exception_clear",
             "molt_exception_last",
+            "molt_exception_last_pending",
             "molt_exception_current",
             "molt_exception_push",
             "molt_exception_pop",

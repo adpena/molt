@@ -13311,20 +13311,48 @@ def _backend_daemon_request_bytes(
     *,
     timeout: float | None,
     daemon_pid: int | None = None,
+    project_root: Path | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            if timeout is not None or daemon_pid is not None:
-                sock.settimeout(timeout if timeout is not None else 1.0)
-            sock.connect(str(socket_path))
-            return _backend_daemon_request_on_socket(
-                sock,
-                data,
-                shutdown_write=True,
-                daemon_pid=daemon_pid,
+    request_sentinel = None
+    if project_root is not None:
+        try:
+            harness_memory_guard = _load_cli_harness_memory_guard(project_root)
+            guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
+                "MOLT_BUILD",
+                os.environ,
+                repo_root=project_root,
             )
-    except OSError as exc:
-        return None, f"backend daemon connection failed: {exc}"
+            request_sentinel = guard_context.start_repo_sentinel(
+                label=(
+                    "backend_daemon_request"
+                    if daemon_pid is None
+                    else f"backend_daemon_request_{daemon_pid}"
+                ),
+                drain_on_exit=False,
+                drain_until_clean_sec=0.0,
+                drain_max_runtime_sec=0.0,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            return None, f"backend daemon request memory guard failed: {exc}"
+    try:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                if timeout is not None or daemon_pid is not None:
+                    sock.settimeout(timeout if timeout is not None else 1.0)
+                sock.connect(str(socket_path))
+                return _backend_daemon_request_on_socket(
+                    sock,
+                    data,
+                    shutdown_write=True,
+                    daemon_pid=daemon_pid,
+                )
+        except OSError as exc:
+            return None, f"backend daemon connection failed: {exc}"
+    finally:
+        if request_sentinel is not None:
+            request_sentinel.__exit__(None, None, None)
 
 
 def _backend_daemon_request_on_socket(
@@ -13776,6 +13804,7 @@ def _start_backend_daemon(
 def _compile_with_backend_daemon(
     socket_path: Path,
     *,
+    project_root: Path,
     ir: Mapping[str, Any],
     backend_output: Path,
     is_wasm: bool,
@@ -13867,12 +13896,20 @@ def _compile_with_backend_daemon(
         assert full_request_bytes is not None
     if probe_request_bytes is not None:
         response, err = _backend_daemon_request_bytes(
-            socket_path, probe_request_bytes, timeout=timeout, daemon_pid=daemon_pid
+            socket_path,
+            probe_request_bytes,
+            timeout=timeout,
+            daemon_pid=daemon_pid,
+            project_root=project_root,
         )
     else:
         assert full_request_bytes is not None
         response, err = _backend_daemon_request_bytes(
-            socket_path, full_request_bytes, timeout=timeout, daemon_pid=daemon_pid
+            socket_path,
+            full_request_bytes,
+            timeout=timeout,
+            daemon_pid=daemon_pid,
+            project_root=project_root,
         )
     if err is not None:
         return _BackendDaemonCompileResult(False, err, None, None, None, True, False)
@@ -13971,6 +14008,7 @@ def _compile_with_backend_daemon(
             full_request_bytes,
             timeout=timeout,
             daemon_pid=daemon_pid,
+            project_root=project_root,
         )
         if err is not None:
             return _BackendDaemonCompileResult(
@@ -20020,6 +20058,7 @@ def _execute_backend_compile(
                 daemon_log_offset = _backend_daemon_log_mark(daemon_log_path)
             daemon_compile = _compile_with_backend_daemon(
                 daemon_socket,
+                project_root=molt_root,
                 ir=ir,
                 backend_output=backend_output,
                 is_wasm=is_wasm,
@@ -20080,6 +20119,7 @@ def _execute_backend_compile(
                 if daemon_ready:
                     daemon_compile = _compile_with_backend_daemon(
                         daemon_socket,
+                        project_root=molt_root,
                         ir=ir,
                         backend_output=backend_output,
                         is_wasm=is_wasm,
@@ -24307,11 +24347,12 @@ def _ensure_backend_binary(
             elif probe_target == "rust":
                 probe_cmd.extend(["--target", "rust"])
             try:
-                probe = subprocess.run(
+                probe = _run_subprocess_captured_to_tempfiles(
                     probe_cmd,
                     input=probe_ir,
-                    capture_output=True,
+                    cwd=project_root,
                     timeout=10,
+                    memory_guard_prefix="MOLT_BUILD",
                 )
             except (subprocess.TimeoutExpired, OSError) as exc:
                 return False, str(exc)
@@ -27229,6 +27270,7 @@ def _run_subprocess_captured_to_tempfiles(
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
     progress_label: str | None = None,
+    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a subprocess while capturing stdout/stderr via temporary files.
 
@@ -27240,7 +27282,7 @@ def _run_subprocess_captured_to_tempfiles(
     )
     return harness_memory_guard.guarded_completed_process_to_tempfiles(
         cmd,
-        prefix="MOLT_CLI",
+        prefix=memory_guard_prefix,
         input=input,
         cwd=cwd,
         env=env,
@@ -32488,15 +32530,38 @@ def _git_ref_from_source(source: dict[str, Any]) -> tuple[str | None, str | None
     return None, None
 
 
-def _resolve_git_ref(url: str, ref: str) -> tuple[str | None, str | None]:
+_GIT_SOURCE_COMMAND_TIMEOUT_SEC = 300.0
+
+
+def _run_git_source_command(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout: float = _GIT_SOURCE_COMMAND_TIMEOUT_SEC,
+) -> subprocess.CompletedProcess[str]:
+    return _run_completed_command(
+        cmd,
+        cwd=cwd,
+        env=None,
+        capture_output=True,
+        memory_guard_prefix="MOLT_BUILD",
+        timeout=timeout,
+    )
+
+
+def _resolve_git_ref(
+    url: str,
+    ref: str,
+    *,
+    project_root: Path,
+) -> tuple[str | None, str | None]:
     try:
-        result = subprocess.run(
+        result = _run_git_source_command(
             ["git", "ls-remote", url, ref],
-            capture_output=True,
-            text=True,
-            check=False,
+            cwd=project_root,
+            timeout=60.0,
         )
-    except OSError as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
         return None, f"Failed to resolve git ref {ref}: {exc}"
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "unknown error"
@@ -32515,13 +32580,14 @@ def _clone_git_source(
     ref: str,
     dest: Path,
     *,
+    project_root: Path,
     subdirectory: str | None = None,
 ) -> tuple[str, str]:
     tmp_root = dest.parent
     with tempfile.TemporaryDirectory(dir=tmp_root, prefix="git_vendor_") as tmpdir:
         repo_dir = Path(tmpdir) / "repo"
         try:
-            clone = subprocess.run(
+            clone = _run_git_source_command(
                 [
                     "git",
                     "clone",
@@ -32530,48 +32596,38 @@ def _clone_git_source(
                     url,
                     str(repo_dir),
                 ],
-                capture_output=True,
-                text=True,
-                check=False,
+                cwd=project_root,
             )
-        except OSError as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             raise RuntimeError(f"Failed to clone git repo {url}: {exc}") from exc
         if clone.returncode != 0:
             detail = (clone.stderr or clone.stdout).strip() or "unknown error"
             raise RuntimeError(f"Failed to clone git repo {url}: {detail}")
-        fetch = subprocess.run(
+        fetch = _run_git_source_command(
             ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", ref],
-            capture_output=True,
-            text=True,
-            check=False,
+            cwd=project_root,
         )
         if fetch.returncode != 0:
             detail = (fetch.stderr or fetch.stdout).strip() or "unknown error"
             raise RuntimeError(f"Failed to fetch git ref {ref}: {detail}")
-        checkout = subprocess.run(
+        checkout = _run_git_source_command(
             ["git", "-C", str(repo_dir), "checkout", "--detach", ref],
-            capture_output=True,
-            text=True,
-            check=False,
+            cwd=project_root,
         )
         if checkout.returncode != 0:
             detail = (checkout.stderr or checkout.stdout).strip() or "unknown error"
             raise RuntimeError(f"Failed to checkout git ref {ref}: {detail}")
-        rev = subprocess.run(
+        rev = _run_git_source_command(
             ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
+            cwd=project_root,
         )
         if rev.returncode != 0 or not rev.stdout.strip():
             detail = (rev.stderr or rev.stdout).strip() or "unknown error"
             raise RuntimeError(f"Failed to resolve git revision for {ref}: {detail}")
         resolved_commit = rev.stdout.strip()
-        tree = subprocess.run(
+        tree = _run_git_source_command(
             ["git", "-C", str(repo_dir), "rev-parse", "HEAD^{tree}"],
-            capture_output=True,
-            text=True,
-            check=False,
+            cwd=project_root,
         )
         if tree.returncode != 0 or not tree.stdout.strip():
             detail = (tree.stderr or tree.stdout).strip() or "unknown error"
@@ -33068,7 +33124,11 @@ def vendor(
             resolved_ref = ref
             resolved_error = None
             if ref_kind in {"tag", "branch"}:
-                resolved_ref, resolved_error = _resolve_git_ref(url, ref)
+                resolved_ref, resolved_error = _resolve_git_ref(
+                    url,
+                    ref,
+                    project_root=root,
+                )
             if resolved_error:
                 return _fail(
                     resolved_error,
@@ -33097,7 +33157,11 @@ def vendor(
             if not dry_run:
                 try:
                     resolved_commit, tree_hash = _clone_git_source(
-                        url, resolved_ref, dest, subdirectory=subdir
+                        url,
+                        resolved_ref,
+                        dest,
+                        project_root=root,
+                        subdirectory=subdir,
                     )
                 except RuntimeError as exc:
                     return _fail(

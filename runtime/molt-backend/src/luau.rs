@@ -3644,7 +3644,7 @@ impl LuauBackend {
             "check_exception" => {
                 // Suppress — exception handler jumps are no-ops in Luau.
             }
-            "exception_last" => {
+            "exception_last" | "exception_last_pending" => {
                 let out = self.out_var(op);
                 if !self.inside_pcall_body {
                     if let Some(&n) = self.try_depth_counter.last() {
@@ -5398,6 +5398,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                                 | "break"
                                 | "check_exception"
                                 | "exception_last"
+                                | "exception_last_pending"
                                 | "const_none"
                                 | "is"
                                 | "not"
@@ -5535,6 +5536,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         | "exception_stack_enter"
                         | "check_exception"
                         | "exception_last"
+                        | "exception_last_pending"
                         | "const_none"
                         | "is"
                         | "not"
@@ -5631,6 +5633,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         | "exception_stack_set_depth"
                         | "exception_stack_exit"
                         | "exception_last"
+                        | "exception_last_pending"
                         | "const_none"
                         | "is"
                         | "not"
@@ -5689,6 +5692,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         | "exception_stack_exit"
                         | "exception_stack_enter"
                         | "exception_last"
+                        | "exception_last_pending"
                         | "const_none"
                         | "is"
                         | "not"
