@@ -1744,7 +1744,7 @@ pub extern "C" fn molt_importlib_known_absent_missing_name(resolved_bits: u64) -
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let Some(name) = importlib_known_absent_missing_name(_py, &resolved) else {
+        let Some(name) = known_absent_module_missing_name(_py, &resolved) else {
             return MoltObject::none().bits();
         };
         match alloc_str_bits(_py, &name) {

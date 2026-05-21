@@ -686,6 +686,12 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "TypeError", "module name must be str");
             }
         };
+        if let Some(missing_name) =
+            crate::builtins::platform::known_absent_module_missing_name(_py, &name)
+        {
+            let msg = format!("No module named '{missing_name}'");
+            return raise_exception::<_>(_py, "ModuleNotFoundError", &msg);
+        }
         let trace_import_stage = std::env::var("MOLT_TRACE_IMPORT_STAGE").as_deref() == Ok("1");
         let trace_stage = |stage: &str| {
             if !trace_import_stage {

@@ -190,6 +190,22 @@ else:
             min_version=(3, 13),
         )
 
+    def test_pep594_removed_module_absent_for_literal_import_under_target_313(self):
+        _assert_match(
+            """\
+import sys
+
+print(sys.version_info >= (3, 13))
+try:
+    import cgi
+except ModuleNotFoundError as exc:
+    print(type(exc).__name__, str(exc))
+else:
+    print("present")
+""",
+            min_version=(3, 13),
+        )
+
 
 # -- Improved Error Messages / Exception Groups --------------------------------
 
