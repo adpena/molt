@@ -829,6 +829,59 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     assert "drain_on_exit" in events
 
 
+def test_repo_process_sentinel_remembers_observed_child_groups(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    seen_known: list[set[int]] = []
+
+    def fake_process_groups(*args, **kwargs):
+        seen_known.append(set(kwargs.get("known_pgids") or set()))
+        pgid = 123 if len(seen_known) == 1 else 456
+        return [
+            harness_memory_guard.process_sentinel.ProcessGroup(
+                pgid=pgid,
+                matched=True,
+                samples=(
+                    harness_memory_guard.memory_guard.ProcessSample(
+                        pid=pgid,
+                        ppid=1,
+                        pgid=pgid,
+                        rss_kb=100,
+                        command="molt worker",
+                    ),
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "process_groups",
+        fake_process_groups,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.01,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-observed",
+        limits=limits,
+    )
+
+    first = sentinel._current_groups()
+    second = sentinel._current_groups()
+
+    assert [group.pgid for group in first] == [123]
+    assert [group.pgid for group in second] == [456]
+    assert seen_known == [set(), {123}]
+    assert sentinel._observed_pgids == {123, 456}
+
+
 def test_guarded_harness_scope_standardizes_repo_sentinel(monkeypatch, tmp_path: Path):
     calls: list[dict[str, object]] = []
 

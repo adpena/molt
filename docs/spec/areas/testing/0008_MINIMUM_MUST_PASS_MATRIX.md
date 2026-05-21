@@ -57,6 +57,13 @@ Required hardening gate details for IR dedicated probes (part of G3):
   - `MOLT_DIFF_RLIMIT_GB=10`
   - `MOLT_DIFF_ROOT=${MOLT_EXT_ROOT:-$PWD}/tmp/diff`
   - `MOLT_CACHE=${MOLT_EXT_ROOT:-$PWD}/.molt_cache`
+- Default harness memory guards must remain active for differential,
+  benchmark, conformance, regrtest, CLI build/run, and equivalent long-running
+  Molt workflows. The repo process sentinel treats canonical artifact roots
+  (`target/`, `tmp/`, `dist/`, `build/`, `wasm/`, and `bench/results/`) as
+  Molt-owned launch surfaces and propagates matched ownership across nested
+  child process groups so detached descendants stay inside cumulative RSS
+  accounting.
 - If RSS grows rapidly, terminate the run, record abort details and last RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md), then rerun with lower parallelism.
 
 ## Minimal Sign-off Checklist

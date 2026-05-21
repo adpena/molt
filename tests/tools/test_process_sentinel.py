@@ -193,6 +193,96 @@ def test_process_groups_match_repo_scoped_cached_binary() -> None:
     assert groups[0].pgid == 10
 
 
+def test_process_groups_match_canonical_artifact_roots() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/repo/molt/tmp/diff/case_1/main_molt",
+        ),
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=1,
+            pgid=20,
+            rss_kb=100,
+            command="/repo/molt/dist/app_molt",
+        ),
+        30: module.memory_guard.ProcessSample(
+            pid=30,
+            ppid=1,
+            pgid=30,
+            rss_kb=100,
+            command="/repo/molt/wasm/molt_runtime.wasm",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert [group.pgid for group in groups] == [10, 20, 30]
+
+
+def test_process_groups_propagate_to_nested_child_sessions() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/usr/bin/python /repo/molt/tests/molt_diff.py",
+        ),
+        11: module.memory_guard.ProcessSample(
+            pid=11,
+            ppid=10,
+            pgid=11,
+            rss_kb=200,
+            command="python child.py",
+        ),
+        12: module.memory_guard.ProcessSample(
+            pid=12,
+            ppid=11,
+            pgid=12,
+            rss_kb=300,
+            command="node worker.js",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert [group.pgid for group in groups] == [10, 11, 12]
+    assert [group.total_rss_kb for group in groups] == [100, 200, 300]
+
+
+def test_process_groups_keep_observed_child_group_after_reparenting() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        12: module.memory_guard.ProcessSample(
+            pid=12,
+            ppid=1,
+            pgid=12,
+            rss_kb=300,
+            command="node worker.js",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+        known_pgids={12},
+    )
+
+    assert len(groups) == 1
+    assert groups[0].pgid == 12
+    assert groups[0].total_rss_kb == 300
+
+
 def test_find_violations_can_kill_all_or_threshold() -> None:
     module = _load_process_sentinel()
     group = module.ProcessGroup(
