@@ -5,16 +5,16 @@
 // Mirrors CPython's `random` module (Lib/random.py, Modules/_randommodule.c),
 // implemented entirely in Rust with no CPython fallback.
 //
-// Handle model: global Mutex<HashMap<i64, MersenneTwisterRng>> keyed by an
-// atomically-issued handle ID, returned to Python as a NaN-boxed integer.
-// Uses a global registry (not thread-local) so handles are visible across all
-// threads. The GIL serializes all Python-level access, so the Mutex is always
-// uncontended.
+// Handle model: runtime-owned Mutex<HashMap<i64, MersenneTwisterRng>> keyed by
+// a per-runtime handle ID, returned to Python as a NaN-boxed integer. Handles
+// are visible across all threads inside one RuntimeState and are invalidated
+// during runtime teardown.
 //
 // MT constants follow the original Matsumoto & Nishimura 1998 parameters.
 // Distribution algorithms follow CPython 3.12 random.py exactly.
 
 use crate::randomness::fill_os_random;
+use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
 #[cfg(feature = "stdlib_crypto")]
 use digest::Digest;
@@ -24,8 +24,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 #[cfg(feature = "stdlib_crypto")]
 use sha2::Sha512;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::MutexGuard;
 
 // ─── Mersenne Twister constants ───────────────────────────────────────────────
 
@@ -142,14 +141,6 @@ fn rng_floor(x: f64) -> f64 {
 #[inline(always)]
 fn rng_floor(x: f64) -> f64 {
     x.floor()
-}
-
-// ─── Handle counter ───────────────────────────────────────────────────────────
-
-static NEXT_RANDOM_HANDLE: AtomicI64 = AtomicI64::new(1);
-
-fn next_random_handle() -> i64 {
-    NEXT_RANDOM_HANDLE.fetch_add(1, Ordering::Relaxed)
 }
 
 // ─── MersenneTwisterRng struct ────────────────────────────────────────────────
@@ -321,10 +312,30 @@ impl MersenneTwisterRng {
     }
 }
 
-// ─── Global registry ──────────────────────────────────────────────────────────
+// ─── Runtime-owned registry ──────────────────────────────────────────────────
 
-static RANDOM_REGISTRY: LazyLock<Mutex<HashMap<i64, MersenneTwisterRng>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) struct RandomRuntimeState {
+    next_random_handle: i64,
+    registry: HashMap<i64, MersenneTwisterRng>,
+}
+
+impl RandomRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_random_handle: 1,
+            registry: HashMap::new(),
+        }
+    }
+}
+
+fn random_state(_py: &PyToken<'_>) -> MutexGuard<'static, RandomRuntimeState> {
+    runtime_state(_py).random.lock().unwrap()
+}
+
+pub(crate) fn random_clear_state(state: &RuntimeState) {
+    let mut guard = state.random.lock().unwrap();
+    *guard = RandomRuntimeState::new();
+}
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -513,8 +524,13 @@ pub extern "C" fn molt_random_new() -> u64 {
             }
         };
         let rng = MersenneTwisterRng::new_from_seed_key(&key);
-        let id = next_random_handle();
-        RANDOM_REGISTRY.lock().unwrap().insert(id, rng);
+        let id = {
+            let mut reg = random_state(_py);
+            let id = reg.next_random_handle;
+            reg.next_random_handle += 1;
+            reg.registry.insert(id, rng);
+            id
+        };
         MoltObject::from_int(id).bits()
     })
 }
@@ -553,7 +569,7 @@ pub extern "C" fn molt_random_seed(handle_bits: u64, seed_bits: u64, _version_bi
         };
 
         let new_rng = MersenneTwisterRng::new_from_seed_key(&key);
-        if let Some(entry) = RANDOM_REGISTRY.lock().unwrap().get_mut(&id) {
+        if let Some(entry) = random_state(_py).registry.get_mut(&id) {
             *entry = new_rng;
         }
         MoltObject::none().bits()
@@ -567,8 +583,8 @@ pub extern "C" fn molt_random_random(handle_bits: u64) -> u64 {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         MoltObject::from_float(rng.random()).bits()
@@ -601,8 +617,8 @@ pub extern "C" fn molt_random_getrandbits(handle_bits: u64, k_bits: u64) -> u64 
             return int_bits_from_i64(_py, 0);
         }
         let big = {
-            let mut reg = RANDOM_REGISTRY.lock().unwrap();
-            let Some(rng) = reg.get_mut(&id) else {
+            let mut reg = random_state(_py);
+            let Some(rng) = reg.registry.get_mut(&id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
             };
             rng.randbits_biguint(k)
@@ -640,8 +656,8 @@ pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
         }
 
         let result = {
-            let mut reg = RANDOM_REGISTRY.lock().unwrap();
-            let Some(rng) = reg.get_mut(&id) else {
+            let mut reg = random_state(_py);
+            let Some(rng) = reg.registry.get_mut(&id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
             };
             rng.randbelow(&n_big)
@@ -666,8 +682,8 @@ pub extern "C" fn molt_random_getstate(handle_bits: u64) -> u64 {
         };
 
         let (mt_words, index, gauss_next) = {
-            let reg = RANDOM_REGISTRY.lock().unwrap();
-            let Some(rng) = reg.get(&id) else {
+            let reg = random_state(_py);
+            let Some(rng) = reg.registry.get(&id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
             };
             (rng.mt, rng.index, rng.gauss_next)
@@ -772,8 +788,8 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
         };
 
         {
-            let mut reg = RANDOM_REGISTRY.lock().unwrap();
-            let Some(rng) = reg.get_mut(&id) else {
+            let mut reg = random_state(_py);
+            let Some(rng) = reg.registry.get_mut(&id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
             };
             rng.mt = mt;
@@ -811,8 +827,8 @@ pub extern "C" fn molt_random_shuffle(handle_bits: u64, list_bits: u64) -> u64 {
         // We need mutable access to the list's Vec and the RNG simultaneously.
         // Do rejection sampling outside the lock, then apply inside — but since
         // the GIL serializes us, we can just lock once and work.
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -857,8 +873,8 @@ pub extern "C" fn molt_random_gauss(handle_bits: u64, mu_bits: u64, sigma_bits: 
         let Some(sigma) = f64_from_bits(_py, sigma_bits, "sigma") else {
             return MoltObject::none().bits();
         };
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         MoltObject::from_float(rng.gauss(mu, sigma)).bits()
@@ -878,8 +894,8 @@ pub extern "C" fn molt_random_uniform(handle_bits: u64, a_bits: u64, b_bits: u64
         let Some(b) = f64_from_bits(_py, b_bits, "b") else {
             return MoltObject::none().bits();
         };
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         MoltObject::from_float(a + (b - a) * rng.random()).bits()
@@ -922,8 +938,8 @@ pub extern "C" fn molt_random_triangular(
             }
         };
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         let u = rng.random();
@@ -949,8 +965,8 @@ pub extern "C" fn molt_random_expovariate(handle_bits: u64, lambd_bits: u64) -> 
         if lambd == 0.0 {
             return raise_exception::<u64>(_py, "ZeroDivisionError", "lambd must not be zero");
         }
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         // CPython: -log(random()) / lambd, guarding against log(0)
@@ -981,8 +997,8 @@ pub extern "C" fn molt_random_normalvariate(
         let Some(sigma) = f64_from_bits(_py, sigma_bits, "sigma") else {
             return MoltObject::none().bits();
         };
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         MoltObject::from_float(rng.normalvariate(mu, sigma)).bits()
@@ -1006,8 +1022,8 @@ pub extern "C" fn molt_random_lognormvariate(
         let Some(sigma) = f64_from_bits(_py, sigma_bits, "sigma") else {
             return MoltObject::none().bits();
         };
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         let nv = rng.normalvariate(mu, sigma);
@@ -1033,8 +1049,8 @@ pub extern "C" fn molt_random_vonmisesvariate(
             return MoltObject::none().bits();
         };
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1079,8 +1095,8 @@ pub extern "C" fn molt_random_paretovariate(handle_bits: u64, alpha_bits: u64) -
         let Some(alpha) = f64_from_bits(_py, alpha_bits, "alpha") else {
             return MoltObject::none().bits();
         };
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         let u = loop {
@@ -1110,8 +1126,8 @@ pub extern "C" fn molt_random_weibullvariate(
         let Some(beta) = f64_from_bits(_py, beta_bits, "beta") else {
             return MoltObject::none().bits();
         };
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
         let u = loop {
@@ -1151,8 +1167,8 @@ pub extern "C" fn molt_random_gammavariate(
             );
         }
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1225,8 +1241,8 @@ pub extern "C" fn molt_random_betavariate(
             );
         }
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1328,8 +1344,8 @@ pub extern "C" fn molt_random_choices(
             Some(weights)
         };
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1401,8 +1417,8 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
             return raise_exception::<u64>(_py, "ValueError", "sample k larger than population");
         }
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1492,8 +1508,8 @@ pub extern "C" fn molt_random_binomialvariate(handle_bits: u64, n_bits: u64, p_b
             );
         }
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1598,8 +1614,8 @@ pub extern "C" fn molt_random_randrange(
             return raise_exception::<u64>(_py, "TypeError", "integer argument expected");
         };
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1666,8 +1682,8 @@ pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
         }
         let n = n as usize;
 
-        let mut reg = RANDOM_REGISTRY.lock().unwrap();
-        let Some(rng) = reg.get_mut(&id) else {
+        let mut reg = random_state(_py);
+        let Some(rng) = reg.registry.get_mut(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid Random handle");
         };
 
@@ -1685,4 +1701,49 @@ pub extern "C" fn molt_random_randbytes(handle_bits: u64, n_bits: u64) -> u64 {
         }
         MoltObject::from_ptr(ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exception_pending;
+
+    #[test]
+    fn random_state_is_runtime_scoped_and_clearable() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(py, {
+            let state = runtime_state(py);
+            random_clear_state(state);
+
+            let handle_bits = molt_random_new();
+            assert_eq!(to_i64(obj_from_bits(handle_bits)), Some(1));
+            assert!(
+                obj_from_bits(molt_random_random(handle_bits))
+                    .as_float()
+                    .is_some()
+            );
+
+            {
+                let guard = state.random.lock().unwrap();
+                assert_eq!(guard.next_random_handle, 2);
+                assert_eq!(guard.registry.len(), 1);
+                assert!(guard.registry.contains_key(&1));
+            }
+
+            random_clear_state(state);
+            {
+                let guard = state.random.lock().unwrap();
+                assert_eq!(guard.next_random_handle, 1);
+                assert!(guard.registry.is_empty());
+            }
+
+            let second_handle = molt_random_new();
+            assert_eq!(to_i64(obj_from_bits(second_handle)), Some(1));
+            random_clear_state(state);
+            assert!(!exception_pending(py));
+        });
+    }
 }
