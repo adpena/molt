@@ -306,10 +306,18 @@ pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8
         return ptr;
     }
     unsafe {
-        let order = Vec::with_capacity(pairs.len());
-        let table = Vec::new();
-        let order_ptr = Box::into_raw(Box::new(order));
-        let table_ptr = Box::into_raw(Box::new(table));
+        let Some(order_ptr) =
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(pairs.len())
+        else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
+        let Some(table_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<usize>(0)
+        else {
+            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         *(ptr as *mut *mut Vec<u64>) = order_ptr;
         *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
         for pair in pairs.chunks(2) {
@@ -334,13 +342,23 @@ pub(crate) fn alloc_set_like_with_entries(
         return ptr;
     }
     unsafe {
-        let order = Vec::with_capacity(entries.len());
-        let mut table = Vec::new();
-        if !entries.is_empty() {
-            table.resize(set_table_capacity(entries.len()), 0);
-        }
-        let order_ptr = Box::into_raw(Box::new(order));
-        let table_ptr = Box::into_raw(Box::new(table));
+        let Some(order_ptr) =
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(entries.len())
+        else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
+        let table_cap = if entries.is_empty() {
+            0
+        } else {
+            set_table_capacity(entries.len())
+        };
+        let Some(table_ptr) = crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
+        else {
+            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         *(ptr as *mut *mut Vec<u64>) = order_ptr;
         *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
         for &entry in entries {
@@ -397,11 +415,12 @@ pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
                     capacity_hint
                 );
             }
-            let mut vec = Vec::<u64>::new();
-            if capacity_hint > 0 && vec.try_reserve(capacity_hint).is_err() {
+            let Some(vec_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
-            }
-            let vec_ptr = Box::into_raw(Box::new(vec));
+            };
             *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         }
         bits_from_ptr(ptr)
@@ -460,6 +479,14 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) {
                 return;
             }
             let vec = &mut *vec_ptr;
+            if !crate::object::backing::tracked_vec_reserve_or_raise(
+                _py,
+                vec_ptr,
+                vec.len().saturating_add(1),
+                "list allocation failed",
+            ) {
+                return;
+            }
             vec.push(val);
         })
     }
@@ -483,7 +510,7 @@ pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
             *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
 
             // Reconstruct Box to drop it later, but we need the data
-            let vec = Box::from_raw(vec_ptr);
+            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let slice = vec.as_slice();
             let capacity = vec.capacity().max(MAX_SMALL_LIST);
             let list_ptr = alloc_list_with_capacity(_py, slice, capacity);
@@ -518,7 +545,7 @@ pub unsafe extern "C" fn molt_list_builder_finish_owned(builder_bits: u64) -> u6
             }
             *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
 
-            let vec = Box::from_raw(vec_ptr);
+            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let slice = vec.as_slice();
             let capacity = vec.capacity().max(MAX_SMALL_LIST);
             let list_ptr = alloc_list_with_capacity_owned(_py, slice, capacity);
@@ -552,7 +579,7 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
             }
             *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
 
-            let vec = Box::from_raw(vec_ptr);
+            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let slice = vec.as_slice();
             let capacity = vec.capacity().max(MAX_SMALL_LIST);
             let tuple_ptr = alloc_tuple_with_capacity(_py, slice, capacity);
@@ -612,7 +639,7 @@ pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u
             }
             *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
 
-            let vec = Box::from_raw(vec_ptr);
+            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let slice = vec.as_slice();
             let capacity = vec.capacity().max(MAX_SMALL_LIST);
             let tuple_ptr = alloc_tuple_with_capacity_owned(_py, slice, capacity);
@@ -636,8 +663,16 @@ pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
         }
         unsafe {
             let capacity_hint = usize_from_bits(capacity_bits);
-            let vec = Vec::with_capacity(capacity_hint * 2);
-            let vec_ptr = Box::into_raw(Box::new(vec));
+            let Some(vec_capacity) = capacity_hint.checked_mul(2) else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return 0;
+            };
+            let Some(vec_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(vec_capacity)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return 0;
+            };
             *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         }
         bits_from_ptr(ptr)
@@ -659,6 +694,14 @@ pub unsafe extern "C" fn molt_dict_builder_append(builder_bits: u64, key: u64, v
                 return;
             }
             let vec = &mut *vec_ptr;
+            if !crate::object::backing::tracked_vec_reserve_or_raise(
+                _py,
+                vec_ptr,
+                vec.len().saturating_add(2),
+                "dict allocation failed",
+            ) {
+                return;
+            }
             vec.push(key);
             vec.push(val);
         })
@@ -681,7 +724,7 @@ pub unsafe extern "C" fn molt_dict_builder_finish(builder_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-            let vec = Box::from_raw(vec_ptr);
+            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let ptr = alloc_dict_with_pairs(_py, vec.as_slice());
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -701,8 +744,12 @@ pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
         }
         unsafe {
             let capacity_hint = usize_from_bits(capacity_bits);
-            let vec = Vec::with_capacity(capacity_hint);
-            let vec_ptr = Box::into_raw(Box::new(vec));
+            let Some(vec_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return 0;
+            };
             *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         }
         bits_from_ptr(ptr)
@@ -724,6 +771,14 @@ pub unsafe extern "C" fn molt_set_builder_append(builder_bits: u64, key: u64) {
                 return;
             }
             let vec = &mut *vec_ptr;
+            if !crate::object::backing::tracked_vec_reserve_or_raise(
+                _py,
+                vec_ptr,
+                vec.len().saturating_add(1),
+                "set allocation failed",
+            ) {
+                return;
+            }
             vec.push(key);
         })
     }
@@ -745,7 +800,7 @@ pub unsafe extern "C" fn molt_set_builder_finish(builder_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-            let vec = Box::from_raw(vec_ptr);
+            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
             let ptr = alloc_set_with_entries(_py, vec.as_slice());
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -772,12 +827,13 @@ pub(crate) fn alloc_list_with_capacity(
         return ptr;
     }
     unsafe {
-        let mut vec = Vec::with_capacity(cap);
-        vec.extend_from_slice(elems);
+        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         for &elem in elems {
             inc_ref_bits(_py, elem);
         }
-        let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -801,9 +857,10 @@ pub(crate) fn alloc_list_with_capacity_owned(
         return ptr;
     }
     unsafe {
-        let mut vec = Vec::with_capacity(cap);
-        vec.extend_from_slice(elems);
-        let vec_ptr = Box::into_raw(Box::new(vec));
+        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -835,12 +892,13 @@ pub(crate) fn alloc_tuple_with_capacity(
         return ptr;
     }
     unsafe {
-        let mut vec = Vec::with_capacity(cap);
-        vec.extend_from_slice(elems);
+        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         for &elem in elems {
             inc_ref_bits(_py, elem);
         }
-        let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -866,10 +924,11 @@ pub(crate) fn alloc_tuple_with_capacity_owned(
         return ptr;
     }
     unsafe {
-        let mut vec = Vec::with_capacity(cap);
-        vec.extend_from_slice(elems);
+        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, cap) else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         // No inc_ref — ownership transferred from caller.
-        let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -1540,9 +1599,10 @@ pub(crate) fn alloc_bytearray_with_capacity(
         return ptr;
     }
     unsafe {
-        let mut vec = Vec::with_capacity(cap);
-        vec.extend_from_slice(bytes);
-        let vec_ptr = Box::into_raw(Box::new(vec));
+        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_from_slice(bytes, cap) else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         *(ptr as *mut *mut Vec<u8>) = vec_ptr;
     }
     ptr
@@ -1557,8 +1617,10 @@ pub(crate) fn alloc_bytearray_with_len(_py: &PyToken<'_>, len: usize) -> *mut u8
         return ptr;
     }
     unsafe {
-        let vec = vec![0u8; len];
-        let vec_ptr = Box::into_raw(Box::new(vec));
+        let Some(vec_ptr) = crate::object::backing::tracked_vec_box_zeroed::<u8>(len) else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         *(ptr as *mut *mut Vec<u8>) = vec_ptr;
     }
     ptr
@@ -1598,8 +1660,21 @@ pub(crate) fn alloc_memoryview(
         return ptr;
     }
     unsafe {
-        let shape = Box::new(vec![len as isize]);
-        let strides = Box::new(vec![stride]);
+        let shape = [len as isize];
+        let strides = [stride];
+        let Some(shape_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(shape.as_slice(), shape.len())
+        else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
+        let Some(strides_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(strides.as_slice(), strides.len())
+        else {
+            drop(crate::object::backing::tracked_vec_box_from_raw(shape_ptr));
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         let mv_ptr = memoryview_ptr(ptr);
         (*mv_ptr).owner_bits = owner_bits;
         (*mv_ptr).offset = offset;
@@ -1610,8 +1685,8 @@ pub(crate) fn alloc_memoryview(
         (*mv_ptr).ndim = 1;
         (*mv_ptr)._pad = [0; 6];
         (*mv_ptr).format_bits = format_bits;
-        (*mv_ptr).shape_ptr = Box::into_raw(shape);
-        (*mv_ptr).strides_ptr = Box::into_raw(strides);
+        (*mv_ptr).shape_ptr = shape_ptr;
+        (*mv_ptr).strides_ptr = strides_ptr;
     }
     inc_ref_bits(_py, owner_bits);
     inc_ref_bits(_py, format_bits);
@@ -1638,6 +1713,19 @@ pub(crate) fn alloc_memoryview_shaped(
     let len = shape.first().copied().unwrap_or(0).max(0) as usize;
     let stride = strides.first().copied().unwrap_or(0);
     unsafe {
+        let Some(shape_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(shape.as_slice(), shape.len())
+        else {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
+        let Some(strides_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(strides.as_slice(), strides.len())
+        else {
+            drop(crate::object::backing::tracked_vec_box_from_raw(shape_ptr));
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         let mv_ptr = memoryview_ptr(ptr);
         (*mv_ptr).owner_bits = owner_bits;
         (*mv_ptr).offset = offset;
@@ -1648,8 +1736,8 @@ pub(crate) fn alloc_memoryview_shaped(
         (*mv_ptr).ndim = ndim.min(u8::MAX as usize) as u8;
         (*mv_ptr)._pad = [0; 6];
         (*mv_ptr).format_bits = format_bits;
-        (*mv_ptr).shape_ptr = Box::into_raw(Box::new(shape));
-        (*mv_ptr).strides_ptr = Box::into_raw(Box::new(strides));
+        (*mv_ptr).shape_ptr = shape_ptr;
+        (*mv_ptr).strides_ptr = strides_ptr;
     }
     inc_ref_bits(_py, owner_bits);
     inc_ref_bits(_py, format_bits);

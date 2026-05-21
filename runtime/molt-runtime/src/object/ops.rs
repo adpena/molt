@@ -6088,6 +6088,9 @@ pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
                 return Some(false);
             }
         }
+        if !reserve_dict_order(_py, order, 2) {
+            return Some(false);
+        }
         order.push(key_bits);
         order.push(sum_bits);
         inc_ref_bits(_py, key_bits);
@@ -6256,6 +6259,13 @@ unsafe fn dict_inc_with_string_token(
                 return false;
             }
         }
+        if !reserve_dict_order(_py, order, 2) {
+            if sum_owned {
+                dec_ref_bits(_py, sum_bits);
+            }
+            dec_ref_bits(_py, key_bits);
+            return false;
+        }
         order.push(key_bits);
         order.push(sum_bits);
         inc_ref_bits(_py, key_bits);
@@ -6344,6 +6354,11 @@ unsafe fn dict_setdefault_empty_list_with_string_token(
                 dec_ref_bits(_py, key_bits);
                 return None;
             }
+        }
+        if !reserve_dict_order(_py, order, 2) {
+            dec_ref_bits(_py, default_bits);
+            dec_ref_bits(_py, key_bits);
+            return None;
         }
         order.push(key_bits);
         order.push(default_bits);
@@ -8194,6 +8209,38 @@ pub(crate) fn dict_table_capacity(entries: usize) -> usize {
 
 const TABLE_TOMBSTONE: usize = usize::MAX;
 
+#[inline]
+unsafe fn reserve_dict_order(_py: &PyToken<'_>, order: &mut Vec<u64>, additional: usize) -> bool {
+    let Some(required_len) = order.len().checked_add(additional) else {
+        let _ = raise_exception::<u64>(_py, "MemoryError", "dict allocation failed");
+        return false;
+    };
+    unsafe {
+        crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            order as *mut Vec<u64>,
+            required_len,
+            "dict allocation failed",
+        )
+    }
+}
+
+#[inline]
+unsafe fn reserve_set_order(_py: &PyToken<'_>, order: &mut Vec<u64>, additional: usize) -> bool {
+    let Some(required_len) = order.len().checked_add(additional) else {
+        let _ = raise_exception::<u64>(_py, "MemoryError", "set allocation failed");
+        return false;
+    };
+    unsafe {
+        crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            order as *mut Vec<u64>,
+            required_len,
+            "set allocation failed",
+        )
+    }
+}
+
 fn dict_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entry_idx: usize) {
     let mask = table.len() - 1;
     let key_bits = order[entry_idx * 2];
@@ -8250,6 +8297,16 @@ pub(crate) fn dict_rebuild(
     table: &mut Vec<usize>,
     capacity: usize,
 ) {
+    if !unsafe {
+        crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            table as *mut Vec<usize>,
+            capacity,
+            "dict allocation failed",
+        )
+    } {
+        return;
+    }
     table.clear();
     table.resize(capacity, 0);
     let entry_count = order.len() / 2;
@@ -8829,6 +8886,16 @@ pub(super) fn set_rebuild(
     capacity: usize,
 ) {
     crate::gil_assert();
+    if !unsafe {
+        crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            table as *mut Vec<usize>,
+            capacity,
+            "set allocation failed",
+        )
+    } {
+        return;
+    }
     table.clear();
     table.resize(capacity, 0);
     for entry_idx in 0..order.len() {
@@ -9049,6 +9116,9 @@ pub(crate) unsafe fn dict_set_in_place(
             }
         }
 
+        if !reserve_dict_order(_py, order, 2) {
+            return;
+        }
         order.push(key_bits);
         order.push(val_bits);
         if crate::object::refcount_opt::is_heap_ref(key_bits) {
@@ -9127,6 +9197,9 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
             dict_rebuild(_py, order, table, capacity);
         }
 
+        if !reserve_dict_order(_py, order, 2) {
+            return;
+        }
         order.push(key_bits);
         order.push(val_bits);
         // key is inline int: no refcount needed.
@@ -9246,6 +9319,21 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
             }
         }
 
+        let Some(required_len) = order.len().checked_add(2) else {
+            if !pending_before {
+                let _ = raise_exception::<u64>(_py, "MemoryError", "dict allocation failed");
+            }
+            return;
+        };
+        if !crate::object::backing::tracked_vec_reserve_for_len(
+            order as *mut Vec<u64>,
+            required_len,
+        ) {
+            if !pending_before {
+                let _ = raise_exception::<u64>(_py, "MemoryError", "dict allocation failed");
+            }
+            return;
+        }
         order.push(key_bits);
         order.push(val_bits);
         inc_ref_bits(_py, key_bits);
@@ -9290,6 +9378,9 @@ pub(crate) unsafe fn set_add_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
             }
         }
 
+        if !reserve_set_order(_py, order, 1) {
+            return;
+        }
         order.push(key_bits);
         inc_ref_bits(_py, key_bits);
         let entry_idx = order.len() - 1;
@@ -9432,6 +9523,23 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
     unsafe {
         crate::gil_assert();
         let order = set_order(ptr);
+        let capacity = set_table_capacity(entries.len().max(1));
+        if !crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            order as *mut Vec<u64>,
+            entries.len(),
+            "set allocation failed",
+        ) {
+            return;
+        }
+        if !crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            set_table_ptr(ptr),
+            capacity,
+            "set allocation failed",
+        ) {
+            return;
+        }
         for entry in entries {
             inc_ref_bits(_py, *entry);
         }
@@ -9441,7 +9549,6 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
         order.clear();
         order.extend_from_slice(entries);
         let table = set_table(ptr);
-        let capacity = set_table_capacity(order.len().max(1));
         set_rebuild(_py, order, table, capacity);
     }
 }
@@ -11019,9 +11126,12 @@ pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
             return MoltObject::none().bits();
         }
         unsafe {
-            let mut vec = Vec::with_capacity(n);
-            vec.resize(n, fill_value);
-            let vec_ptr = Box::into_raw(Box::new(vec));
+            let Some(vec_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<u64>(n)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+            };
+            (*vec_ptr).resize(n, fill_value);
             *(ptr as *mut *mut Vec<u64>) = vec_ptr;
             if let Some(fill_ptr) = obj_from_bits(fill_value).as_ptr() {
                 let mut remaining = n;

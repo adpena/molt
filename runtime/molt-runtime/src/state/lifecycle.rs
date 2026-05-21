@@ -64,6 +64,8 @@ impl Drop for ThreadLocalGuard {
 
 pub(crate) fn touch_tls_guard() {
     let _ = GIL_DEPTH.try_with(|_| {});
+    let _ = PARSE_ARENA.try_with(|_| {});
+    let _ = crate::REPR_SET.try_with(|_| {});
     let _ = TLS_GUARD.try_with(|_| {});
 }
 
