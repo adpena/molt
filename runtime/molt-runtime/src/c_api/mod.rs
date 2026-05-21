@@ -16,11 +16,11 @@ use crate::builtins::exceptions::molt_exception_new_from_class;
 use crate::concurrency::gil::{gil_held, release_runtime_gil};
 use crate::object::layout::{function_call_target_ptr, function_set_call_target_ptr};
 use crate::state::runtime_state::{
-    molt_runtime_ensure_gil, molt_runtime_init, molt_runtime_shutdown,
+    RuntimeState, molt_runtime_ensure_gil, molt_runtime_init, molt_runtime_shutdown, runtime_state,
 };
 use crate::*;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::MutexGuard;
 /// libmolt C-API surface version.
 pub const MOLT_C_API_VERSION: u32 = 1;
 
@@ -50,8 +50,19 @@ struct CApiModuleStateRegistry {
     by_module: HashMap<usize, usize>,
 }
 
-static C_API_MODULE_METADATA: OnceLock<Mutex<HashMap<usize, CApiModuleMetadata>>> = OnceLock::new();
-static C_API_MODULE_STATE_REGISTRY: OnceLock<Mutex<CApiModuleStateRegistry>> = OnceLock::new();
+pub(crate) struct CApiModuleRuntimeState {
+    metadata: HashMap<usize, CApiModuleMetadata>,
+    state_registry: CApiModuleStateRegistry,
+}
+
+impl CApiModuleRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            metadata: HashMap::new(),
+            state_registry: CApiModuleStateRegistry::default(),
+        }
+    }
+}
 
 const C_API_METH_VARARGS: u32 = 0x0001;
 const C_API_METH_KEYWORDS: u32 = 0x0002;
@@ -61,14 +72,35 @@ const C_API_METH_VARARGS_KEYWORDS: u32 = C_API_METH_VARARGS | C_API_METH_KEYWORD
 const C_API_SUPPORTED_METH_FLAGS: u32 =
     C_API_METH_VARARGS | C_API_METH_KEYWORDS | C_API_METH_NOARGS | C_API_METH_O;
 
-#[inline]
-fn c_api_module_metadata_registry() -> &'static Mutex<HashMap<usize, CApiModuleMetadata>> {
-    C_API_MODULE_METADATA.get_or_init(|| Mutex::new(HashMap::new()))
+fn c_api_module_state(_py: &PyToken<'_>) -> MutexGuard<'static, CApiModuleRuntimeState> {
+    runtime_state(_py)
+        .c_api_module
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[inline]
-fn c_api_module_state_registry() -> &'static Mutex<CApiModuleStateRegistry> {
-    C_API_MODULE_STATE_REGISTRY.get_or_init(|| Mutex::new(CApiModuleStateRegistry::default()))
+pub(crate) fn c_api_module_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    let bits_to_decref = {
+        let mut guard = state
+            .c_api_module
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.metadata.clear();
+        let out = guard
+            .state_registry
+            .by_def
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        guard.state_registry.by_def.clear();
+        guard.state_registry.by_module.clear();
+        out
+    };
+    for bits in bits_to_decref {
+        if !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
+        }
+    }
 }
 
 #[inline]
@@ -253,52 +285,22 @@ fn c_api_module_state_registry_remove_module(
     _py: &PyToken<'_>,
     module_key: usize,
 ) -> Option<MoltHandle> {
-    let registry = c_api_module_state_registry();
-    let mut guard = registry
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let def_key = guard.by_module.remove(&module_key)?;
-    guard.by_def.remove(&def_key)
+    let mut guard = c_api_module_state(_py);
+    let def_key = guard.state_registry.by_module.remove(&module_key)?;
+    guard.state_registry.by_def.remove(&def_key)
 }
 
 #[inline]
 fn c_api_module_state_registry_remove_def(_py: &PyToken<'_>, def_key: usize) -> Option<MoltHandle> {
-    let registry = c_api_module_state_registry();
-    let mut guard = registry
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let bits = guard.by_def.remove(&def_key)?;
+    let mut guard = c_api_module_state(_py);
+    let bits = guard.state_registry.by_def.remove(&def_key)?;
     if let Some(module_ptr) = obj_from_bits(bits).as_ptr() {
-        guard.by_module.remove(&module_ptr_key(module_ptr));
+        guard
+            .state_registry
+            .by_module
+            .remove(&module_ptr_key(module_ptr));
     }
     Some(bits)
-}
-
-#[inline]
-fn c_api_module_state_registry_clear(_py: &PyToken<'_>) -> Vec<MoltHandle> {
-    let registry = c_api_module_state_registry();
-    let mut guard = registry
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let out = guard.by_def.values().copied().collect::<Vec<_>>();
-    guard.by_def.clear();
-    guard.by_module.clear();
-    out
-}
-
-pub(crate) fn c_api_module_teardown(_py: &PyToken<'_>) {
-    {
-        let registry = c_api_module_metadata_registry();
-        let mut guard = registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.clear();
-    }
-    for bits in c_api_module_state_registry_clear(_py) {
-        if !obj_from_bits(bits).is_none() {
-            dec_ref_bits(_py, bits);
-        }
-    }
 }
 
 pub(crate) fn c_api_module_on_module_teardown(_py: &PyToken<'_>, module_ptr: *mut u8) {
@@ -307,11 +309,8 @@ pub(crate) fn c_api_module_on_module_teardown(_py: &PyToken<'_>, module_ptr: *mu
     }
     let module_key = module_ptr_key(module_ptr);
     {
-        let registry = c_api_module_metadata_registry();
-        let mut guard = registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.remove(&module_key);
+        let mut guard = c_api_module_state(_py);
+        guard.metadata.remove(&module_key);
     }
     if let Some(bits) = c_api_module_state_registry_remove_module(_py, module_key)
         && let Some(bits_ptr) = obj_from_bits(bits).as_ptr()
