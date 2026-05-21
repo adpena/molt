@@ -38,9 +38,9 @@ use crate::{
     TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string,
     builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
     clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_clear_in_place_shutdown,
-    dict_get_in_place, exception_pending, inc_ref_bits, intern_static_name, module_dict_bits,
-    molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
-    runtime_state,
+    dict_get_in_place, exception_pending, exceptions_clear_runtime_state, inc_ref_bits,
+    intern_static_name, module_dict_bits, molt_file_flush, molt_get_attr_name, obj_from_bits,
+    object_type_id, reset_ptr_registry, runtime_state,
 };
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -166,6 +166,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     attributes_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_types_runtime_state");
     types_clear_runtime_state(_py, state);
+    trace_shutdown("process_exit_clear_exceptions_runtime_state");
+    exceptions_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_resource_state");
     crate::resource::clear_resource_state();
     trace_shutdown("process_exit_done");
@@ -274,6 +276,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     io_clear_runtime_state(_py, state);
     trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
+    trace_shutdown("clear_exceptions_runtime_state");
+    exceptions_clear_runtime_state(_py, state);
     trace_shutdown("clear_gen_locals");
     clear_gen_locals(_py, state);
     trace_shutdown("clear_dict_subclass_storage");

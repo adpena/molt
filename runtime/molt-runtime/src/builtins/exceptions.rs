@@ -25,14 +25,15 @@ use crate::{
     code_linetable_bits, code_name_bits, context_stack_unwind, current_task_key, current_task_ptr,
     current_token_id, dec_ref_bits, dict_find_entry_fast, dict_get_in_place, dict_order,
     dict_set_in_place, dict_table, format_obj, format_obj_str, header_from_obj_ptr, inc_ref_bits,
-    index_bigint_from_obj, instance_dict_bits, instance_set_dict_bits, int_bits_from_i64,
-    intern_static_name, is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits,
-    module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index, molt_is_callable,
-    molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj, obj_from_bits,
-    object_class_bits, object_mark_has_ptrs, object_type_id, profile_enabled, runtime_state,
-    seq_vec, seq_vec_ref, string_bytes, string_len, string_obj_to_owned, task_exception_depths,
-    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
-    token_is_cancelled, traceback_suppressed, type_name, type_of_bits,
+    index_bigint_from_obj, init_atomic_bits, instance_dict_bits, instance_set_dict_bits,
+    int_bits_from_i64, intern_static_name, is_truthy, isinstance_bits, issubclass_bits,
+    maybe_ptr_from_bits, module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index,
+    molt_is_callable, molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj,
+    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_enabled,
+    runtime_state, seq_vec, seq_vec_ref, string_bytes, string_len, string_obj_to_owned,
+    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
+    task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed, type_name,
+    type_of_bits,
 };
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
@@ -104,11 +105,118 @@ thread_local! {
     pub(crate) static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
+const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 30;
+
+pub(crate) struct ExceptionsRuntimeState {
+    tb_lasti_name: AtomicU64,
+    f_back_name: AtomicU64,
+    f_globals_name: AtomicU64,
+    file_name: AtomicU64,
+    errno_attr_name: AtomicU64,
+    strerror_attr_name: AtomicU64,
+    filename_attr_name: AtomicU64,
+    characters_written_attr_name: AtomicU64,
+    exc_group_message_name: AtomicU64,
+    exc_group_exceptions_name: AtomicU64,
+    unicode_encoding_attr_name: AtomicU64,
+    unicode_object_attr_name: AtomicU64,
+    unicode_start_attr_name: AtomicU64,
+    unicode_end_attr_name: AtomicU64,
+    unicode_reason_attr_name: AtomicU64,
+    exception_with_traceback: AtomicU64,
+    base_exception_class_cache: AtomicU64,
+    exception_class_cache: AtomicU64,
+    key_error_class_cache: AtomicU64,
+    index_error_class_cache: AtomicU64,
+    value_error_class_cache: AtomicU64,
+    type_error_class_cache: AtomicU64,
+    runtime_error_class_cache: AtomicU64,
+    stop_iteration_class_cache: AtomicU64,
+    stop_async_iteration_class_cache: AtomicU64,
+    assertion_error_class_cache: AtomicU64,
+    import_error_class_cache: AtomicU64,
+    name_error_class_cache: AtomicU64,
+    unbound_local_error_class_cache: AtomicU64,
+    not_implemented_error_class_cache: AtomicU64,
+}
+
+impl ExceptionsRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            tb_lasti_name: AtomicU64::new(0),
+            f_back_name: AtomicU64::new(0),
+            f_globals_name: AtomicU64::new(0),
+            file_name: AtomicU64::new(0),
+            errno_attr_name: AtomicU64::new(0),
+            strerror_attr_name: AtomicU64::new(0),
+            filename_attr_name: AtomicU64::new(0),
+            characters_written_attr_name: AtomicU64::new(0),
+            exc_group_message_name: AtomicU64::new(0),
+            exc_group_exceptions_name: AtomicU64::new(0),
+            unicode_encoding_attr_name: AtomicU64::new(0),
+            unicode_object_attr_name: AtomicU64::new(0),
+            unicode_start_attr_name: AtomicU64::new(0),
+            unicode_end_attr_name: AtomicU64::new(0),
+            unicode_reason_attr_name: AtomicU64::new(0),
+            exception_with_traceback: AtomicU64::new(0),
+            base_exception_class_cache: AtomicU64::new(0),
+            exception_class_cache: AtomicU64::new(0),
+            key_error_class_cache: AtomicU64::new(0),
+            index_error_class_cache: AtomicU64::new(0),
+            value_error_class_cache: AtomicU64::new(0),
+            type_error_class_cache: AtomicU64::new(0),
+            runtime_error_class_cache: AtomicU64::new(0),
+            stop_iteration_class_cache: AtomicU64::new(0),
+            stop_async_iteration_class_cache: AtomicU64::new(0),
+            assertion_error_class_cache: AtomicU64::new(0),
+            import_error_class_cache: AtomicU64::new(0),
+            name_error_class_cache: AtomicU64::new(0),
+            unbound_local_error_class_cache: AtomicU64::new(0),
+            not_implemented_error_class_cache: AtomicU64::new(0),
+        }
+    }
+
+    fn object_slots(&self) -> [&AtomicU64; EXCEPTIONS_OBJECT_SLOT_COUNT] {
+        [
+            &self.tb_lasti_name,
+            &self.f_back_name,
+            &self.f_globals_name,
+            &self.file_name,
+            &self.errno_attr_name,
+            &self.strerror_attr_name,
+            &self.filename_attr_name,
+            &self.characters_written_attr_name,
+            &self.exc_group_message_name,
+            &self.exc_group_exceptions_name,
+            &self.unicode_encoding_attr_name,
+            &self.unicode_object_attr_name,
+            &self.unicode_start_attr_name,
+            &self.unicode_end_attr_name,
+            &self.unicode_reason_attr_name,
+            &self.exception_with_traceback,
+            &self.base_exception_class_cache,
+            &self.exception_class_cache,
+            &self.key_error_class_cache,
+            &self.index_error_class_cache,
+            &self.value_error_class_cache,
+            &self.type_error_class_cache,
+            &self.runtime_error_class_cache,
+            &self.stop_iteration_class_cache,
+            &self.stop_async_iteration_class_cache,
+            &self.assertion_error_class_cache,
+            &self.import_error_class_cache,
+            &self.name_error_class_cache,
+            &self.unbound_local_error_class_cache,
+            &self.not_implemented_error_class_cache,
+        ]
+    }
+}
+
 static STOPASYNC_BT_PRINTED: AtomicBool = AtomicBool::new(false);
-static TB_LASTI_NAME: AtomicU64 = AtomicU64::new(0);
-static F_BACK_NAME: AtomicU64 = AtomicU64::new(0);
-static F_GLOBALS_NAME: AtomicU64 = AtomicU64::new(0);
-static FILE_NAME: AtomicU64 = AtomicU64::new(0);
+
+fn exceptions_state(_py: &PyToken<'_>) -> &'static ExceptionsRuntimeState {
+    &runtime_state(_py).exceptions
+}
 
 #[inline]
 fn debug_exception_flow() -> bool {
@@ -168,7 +276,7 @@ fn exception_clear_reason_take() -> Option<&'static str> {
 }
 
 pub(crate) mod internals {
-    use super::{AtomicU64, HashMap, Mutex};
+    use super::{HashMap, Mutex};
     use crate::{PyToken, runtime_state};
 
     pub(crate) fn module_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<String, u64>> {
@@ -178,26 +286,9 @@ pub(crate) mod internals {
     pub(crate) fn exception_type_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<String, u64>> {
         &runtime_state(_py).exception_type_cache
     }
-
-    pub(crate) static ERRNO_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static STRERROR_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static FILENAME_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static CHARACTERS_WRITTEN_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static EXC_GROUP_MESSAGE_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static EXC_GROUP_EXCEPTIONS_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static UNICODE_ENCODING_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static UNICODE_OBJECT_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static UNICODE_START_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static UNICODE_END_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static UNICODE_REASON_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
 }
 
-use internals::{
-    CHARACTERS_WRITTEN_ATTR_NAME, ERRNO_ATTR_NAME, EXC_GROUP_EXCEPTIONS_NAME,
-    EXC_GROUP_MESSAGE_NAME, FILENAME_ATTR_NAME, STRERROR_ATTR_NAME, UNICODE_ENCODING_ATTR_NAME,
-    UNICODE_END_ATTR_NAME, UNICODE_OBJECT_ATTR_NAME, UNICODE_REASON_ATTR_NAME,
-    UNICODE_START_ATTR_NAME, exception_type_cache, module_cache,
-};
+use internals::{exception_type_cache, module_cache};
 
 pub(crate) fn exception_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
@@ -219,15 +310,12 @@ pub(crate) fn exception_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_exception_add_note),
             2,
         )),
-        "with_traceback" => {
-            static EXCEPTION_WITH_TRACEBACK: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits(
-                _py,
-                &EXCEPTION_WITH_TRACEBACK,
-                fn_addr!(molt_exception_with_traceback),
-                2,
-            ))
-        }
+        "with_traceback" => Some(builtin_func_bits(
+            _py,
+            &exceptions_state(_py).exception_with_traceback,
+            fn_addr!(molt_exception_with_traceback),
+            2,
+        )),
         _ => None,
     }
 }
@@ -1052,6 +1140,12 @@ pub(crate) fn clear_exception_type_cache(_py: &PyToken<'_>, state: &RuntimeState
         class_break_cycles(_py, bits);
         dec_ref_bits(_py, bits);
     }
+}
+
+pub(crate) fn exceptions_clear_runtime_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let slots = state.exceptions.object_slots();
+    crate::state::cache::clear_atomic_slots(_py, &slots);
 }
 
 pub(crate) fn exception_handler_active() -> bool {
@@ -2093,51 +2187,48 @@ fn builtin_exception_name_for_tag(tag: u64) -> Option<&'static str> {
     }
 }
 
-static BASE_EXCEPTION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static EXCEPTION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static KEY_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static INDEX_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static VALUE_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static TYPE_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static RUNTIME_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static STOP_ITERATION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static STOP_ASYNC_ITERATION_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static ASSERTION_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static IMPORT_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static NAME_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static UNBOUND_LOCAL_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-static NOT_IMPLEMENTED_ERROR_CLASS_CACHE: AtomicU64 = AtomicU64::new(0);
-
-fn builtin_exception_class_cache_for_tag(tag: u64) -> Option<(&'static AtomicU64, &'static str)> {
+fn builtin_exception_class_cache_for_tag(
+    _py: &PyToken<'_>,
+    tag: u64,
+) -> Option<(&'static AtomicU64, &'static str)> {
+    let state = exceptions_state(_py);
     match tag {
-        1 => Some((&BASE_EXCEPTION_CLASS_CACHE, "BaseException")),
-        2 => Some((&EXCEPTION_CLASS_CACHE, "Exception")),
-        3 => Some((&KEY_ERROR_CLASS_CACHE, "KeyError")),
-        4 => Some((&INDEX_ERROR_CLASS_CACHE, "IndexError")),
-        5 => Some((&VALUE_ERROR_CLASS_CACHE, "ValueError")),
-        6 => Some((&TYPE_ERROR_CLASS_CACHE, "TypeError")),
-        7 => Some((&RUNTIME_ERROR_CLASS_CACHE, "RuntimeError")),
-        8 => Some((&STOP_ITERATION_CLASS_CACHE, "StopIteration")),
-        9 => Some((&STOP_ASYNC_ITERATION_CLASS_CACHE, "StopAsyncIteration")),
-        10 => Some((&ASSERTION_ERROR_CLASS_CACHE, "AssertionError")),
-        11 => Some((&IMPORT_ERROR_CLASS_CACHE, "ImportError")),
-        12 => Some((&NAME_ERROR_CLASS_CACHE, "NameError")),
-        13 => Some((&UNBOUND_LOCAL_ERROR_CLASS_CACHE, "UnboundLocalError")),
-        14 => Some((&NOT_IMPLEMENTED_ERROR_CLASS_CACHE, "NotImplementedError")),
+        1 => Some((&state.base_exception_class_cache, "BaseException")),
+        2 => Some((&state.exception_class_cache, "Exception")),
+        3 => Some((&state.key_error_class_cache, "KeyError")),
+        4 => Some((&state.index_error_class_cache, "IndexError")),
+        5 => Some((&state.value_error_class_cache, "ValueError")),
+        6 => Some((&state.type_error_class_cache, "TypeError")),
+        7 => Some((&state.runtime_error_class_cache, "RuntimeError")),
+        8 => Some((&state.stop_iteration_class_cache, "StopIteration")),
+        9 => Some((
+            &state.stop_async_iteration_class_cache,
+            "StopAsyncIteration",
+        )),
+        10 => Some((&state.assertion_error_class_cache, "AssertionError")),
+        11 => Some((&state.import_error_class_cache, "ImportError")),
+        12 => Some((&state.name_error_class_cache, "NameError")),
+        13 => Some((&state.unbound_local_error_class_cache, "UnboundLocalError")),
+        14 => Some((
+            &state.not_implemented_error_class_cache,
+            "NotImplementedError",
+        )),
         _ => None,
     }
 }
 
 fn builtin_exception_class_bits_for_tag(_py: &PyToken<'_>, tag: u64) -> Option<u64> {
-    let (cache, name) = builtin_exception_class_cache_for_tag(tag)?;
+    let (cache, name) = builtin_exception_class_cache_for_tag(_py, tag)?;
     let cached = cache.load(AtomicOrdering::Acquire);
     if cached != 0 {
         return Some(cached);
     }
     let class_bits = exception_type_bits_from_name(_py, name);
     if class_bits != 0 {
-        cache.store(class_bits, AtomicOrdering::Release);
-        Some(class_bits)
+        Some(init_atomic_bits(_py, cache, || {
+            inc_ref_bits(_py, class_bits);
+            class_bits
+        }))
     } else {
         None
     }
@@ -2320,7 +2411,11 @@ fn exception_group_message_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
     {
         unsafe {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let key_bits = intern_static_name(_py, &EXC_GROUP_MESSAGE_NAME, b"message");
+                let key_bits = intern_static_name(
+                    _py,
+                    &exceptions_state(_py).exc_group_message_name,
+                    b"message",
+                );
                 if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, key_bits) {
                     return val_bits;
                 }
@@ -2340,7 +2435,11 @@ fn exception_group_exceptions_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u6
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
             return None;
         }
-        let key_bits = intern_static_name(_py, &EXC_GROUP_EXCEPTIONS_NAME, b"exceptions");
+        let key_bits = intern_static_name(
+            _py,
+            &exceptions_state(_py).exc_group_exceptions_name,
+            b"exceptions",
+        );
         dict_get_in_place(_py, dict_ptr, key_bits)
     }
 }
@@ -2500,8 +2599,16 @@ fn exception_group_alloc(
         return None;
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    let msg_name_bits = intern_static_name(_py, &EXC_GROUP_MESSAGE_NAME, b"message");
-    let exceptions_name_bits = intern_static_name(_py, &EXC_GROUP_EXCEPTIONS_NAME, b"exceptions");
+    let msg_name_bits = intern_static_name(
+        _py,
+        &exceptions_state(_py).exc_group_message_name,
+        b"message",
+    );
+    let exceptions_name_bits = intern_static_name(
+        _py,
+        &exceptions_state(_py).exc_group_exceptions_name,
+        b"exceptions",
+    );
     let dict_ptr = alloc_dict_with_pairs(
         _py,
         &[
@@ -3291,7 +3398,8 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
         {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let errno_name = intern_static_name(_py, &ERRNO_ATTR_NAME, b"errno");
+                    let errno_name =
+                        intern_static_name(_py, &exceptions_state(_py).errno_attr_name, b"errno");
                     let errno_bits = MoltObject::from_int(errno).bits();
                     dict_set_in_place(_py, dict_ptr, errno_name, errno_bits);
                 }
@@ -3330,9 +3438,11 @@ unsafe fn oserror_attr_dict(
     strerror_bits: u64,
     filename_bits: u64,
 ) -> u64 {
-    let errno_name = intern_static_name(_py, &ERRNO_ATTR_NAME, b"errno");
-    let strerror_name = intern_static_name(_py, &STRERROR_ATTR_NAME, b"strerror");
-    let filename_name = intern_static_name(_py, &FILENAME_ATTR_NAME, b"filename");
+    let errno_name = intern_static_name(_py, &exceptions_state(_py).errno_attr_name, b"errno");
+    let strerror_name =
+        intern_static_name(_py, &exceptions_state(_py).strerror_attr_name, b"strerror");
+    let filename_name =
+        intern_static_name(_py, &exceptions_state(_py).filename_attr_name, b"filename");
     let errno_bits = match errno_val {
         Some(val) => MoltObject::from_int(val).bits(),
         None => MoltObject::none().bits(),
@@ -3500,11 +3610,27 @@ fn unicode_error_fields_from_args(
 }
 
 fn unicode_error_attr_dict(_py: &PyToken<'_>, fields: UnicodeErrorFields) -> u64 {
-    let encoding_name = intern_static_name(_py, &UNICODE_ENCODING_ATTR_NAME, b"encoding");
-    let object_name = intern_static_name(_py, &UNICODE_OBJECT_ATTR_NAME, b"object");
-    let start_name = intern_static_name(_py, &UNICODE_START_ATTR_NAME, b"start");
-    let end_name = intern_static_name(_py, &UNICODE_END_ATTR_NAME, b"end");
-    let reason_name = intern_static_name(_py, &UNICODE_REASON_ATTR_NAME, b"reason");
+    let encoding_name = intern_static_name(
+        _py,
+        &exceptions_state(_py).unicode_encoding_attr_name,
+        b"encoding",
+    );
+    let object_name = intern_static_name(
+        _py,
+        &exceptions_state(_py).unicode_object_attr_name,
+        b"object",
+    );
+    let start_name = intern_static_name(
+        _py,
+        &exceptions_state(_py).unicode_start_attr_name,
+        b"start",
+    );
+    let end_name = intern_static_name(_py, &exceptions_state(_py).unicode_end_attr_name, b"end");
+    let reason_name = intern_static_name(
+        _py,
+        &exceptions_state(_py).unicode_reason_attr_name,
+        b"reason",
+    );
     let dict_ptr = alloc_dict_with_pairs(
         _py,
         &[
@@ -3666,7 +3792,7 @@ pub(crate) fn alloc_exception_from_class_bits(
                 if (chars_obj.is_int() || chars_obj.is_bool()) && dict_bits != 0 {
                     let name_bits = intern_static_name(
                         _py,
-                        &CHARACTERS_WRITTEN_ATTR_NAME,
+                        &exceptions_state(_py).characters_written_attr_name,
                         b"characters_written",
                     );
                     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
@@ -4433,7 +4559,8 @@ unsafe fn frame_globals_field_for_code(_py: &PyToken<'_>, code_bits: u64) -> Opt
             )
         };
         if let Some(filename) = filename {
-            let file_name_bits = intern_static_name(_py, &FILE_NAME, b"__file__");
+            let file_name_bits =
+                intern_static_name(_py, &exceptions_state(_py).file_name, b"__file__");
             for module_bits in &module_bits {
                 let Some(module_ptr) = obj_from_bits(*module_bits).as_ptr() else {
                     continue;
@@ -4516,8 +4643,9 @@ unsafe fn alloc_frame_obj(
             intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
         let f_lasti_bits =
             intern_static_name(_py, &runtime_state(_py).interned.f_lasti_name, b"f_lasti");
-        let f_back_bits = intern_static_name(_py, &F_BACK_NAME, b"f_back");
-        let f_globals_bits = intern_static_name(_py, &F_GLOBALS_NAME, b"f_globals");
+        let f_back_bits = intern_static_name(_py, &exceptions_state(_py).f_back_name, b"f_back");
+        let f_globals_bits =
+            intern_static_name(_py, &exceptions_state(_py).f_globals_name, b"f_globals");
         let f_locals_bits =
             intern_static_name(_py, &runtime_state(_py).interned.f_locals_name, b"f_locals");
         let globals = frame_globals_field_for_code(_py, code_bits)?;
@@ -4649,7 +4777,8 @@ unsafe fn alloc_traceback_obj(
         );
         let tb_next_bits =
             intern_static_name(_py, &runtime_state(_py).interned.tb_next_name, b"tb_next");
-        let tb_lasti_bits = intern_static_name(_py, &TB_LASTI_NAME, b"tb_lasti");
+        let tb_lasti_bits =
+            intern_static_name(_py, &exceptions_state(_py).tb_lasti_name, b"tb_lasti");
         let line_bits = MoltObject::from_int(line).bits();
         let lasti_bits = MoltObject::from_int(compute_tb_lasti(_py, frame_bits, line)).bits();
         let dict_ptr = alloc_dict_with_pairs(
@@ -5345,11 +5474,18 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
                     && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                     && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
                 {
-                    let errno_name = intern_static_name(_py, &internals::ERRNO_ATTR_NAME, b"errno");
-                    let strerror_name =
-                        intern_static_name(_py, &internals::STRERROR_ATTR_NAME, b"strerror");
-                    let filename_name =
-                        intern_static_name(_py, &internals::FILENAME_ATTR_NAME, b"filename");
+                    let errno_name =
+                        intern_static_name(_py, &exceptions_state(_py).errno_attr_name, b"errno");
+                    let strerror_name = intern_static_name(
+                        _py,
+                        &exceptions_state(_py).strerror_attr_name,
+                        b"strerror",
+                    );
+                    let filename_name = intern_static_name(
+                        _py,
+                        &exceptions_state(_py).filename_attr_name,
+                        b"filename",
+                    );
                     let errno_bits = match errno_val {
                         Some(val) => MoltObject::from_int(val).bits(),
                         None => MoltObject::none().bits(),
@@ -5384,17 +5520,29 @@ pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
                 {
                     let encoding_name = intern_static_name(
                         _py,
-                        &internals::UNICODE_ENCODING_ATTR_NAME,
+                        &exceptions_state(_py).unicode_encoding_attr_name,
                         b"encoding",
                     );
-                    let object_name =
-                        intern_static_name(_py, &internals::UNICODE_OBJECT_ATTR_NAME, b"object");
-                    let start_name =
-                        intern_static_name(_py, &internals::UNICODE_START_ATTR_NAME, b"start");
-                    let end_name =
-                        intern_static_name(_py, &internals::UNICODE_END_ATTR_NAME, b"end");
-                    let reason_name =
-                        intern_static_name(_py, &internals::UNICODE_REASON_ATTR_NAME, b"reason");
+                    let object_name = intern_static_name(
+                        _py,
+                        &exceptions_state(_py).unicode_object_attr_name,
+                        b"object",
+                    );
+                    let start_name = intern_static_name(
+                        _py,
+                        &exceptions_state(_py).unicode_start_attr_name,
+                        b"start",
+                    );
+                    let end_name = intern_static_name(
+                        _py,
+                        &exceptions_state(_py).unicode_end_attr_name,
+                        b"end",
+                    );
+                    let reason_name = intern_static_name(
+                        _py,
+                        &exceptions_state(_py).unicode_reason_attr_name,
+                        b"reason",
+                    );
                     unsafe {
                         dict_set_in_place(_py, dict_ptr, encoding_name, fields.encoding_bits);
                         dict_set_in_place(_py, dict_ptr, object_name, fields.object_bits);
@@ -6706,16 +6854,20 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 mod tests {
     use super::{
         alloc_exception, clear_exception, exception_context_set, exception_last_pending_bits,
-        exception_last_public_bits, exception_pending, exception_stack_pop, exception_stack_push,
-        format_exception, format_exception_message, frame_stack_pop, frame_stack_push,
-        frame_stack_push_owned, generator_exception_stack_drop, generator_exception_stack_store,
+        exception_last_public_bits, exception_method_bits, exception_pending, exception_stack_pop,
+        exception_stack_push, exceptions_clear_runtime_state, format_exception,
+        format_exception_message, frame_stack_pop, frame_stack_push, frame_stack_push_owned,
+        generator_exception_stack_drop, generator_exception_stack_store,
         generator_exception_stack_take, molt_exception_new_builtin_one, record_exception,
         task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
     };
     use crate::builtins::containers::tuple_len;
     use crate::object::builders::alloc_code_obj;
     use crate::object::header_from_obj_ptr;
-    use crate::{alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits, seq_vec_ref};
+    use crate::{
+        alloc_string, dec_ref_bits, inc_ref_bits, intern_static_name, obj_from_bits, runtime_state,
+        seq_vec_ref,
+    };
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
@@ -6736,6 +6888,43 @@ mod tests {
         dec_ref_bits(_py, filename_bits);
         dec_ref_bits(_py, name_bits);
         (code_ptr, MoltObject::from_ptr(code_ptr).bits())
+    }
+
+    #[test]
+    fn exceptions_runtime_state_is_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            let value_error_bits =
+                super::builtin_exception_class_bits_for_tag(_py, 5).expect("ValueError class");
+            assert_ne!(value_error_bits, 0);
+            assert_ne!(
+                state
+                    .exceptions
+                    .value_error_class_cache
+                    .load(Ordering::Acquire),
+                0
+            );
+            let traceback_method =
+                exception_method_bits(_py, "with_traceback").expect("with_traceback method");
+            assert_ne!(traceback_method, 0);
+            assert_ne!(
+                state
+                    .exceptions
+                    .exception_with_traceback
+                    .load(Ordering::Acquire),
+                0
+            );
+            let errno_name = intern_static_name(_py, &state.exceptions.errno_attr_name, b"errno");
+            assert_ne!(errno_name, 0);
+            assert_ne!(state.exceptions.errno_attr_name.load(Ordering::Acquire), 0);
+
+            exceptions_clear_runtime_state(_py, state);
+
+            for slot in state.exceptions.object_slots() {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+        });
     }
 
     #[test]
