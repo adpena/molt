@@ -954,13 +954,13 @@ pub extern "C" fn molt_re_named_backref_advance(
 // * No `regex` crate — backreferences are required and not supported there.
 // * Hand-rolled recursive-descent parser that mirrors the Python `_Parser` class
 //   in `src/molt/stdlib/re/__init__.py` exactly (same quirks, same IR shape).
-// * Global registry uses `LazyLock<Mutex<…>>` (not thread_local!) so that
-//   compiled patterns are visible across threads.
+// * Compiled patterns are owned by the active runtime state so handles do not
+//   survive teardown/reinit.
 // * Handle allocation starts at 1 so that 0 can serve as "invalid".
 
 use std::collections::HashMap;
 use std::sync::{
-    LazyLock, Mutex,
+    Mutex,
     atomic::{AtomicI64, Ordering},
 };
 
@@ -1035,19 +1035,76 @@ pub(crate) struct CompiledPattern {
 }
 
 // ---------------------------------------------------------------------------
-// Global pattern registry
+// Runtime-scoped pattern registry
 // ---------------------------------------------------------------------------
 
-static RE_NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
-static RE_PATTERNS: LazyLock<Mutex<HashMap<i64, CompiledPattern>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn re_alloc_handle() -> i64 {
-    RE_NEXT_HANDLE.fetch_add(1, Ordering::Relaxed)
+struct RegexRuntimeState {
+    next_handle: AtomicI64,
+    patterns: Mutex<HashMap<i64, CompiledPattern>>,
 }
 
-fn re_store_pattern(handle: i64, pattern: CompiledPattern) {
-    let mut guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+impl RegexRuntimeState {
+    fn new() -> Self {
+        Self {
+            next_handle: AtomicI64::new(1),
+            patterns: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn clear(&self) {
+        self.patterns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+}
+
+unsafe extern "C" fn regex_runtime_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(RegexRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn regex_runtime_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (&*(ptr as *const RegexRuntimeState)).clear();
+    }
+}
+
+unsafe extern "C" fn regex_runtime_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut RegexRuntimeState));
+    }
+}
+
+fn regex_state(_py: &crate::PyToken<'_>) -> &'static RegexRuntimeState {
+    let ptr = crate::state::runtime_extension_state_get_or_init(
+        crate::state::runtime_state::runtime_state(_py),
+        b"molt-runtime-regex/patterns/v1",
+        regex_runtime_state_init,
+        regex_runtime_state_clear,
+        regex_runtime_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "molt regex runtime state initialization failed"
+    );
+    unsafe { &*(ptr as *const RegexRuntimeState) }
+}
+
+fn re_alloc_handle(_py: &crate::PyToken<'_>) -> i64 {
+    regex_state(_py).next_handle.fetch_add(1, Ordering::Relaxed)
+}
+
+fn re_store_pattern(_py: &crate::PyToken<'_>, handle: i64, pattern: CompiledPattern) {
+    let mut guard = regex_state(_py)
+        .patterns
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     guard.insert(handle, pattern);
 }
 
@@ -1946,7 +2003,7 @@ fn parse_pattern(pattern: &str, flags: i64) -> Result<CompiledPattern, String> {
 /// `molt_re_compile(pattern: str, flags: int) -> int`
 ///
 /// Parse a regex pattern string and return an opaque integer handle.  The
-/// compiled `CompiledPattern` is stored in the global `RE_PATTERNS` registry.
+/// compiled `CompiledPattern` is stored in the active runtime registry.
 /// Returns -1 and raises `re.error` on parse failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
@@ -1959,8 +2016,8 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
         };
         match parse_pattern(&pattern, flags) {
             Ok(compiled) => {
-                let handle = re_alloc_handle();
-                re_store_pattern(handle, compiled);
+                let handle = re_alloc_handle(_py);
+                re_store_pattern(_py, handle, compiled);
                 MoltObject::from_int(handle).bits()
             }
             Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
@@ -1985,7 +2042,10 @@ pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "handle must be int");
         };
-        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = regex_state(_py)
+            .patterns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(compiled) = guard.get(&handle) else {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
@@ -2999,7 +3059,10 @@ pub extern "C" fn molt_re_execute(
         let end_usize = if end < 0 { 0usize } else { end as usize };
 
         // Look up the compiled pattern.
-        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = regex_state(_py)
+            .patterns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(compiled) = guard.get(&handle) else {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
@@ -3060,7 +3123,10 @@ pub extern "C" fn molt_re_finditer_collect(
         let end_usize = if end < 0 { 0usize } else { end as usize };
 
         // Look up the compiled pattern.
-        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = regex_state(_py)
+            .patterns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(compiled) = guard.get(&handle) else {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
@@ -3163,7 +3229,10 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         };
 
         // Look up compiled pattern.
-        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = regex_state(_py)
+            .patterns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(compiled) = guard.get(&handle) else {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
@@ -3323,7 +3392,10 @@ pub extern "C" fn molt_re_sub(
         };
 
         // Look up compiled pattern.
-        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = regex_state(_py)
+            .patterns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(compiled) = guard.get(&handle) else {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
@@ -3666,7 +3738,10 @@ pub extern "C" fn molt_re_sub_callable(
         };
 
         // Look up compiled pattern.
-        let guard = RE_PATTERNS.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = regex_state(_py)
+            .patterns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(compiled) = guard.get(&handle) else {
             return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
         };
