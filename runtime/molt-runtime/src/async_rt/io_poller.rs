@@ -160,6 +160,24 @@ struct IoSocketEntry {
 }
 
 #[cfg(molt_has_net_io)]
+struct IoRegistrationRollback {
+    socket_id: usize,
+    waiter_key: PtrSlot,
+    token: Token,
+    new_entry: bool,
+    previous_interests: Option<Interest>,
+}
+
+#[cfg(molt_has_net_io)]
+struct IoBlockingRegistrationRollback {
+    socket_id: usize,
+    waiter_id: usize,
+    token: Token,
+    new_entry: bool,
+    previous_interests: Option<Interest>,
+}
+
+#[cfg(molt_has_net_io)]
 pub(crate) struct IoPoller {
     poll: Mutex<Poll>,
     registry: Registry,
@@ -438,6 +456,44 @@ impl IoPoller {
         }
     }
 
+    fn rollback_wait_registration(&self, rollback: IoRegistrationRollback) {
+        {
+            let mut waiters = self.waiters.lock().unwrap();
+            waiters.remove(&rollback.waiter_key);
+        }
+        {
+            let mut ready = self.ready.lock().unwrap();
+            ready.remove(&rollback.waiter_key);
+        }
+        let mut sockets = self.sockets.lock().unwrap();
+        if rollback.new_entry {
+            sockets.remove(&rollback.socket_id);
+            self.tokens.lock().unwrap().remove(&rollback.token);
+            return;
+        }
+        if let Some(entry) = sockets.get_mut(&rollback.socket_id) {
+            entry.waiters.remove(rollback.waiter_key);
+            if let Some(previous) = rollback.previous_interests {
+                entry.interests = previous;
+            }
+        }
+    }
+
+    fn rollback_blocking_registration(&self, rollback: IoBlockingRegistrationRollback) {
+        let mut sockets = self.sockets.lock().unwrap();
+        if rollback.new_entry {
+            sockets.remove(&rollback.socket_id);
+            self.tokens.lock().unwrap().remove(&rollback.token);
+            return;
+        }
+        if let Some(entry) = sockets.get_mut(&rollback.socket_id) {
+            entry.blocking_waiters.remove(rollback.waiter_id);
+            if let Some(previous) = rollback.previous_interests {
+                entry.interests = previous;
+            }
+        }
+    }
+
     pub(crate) fn register_wait(
         &self,
         future_ptr: *mut u8,
@@ -489,6 +545,7 @@ impl IoPoller {
                 token
             });
         let entry = sockets.get_mut(&socket_id).expect("socket entry");
+        let previous_interests = entry.interests;
         entry.waiters.insert(waiter_key);
         let interest = interest_from_events(events);
         let needs_register = new_entry;
@@ -505,21 +562,34 @@ impl IoPoller {
         }
         let interests = entry.interests;
         let debug_fd = entry.debug_fd;
+        let rollback = IoRegistrationRollback {
+            socket_id,
+            waiter_key,
+            token,
+            new_entry,
+            previous_interests: (!new_entry).then_some(previous_interests),
+        };
         drop(sockets);
-        if needs_register {
+        let register_result = if needs_register {
             with_socket_mut(socket_ptr, |sock| {
                 let source = sock.source_mut().ok_or_else(|| {
                     std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
                 })?;
                 self.registry.register(source, token, interests)
-            })?;
+            })
         } else if updated {
             with_socket_mut(socket_ptr, |sock| {
                 let source = sock.source_mut().ok_or_else(|| {
                     std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
                 })?;
                 self.registry.reregister(source, token, interests)
-            })?;
+            })
+        } else {
+            Ok(())
+        };
+        if let Err(err) = register_result {
+            self.rollback_wait_registration(rollback);
+            return Err(err);
         }
         let _ = self.waker.wake();
         if trace_io_poller() {
@@ -595,6 +665,7 @@ impl IoPoller {
             }
         };
         let entry = sockets.get_mut(&socket_id).expect("socket entry");
+        let previous_interests = entry.interests;
         entry.waiters.insert(waiter_key);
         let interest = interest_from_events(events);
         let needs_register = new_entry;
@@ -611,6 +682,13 @@ impl IoPoller {
         }
         let interests = entry.interests;
         let debug_fd = entry.debug_fd;
+        let rollback = IoRegistrationRollback {
+            socket_id,
+            waiter_key,
+            token,
+            new_entry,
+            previous_interests: (!new_entry).then_some(previous_interests),
+        };
         let register_result = match &mut entry.source {
             IoSource::WebSocket(stream) => {
                 if needs_register {
@@ -627,7 +705,10 @@ impl IoPoller {
             )),
         };
         drop(sockets);
-        register_result?;
+        if let Err(err) = register_result {
+            self.rollback_wait_registration(rollback);
+            return Err(err);
+        }
         let _ = self.waker.wake();
         if trace_io_poller() {
             eprintln!(
@@ -753,10 +834,12 @@ impl IoPoller {
         let waiter_id = Arc::as_ptr(&waiter) as usize;
         let socket_id = socket_ptr as usize;
         let mut sockets = self.sockets.lock().unwrap();
+        let mut new_entry = false;
         let token = sockets
             .get(&socket_id)
             .map(|entry| entry.token)
             .unwrap_or_else(|| {
+                new_entry = true;
                 let token = Token(self.next_token.fetch_add(1, AtomicOrdering::Relaxed));
                 let debug_fd = socket_debug_fd(socket_ptr).unwrap_or(-1);
                 sockets.insert(
@@ -774,6 +857,7 @@ impl IoPoller {
                 token
             });
         let entry = sockets.get_mut(&socket_id).expect("socket entry");
+        let previous_interests = entry.interests;
         entry.blocking_waiters.insert(Arc::clone(&waiter));
         let interest = interest_from_events(events);
         let mut updated = false;
@@ -789,9 +873,16 @@ impl IoPoller {
             }
         }
         let interests = entry.interests;
+        let rollback = IoBlockingRegistrationRollback {
+            socket_id,
+            waiter_id,
+            token,
+            new_entry,
+            previous_interests: (!new_entry).then_some(previous_interests),
+        };
         drop(sockets);
         if updated {
-            with_socket_mut(socket_ptr, |sock| {
+            let register_result = with_socket_mut(socket_ptr, |sock| {
                 if needs_register {
                     let source = sock.source_mut().ok_or_else(|| {
                         std::io::Error::new(ErrorKind::InvalidInput, "socket not pollable")
@@ -809,7 +900,11 @@ impl IoPoller {
                     })?;
                     self.registry.reregister(source, token, interests)
                 }
-            })?;
+            });
+            if let Err(err) = register_result {
+                self.rollback_blocking_registration(rollback);
+                return Err(err);
+            }
         }
         let _ = self.waker.wake();
         let deadline = timeout.map(|dur| Instant::now() + dur);
@@ -869,6 +964,191 @@ impl IoPoller {
             }
         }
         Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"))
+    }
+}
+
+#[cfg(all(test, molt_has_net_io))]
+mod tests {
+    use super::*;
+
+    fn slot(addr: usize) -> PtrSlot {
+        PtrSlot(addr as *mut u8)
+    }
+
+    fn socket_entry(
+        token: Token,
+        interests: Interest,
+        waiters: WaiterList,
+        blocking_waiters: BlockingWaiterList,
+    ) -> IoSocketEntry {
+        IoSocketEntry {
+            token,
+            interests,
+            waiters,
+            blocking_waiters,
+            source: IoSource::Socket(slot(0xdead)),
+            debug_fd: -1,
+        }
+    }
+
+    #[test]
+    fn rollback_new_wait_registration_clears_all_maps() {
+        let poller = IoPoller::new();
+        let waiter = slot(0x1000);
+        let socket_id = 0x2000usize;
+        let token = Token(11);
+        let mut waiters = WaiterList::default();
+        waiters.insert(waiter);
+        poller.waiters.lock().unwrap().insert(
+            waiter,
+            IoWaiter {
+                socket_id,
+                events: IO_EVENT_READ,
+            },
+        );
+        poller.sockets.lock().unwrap().insert(
+            socket_id,
+            socket_entry(
+                token,
+                Interest::READABLE,
+                waiters,
+                BlockingWaiterList::default(),
+            ),
+        );
+        poller.tokens.lock().unwrap().insert(token, socket_id);
+        poller.ready.lock().unwrap().insert(waiter, IO_EVENT_ERROR);
+
+        poller.rollback_wait_registration(IoRegistrationRollback {
+            socket_id,
+            waiter_key: waiter,
+            token,
+            new_entry: true,
+            previous_interests: None,
+        });
+
+        assert!(poller.waiters.lock().unwrap().is_empty());
+        assert!(poller.sockets.lock().unwrap().is_empty());
+        assert!(poller.tokens.lock().unwrap().is_empty());
+        assert!(poller.ready.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rollback_existing_wait_registration_restores_interest_and_waiters() {
+        let poller = IoPoller::new();
+        let existing = slot(0x1000);
+        let waiter = slot(0x1008);
+        let socket_id = 0x2000usize;
+        let token = Token(12);
+        let mut waiters = WaiterList::default();
+        waiters.insert(existing);
+        waiters.insert(waiter);
+        poller.waiters.lock().unwrap().insert(
+            waiter,
+            IoWaiter {
+                socket_id,
+                events: IO_EVENT_WRITE,
+            },
+        );
+        poller.sockets.lock().unwrap().insert(
+            socket_id,
+            socket_entry(
+                token,
+                Interest::READABLE | Interest::WRITABLE,
+                waiters,
+                BlockingWaiterList::default(),
+            ),
+        );
+        poller.tokens.lock().unwrap().insert(token, socket_id);
+
+        poller.rollback_wait_registration(IoRegistrationRollback {
+            socket_id,
+            waiter_key: waiter,
+            token,
+            new_entry: false,
+            previous_interests: Some(Interest::READABLE),
+        });
+
+        assert!(!poller.waiters.lock().unwrap().contains_key(&waiter));
+        assert_eq!(poller.tokens.lock().unwrap().get(&token), Some(&socket_id));
+        let sockets = poller.sockets.lock().unwrap();
+        let entry = sockets.get(&socket_id).expect("socket entry");
+        assert_eq!(entry.interests, Interest::READABLE);
+        assert_eq!(entry.waiters.len(), 1);
+    }
+
+    #[test]
+    fn rollback_blocking_registration_removes_waiter_and_restores_interest() {
+        let poller = IoPoller::new();
+        let socket_id = 0x2000usize;
+        let token = Token(13);
+        let waiter = Arc::new(BlockingWaiter {
+            events: IO_EVENT_WRITE,
+            ready: Mutex::new(None),
+            condvar: Condvar::new(),
+        });
+        let waiter_id = blocking_waiter_id(&waiter);
+        let mut blocking_waiters = BlockingWaiterList::default();
+        blocking_waiters.insert(Arc::clone(&waiter));
+        poller.sockets.lock().unwrap().insert(
+            socket_id,
+            socket_entry(
+                token,
+                Interest::READABLE | Interest::WRITABLE,
+                WaiterList::default(),
+                blocking_waiters,
+            ),
+        );
+        poller.tokens.lock().unwrap().insert(token, socket_id);
+
+        poller.rollback_blocking_registration(IoBlockingRegistrationRollback {
+            socket_id,
+            waiter_id,
+            token,
+            new_entry: false,
+            previous_interests: Some(Interest::READABLE),
+        });
+
+        assert_eq!(poller.tokens.lock().unwrap().get(&token), Some(&socket_id));
+        let sockets = poller.sockets.lock().unwrap();
+        let entry = sockets.get(&socket_id).expect("socket entry");
+        assert_eq!(entry.interests, Interest::READABLE);
+        assert!(entry.blocking_waiters.is_empty());
+    }
+
+    #[test]
+    fn rollback_new_blocking_registration_clears_socket_and_token() {
+        let poller = IoPoller::new();
+        let socket_id = 0x2000usize;
+        let token = Token(14);
+        let waiter = Arc::new(BlockingWaiter {
+            events: IO_EVENT_READ,
+            ready: Mutex::new(None),
+            condvar: Condvar::new(),
+        });
+        let waiter_id = blocking_waiter_id(&waiter);
+        let mut blocking_waiters = BlockingWaiterList::default();
+        blocking_waiters.insert(waiter);
+        poller.sockets.lock().unwrap().insert(
+            socket_id,
+            socket_entry(
+                token,
+                Interest::READABLE,
+                WaiterList::default(),
+                blocking_waiters,
+            ),
+        );
+        poller.tokens.lock().unwrap().insert(token, socket_id);
+
+        poller.rollback_blocking_registration(IoBlockingRegistrationRollback {
+            socket_id,
+            waiter_id,
+            token,
+            new_entry: true,
+            previous_interests: None,
+        });
+
+        assert!(poller.sockets.lock().unwrap().is_empty());
+        assert!(poller.tokens.lock().unwrap().is_empty());
     }
 }
 
