@@ -1,3 +1,4 @@
+use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -2181,7 +2182,62 @@ fn is_protected_runtime_entrypoint(name: &str) -> bool {
 /// exception. This is intentionally stricter than "has no writes": expression
 /// statements still have to execute user dispatch and raise the same exceptions
 /// as CPython even when their produced value is unused.
-pub(crate) fn simple_ir_op_is_provably_nonthrowing(op: &OpIR) -> bool {
+pub(crate) struct SimpleIrScalarPurityFacts<'a> {
+    plan: Option<&'a ScalarRepresentationPlan>,
+    literal_kinds: BTreeMap<String, ScalarKind>,
+}
+
+impl<'a> SimpleIrScalarPurityFacts<'a> {
+    pub(crate) fn for_function(
+        func: &FunctionIR,
+        plan: Option<&'a ScalarRepresentationPlan>,
+    ) -> Self {
+        let literal_kinds = func
+            .ops
+            .iter()
+            .filter_map(|op| {
+                let out = op.out.as_ref()?;
+                Some((out.clone(), simple_ir_literal_scalar_kind(op)?))
+            })
+            .collect();
+        Self {
+            plan,
+            literal_kinds,
+        }
+    }
+
+    fn name_scalar_kind(&self, name: &str) -> Option<ScalarKind> {
+        self.literal_kinds
+            .get(name)
+            .copied()
+            .or_else(|| self.plan.and_then(|plan| plan.name_scalar_kind(name)))
+    }
+
+    fn name_is_integer_family(&self, name: &str) -> bool {
+        matches!(
+            self.name_scalar_kind(name),
+            Some(ScalarKind::Int | ScalarKind::Bool)
+        ) || self
+            .plan
+            .is_some_and(|plan| plan.name_is_integer_family(name))
+    }
+}
+
+fn simple_ir_literal_scalar_kind(op: &OpIR) -> Option<ScalarKind> {
+    match op.kind.as_str() {
+        "const" => op.value.map(|_| ScalarKind::Int),
+        "const_bool" => Some(ScalarKind::Bool),
+        "const_float" => Some(ScalarKind::Float),
+        "const_str" => Some(ScalarKind::Str),
+        "const_none" => Some(ScalarKind::NoneValue),
+        _ => None,
+    }
+}
+
+pub(crate) fn simple_ir_op_is_provably_nonthrowing_with_facts(
+    facts: Option<&SimpleIrScalarPurityFacts<'_>>,
+    op: &OpIR,
+) -> bool {
     let kind = op.kind.as_str();
 
     if matches!(
@@ -2221,39 +2277,8 @@ pub(crate) fn simple_ir_op_is_provably_nonthrowing(op: &OpIR) -> bool {
         return true;
     }
 
-    if matches!(
-        kind,
-        "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" | "neg" | "pos"
-    ) && (op.fast_int == Some(true) || op.fast_float == Some(true))
-    {
-        return true;
-    }
-
-    if matches!(
-        kind,
-        "bit_and"
-            | "bit_or"
-            | "bit_xor"
-            | "bit_not"
-            | "bitand"
-            | "bitor"
-            | "bitxor"
-            | "shl"
-            | "shr"
-            | "lshift"
-            | "rshift"
-            | "inplace_bit_and"
-            | "inplace_bit_or"
-            | "inplace_bit_xor"
-            | "inplace_lshift"
-            | "inplace_rshift"
-    ) && op.fast_int == Some(true)
-    {
-        return true;
-    }
-
-    if matches!(kind, "lt" | "le" | "gt" | "ge" | "eq" | "ne")
-        && (op.fast_int == Some(true) || op.fast_float == Some(true))
+    if let Some(facts) = facts
+        && simple_ir_scalar_op_is_provably_nonthrowing(facts, op)
     {
         return true;
     }
@@ -2314,10 +2339,91 @@ pub(crate) fn simple_ir_op_is_provably_nonthrowing(op: &OpIR) -> bool {
     false
 }
 
+fn simple_ir_scalar_op_is_provably_nonthrowing(
+    facts: &SimpleIrScalarPurityFacts<'_>,
+    op: &OpIR,
+) -> bool {
+    let args = op.args.as_deref().unwrap_or(&[]);
+    let arg_kind = |name: &str| facts.name_scalar_kind(name);
+    let arg_is_numeric = |name: &str| {
+        matches!(
+            arg_kind(name),
+            Some(ScalarKind::Int | ScalarKind::Bool | ScalarKind::Float)
+        )
+    };
+    let all_args_numeric =
+        || !args.is_empty() && args.iter().all(|arg| arg_is_numeric(arg.as_str()));
+    let all_args_str = || {
+        !args.is_empty()
+            && args
+                .iter()
+                .all(|arg| arg_kind(arg.as_str()) == Some(ScalarKind::Str))
+    };
+    let all_args_scalar = || !args.is_empty() && args.iter().all(|arg| arg_kind(arg).is_some());
+    let first_source_kind = || {
+        op.var
+            .as_deref()
+            .or_else(|| args.first().map(String::as_str))
+            .and_then(arg_kind)
+    };
+
+    match op.kind.as_str() {
+        "add" | "inplace_add" => all_args_numeric() || all_args_str(),
+        "sub" | "mul" | "inplace_sub" | "inplace_mul" => all_args_numeric(),
+        "neg" | "pos" => matches!(
+            first_source_kind(),
+            Some(ScalarKind::Int | ScalarKind::Bool | ScalarKind::Float)
+        ),
+        "bit_and" | "bit_or" | "bit_xor" | "bit_not" | "bitand" | "bitor" | "bitxor"
+        | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" => {
+            !args.is_empty()
+                && args
+                    .iter()
+                    .all(|arg| facts.name_is_integer_family(arg.as_str()))
+        }
+        "eq" | "ne" => all_args_scalar(),
+        "lt" | "le" | "gt" | "ge" => all_args_numeric() || all_args_str(),
+        _ => false,
+    }
+}
+
+fn simple_ir_op_needs_scalar_plan_for_nonthrowing(op: &OpIR) -> bool {
+    matches!(
+        op.kind.as_str(),
+        "add"
+            | "sub"
+            | "mul"
+            | "inplace_add"
+            | "inplace_sub"
+            | "inplace_mul"
+            | "neg"
+            | "pos"
+            | "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "bit_not"
+            | "bitand"
+            | "bitor"
+            | "bitxor"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "lt"
+            | "le"
+            | "gt"
+            | "ge"
+            | "eq"
+            | "ne"
+    )
+}
+
 /// Returns `true` when an unused-result op can be erased without dropping
 /// Python-observable behaviour.
-fn simple_ir_unused_result_is_removable(op: &OpIR) -> bool {
-    if !simple_ir_op_is_provably_nonthrowing(op) {
+fn simple_ir_unused_result_is_removable(
+    facts: Option<&SimpleIrScalarPurityFacts<'_>>,
+    op: &OpIR,
+) -> bool {
+    if !simple_ir_op_is_provably_nonthrowing_with_facts(facts, op) {
         return false;
     }
 
@@ -2752,11 +2858,22 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR) {
             }
 
             let before = func.ops.len();
+            let needs_scalar_plan = func.ops.iter().any(|op| {
+                simple_ir_op_needs_scalar_plan_for_nonthrowing(op)
+                    && !simple_ir_defined_names(op).is_empty()
+                    && simple_ir_defined_names(op)
+                        .iter()
+                        .all(|name| !consumed.contains(*name))
+            });
+            let scalar_plan =
+                needs_scalar_plan.then(|| ScalarRepresentationPlan::for_function_ir(func));
+            let scalar_facts = needs_scalar_plan
+                .then(|| SimpleIrScalarPurityFacts::for_function(func, scalar_plan.as_ref()));
 
             func.ops.retain(|op| {
                 // Keep all ops whose execution is observable, including
                 // potential exceptions and user-code dispatch.
-                if !simple_ir_unused_result_is_removable(op) {
+                if !simple_ir_unused_result_is_removable(scalar_facts.as_ref(), op) {
                     return true;
                 }
 
@@ -4040,12 +4157,64 @@ mod tests {
     }
 
     #[test]
-    fn dead_op_elim_removes_unused_fast_int_arithmetic_chain() {
-        let mut add = make_arith("add", &["_v0", "_v1"], "_unused");
+    fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
+        let mut add = make_arith("add", &["left", "right"], "_unused");
         add.fast_int = Some(true);
         let mut ir = SimpleIR {
             functions: vec![FunctionIR {
-                name: "unused_fast_add".to_string(),
+                name: "unused_transport_hint_add".to_string(),
+                params: vec!["left".to_string(), "right".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![add, make_op("ret_void")],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter().any(|op| op.kind == "add"),
+            "transport hints must not prove unused arithmetic is nonthrowing without typed facts: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "unused_typed_param_add".to_string(),
+                params: vec!["left".to_string(), "right".to_string()],
+                param_types: Some(vec!["int".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    make_arith("add", &["left", "right"], "_unused"),
+                    make_op("ret_void"),
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter().all(|op| op.kind != "add"),
+            "typed scalar facts, not transport hints, should prove unused int arithmetic removable: {ops:?}"
+        );
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind, "ret_void");
+    }
+
+    #[test]
+    fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
+        let add = make_arith("add", &["_v0", "_v1"], "_unused");
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "unused_typed_const_add".to_string(),
                 params: vec![],
                 param_types: None,
                 source_file: None,
@@ -4065,7 +4234,7 @@ mod tests {
         let ops = &ir.functions[0].ops;
         assert!(
             ops.iter().all(|op| op.kind != "add" && op.out.is_none()),
-            "dead-op elimination should still remove provably nonthrowing unused fast-int value chains: {ops:?}"
+            "dead-op elimination should still remove provably nonthrowing unused typed value chains: {ops:?}"
         );
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].kind, "ret_void");

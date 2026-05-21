@@ -241,8 +241,25 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
 /// region with just the BODY ops.
 ///
 /// Targets `bench_exception_check.happy_path`'s `try: total += 1` loop
-/// where `total += 1` is fast-int arithmetic and provably non-throwing.
+/// where `total += 1` is typed scalar arithmetic and provably non-throwing.
 pub fn elide_useless_try_blocks(ops: &mut Vec<OpIR>) {
+    elide_useless_try_blocks_inner(ops, None);
+}
+
+/// Elide try/except wrappers using the same typed representation authority as
+/// the backend lowering path. Transport flags such as `fast_int` and
+/// `fast_float` are not proof that Python dispatch cannot raise.
+pub fn elide_useless_try_blocks_for_function(func: &mut FunctionIR) {
+    let scalar_plan = crate::representation_plan::ScalarRepresentationPlan::for_function_ir(func);
+    let scalar_facts =
+        crate::passes::SimpleIrScalarPurityFacts::for_function(func, Some(&scalar_plan));
+    elide_useless_try_blocks_inner(&mut func.ops, Some(&scalar_facts));
+}
+
+fn elide_useless_try_blocks_inner(
+    ops: &mut Vec<OpIR>,
+    scalar_facts: Option<&crate::passes::SimpleIrScalarPurityFacts<'_>>,
+) {
     let mut i = 0;
     while i < ops.len() {
         if ops[i].kind != "exception_push" {
@@ -310,7 +327,7 @@ pub fn elide_useless_try_blocks(ops: &mut Vec<OpIR>) {
                 safe = false;
                 break;
             }
-            if !crate::passes::simple_ir_op_is_provably_nonthrowing(op) {
+            if !crate::passes::simple_ir_op_is_provably_nonthrowing_with_facts(scalar_facts, op) {
                 safe = false;
                 break;
             }
@@ -3481,11 +3498,11 @@ impl SimpleBackend {
                             // Elide try/except wrappers whose body provably
                             // cannot raise — the frontend emits the wrapper
                             // unconditionally, but a body of e.g.
-                            // `total += 1` (fast-int) carries it for nothing.
+                            // `total += 1` (typed scalar arithmetic) carries it for nothing.
                             // Done at SimpleIR level so the eliminated ops
                             // never reach the TIR pipeline at all.
                             if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
-                                elide_useless_try_blocks(&mut tmp_func.ops);
+                                elide_useless_try_blocks_for_function(&mut tmp_func);
                             }
                             let func_name = tmp_func.name.clone();
                             let mut tir_func =
@@ -4397,7 +4414,7 @@ mod tests {
     use super::{
         FunctionIR, NativeBackendModuleContext, OpIR, SimpleBackend, SimpleIR, TrampolineKind,
         analyze_native_backend_ir, compute_function_has_ret, elide_useless_try_blocks,
-        merge_function_arities, merge_function_has_ret,
+        elide_useless_try_blocks_for_function, merge_function_arities, merge_function_has_ret,
     };
     use crate::drain_cleanup_entry_tracked;
     use crate::passes::ReturnAliasSummary;
@@ -4580,6 +4597,178 @@ mod tests {
                 .all(|op| !(op.kind == "check_exception" && op.value == Some(10))),
             "eliding a safe try/except body must not leave stale handler checks: {ops:?}"
         );
+    }
+
+    #[test]
+    fn try_except_elision_keeps_transport_hinted_unknown_add() {
+        let mut add = OpIR {
+            kind: "add".to_string(),
+            args: Some(vec!["left".to_string(), "right".to_string()]),
+            out: Some("sum".to_string()),
+            ..OpIR::default()
+        };
+        add.fast_int = Some(true);
+        let mut func = FunctionIR {
+            name: "transport_hint_try_body".to_string(),
+            params: vec!["left".to_string(), "right".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "exception_push".to_string(),
+                    out: Some("none".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "try_start".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                add,
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("result".to_string()),
+                    args: Some(vec!["sum".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "try_end".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(11),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_last".to_string(),
+                    out: Some("exc".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_match_builtin".to_string(),
+                    value: Some(3),
+                    s_value: Some("ValueError".to_string()),
+                    args: Some(vec!["exc".to_string()]),
+                    out: Some("matched".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(11),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_pop".to_string(),
+                    out: Some("none".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+        };
+
+        elide_useless_try_blocks_for_function(&mut func);
+
+        assert!(
+            func.ops.iter().any(|op| op.kind == "exception_push")
+                && func.ops.iter().any(|op| op.kind == "add"),
+            "transport hints alone must not elide try/except around Python arithmetic: {:?}",
+            func.ops
+        );
+    }
+
+    #[test]
+    fn try_except_elision_uses_typed_int_body_without_transport_hints() {
+        let mut func = FunctionIR {
+            name: "typed_int_try_body".to_string(),
+            params: vec!["left".to_string(), "right".to_string()],
+            param_types: Some(vec!["int".to_string(), "int".to_string()]),
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "exception_push".to_string(),
+                    out: Some("none".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "try_start".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".to_string(),
+                    args: Some(vec!["left".to_string(), "right".to_string()]),
+                    out: Some("sum".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("result".to_string()),
+                    args: Some(vec!["sum".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "try_end".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(11),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_last".to_string(),
+                    out: Some("exc".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_match_builtin".to_string(),
+                    value: Some(3),
+                    s_value: Some("ValueError".to_string()),
+                    args: Some(vec!["exc".to_string()]),
+                    out: Some("matched".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(11),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_pop".to_string(),
+                    out: Some("none".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+        };
+
+        elide_useless_try_blocks_for_function(&mut func);
+
+        let kinds: Vec<&str> = func.ops.iter().map(|op| op.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["add", "store_var"]);
     }
 
     #[test]
