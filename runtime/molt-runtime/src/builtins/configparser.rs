@@ -11,6 +11,7 @@
 //!   - `getint`, `getfloat`, `getboolean` type-coercion helpers
 //!   - `write` serialises back to an INI-formatted file
 
+use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, alloc_dict_with_pairs, alloc_list, alloc_string,
     alloc_tuple, dec_ref_bits, dict_order, is_truthy, obj_from_bits, object_type_id,
@@ -18,18 +19,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{LazyLock, Mutex};
-
-// ---------------------------------------------------------------------------
-// Handle counter
-// ---------------------------------------------------------------------------
-
-static NEXT_HANDLE_ID: AtomicI64 = AtomicI64::new(1);
-
-fn next_handle_id() -> i64 {
-    NEXT_HANDLE_ID.fetch_add(1, Ordering::Relaxed)
-}
+use std::sync::MutexGuard;
 
 // ---------------------------------------------------------------------------
 // ConfigParser data model
@@ -298,11 +288,32 @@ fn split_key_value(line: &str) -> (&str, &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Process-wide handle registry
+// Runtime-owned handle registry
 // ---------------------------------------------------------------------------
 
-static CONFIG_REGISTRY: LazyLock<Mutex<HashMap<i64, ConfigState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) struct ConfigParserRuntimeState {
+    next_handle_id: i64,
+    configs: HashMap<i64, ConfigState>,
+}
+
+impl ConfigParserRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_handle_id: 1,
+            configs: HashMap::new(),
+        }
+    }
+}
+
+fn configparser_state(_py: &PyToken<'_>) -> MutexGuard<'static, ConfigParserRuntimeState> {
+    runtime_state(_py).configparser.lock().unwrap()
+}
+
+pub(crate) fn configparser_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    let _ = _py;
+    let mut guard = state.configparser.lock().unwrap();
+    *guard = ConfigParserRuntimeState::new();
+}
 
 // ---------------------------------------------------------------------------
 // Object helpers
@@ -431,11 +442,15 @@ pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: 
             _ => Interpolation::Basic,
         };
 
-        let id = next_handle_id();
-        CONFIG_REGISTRY
-            .lock()
-            .unwrap()
-            .insert(id, ConfigState::new(defaults, interpolation));
+        let id = {
+            let mut registry = configparser_state(_py);
+            let id = registry.next_handle_id;
+            registry.next_handle_id += 1;
+            registry
+                .configs
+                .insert(id, ConfigState::new(defaults, interpolation));
+            id
+        };
         MoltObject::from_int(id).bits()
     })
 }
@@ -463,7 +478,7 @@ pub extern "C" fn molt_configparser_read(handle_bits: u64, filename_bits: u64) -
             }
         };
 
-        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+        let ok = configparser_state(_py).configs.get_mut(&id).map(|state| {
             state.read_string(&content);
             true
         });
@@ -495,7 +510,7 @@ pub extern "C" fn molt_configparser_read_string(handle_bits: u64, text_bits: u64
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "text must be str");
         };
-        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+        let ok = configparser_state(_py).configs.get_mut(&id).map(|state| {
             state.read_string(&text);
         });
         if ok.is_none() {
@@ -511,9 +526,8 @@ pub extern "C" fn molt_configparser_sections(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
-        let sections = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let sections = configparser_state(_py)
+            .configs
             .get(&id)
             .map(|state| state.section_order.to_vec());
         let Some(secs) = sections else {
@@ -532,9 +546,8 @@ pub extern "C" fn molt_configparser_has_section(handle_bits: u64, section_bits: 
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let result = configparser_state(_py)
+            .configs
             .get(&id)
             .map(|state| state.sections.contains_key(&section));
         let Some(found) = result else {
@@ -561,7 +574,7 @@ pub extern "C" fn molt_configparser_has_option(
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+        let result = configparser_state(_py).configs.get(&id).map(|state| {
             state
                 .sections
                 .get(&section)
@@ -593,9 +606,8 @@ pub extern "C" fn molt_configparser_get(
         };
         // Look up without fallback first; if missing, return fallback_bits
         // directly (avoids round-tripping fallback through string conversion).
-        let result = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let result = configparser_state(_py)
+            .configs
             .get(&id)
             .and_then(|state| state.get(&section, &option, None));
         match result {
@@ -635,9 +647,8 @@ pub extern "C" fn molt_configparser_getint(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let result = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let result = configparser_state(_py)
+            .configs
             .get(&id)
             .and_then(|state| state.get(&section, &option, None));
         match result {
@@ -680,9 +691,8 @@ pub extern "C" fn molt_configparser_getfloat(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let result = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let result = configparser_state(_py)
+            .configs
             .get(&id)
             .and_then(|state| state.get(&section, &option, None));
         match result {
@@ -725,9 +735,8 @@ pub extern "C" fn molt_configparser_getboolean(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
-        let result = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let result = configparser_state(_py)
+            .configs
             .get(&id)
             .and_then(|state| state.get(&section, &option, None));
 
@@ -778,7 +787,7 @@ pub extern "C" fn molt_configparser_set(
         let value = string_obj_to_owned(obj_from_bits(value_bits)).unwrap_or_default();
         let key = option.to_ascii_lowercase();
 
-        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+        let ok = configparser_state(_py).configs.get_mut(&id).map(|state| {
             if section.eq_ignore_ascii_case("DEFAULT") {
                 state.defaults.insert(key, value);
             } else if let Some(sec) = state.sections.get_mut(&section) {
@@ -810,7 +819,7 @@ pub extern "C" fn molt_configparser_add_section(handle_bits: u64, section_bits: 
         if section.eq_ignore_ascii_case("DEFAULT") {
             return raise_exception::<u64>(_py, "ValueError", "Invalid section name: 'DEFAULT'");
         }
-        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+        let ok = configparser_state(_py).configs.get_mut(&id).map(|state| {
             if state.sections.contains_key(&section) {
                 false // DuplicateSectionError
             } else {
@@ -836,7 +845,7 @@ pub extern "C" fn molt_configparser_remove_section(handle_bits: u64, section_bit
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+        let result = configparser_state(_py).configs.get_mut(&id).map(|state| {
             let removed = state.sections.remove(&section).is_some();
             if removed {
                 state.section_order.retain(|s| s != &section);
@@ -867,7 +876,7 @@ pub extern "C" fn molt_configparser_remove_option(
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+        let result = configparser_state(_py).configs.get_mut(&id).map(|state| {
             state
                 .sections
                 .get_mut(&section)
@@ -892,7 +901,7 @@ pub extern "C" fn molt_configparser_options(handle_bits: u64, section_bits: u64)
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+        let result = configparser_state(_py).configs.get(&id).map(|state| {
             let sec_keys: Vec<String> = state
                 .sections
                 .get(&section)
@@ -923,7 +932,7 @@ pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "section must be str");
         };
-        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).and_then(|state| {
+        let result = configparser_state(_py).configs.get(&id).and_then(|state| {
             state.sections.get(&section).map(|sec| {
                 let mut pairs: Vec<(String, String)> =
                     sec.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -953,9 +962,8 @@ pub extern "C" fn molt_configparser_write(handle_bits: u64, filename_bits: u64) 
         let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "filename must be str");
         };
-        let content = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let content = configparser_state(_py)
+            .configs
             .get(&id)
             .map(|state| state.write());
         let Some(content) = content else {
@@ -972,7 +980,7 @@ pub extern "C" fn molt_configparser_write(handle_bits: u64, filename_bits: u64) 
 pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            CONFIG_REGISTRY.lock().unwrap().remove(&id);
+            configparser_state(_py).configs.remove(&id);
         }
         MoltObject::none().bits()
     })
@@ -990,9 +998,8 @@ pub extern "C" fn molt_configparser_write_string(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
-        let content = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let content = configparser_state(_py)
+            .configs
             .get(&id)
             .map(|state| state.write());
         let Some(content) = content else {
@@ -1025,7 +1032,7 @@ pub extern "C" fn molt_configparser_get_raw(
             return raise_exception::<u64>(_py, "TypeError", "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).and_then(|state| {
+        let result = configparser_state(_py).configs.get(&id).and_then(|state| {
             state
                 .sections
                 .get(&section)
@@ -1063,9 +1070,8 @@ pub extern "C" fn molt_configparser_interpolate_basic(
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "value must be str");
         };
-        let result = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let result = configparser_state(_py)
+            .configs
             .get(&id)
             .map(|state| state.interpolate(value.clone(), &section));
         let Some(interpolated) = result else {
@@ -1098,9 +1104,8 @@ pub extern "C" fn molt_configparser_interpolate_extended(
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "value must be str");
         };
-        let result = CONFIG_REGISTRY
-            .lock()
-            .unwrap()
+        let result = configparser_state(_py)
+            .configs
             .get(&id)
             .map(|state| interpolate_extended(state, &value, &section));
         let Some(interpolated) = result else {
@@ -1191,7 +1196,7 @@ pub extern "C" fn molt_configparser_read_file(
             return raise_exception::<u64>(_py, "TypeError", "content must be str");
         };
         let _source = string_obj_to_owned(obj_from_bits(source_bits));
-        let ok = CONFIG_REGISTRY.lock().unwrap().get_mut(&id).map(|state| {
+        let ok = configparser_state(_py).configs.get_mut(&id).map(|state| {
             state.read_string(&text);
         });
         if ok.is_none() {
@@ -1208,7 +1213,7 @@ pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
         };
-        let result = CONFIG_REGISTRY.lock().unwrap().get(&id).map(|state| {
+        let result = configparser_state(_py).configs.get(&id).map(|state| {
             let mut pairs: Vec<(String, String)> = state
                 .defaults
                 .iter()
@@ -1231,4 +1236,51 @@ fn _suppress(_py: &PyToken<'_>, b: u64) {
     let _ = is_truthy(_py, obj_from_bits(b));
     let _ = alloc_tuple(_py, &[]);
     let _ = alloc_dict_with_pairs(_py, &[]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exception_pending;
+
+    #[test]
+    fn configparser_state_is_runtime_scoped_and_clearable() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(py, {
+            let state = runtime_state(py);
+            configparser_clear_state(py, state);
+
+            let handle_bits =
+                molt_configparser_new(MoltObject::none().bits(), MoltObject::none().bits());
+            assert_eq!(to_i64(obj_from_bits(handle_bits)), Some(1));
+
+            let text_bits = alloc_str_or_err(py, "[section]\nvalue = 42\n").unwrap();
+            let read_bits = molt_configparser_read_string(handle_bits, text_bits);
+            dec_ref_bits(py, text_bits);
+            assert!(obj_from_bits(read_bits).is_none());
+
+            {
+                let guard = state.configparser.lock().unwrap();
+                assert_eq!(guard.next_handle_id, 2);
+                assert_eq!(guard.configs.len(), 1);
+                assert!(guard.configs.contains_key(&1));
+            }
+
+            configparser_clear_state(py, state);
+            {
+                let guard = state.configparser.lock().unwrap();
+                assert_eq!(guard.next_handle_id, 1);
+                assert!(guard.configs.is_empty());
+            }
+
+            let second_handle =
+                molt_configparser_new(MoltObject::none().bits(), MoltObject::none().bits());
+            assert_eq!(to_i64(obj_from_bits(second_handle)), Some(1));
+            configparser_clear_state(py, state);
+            assert!(!exception_pending(py));
+        });
+    }
 }
