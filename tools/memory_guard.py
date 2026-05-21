@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -1098,11 +1099,24 @@ def run_guarded(
         dict(env) if env is not None else None,
         child_rlimit_kb=child_rlimit_kb,
     )
+    stdout_capture = None
+    stderr_capture = None
+    if capture_output:
+        stdout_capture = tempfile.TemporaryFile(
+            mode="w+t",
+            encoding="utf-8",
+            errors="replace",
+        )
+        stderr_capture = tempfile.TemporaryFile(
+            mode="w+t",
+            encoding="utf-8",
+            errors="replace",
+        )
     popen_kwargs: dict[str, object] = {
         "cwd": cwd,
         "env": dict(launch.env) if launch.env is not None else None,
-        "stdout": subprocess.PIPE if capture_output else None,
-        "stderr": subprocess.PIPE if capture_output else None,
+        "stdout": stdout_capture if capture_output else None,
+        "stderr": stderr_capture if capture_output else None,
         "stdin": subprocess.PIPE if input is not None else None,
         "text": True,
         "start_new_session": True,
@@ -1115,6 +1129,10 @@ def run_guarded(
         proc = subprocess.Popen(launch.command, **popen_kwargs)
     except Exception:
         _close_fds((*launch.close_fds, launch.started_read_fd))
+        if stdout_capture is not None:
+            stdout_capture.close()
+        if stderr_capture is not None:
+            stderr_capture.close()
         raise
     _close_fds(launch.close_fds)
     stdin_thread: threading.Thread | None = None
@@ -1261,20 +1279,35 @@ def run_guarded(
             limit_at_violation = current_limits
             if peak is None or child_exit_usage.max_rss_kb > peak.rss_kb:
                 peak = violation
+    stdout = ""
+    stderr = ""
     try:
-        stdout, stderr = proc.communicate(timeout=max(1.0, poll_interval * 4.0))
-    except subprocess.TimeoutExpired:
-        samples = sampler()
-        watched = tracker.update(samples)
-        terminate_watched_processes(
-            proc.pid,
-            samples=samples,
-            watched=watched,
-            grace=0.25,
-        )
-        stdout, stderr = proc.communicate()
-    if stdin_thread is not None:
-        stdin_thread.join(timeout=1.0)
+        if proc.returncode is None:
+            try:
+                proc.wait(timeout=max(1.0, poll_interval * 4.0))
+            except subprocess.TimeoutExpired:
+                samples = sampler()
+                watched = tracker.update(samples)
+                terminate_watched_processes(
+                    proc.pid,
+                    samples=samples,
+                    watched=watched,
+                    grace=0.25,
+                )
+                proc.wait()
+        if stdin_thread is not None:
+            stdin_thread.join(timeout=1.0)
+        if stdout_capture is not None:
+            stdout_capture.seek(0)
+            stdout = stdout_capture.read()
+        if stderr_capture is not None:
+            stderr_capture.seek(0)
+            stderr = stderr_capture.read()
+    finally:
+        if stdout_capture is not None:
+            stdout_capture.close()
+        if stderr_capture is not None:
+            stderr_capture.close()
     child_started = _read_child_started_at(launch.started_read_fd)
     elapsed_start = child_started if child_started is not None else start
     elapsed_s = max(0.0, finished - elapsed_start)
@@ -1290,8 +1323,8 @@ def run_guarded(
         violation=violation,
         peak=peak,
         peak_total=peak_total,
-        stdout=stdout or "",
-        stderr=stderr or "",
+        stdout=stdout,
+        stderr=stderr,
         timed_out=timed_out,
         elapsed_s=elapsed_s,
         limit_at_violation=limit_at_violation,

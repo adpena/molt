@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import molt.cli as cli
+
+
+def test_uv_lock_check_uses_build_memory_guard(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    (tmp_path / "uv.lock").write_text("# lock\n")
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+
+    assert cli._verify_uv_lock(tmp_path) is None
+    assert captured["cmd"] == ["uv", "lock", "--check"]
+    assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_BUILD"
+    assert captured["kwargs"]["cwd"] == tmp_path
+
+
+def test_cargo_lock_check_uses_build_memory_guard(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Cargo.toml").write_text("[workspace]\nmembers=[]\n")
+    (tmp_path / "Cargo.lock").write_text("# lock\n")
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+
+    assert cli._verify_cargo_lock(tmp_path) is None
+    assert captured["cmd"] == [
+        "cargo",
+        "metadata",
+        "--locked",
+        "--format-version",
+        "1",
+    ]
+    assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_BUILD"
+    assert captured["kwargs"]["cwd"] == tmp_path
+
+
+def test_native_link_command_uses_build_memory_guard(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "out", "err")
+
+    class FakeMemoryGuard:
+        TIMEOUT_RETURN_CODE = 124
+
+    class FakeHarness:
+        memory_guard = FakeMemoryGuard()
+
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+    monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
+
+    result = cli._run_native_link_command(
+        link_cmd=["cc", "main.o"],
+        json_output=True,
+        link_timeout=12.0,
+    )
+
+    assert result.returncode == 0
+    assert captured["cmd"] == ["cc", "main.o"]
+    assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_BUILD"
+    assert captured["kwargs"]["timeout"] == 12.0
+
+
+def test_rustup_target_install_uses_build_memory_guard(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kwargs))
+        if cmd[2:] == ["list", "--installed"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "installed", "")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+
+    warnings: list[str] = []
+    assert cli._ensure_rustup_target("wasm32-wasip1", warnings) is True
+    assert warnings == []
+    assert calls[0][0] == ["/usr/bin/rustup", "target", "list", "--installed"]
+    assert calls[1][0] == ["/usr/bin/rustup", "target", "add", "wasm32-wasip1"]
+    assert calls[0][1]["memory_guard_prefix"] == "MOLT_BUILD"
+    assert calls[1][1]["memory_guard_prefix"] == "MOLT_BUILD"
+
+
+def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+    output = tmp_path / "out.mlir"
+    backend = tmp_path / "molt-backend-mlir"
+
+    def fake_tempfiles(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        output.write_text("module {}\n")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(cli, "_find_mlir_backend_binary", lambda root: backend)
+    monkeypatch.setattr(cli, "_run_subprocess_captured_to_tempfiles", fake_tempfiles)
+
+    rc = cli._run_mlir_backend_pipeline(
+        ir={"functions": []},
+        output_artifact=output,
+        project_root=tmp_path,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    assert captured["cmd"] == [str(backend), "--output", str(output)]
+    assert captured["kwargs"]["cwd"] == tmp_path
+    assert captured["kwargs"]["timeout"] == 120
+    assert captured["kwargs"]["progress_label"] == "MLIR backend"
+
+
+def test_ty_check_uses_cli_memory_guard(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+
+    ok, output = cli._run_ty_check(tmp_path)
+
+    assert ok is True
+    assert output == "ok"
+    assert captured["cmd"] == [
+        "uv",
+        "run",
+        "ty",
+        "check",
+        str(tmp_path),
+        "--output-format",
+        "concise",
+    ]
+    assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_CLI"
+
+
+def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    backend = tmp_path / "molt-backend"
+    backend.write_text("backend")
+    socket_path = tmp_path / "daemon.sock"
+    captured: dict[str, Any] = {}
+    sentinel_events: list[str] = []
+
+    class FakeSentinel:
+        def __exit__(self, exc_type, exc, tb) -> None:
+            sentinel_events.append("exit")
+
+    class FakeContext:
+        env = {"PATH": "/usr/bin", "MOLT_EXT_ROOT": str(tmp_path)}
+
+        def process_group_kwargs(self) -> dict[str, object]:
+            return {"start_new_session": True, "preexec_fn": lambda: None}
+
+        def start_repo_sentinel(self, **kwargs: object) -> FakeSentinel:
+            captured["sentinel_kwargs"] = kwargs
+            sentinel_events.append("start")
+            return FakeSentinel()
+
+    class FakeHarness:
+        class HarnessExecutionContext:
+            @classmethod
+            def from_env(cls, prefix, env, *, repo_root):  # type: ignore[no-untyped-def]
+                captured["context"] = {
+                    "prefix": prefix,
+                    "env": env,
+                    "repo_root": repo_root,
+                }
+                return FakeContext()
+
+    class FakeProc:
+        pid = 4321
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(cmd: list[str], **kwargs: object) -> FakeProc:
+        captured["popen_cmd"] = cmd
+        captured["popen_kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", lambda *a, **k: (True, None))
+
+    ok = cli._start_backend_daemon(
+        backend,
+        socket_path,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        target_triple=None,
+        startup_timeout=1.0,
+        json_output=True,
+        warnings=[],
+    )
+
+    assert ok is True
+    assert captured["context"]["prefix"] == "MOLT_BUILD"
+    assert captured["sentinel_kwargs"]["label"] == "backend_daemon_start"
+    assert captured["sentinel_kwargs"]["drain_on_exit"] is False
+    assert captured["popen_cmd"] == [
+        str(backend),
+        "--daemon",
+        "--socket",
+        str(socket_path),
+    ]
+    assert captured["popen_kwargs"]["start_new_session"] is True
+    assert callable(captured["popen_kwargs"]["preexec_fn"])
+    assert sentinel_events == ["start", "exit"]
