@@ -3,12 +3,11 @@
 // Rust intrinsics for asyncio Future state machine and synchronization primitives
 // (Event, Lock, Semaphore).
 //
-// Handle model: global LazyLock<Mutex<HashMap<i64, State>>> keyed by an
-// atomically-issued handle ID, returned to Python as a NaN-boxed integer.
-// Uses a global registry (not thread-local) so handles are visible across all
-// threads — critical for asyncio primitives used cross-thread with
-// concurrent.futures or multi-threaded event loops. The GIL serializes all
-// Python-level access, so the Mutex is always uncontended.
+// Handle model: per-RuntimeState registries keyed by atomically-issued handle
+// IDs, returned to Python as NaN-boxed integers. Registries are runtime-owned
+// so shutdown/reset drains retained object bits through the same lifecycle that
+// owns scheduler/task state. The GIL serializes all Python-level access, so the
+// Mutexes are normally uncontended.
 //
 // All stored u64 bits that may point to heap objects are inc_ref'd on store
 // and dec_ref'd on removal/drop to maintain correct refcounts.
@@ -20,30 +19,94 @@
 
 use crate::*;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{LazyLock, Mutex};
 
 // ─── Handle counters ─────────────────────────────────────────────────────────
 
-static NEXT_FUTURE_HANDLE: AtomicI64 = AtomicI64::new(1);
-static NEXT_EVENT_HANDLE: AtomicI64 = AtomicI64::new(1);
-static NEXT_LOCK_HANDLE: AtomicI64 = AtomicI64::new(1);
-static NEXT_SEMAPHORE_HANDLE: AtomicI64 = AtomicI64::new(1);
-
-fn next_future_handle() -> i64 {
-    NEXT_FUTURE_HANDLE.fetch_add(1, Ordering::Relaxed)
+pub(crate) struct AsyncioCoreState {
+    next_future_handle: AtomicI64,
+    next_event_handle: AtomicI64,
+    next_lock_handle: AtomicI64,
+    next_semaphore_handle: AtomicI64,
+    futures: Mutex<HashMap<i64, FutureState>>,
+    events: Mutex<HashMap<i64, EventState>>,
+    locks: Mutex<HashMap<i64, LockState>>,
+    semaphores: Mutex<HashMap<i64, SemaphoreState>>,
 }
 
-fn next_event_handle() -> i64 {
-    NEXT_EVENT_HANDLE.fetch_add(1, Ordering::Relaxed)
-}
+impl AsyncioCoreState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_future_handle: AtomicI64::new(1),
+            next_event_handle: AtomicI64::new(1),
+            next_lock_handle: AtomicI64::new(1),
+            next_semaphore_handle: AtomicI64::new(1),
+            futures: Mutex::new(HashMap::new()),
+            events: Mutex::new(HashMap::new()),
+            locks: Mutex::new(HashMap::new()),
+            semaphores: Mutex::new(HashMap::new()),
+        }
+    }
 
-fn next_lock_handle() -> i64 {
-    NEXT_LOCK_HANDLE.fetch_add(1, Ordering::Relaxed)
-}
+    fn next_future_handle(&self) -> i64 {
+        self.next_future_handle.fetch_add(1, Ordering::Relaxed)
+    }
 
-fn next_semaphore_handle() -> i64 {
-    NEXT_SEMAPHORE_HANDLE.fetch_add(1, Ordering::Relaxed)
+    fn next_event_handle(&self) -> i64 {
+        self.next_event_handle.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn next_lock_handle(&self) -> i64 {
+        self.next_lock_handle.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn next_semaphore_handle(&self) -> i64 {
+        self.next_semaphore_handle.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn reset_handle_counters(&self) {
+        self.next_future_handle.store(1, Ordering::Relaxed);
+        self.next_event_handle.store(1, Ordering::Relaxed);
+        self.next_lock_handle.store(1, Ordering::Relaxed);
+        self.next_semaphore_handle.store(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn clear(&self, _py: &PyToken<'_>) {
+        let futures = {
+            let mut guard = self.futures.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        for state in futures.into_values() {
+            release_future_state(_py, state);
+        }
+
+        let events = {
+            let mut guard = self.events.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        for state in events.into_values() {
+            release_waiters(_py, state.waiters);
+        }
+
+        let locks = {
+            let mut guard = self.locks.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        for state in locks.into_values() {
+            release_waiters(_py, state.waiters);
+        }
+
+        let semaphores = {
+            let mut guard = self.semaphores.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        for state in semaphores.into_values() {
+            release_waiters(_py, state.waiters);
+        }
+
+        self.reset_handle_counters();
+    }
 }
 
 // ─── Future state ────────────────────────────────────────────────────────────
@@ -76,9 +139,6 @@ impl FutureState {
     }
 }
 
-static FUTURES: LazyLock<Mutex<HashMap<i64, FutureState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 // ─── Event state ─────────────────────────────────────────────────────────────
 
 struct EventState {
@@ -95,9 +155,6 @@ impl EventState {
         }
     }
 }
-
-static EVENTS: LazyLock<Mutex<HashMap<i64, EventState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ─── Lock state ──────────────────────────────────────────────────────────────
 
@@ -116,9 +173,6 @@ impl LockState {
     }
 }
 
-static LOCKS: LazyLock<Mutex<HashMap<i64, LockState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 // ─── Semaphore state ─────────────────────────────────────────────────────────
 
 struct SemaphoreState {
@@ -136,10 +190,12 @@ impl SemaphoreState {
     }
 }
 
-static SEMAPHORES: LazyLock<Mutex<HashMap<i64, SemaphoreState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 // ─── Helper: extract handle i64 from NaN-boxed bits ─────────────────────────
+
+#[inline]
+fn asyncio_core_state(_py: &PyToken<'_>) -> &'static AsyncioCoreState {
+    &runtime_state(_py).asyncio_core
+}
 
 #[inline]
 fn handle_from_bits(bits: u64) -> i64 {
@@ -153,6 +209,19 @@ fn none_bits() -> u64 {
     MoltObject::none().bits()
 }
 
+fn release_future_state(_py: &PyToken<'_>, state: FutureState) {
+    dec_ref_bits(_py, state.result_bits);
+    dec_ref_bits(_py, state.exception_bits);
+    dec_ref_bits(_py, state.cancel_msg_bits);
+    release_waiters(_py, state.callbacks);
+}
+
+fn release_waiters(_py: &PyToken<'_>, waiters: Vec<u64>) {
+    for bits in waiters {
+        dec_ref_bits(_py, bits);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Future intrinsics
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,8 +230,13 @@ fn none_bits() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_future_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let handle = next_future_handle();
-        FUTURES.lock().unwrap().insert(handle, FutureState::new());
+        let registry = asyncio_core_state(_py);
+        let handle = registry.next_future_handle();
+        registry
+            .futures
+            .lock()
+            .unwrap()
+            .insert(handle, FutureState::new());
         MoltObject::from_int(handle).bits()
     })
 }
@@ -174,7 +248,8 @@ pub extern "C" fn molt_asyncio_future_new() -> u64 {
 pub extern "C" fn molt_asyncio_future_result(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let map = registry.futures.lock().unwrap();
         let Some(state) = map.get(&handle) else {
             return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
         };
@@ -214,7 +289,8 @@ pub extern "C" fn molt_asyncio_future_result(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let map = registry.futures.lock().unwrap();
         let Some(state) = map.get(&handle) else {
             return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
         };
@@ -242,7 +318,8 @@ pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.futures.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
         };
@@ -268,7 +345,8 @@ pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_b
 pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.futures.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return raise_exception::<u64>(_py, "InvalidStateError", "Future not found");
         };
@@ -299,7 +377,8 @@ pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_b
 pub extern "C" fn molt_asyncio_future_cancel_fast(handle_bits: u64, msg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.futures.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -340,7 +419,8 @@ pub extern "C" fn molt_asyncio_future_cancel_fast(handle_bits: u64, msg_bits: u6
 pub extern "C" fn molt_asyncio_future_done(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let map = registry.futures.lock().unwrap();
         let Some(state) = map.get(&handle) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -353,7 +433,8 @@ pub extern "C" fn molt_asyncio_future_done(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_future_cancelled(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let map = registry.futures.lock().unwrap();
         let Some(state) = map.get(&handle) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -373,7 +454,8 @@ pub extern "C" fn molt_asyncio_future_add_done_callback_fast(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = FUTURES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.futures.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return MoltObject::from_bool(true).bits();
         };
@@ -395,7 +477,8 @@ pub extern "C" fn molt_asyncio_future_add_done_callback_fast(
 pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let removed = FUTURES.lock().unwrap().remove(&handle);
+        let registry = asyncio_core_state(_py);
+        let removed = registry.futures.lock().unwrap().remove(&handle);
         if let Some(state) = removed {
             // Dec-ref stored heap objects.
             dec_ref_bits(_py, state.result_bits);
@@ -416,8 +499,13 @@ pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let handle = next_event_handle();
-        EVENTS.lock().unwrap().insert(handle, EventState::new());
+        let registry = asyncio_core_state(_py);
+        let handle = registry.next_event_handle();
+        registry
+            .events
+            .lock()
+            .unwrap()
+            .insert(handle, EventState::new());
         MoltObject::from_int(handle).bits()
     })
 }
@@ -427,7 +515,8 @@ pub extern "C" fn molt_asyncio_event_new() -> u64 {
 pub extern "C" fn molt_asyncio_event_is_set(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let map = EVENTS.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let map = registry.events.lock().unwrap();
         let Some(state) = map.get(&handle) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -442,7 +531,8 @@ pub extern "C" fn molt_asyncio_event_is_set(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_event_set_fast(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = EVENTS.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.events.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return MoltObject::from_int(0).bits();
         };
@@ -472,7 +562,8 @@ pub extern "C" fn molt_asyncio_event_set_fast(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_event_clear(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = EVENTS.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.events.lock().unwrap();
         if let Some(state) = map.get_mut(&handle) {
             state.flag = false;
         }
@@ -485,7 +576,8 @@ pub extern "C" fn molt_asyncio_event_clear(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_event_drop(handle_bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let removed = EVENTS.lock().unwrap().remove(&handle);
+        let registry = asyncio_core_state(_py);
+        let removed = registry.events.lock().unwrap().remove(&handle);
         if let Some(state) = removed {
             for w in &state.waiters {
                 dec_ref_bits(_py, *w);
@@ -502,8 +594,13 @@ pub extern "C" fn molt_asyncio_event_drop(handle_bits: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_lock_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let handle = next_lock_handle();
-        LOCKS.lock().unwrap().insert(handle, LockState::new());
+        let registry = asyncio_core_state(_py);
+        let handle = registry.next_lock_handle();
+        registry
+            .locks
+            .lock()
+            .unwrap()
+            .insert(handle, LockState::new());
         MoltObject::from_int(handle).bits()
     })
 }
@@ -513,7 +610,8 @@ pub extern "C" fn molt_asyncio_lock_new() -> u64 {
 pub extern "C" fn molt_asyncio_lock_locked(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let map = LOCKS.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let map = registry.locks.lock().unwrap();
         let Some(state) = map.get(&handle) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -530,7 +628,8 @@ pub extern "C" fn molt_asyncio_lock_locked(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_lock_acquire_fast(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = LOCKS.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.locks.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -551,7 +650,8 @@ pub extern "C" fn molt_asyncio_lock_acquire_fast(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_lock_release_fast(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = LOCKS.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.locks.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return raise_exception::<u64>(_py, "RuntimeError", "Lock not found");
         };
@@ -585,7 +685,8 @@ pub extern "C" fn molt_asyncio_lock_release_fast(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_lock_drop(handle_bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let removed = LOCKS.lock().unwrap().remove(&handle);
+        let registry = asyncio_core_state(_py);
+        let removed = registry.locks.lock().unwrap().remove(&handle);
         if let Some(state) = removed {
             for w in &state.waiters {
                 dec_ref_bits(_py, *w);
@@ -612,8 +713,10 @@ pub extern "C" fn molt_asyncio_semaphore_new(value_bits: u64) -> u64 {
                 "Semaphore initial value must be >= 0",
             );
         }
-        let handle = next_semaphore_handle();
-        SEMAPHORES
+        let registry = asyncio_core_state(_py);
+        let handle = registry.next_semaphore_handle();
+        registry
+            .semaphores
             .lock()
             .unwrap()
             .insert(handle, SemaphoreState::new(initial_value));
@@ -628,7 +731,8 @@ pub extern "C" fn molt_asyncio_semaphore_new(value_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_semaphore_acquire_fast(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let mut map = SEMAPHORES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.semaphores.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -663,7 +767,8 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
             to_i64(max_value_obj).and_then(|v| if v < 0 { None } else { Some(v) })
         };
 
-        let mut map = SEMAPHORES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let mut map = registry.semaphores.lock().unwrap();
         let Some(state) = map.get_mut(&handle) else {
             return raise_exception::<u64>(_py, "RuntimeError", "Semaphore not found");
         };
@@ -696,7 +801,8 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
 pub extern "C" fn molt_asyncio_semaphore_value(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let map = SEMAPHORES.lock().unwrap();
+        let registry = asyncio_core_state(_py);
+        let map = registry.semaphores.lock().unwrap();
         let value = map.get(&handle).map_or(0, |s| s.value);
         MoltObject::from_int(value).bits()
     })
@@ -707,11 +813,51 @@ pub extern "C" fn molt_asyncio_semaphore_value(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
-        let removed = SEMAPHORES.lock().unwrap().remove(&handle);
+        let registry = asyncio_core_state(_py);
+        let removed = registry.semaphores.lock().unwrap().remove(&handle);
         if let Some(state) = removed {
             for w in &state.waiters {
                 dec_ref_bits(_py, *w);
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MoltObject, alloc_string, header_from_obj_ptr};
+    use std::sync::atomic::Ordering as AtomicOrdering;
+
+    #[test]
+    fn asyncio_core_clear_releases_future_owned_refs() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let ptr = alloc_string(_py, b"asyncio-core-clear-owned-ref");
+            let bits = MoltObject::from_ptr(ptr).bits();
+            let initial_refs = unsafe {
+                (*header_from_obj_ptr(ptr))
+                    .ref_count
+                    .load(AtomicOrdering::Relaxed)
+            };
+
+            let future = molt_asyncio_future_new();
+            let _ = molt_asyncio_future_set_result_fast(future, bits);
+            let retained_refs = unsafe {
+                (*header_from_obj_ptr(ptr))
+                    .ref_count
+                    .load(AtomicOrdering::Relaxed)
+            };
+            assert_eq!(retained_refs, initial_refs + 1);
+
+            runtime_state(_py).asyncio_core.clear(_py);
+            let cleared_refs = unsafe {
+                (*header_from_obj_ptr(ptr))
+                    .ref_count
+                    .load(AtomicOrdering::Relaxed)
+            };
+            assert_eq!(cleared_refs, initial_refs);
+            dec_ref_bits(_py, bits);
+        });
+    }
 }

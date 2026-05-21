@@ -1,6 +1,6 @@
 use super::generators_async::asyncio_clear_pending_exception;
 use super::process_task_state;
-use super::{await_waiters_take, wake_task_ptr};
+use super::wake_await_waiters;
 use crate::*;
 
 #[cfg(target_arch = "wasm32")]
@@ -2272,10 +2272,7 @@ pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
                 .exit_code
                 .store(exit_code, AtomicOrdering::Release);
             if let Some(future) = handle_obj.state.wait_future.lock().unwrap().take() {
-                let waiters = await_waiters_take(_py, future.0);
-                for waiter in waiters {
-                    wake_task_ptr(_py, waiter.0);
-                }
+                let _ = wake_await_waiters(_py, future.0);
             }
         })
     }
@@ -2453,10 +2450,7 @@ fn process_wait_worker(state: Arc<ProcessState>) {
                 if let Some(future) = state.wait_future.lock().unwrap().take() {
                     let gil = GilGuard::new();
                     let py = gil.token();
-                    let waiters = await_waiters_take(&py, future.0);
-                    for waiter in waiters {
-                        wake_task_ptr(&py, waiter.0);
-                    }
+                    let _ = wake_await_waiters(&py, future.0);
                 }
                 break;
             }

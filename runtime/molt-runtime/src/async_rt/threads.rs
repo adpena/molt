@@ -1,4 +1,4 @@
-use super::{await_waiters_take, wake_task_ptr};
+use super::wake_await_waiters;
 use crate::PyToken;
 use crate::*;
 
@@ -200,10 +200,7 @@ fn thread_worker(rx: Receiver<ThreadWork>) {
                     task.set_result(result_bits);
                 }
                 task.notify_done();
-                let waiters = await_waiters_take(_py, task.future_ptr);
-                for waiter in waiters {
-                    wake_task_ptr(_py, waiter.0);
-                }
+                let _ = wake_await_waiters(_py, task.future_ptr);
             }
         }
     }
