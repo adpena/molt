@@ -272,13 +272,11 @@ def test_conformance_batch_server_starts_in_guarded_process_group(monkeypatch):
     compiler.start()
     compiler.close()
 
-    process_group_kwargs = captured["process_group_kwargs"]
-    assert process_group_kwargs["start_new_session"] is True
-    assert callable(process_group_kwargs["preexec_fn"])
-    assert (
-        captured["force_close"]
-        is run_molt_conformance.harness_memory_guard.force_close_process_group
-    )
+    guard_context = captured["guard_context"]
+    assert guard_context.prefix == "MOLT_CONFORMANCE"
+    assert guard_context.limits.enabled is True
+    assert "process_group_kwargs" not in captured
+    assert "force_close" not in captured
 
 
 def test_run_binary_reports_guard_timeout_as_timeout(monkeypatch, tmp_path: Path):

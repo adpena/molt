@@ -268,6 +268,45 @@ def test_timeout_from_env_zero_disables_default(monkeypatch) -> None:
     )
 
 
+def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> None:
+    env = harness_memory_guard.canonical_harness_env(
+        {"PATH": "/usr/bin"},
+        repo_root=tmp_path,
+    )
+
+    assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
+    assert env["CARGO_TARGET_DIR"] == str(tmp_path / "target")
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+    assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(tmp_path / "tmp" / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path / "tmp")
+    assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
+    assert env["TMPDIR"] == str(tmp_path / "tmp")
+
+
+def test_execution_context_owns_env_limits_and_batch_kwargs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    if harness_memory_guard.os.name != "posix":
+        return
+    monkeypatch.setenv("MOLT_BENCH_MAX_PROCESS_RSS_GB", "2")
+    monkeypatch.setenv("MOLT_BENCH_MAX_TOTAL_RSS_GB", "3")
+    monkeypatch.setenv("MOLT_BENCH_MAX_GLOBAL_RSS_GB", "4")
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_BENCH",
+        {"PATH": "/usr/bin"},
+        repo_root=tmp_path,
+    )
+
+    assert context.prefix == "MOLT_BENCH"
+    assert context.env["TMPDIR"] == str(tmp_path / "tmp")
+    assert context.limits.enabled is True
+    kwargs = context.process_group_kwargs()
+    assert kwargs["start_new_session"] is True
+    assert callable(kwargs["preexec_fn"])
+
+
 def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

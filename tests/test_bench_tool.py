@@ -256,13 +256,11 @@ def test_bench_batch_server_starts_in_guarded_process_group(monkeypatch) -> None
     server = bench_tool._BenchBatchBuildServer({})
     server.close()
 
-    process_group_kwargs = captured["process_group_kwargs"]
-    assert process_group_kwargs["start_new_session"] is True
-    assert callable(process_group_kwargs["preexec_fn"])
-    assert (
-        captured["force_close"]
-        is bench_tool.harness_memory_guard.force_close_process_group
-    )
+    guard_context = captured["guard_context"]
+    assert guard_context.prefix == "MOLT_BENCH"
+    assert guard_context.limits.enabled is True
+    assert "process_group_kwargs" not in captured
+    assert "force_close" not in captured
     assert captured["closed"] == 5.0
 
 
