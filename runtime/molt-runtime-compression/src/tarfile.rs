@@ -20,9 +20,9 @@
 
 use crate::bridge::*;
 use molt_runtime_core::prelude::*;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ── Tar block constants ────────────────────────────────────────────────────
@@ -72,12 +72,6 @@ impl TarInfo {
 
 // ── Handle-id counter ─────────────────────────────────────────────────────
 
-static NEXT_TAR_ID: AtomicI64 = AtomicI64::new(1);
-
-fn next_tar_id() -> i64 {
-    NEXT_TAR_ID.fetch_add(1, Ordering::Relaxed)
-}
-
 // ── Archive state ─────────────────────────────────────────────────────────
 
 enum ArchiveMode {
@@ -102,10 +96,62 @@ enum TarCompression {
     Bzip2,
 }
 
-// ── Thread-local handle map ────────────────────────────────────────────────
+struct TarRuntimeState {
+    next_id: AtomicI64,
+    archives: Mutex<HashMap<i64, TarArchive>>,
+}
 
-thread_local! {
-    static TAR_MAP: RefCell<HashMap<i64, TarArchive>> = RefCell::new(HashMap::new());
+impl TarRuntimeState {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicI64::new(1),
+            archives: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn clear(&self) {
+        self.archives.lock().unwrap().clear();
+    }
+}
+
+unsafe extern "C" fn tar_runtime_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(TarRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn tar_runtime_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (&*(ptr as *const TarRuntimeState)).clear();
+    }
+}
+
+unsafe extern "C" fn tar_runtime_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut TarRuntimeState));
+    }
+}
+
+fn tar_state(_py: &PyToken) -> &'static TarRuntimeState {
+    let ptr = runtime_state_get_or_init(
+        b"molt-runtime-compression/tarfile/v1",
+        tar_runtime_state_init,
+        tar_runtime_state_clear,
+        tar_runtime_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "molt tarfile runtime state initialization failed"
+    );
+    unsafe { &*(ptr as *const TarRuntimeState) }
+}
+
+fn next_tar_id(_py: &PyToken) -> i64 {
+    tar_state(_py).next_id.fetch_add(1, Ordering::Relaxed)
 }
 
 // ── Parsing helpers ────────────────────────────────────────────────────────
@@ -252,16 +298,16 @@ fn decompress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())
 }
 
 fn compress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
-    use bzip2::write::BzEncoder;
     use bzip2::Compression;
+    use bzip2::write::BzEncoder;
     let mut enc = BzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(data).map_err(|e| e.to_string())?;
     enc.finish().map_err(|e| e.to_string())
@@ -409,19 +455,17 @@ pub extern "C" fn molt_tarfile_open(name_bits: u64, mode_bits: u64) -> u64 {
             ArchiveMode::Write => Vec::new(),
         };
 
-        let id = next_tar_id();
-        TAR_MAP.with(|m| {
-            m.borrow_mut().insert(
-                id,
-                TarArchive {
-                    data: decompressed,
-                    members,
-                    mode: archive_mode,
-                    name: name.clone(),
-                    compression,
-                },
-            )
-        });
+        let id = next_tar_id(_py);
+        tar_state(_py).archives.lock().unwrap().insert(
+            id,
+            TarArchive {
+                data: decompressed,
+                members,
+                mode: archive_mode,
+                name: name.clone(),
+                compression,
+            },
+        );
         int_bits_from_i64(_py, id)
     })
 }
@@ -431,11 +475,12 @@ pub extern "C" fn molt_tarfile_getnames(handle_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
         };
-        let names: Option<Vec<String>> = TAR_MAP.with(|m| {
-            m.borrow()
-                .get(&id)
-                .map(|a| a.members.iter().map(|m| m.name.clone()).collect())
-        });
+        let names: Option<Vec<String>> = tar_state(_py)
+            .archives
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|a| a.members.iter().map(|m| m.name.clone()).collect());
         match names {
             None => raise_exception(_py, "ValueError", "invalid tarfile handle"),
             Some(ns) => {
@@ -510,8 +555,12 @@ pub extern "C" fn molt_tarfile_getmembers(handle_bits: u64) -> u64 {
             Some(v) => v,
             None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
         };
-        let members_clone: Option<Vec<TarInfo>> =
-            TAR_MAP.with(|m| m.borrow().get(&id).map(|a| a.members.clone()));
+        let members_clone: Option<Vec<TarInfo>> = tar_state(_py)
+            .archives
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|a| a.members.clone());
         match members_clone {
             None => raise_exception(_py, "ValueError", "invalid tarfile handle"),
             Some(members) => {
@@ -540,11 +589,12 @@ pub extern "C" fn molt_tarfile_extractall(handle_bits: u64, path_bits: u64) -> u
         };
         let dest = path_from_bits_local(_py, path_bits).unwrap_or_else(|| ".".to_string());
 
-        let archive_data: Option<(Vec<TarInfo>, Vec<u8>)> = TAR_MAP.with(|m| {
-            m.borrow()
-                .get(&id)
-                .map(|a| (a.members.clone(), a.data.clone()))
-        });
+        let archive_data: Option<(Vec<TarInfo>, Vec<u8>)> = tar_state(_py)
+            .archives
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|a| (a.members.clone(), a.data.clone()));
         let (members, data) = match archive_data {
             Some(v) => v,
             None => return raise_exception(_py, "ValueError", "invalid tarfile handle"),
@@ -602,11 +652,12 @@ pub extern "C" fn molt_tarfile_extract(handle_bits: u64, member_bits: u64, path_
             None => return raise_exception(_py, "TypeError", "member must be a str"),
         };
 
-        let archive_data: Option<(Vec<TarInfo>, Vec<u8>)> = TAR_MAP.with(|m| {
-            m.borrow()
-                .get(&id)
-                .map(|a| (a.members.clone(), a.data.clone()))
-        });
+        let archive_data: Option<(Vec<TarInfo>, Vec<u8>)> = tar_state(_py)
+            .archives
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|a| (a.members.clone(), a.data.clone()));
         let (members, data) = match archive_data {
             Some(v) => v,
             None => return raise_exception(_py, "ValueError", "invalid tarfile handle"),
@@ -670,19 +721,26 @@ pub extern "C" fn molt_tarfile_extractfile(handle_bits: u64, member_bits: u64) -
             None => return raise_exception(_py, "TypeError", "member must be a str"),
         };
 
-        let result: Option<Result<Vec<u8>, String>> = TAR_MAP.with(|m| {
-            let map = m.borrow();
-            let archive = map.get(&id)?;
-            let info = archive.members.iter().find(|m| m.name == member_name)?;
-            if !info.is_regular() {
-                return Some(Err(format!("'{member_name}' is not a regular file")));
+        let result: Option<Result<Vec<u8>, String>> = {
+            let archives = tar_state(_py).archives.lock().unwrap();
+            match archives.get(&id) {
+                Some(archive) => match archive.members.iter().find(|m| m.name == member_name) {
+                    Some(info) if !info.is_regular() => {
+                        Some(Err(format!("'{member_name}' is not a regular file")))
+                    }
+                    Some(info) => {
+                        let end = info.data_offset + info.size as usize;
+                        if end > archive.data.len() {
+                            Some(Err(format!("'{member_name}' data out of bounds")))
+                        } else {
+                            Some(Ok(archive.data[info.data_offset..end].to_vec()))
+                        }
+                    }
+                    None => None,
+                },
+                None => None,
             }
-            let end = info.data_offset + info.size as usize;
-            if end > archive.data.len() {
-                return Some(Err(format!("'{member_name}' data out of bounds")));
-            }
-            Some(Ok(archive.data[info.data_offset..end].to_vec()))
-        });
+        };
 
         match result {
             None => raise_exception(
@@ -754,19 +812,16 @@ pub extern "C" fn molt_tarfile_add(handle_bits: u64, name_bits: u64, arcname_bit
             data_offset: 0, // will be set when writing
         };
 
-        TAR_MAP.with(|m| {
-            let mut map = m.borrow_mut();
-            if let Some(archive) = map.get_mut(&id) {
-                write_tar_header(&mut archive.data, &info, &file_data);
-                // Update data_offset in a new TarInfo entry for reading back.
-                let data_offset = archive.data.len()
-                    - file_data.len()
-                    - (BLOCK_SIZE - file_data.len() % BLOCK_SIZE) % BLOCK_SIZE;
-                let mut info2 = info;
-                info2.data_offset = data_offset + BLOCK_SIZE; // header block consumed
-                archive.members.push(info2);
-            }
-        });
+        if let Some(archive) = tar_state(_py).archives.lock().unwrap().get_mut(&id) {
+            write_tar_header(&mut archive.data, &info, &file_data);
+            // Update data_offset in a new TarInfo entry for reading back.
+            let data_offset = archive.data.len()
+                - file_data.len()
+                - (BLOCK_SIZE - file_data.len() % BLOCK_SIZE) % BLOCK_SIZE;
+            let mut info2 = info;
+            info2.data_offset = data_offset + BLOCK_SIZE; // header block consumed
+            archive.members.push(info2);
+        }
 
         return_none()
     })
@@ -778,7 +833,7 @@ pub extern "C" fn molt_tarfile_close(handle_bits: u64) -> u64 {
             None => return raise_exception(_py, "TypeError", "tarfile handle must be int"),
         };
 
-        let archive = TAR_MAP.with(|m| m.borrow_mut().remove(&id));
+        let archive = tar_state(_py).archives.lock().unwrap().remove(&id);
         if let Some(mut archive) = archive {
             match archive.mode {
                 ArchiveMode::Write | ArchiveMode::Append => {

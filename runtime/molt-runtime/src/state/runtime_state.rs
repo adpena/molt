@@ -97,6 +97,7 @@ pub(crate) struct SpecialCache {
 #[cfg(any(
     test,
     feature = "sqlite",
+    feature = "stdlib_compression",
     feature = "stdlib_collections",
     feature = "stdlib_logging_ext"
 ))]
@@ -419,6 +420,7 @@ impl RuntimeState {
 #[cfg(any(
     test,
     feature = "sqlite",
+    feature = "stdlib_compression",
     feature = "stdlib_collections",
     feature = "stdlib_logging_ext"
 ))]

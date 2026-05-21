@@ -7,17 +7,12 @@
 
 use crate::bridge::*;
 use molt_runtime_core::prelude::*;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ── Handle-id counter ───────────────────────────────────────────────────
-static NEXT_ZIP_ID: AtomicI64 = AtomicI64::new(1);
-fn next_zip_id() -> i64 {
-    NEXT_ZIP_ID.fetch_add(1, Ordering::Relaxed)
-}
-
 // ── Archive state ───────────────────────────────────────────────────────
 
 enum ZipState {
@@ -30,8 +25,62 @@ enum ZipState {
     },
 }
 
-thread_local! {
-    static ZIP_MAP: RefCell<HashMap<i64, ZipState>> = RefCell::new(HashMap::new());
+struct ZipRuntimeState {
+    next_id: AtomicI64,
+    archives: Mutex<HashMap<i64, ZipState>>,
+}
+
+impl ZipRuntimeState {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicI64::new(1),
+            archives: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn clear(&self) {
+        self.archives.lock().unwrap().clear();
+    }
+}
+
+unsafe extern "C" fn zip_runtime_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(ZipRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn zip_runtime_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (&*(ptr as *const ZipRuntimeState)).clear();
+    }
+}
+
+unsafe extern "C" fn zip_runtime_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut ZipRuntimeState));
+    }
+}
+
+fn zip_state(_py: &PyToken) -> &'static ZipRuntimeState {
+    let ptr = runtime_state_get_or_init(
+        b"molt-runtime-compression/zipfile/v1",
+        zip_runtime_state_init,
+        zip_runtime_state_clear,
+        zip_runtime_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "molt zipfile runtime state initialization failed"
+    );
+    unsafe { &*(ptr as *const ZipRuntimeState) }
+}
+
+fn next_zip_id(_py: &PyToken) -> i64 {
+    zip_state(_py).next_id.fetch_add(1, Ordering::Relaxed)
 }
 
 // ── open(path, mode) -> handle ──────────────────────────────────────────
@@ -44,27 +93,27 @@ pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
             return raise_exception(_py, "TypeError", "mode must be a string");
         };
 
-        let id = next_zip_id();
+        let id = next_zip_id(_py);
         match mode.as_str() {
             "r" => {
                 let data = match std::fs::read(&path) {
                     Ok(d) => d,
                     Err(e) => return raise_exception(_py, "FileNotFoundError", &format!("{}", e)),
                 };
-                ZIP_MAP.with(|m| {
-                    m.borrow_mut().insert(id, ZipState::Reader { data });
-                });
+                zip_state(_py)
+                    .archives
+                    .lock()
+                    .unwrap()
+                    .insert(id, ZipState::Reader { data });
             }
             "w" => {
-                ZIP_MAP.with(|m| {
-                    m.borrow_mut().insert(
-                        id,
-                        ZipState::Writer {
-                            path,
-                            entries: Vec::new(),
-                        },
-                    );
-                });
+                zip_state(_py).archives.lock().unwrap().insert(
+                    id,
+                    ZipState::Writer {
+                        path,
+                        entries: Vec::new(),
+                    },
+                );
             }
             _ => return raise_exception(_py, "ValueError", "unsupported zipfile mode"),
         }
@@ -78,7 +127,7 @@ pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception(_py, "TypeError", "invalid handle");
         };
-        let state = ZIP_MAP.with(|m| m.borrow_mut().remove(&id));
+        let state = zip_state(_py).archives.lock().unwrap().remove(&id);
         match state {
             Some(ZipState::Writer { path, entries }) => {
                 // Write the zip file using the `zip` crate
@@ -145,19 +194,17 @@ pub extern "C" fn molt_zipfile_writestr(
             return raise_exception(_py, "TypeError", "data must be bytes or str");
         };
 
-        ZIP_MAP.with(|m| {
-            let mut map = m.borrow_mut();
-            let Some(state) = map.get_mut(&id) else {
-                return raise_exception(_py, "ValueError", "invalid zip handle");
-            };
-            match state {
-                ZipState::Writer { entries, .. } => {
-                    entries.push((name, data, method));
-                    MoltObject::none().bits()
-                }
-                _ => raise_exception(_py, "ValueError", "writestr requires mode='w'"),
+        let mut archives = zip_state(_py).archives.lock().unwrap();
+        let Some(state) = archives.get_mut(&id) else {
+            return raise_exception(_py, "ValueError", "invalid zip handle");
+        };
+        match state {
+            ZipState::Writer { entries, .. } => {
+                entries.push((name, data, method));
+                MoltObject::none().bits()
             }
-        })
+            _ => raise_exception(_py, "ValueError", "writestr requires mode='w'"),
+        }
     })
 }
 
@@ -168,9 +215,9 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
             return raise_exception(_py, "TypeError", "invalid handle");
         };
 
-        ZIP_MAP.with(|m| {
-            let map = m.borrow();
-            let Some(state) = map.get(&id) else {
+        let names: Result<Vec<String>, u64> = {
+            let archives = zip_state(_py).archives.lock().unwrap();
+            let Some(state) = archives.get(&id) else {
                 return raise_exception(_py, "ValueError", "invalid zip handle");
             };
             match state {
@@ -179,31 +226,34 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
                     let mut archive = match zip::ZipArchive::new(cursor) {
                         Ok(a) => a,
                         Err(e) => {
-                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e))
+                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e));
                         }
                     };
-                    let mut bits = Vec::with_capacity(archive.len());
+                    let mut names = Vec::with_capacity(archive.len());
                     for i in 0..archive.len() {
                         if let Ok(entry) = archive.by_index(i) {
-                            let name = entry.name().to_string();
-                            let ptr = alloc_string(_py, name.as_bytes());
-                            bits.push(MoltObject::from_ptr(ptr).bits());
+                            names.push(entry.name().to_string());
                         }
                     }
-                    let list_ptr = alloc_list(_py, &bits);
-                    MoltObject::from_ptr(list_ptr).bits()
+                    Ok(names)
                 }
                 ZipState::Writer { entries, .. } => {
-                    let mut bits = Vec::with_capacity(entries.len());
-                    for (name, _, _) in entries {
-                        let ptr = alloc_string(_py, name.as_bytes());
-                        bits.push(MoltObject::from_ptr(ptr).bits());
-                    }
-                    let list_ptr = alloc_list(_py, &bits);
-                    MoltObject::from_ptr(list_ptr).bits()
+                    Ok(entries.iter().map(|(name, _, _)| name.clone()).collect())
                 }
             }
-        })
+        };
+        match names {
+            Ok(names) => {
+                let mut bits = Vec::with_capacity(names.len());
+                for name in names {
+                    let ptr = alloc_string(_py, name.as_bytes());
+                    bits.push(MoltObject::from_ptr(ptr).bits());
+                }
+                let list_ptr = alloc_list(_py, &bits);
+                MoltObject::from_ptr(list_ptr).bits()
+            }
+            Err(bits) => bits,
+        }
     })
 }
 
@@ -217,9 +267,9 @@ pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
             return raise_exception(_py, "TypeError", "name must be a string");
         };
 
-        ZIP_MAP.with(|m| {
-            let map = m.borrow();
-            let Some(state) = map.get(&id) else {
+        let read_result: Result<Vec<u8>, u64> = {
+            let archives = zip_state(_py).archives.lock().unwrap();
+            let Some(state) = archives.get(&id) else {
                 return raise_exception(_py, "ValueError", "invalid zip handle");
             };
             match state {
@@ -228,7 +278,7 @@ pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
                     let mut archive = match zip::ZipArchive::new(cursor) {
                         Ok(a) => a,
                         Err(e) => {
-                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e))
+                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e));
                         }
                     };
                     let mut entry = match archive.by_name(&name) {
@@ -239,11 +289,17 @@ pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
                     if let Err(e) = entry.read_to_end(&mut buf) {
                         return raise_exception(_py, "ValueError", &format!("read error: {}", e));
                     }
-                    let ptr = alloc_bytes(_py, &buf);
-                    MoltObject::from_ptr(ptr).bits()
+                    Ok(buf)
                 }
-                _ => raise_exception(_py, "ValueError", "read requires mode='r'"),
+                _ => Err(raise_exception(_py, "ValueError", "read requires mode='r'")),
             }
-        })
+        };
+        match read_result {
+            Ok(buf) => {
+                let ptr = alloc_bytes(_py, &buf);
+                MoltObject::from_ptr(ptr).bits()
+            }
+            Err(bits) => bits,
+        }
     })
 }
