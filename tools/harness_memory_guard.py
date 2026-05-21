@@ -509,7 +509,10 @@ def _auto_repo_sentinel(
         artifact_root=_artifact_root_from_env(env),
         label=label,
         limits=limits,
-        drain_on_exit=True,
+        # Automatic command guards already own the direct child process tree via
+        # memory_guard.run_guarded. Broad repo draining on context exit can
+        # SIGTERM unrelated concurrent builds that appeared after the baseline.
+        drain_on_exit=False,
         drain_until_clean_sec=0.1,
         drain_max_runtime_sec=2.0,
         suppress_auto_guard=False,

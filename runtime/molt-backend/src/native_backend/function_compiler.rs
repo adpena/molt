@@ -409,6 +409,26 @@ fn def_inline_int_value(
 }
 
 #[cfg(feature = "native-backend")]
+#[inline]
+fn emit_exception_pending_condition(
+    builder: &mut FunctionBuilder<'_>,
+    local_exc_pending_fast: FuncRef,
+    exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
+) -> Value {
+    if let Some(slot) = exc_flag_ptr_slot {
+        let flag_ptr = builder.ins().stack_load(types::I64, slot, 0);
+        let pending_byte = builder
+            .ins()
+            .load(types::I8, MemFlags::trusted(), flag_ptr, 0);
+        return builder.ins().icmp_imm(IntCC::NotEqual, pending_byte, 0);
+    }
+
+    let call = builder.ins().call(local_exc_pending_fast, &[]);
+    let pending = builder.inst_results(call)[0];
+    builder.ins().icmp_imm(IntCC::NotEqual, pending, 0)
+}
+
+#[cfg(feature = "native-backend")]
 fn def_bool_result(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
@@ -2690,7 +2710,7 @@ impl SimpleBackend {
                 .map(parse_truthy_env)
                 .unwrap_or(false)
         });
-        let exc_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
+        let exc_global_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
             Some(import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
@@ -2703,7 +2723,20 @@ impl SimpleBackend {
         } else {
             None
         };
-        let exc_flag_ptr_slot = if exc_flag_ptr_fn.is_some() {
+        let exc_task_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
+            Some(import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_task_exception_pending_flag_ptr",
+                &[],
+                &[types::I64],
+            ))
+        } else {
+            None
+        };
+        let exc_flag_ptr_slot = if exc_global_flag_ptr_fn.is_some() {
             Some(builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 8,
@@ -2862,10 +2895,19 @@ impl SimpleBackend {
         // Fetch the exception flag pointer once in the entry block and keep
         // it in a stack slot so later check_exception sites can load it
         // without re-entering Cranelift SSA variable repair.
-        if let (Some(slot), Some(fn_ref)) = (exc_flag_ptr_slot, exc_flag_ptr_fn) {
-            let call = builder.ins().call(fn_ref, &[]);
-            let ptr_val = builder.inst_results(call)[0];
-            builder.ins().stack_store(ptr_val, slot, 0);
+        if let (Some(slot), Some(global_fn_ref), Some(task_fn_ref)) = (
+            exc_flag_ptr_slot,
+            exc_global_flag_ptr_fn,
+            exc_task_flag_ptr_fn,
+        ) {
+            let global_call = builder.ins().call(global_fn_ref, &[]);
+            let global_ptr = builder.inst_results(global_call)[0];
+            let task_call = builder.ins().call(task_fn_ref, &[]);
+            let task_ptr = builder.inst_results(task_call)[0];
+            let zero = builder.ins().iconst(types::I64, 0);
+            let has_task_flag = builder.ins().icmp(IntCC::NotEqual, task_ptr, zero);
+            let active_ptr = builder.ins().select(has_task_flag, task_ptr, global_ptr);
+            builder.ins().stack_store(active_ptr, slot, 0);
         }
 
         // ── Entry-block variable initialization ──────────────────────────
@@ -21449,9 +21491,11 @@ impl SimpleBackend {
                         let fallthrough = builder.create_block();
                         reachable_blocks.insert(target_block);
                         reachable_blocks.insert(fallthrough);
-                        let exc_call = builder.ins().call(local_exc_pending_fast, &[]);
-                        let pending_exc = builder.inst_results(exc_call)[0];
-                        let has_exception = builder.ins().icmp_imm(IntCC::NotEqual, pending_exc, 0);
+                        let has_exception = emit_exception_pending_condition(
+                            &mut builder,
+                            local_exc_pending_fast,
+                            exc_flag_ptr_slot,
+                        );
                         brif_block(
                             &mut builder,
                             has_exception,
@@ -21701,9 +21745,11 @@ impl SimpleBackend {
                         let fallthrough = builder.create_block();
                         reachable_blocks.insert(target_block);
                         reachable_blocks.insert(fallthrough);
-                        let exc_call = builder.ins().call(local_exc_pending_fast, &[]);
-                        let pending_exc = builder.inst_results(exc_call)[0];
-                        let has_exception = builder.ins().icmp_imm(IntCC::NotEqual, pending_exc, 0);
+                        let has_exception = emit_exception_pending_condition(
+                            &mut builder,
+                            local_exc_pending_fast,
+                            exc_flag_ptr_slot,
+                        );
                         brif_block(
                             &mut builder,
                             has_exception,
@@ -21859,9 +21905,11 @@ impl SimpleBackend {
                         let fallthrough = builder.create_block();
                         reachable_blocks.insert(target_block);
                         reachable_blocks.insert(fallthrough);
-                        let exc_call = builder.ins().call(local_exc_pending_fast, &[]);
-                        let pending_exc = builder.inst_results(exc_call)[0];
-                        let has_exception = builder.ins().icmp_imm(IntCC::NotEqual, pending_exc, 0);
+                        let has_exception = emit_exception_pending_condition(
+                            &mut builder,
+                            local_exc_pending_fast,
+                            exc_flag_ptr_slot,
+                        );
                         brif_block(
                             &mut builder,
                             has_exception,
@@ -27418,6 +27466,21 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "exception_last_pending" => {
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_last_pending",
+                        &[],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "exception_active" => {
                     let callee = Self::import_func_id_split(
                         &mut self.module,
@@ -28277,9 +28340,11 @@ impl SimpleBackend {
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    let call = builder.ins().call(local_exc_pending_fast, &[]);
-                    let pending = builder.inst_results(call)[0];
-                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
+                    let cond = emit_exception_pending_condition(
+                        &mut builder,
+                        local_exc_pending_fast,
+                        exc_flag_ptr_slot,
+                    );
                     brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
                     // The fallthrough block is always fresh and both of its
                     // predecessors are emitted here. Seal it now so later
@@ -35406,19 +35471,11 @@ impl SimpleBackend {
         // On the EXCEPTION path, return normally so the C stub can print the
         // traceback before invoking the same finalizer with a failure code.
         if func_ir.name == "molt_main" {
-            // Check if an exception is pending.
-            let exc_check = import_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
+            let has_exc = emit_exception_pending_condition(
                 &mut builder,
-                &mut import_refs,
-                "molt_exception_pending_fast",
-                &[],
-                &[types::I64],
+                local_exc_pending_fast,
+                exc_flag_ptr_slot,
             );
-            let exc_call = builder.ins().call(exc_check, &[]);
-            let exc_flag = builder.inst_results(exc_call)[0];
-            let has_exc = builder.ins().icmp_imm(IntCC::NotEqual, exc_flag, 0);
 
             let exit_block = builder.create_block();
             let normal_ret_block = builder.create_block();

@@ -4158,6 +4158,7 @@ const exceptionMessage = (excBits) => {
   return msgBits;
 };
 const exceptionLast = () => lastException;
+const exceptionLastPending = () => lastException;
 const exceptionActive = () => {
   const active = lastNonNone(activeExceptionStack);
   if (!isNone(active)) return active;
@@ -14003,6 +14004,7 @@ BASE_IMPORTS = """\
   exception_push: () => exceptionPush(),
   exception_pop: () => exceptionPop(),
   exception_last: () => exceptionLast(),
+  exception_last_pending: () => exceptionLastPending(),
   exception_active: () => exceptionActive(),
   exception_new: (kind, args) => exceptionNew(kind, args),
   exception_new_builtin: (tag, args) => exceptionNewBuiltin(tag, args),

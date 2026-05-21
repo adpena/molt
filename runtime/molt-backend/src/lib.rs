@@ -287,6 +287,14 @@ pub fn elide_useless_try_blocks(ops: &mut Vec<OpIR>) {
             i = pop_idx + 1;
             continue;
         };
+        let Some(handler_label) = ops[ts_idx].value else {
+            i = pop_idx + 1;
+            continue;
+        };
+        if !try_wrapper_has_except_dispatch(ops, ts_idx, te_idx, pop_idx, handler_label) {
+            i = pop_idx + 1;
+            continue;
+        }
         // Body is ops[ts_idx + 1 .. te_idx].  All must be provably
         // non-throwing.  Encountering any nested exception_push in the
         // body is fine — it nests in our analysis but not at this
@@ -311,13 +319,105 @@ pub fn elide_useless_try_blocks(ops: &mut Vec<OpIR>) {
             i = pop_idx + 1;
             continue;
         }
+        let removed_labels = removed_try_wrapper_labels(ops, push_idx, pop_idx, body_range.clone());
+        if body_branches_to_removed_wrapper_label(ops, body_range.clone(), &removed_labels) {
+            i = pop_idx + 1;
+            continue;
+        }
         // Replace the entire wrapper [push_idx, pop_idx] with just BODY.
-        let body: Vec<OpIR> = ops[body_range].to_vec();
+        // Checks that target now-removed wrapper handlers are dead because
+        // the body has been proven non-throwing; keeping them would leave
+        // dangling handler labels after the wrapper is spliced away.
+        let body: Vec<OpIR> = ops[body_range]
+            .iter()
+            .filter(|op| {
+                !(op.kind == "check_exception"
+                    && op
+                        .value
+                        .is_some_and(|label| removed_labels.contains(&label)))
+            })
+            .cloned()
+            .collect();
         ops.splice(push_idx..=pop_idx, body);
         // Restart from push_idx to catch nested wrappers that may
         // have come into scope after splicing.
         i = push_idx;
     }
+}
+
+fn removed_try_wrapper_labels(
+    ops: &[OpIR],
+    push_idx: usize,
+    pop_idx: usize,
+    body_range: std::ops::Range<usize>,
+) -> Vec<i64> {
+    (push_idx..=pop_idx)
+        .filter(|idx| !body_range.contains(idx))
+        .filter_map(|idx| {
+            let op = &ops[idx];
+            matches!(op.kind.as_str(), "label" | "state_label")
+                .then_some(op.value)
+                .flatten()
+        })
+        .collect()
+}
+
+fn body_branches_to_removed_wrapper_label(
+    ops: &[OpIR],
+    body_range: std::ops::Range<usize>,
+    removed_labels: &[i64],
+) -> bool {
+    ops[body_range].iter().any(|op| {
+        matches!(
+            op.kind.as_str(),
+            "jump" | "goto" | "br_if" | "loop_break_if_true" | "loop_break_if_false"
+        ) && op
+            .value
+            .is_some_and(|label| removed_labels.contains(&label))
+    })
+}
+
+fn try_wrapper_has_except_dispatch(
+    ops: &[OpIR],
+    _try_start_idx: usize,
+    try_end_idx: usize,
+    pop_idx: usize,
+    handler_label: i64,
+) -> bool {
+    let mut cursor = try_end_idx + 1;
+    while cursor < pop_idx && matches!(ops[cursor].kind.as_str(), "line" | "nop") {
+        cursor += 1;
+    }
+    let Some(done_label) = ops.get(cursor).and_then(|op| {
+        matches!(op.kind.as_str(), "jump" | "goto")
+            .then_some(op.value)
+            .flatten()
+    }) else {
+        return false;
+    };
+    cursor += 1;
+    while cursor < pop_idx && matches!(ops[cursor].kind.as_str(), "line" | "nop") {
+        cursor += 1;
+    }
+    if ops
+        .get(cursor)
+        .is_none_or(|op| op.kind != "label" || op.value != Some(handler_label))
+    {
+        return false;
+    }
+    cursor += 1;
+
+    while cursor < pop_idx {
+        let op = &ops[cursor];
+        if op.kind == "label" && op.value == Some(done_label) {
+            return false;
+        }
+        if op.kind == "exception_match_builtin" {
+            return true;
+        }
+        cursor += 1;
+    }
+    false
 }
 
 /// Collapse simple alias-only copy ops (`copy`, `copy_var`, `identity_alias`)
@@ -4296,8 +4396,8 @@ impl SimpleBackend {
 mod tests {
     use super::{
         FunctionIR, NativeBackendModuleContext, OpIR, SimpleBackend, SimpleIR, TrampolineKind,
-        analyze_native_backend_ir, compute_function_has_ret, merge_function_arities,
-        merge_function_has_ret,
+        analyze_native_backend_ir, compute_function_has_ret, elide_useless_try_blocks,
+        merge_function_arities, merge_function_has_ret,
     };
     use crate::drain_cleanup_entry_tracked;
     use crate::passes::ReturnAliasSummary;
@@ -4310,6 +4410,244 @@ mod tests {
     fn backend_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn op_shapes(
+        ops: &[OpIR],
+    ) -> Vec<(
+        String,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<String>>,
+    )> {
+        ops.iter()
+            .map(|op| {
+                (
+                    op.kind.clone(),
+                    op.value,
+                    op.out.clone(),
+                    op.var.clone(),
+                    op.s_value.clone(),
+                    op.args.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn try_elision_preserves_try_finally_cleanup_shape() {
+        let mut ops = vec![
+            OpIR {
+                kind: "exception_push".to_string(),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_start".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_end".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".to_string(),
+                value: Some(11),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(11),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_none".to_string(),
+                out: Some("finally_value".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_pop".to_string(),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+        ];
+
+        let original = ops.clone();
+        elide_useless_try_blocks(&mut ops);
+
+        assert_eq!(
+            op_shapes(&ops),
+            op_shapes(&original),
+            "try/finally must not use the try/except-only elision path"
+        );
+    }
+
+    #[test]
+    fn try_except_elision_drops_body_checks_to_removed_handler_labels() {
+        let mut ops = vec![
+            OpIR {
+                kind: "exception_push".to_string(),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_start".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                value: Some(1),
+                out: Some("x".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("total".to_string()),
+                args: Some(vec!["x".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_end".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".to_string(),
+                value: Some(11),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_last".to_string(),
+                out: Some("exc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_match_builtin".to_string(),
+                value: Some(3),
+                s_value: Some("ValueError".to_string()),
+                args: Some(vec!["exc".to_string()]),
+                out: Some("matched".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(11),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_pop".to_string(),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+        ];
+
+        elide_useless_try_blocks(&mut ops);
+
+        let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["const", "store_var"]);
+        assert!(
+            ops.iter()
+                .all(|op| !(op.kind == "check_exception" && op.value == Some(10))),
+            "eliding a safe try/except body must not leave stale handler checks: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn try_except_elision_aborts_when_body_branches_to_removed_wrapper_label() {
+        let mut ops = vec![
+            OpIR {
+                kind: "exception_push".to_string(),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_start".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".to_string(),
+                value: Some(11),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_end".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".to_string(),
+                value: Some(11),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_last".to_string(),
+                out: Some("exc".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_match_builtin".to_string(),
+                value: Some(3),
+                s_value: Some("ValueError".to_string()),
+                args: Some(vec!["exc".to_string()]),
+                out: Some("matched".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(11),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_pop".to_string(),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+        ];
+
+        let original = ops.clone();
+        elide_useless_try_blocks(&mut ops);
+
+        assert_eq!(
+            op_shapes(&ops),
+            op_shapes(&original),
+            "try/except elision must be CFG-closed when wrapper-local labels are removed"
+        );
     }
 
     fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {

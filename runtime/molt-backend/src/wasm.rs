@@ -3065,6 +3065,7 @@ impl WasmBackend {
             ("molt_site_help1", "site_help1", 1),
             ("molt_future_features", "future_features", 0),
             ("molt_exception_last", "exception_last", 0),
+            ("molt_exception_last_pending", "exception_last_pending", 0),
             ("molt_exception_active", "exception_active", 0),
             ("molt_exception_current", "exception_current", 0),
             ("molt_exception_enter_handler", "exception_enter_handler", 1),
@@ -4361,6 +4362,7 @@ impl WasmBackend {
                 "exception_message",
                 "exception_active",
                 "exception_last",
+                "exception_last_pending",
                 "exception_stack_clear",
                 "exception_set_cause",
                 "exception_set_value",
@@ -12662,6 +12664,14 @@ impl WasmBackend {
                     }
                     "exception_last" => {
                         emit_call(func, reloc_enabled, import_ids["exception_last"]);
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "exception_last_pending" => {
+                        emit_call(func, reloc_enabled, import_ids["exception_last_pending"]);
                         if let Some(out) = op.out.as_ref() {
                             func.instruction(&Instruction::LocalSet(locals[out]));
                         } else {
