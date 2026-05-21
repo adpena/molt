@@ -94,7 +94,12 @@ pub(crate) struct SpecialCache {
     pub(crate) function_globals_descriptor: AtomicU64,
 }
 
-#[cfg(any(test, feature = "stdlib_collections", feature = "stdlib_logging_ext"))]
+#[cfg(any(
+    test,
+    feature = "sqlite",
+    feature = "stdlib_collections",
+    feature = "stdlib_logging_ext"
+))]
 pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
 pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
 pub(crate) type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
@@ -411,7 +416,12 @@ impl RuntimeState {
     }
 }
 
-#[cfg(any(test, feature = "stdlib_collections", feature = "stdlib_logging_ext"))]
+#[cfg(any(
+    test,
+    feature = "sqlite",
+    feature = "stdlib_collections",
+    feature = "stdlib_logging_ext"
+))]
 pub(crate) fn runtime_extension_state_get_or_init(
     state: &RuntimeState,
     key: &[u8],
