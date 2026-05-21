@@ -56,6 +56,7 @@ define_interned_names! {
     exit_name,
     setattr_name,
     delattr_name,
+    handle_name,
     write_name,
     flush_name,
     readline_name,

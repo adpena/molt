@@ -16,35 +16,72 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Seek, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 #[cfg(not(unix))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BUFFER_SIZE: i64 = 8192;
-static HANDLE_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-static SYS_STDIN_HANDLE_BITS: AtomicU64 = AtomicU64::new(0);
-static SYS_STDOUT_HANDLE_BITS: AtomicU64 = AtomicU64::new(0);
-static SYS_STDERR_HANDLE_BITS: AtomicU64 = AtomicU64::new(0);
-
-// ── VFS write-back registry ──────────────────────────────────────────
-// Maps a file handle's `MoltFileState` pointer address to the VFS backend
-// and relative path so that on close we can flush the in-memory bytearray
-// content back to the virtual filesystem.
 type VfsWritebackEntry = (Arc<dyn crate::vfs::VfsBackend>, String);
 
-fn vfs_writeback_map() -> &'static Mutex<HashMap<usize, VfsWritebackEntry>> {
-    static MAP: OnceLock<Mutex<HashMap<usize, VfsWritebackEntry>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+pub(crate) struct IoRuntimeState {
+    pub(crate) sys_stdin_handle_bits: AtomicU64,
+    pub(crate) sys_stdout_handle_bits: AtomicU64,
+    pub(crate) sys_stderr_handle_bits: AtomicU64,
+    vfs_writebacks: Mutex<HashMap<usize, VfsWritebackEntry>>,
 }
 
-fn vfs_writeback_register(state: &Arc<MoltFileState>, entry: VfsWritebackEntry) {
-    let key = Arc::as_ptr(state) as usize;
-    vfs_writeback_map().lock().unwrap().insert(key, entry);
+impl IoRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            sys_stdin_handle_bits: AtomicU64::new(0),
+            sys_stdout_handle_bits: AtomicU64::new(0),
+            sys_stderr_handle_bits: AtomicU64::new(0),
+            vfs_writebacks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn stdio_slots(&self) -> [&AtomicU64; 3] {
+        [
+            &self.sys_stdin_handle_bits,
+            &self.sys_stdout_handle_bits,
+            &self.sys_stderr_handle_bits,
+        ]
+    }
 }
 
-fn vfs_writeback_take(state: &Arc<MoltFileState>) -> Option<VfsWritebackEntry> {
+fn vfs_writeback_register(_py: &PyToken<'_>, state: &Arc<MoltFileState>, entry: VfsWritebackEntry) {
     let key = Arc::as_ptr(state) as usize;
-    vfs_writeback_map().lock().unwrap().remove(&key)
+    runtime_state(_py)
+        .io
+        .vfs_writebacks
+        .lock()
+        .unwrap()
+        .insert(key, entry);
+}
+
+fn vfs_writeback_take(_py: &PyToken<'_>, state: &Arc<MoltFileState>) -> Option<VfsWritebackEntry> {
+    let key = Arc::as_ptr(state) as usize;
+    runtime_state(_py)
+        .io
+        .vfs_writebacks
+        .lock()
+        .unwrap()
+        .remove(&key)
+}
+
+pub(crate) fn io_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+    crate::gil_assert();
+    for slot in state.io.stdio_slots() {
+        let bits = slot.swap(0, Ordering::AcqRel);
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            let _ = molt_file_flush(bits);
+            if exception_pending(_py) {
+                clear_exception(_py);
+            }
+            dec_ref_bits(_py, bits);
+        }
+    }
+    state.io.vfs_writebacks.lock().unwrap().clear();
 }
 
 macro_rules! file_handle_require_attached {
@@ -70,7 +107,7 @@ fn resolve_file_handle_ptr(_py: &PyToken<'_>, obj_bits: u64) -> Result<*mut Molt
         }
         return Ok(handle_ptr);
     }
-    let name_bits = intern_static_name(_py, &HANDLE_ATTR_NAME, b"_handle");
+    let name_bits = intern_static_name(_py, &runtime_state(_py).interned.handle_name, b"_handle");
     let missing = missing_bits(_py);
     let attr_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
     if exception_pending(_py) {
@@ -1727,7 +1764,7 @@ fn open_impl(
                 // Register VFS writeback so molt_file_close can flush
                 // the bytearray content back to the VFS backend.
                 if let Some(entry) = vfs_backend_arc {
-                    vfs_writeback_register(&vfs_state, entry);
+                    vfs_writeback_register(_py, &vfs_state, entry);
                 }
 
                 // Reuse the same encoding / errors / newline resolution
@@ -2222,7 +2259,7 @@ fn cached_stdio_handle(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stdin() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cached_stdio_handle(_py, &SYS_STDIN_HANDLE_BITS, || {
+        cached_stdio_handle(_py, &runtime_state(_py).io.sys_stdin_handle_bits, || {
             alloc_stdio_handle(_py, 0, true, false, "<stdin>", "surrogateescape", false)
         })
     })
@@ -2231,7 +2268,7 @@ pub extern "C" fn molt_sys_stdin() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stdout() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cached_stdio_handle(_py, &SYS_STDOUT_HANDLE_BITS, || {
+        cached_stdio_handle(_py, &runtime_state(_py).io.sys_stdout_handle_bits, || {
             alloc_stdio_handle(_py, 1, false, true, "<stdout>", "surrogateescape", false)
         })
     })
@@ -2240,7 +2277,7 @@ pub extern "C" fn molt_sys_stdout() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_stderr() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cached_stdio_handle(_py, &SYS_STDERR_HANDLE_BITS, || {
+        cached_stdio_handle(_py, &runtime_state(_py).io.sys_stderr_handle_bits, || {
             alloc_stdio_handle(_py, 2, false, true, "<stderr>", "backslashreplace", true)
         })
     })
@@ -6711,7 +6748,7 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
         unsafe {
             if let Some(handle_ptr) = file_handle_ptr(ptr).as_ref() {
                 let handle = handle_ptr;
-                if let Some((vfs_backend, vfs_path)) = vfs_writeback_take(&handle.state) {
+                if let Some((vfs_backend, vfs_path)) = vfs_writeback_take(_py, &handle.state) {
                     // Read the bytearray content that the runtime wrote into.
                     let mem = handle.mem_bits;
                     if mem != 0
@@ -6756,10 +6793,12 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::file_remaining_bytes_hint;
+    use super::{file_remaining_bytes_hint, io_clear_runtime_state, molt_sys_stdout};
+    use crate::{clear_exception, dec_ref_bits, obj_from_bits, runtime_state};
     use std::fs::{File, remove_file};
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
 
     fn temp_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -6784,5 +6823,26 @@ mod tests {
         assert_eq!(file_remaining_bytes_hint(&mut file), Some(11));
 
         let _ = remove_file(path);
+    }
+
+    #[test]
+    fn cached_stdio_handles_are_runtime_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            io_clear_runtime_state(_py, state);
+            clear_exception(_py);
+
+            let stdout_bits = molt_sys_stdout();
+            assert!(!obj_from_bits(stdout_bits).is_none());
+            assert_eq!(
+                state.io.sys_stdout_handle_bits.load(Ordering::Acquire),
+                stdout_bits
+            );
+
+            dec_ref_bits(_py, stdout_bits);
+            io_clear_runtime_state(_py, state);
+            assert_eq!(state.io.sys_stdout_handle_bits.load(Ordering::Acquire), 0);
+        });
     }
 }
