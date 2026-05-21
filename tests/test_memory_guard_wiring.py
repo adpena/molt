@@ -77,7 +77,8 @@ GUARDED_ENTRYPOINTS = {
     ),
     "tools/cpython_regrtest.py": (
         "harness_memory_guard",
-        "guarded_completed_process",
+        "HarnessExecutionContext",
+        "canonical_regrtest_env",
         "repo_process_sentinel",
         "MOLT_REGRTEST",
     ),
