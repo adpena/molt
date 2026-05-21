@@ -699,6 +699,141 @@ pub fn rt_bytes_as_slice(bytes_bits: u64) -> Option<&'static [u8]> {
     Some(unsafe { std::slice::from_raw_parts(ptr, len as usize) })
 }
 
+unsafe extern "C" {
+    fn __molt_bridge_free_u8(ptr: *mut u8, len: usize);
+    fn __molt_bridge_free_u64(ptr: *mut u64, len: usize);
+}
+
+pub struct OwnedBridgeU8Buffer {
+    ptr: *const u8,
+    len: usize,
+}
+
+impl std::ops::Deref for OwnedBridgeU8Buffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        if self.ptr.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        }
+    }
+}
+
+impl Drop for OwnedBridgeU8Buffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { __molt_bridge_free_u8(self.ptr as *mut u8, self.len) };
+        }
+    }
+}
+
+impl OwnedBridgeU8Buffer {
+    pub fn into_vec(self) -> Vec<u8> {
+        self.to_vec()
+    }
+}
+
+pub struct OwnedBridgeU64Buffer {
+    ptr: *const u64,
+    len: usize,
+}
+
+impl std::ops::Deref for OwnedBridgeU64Buffer {
+    type Target = [u64];
+
+    fn deref(&self) -> &Self::Target {
+        if self.ptr.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        }
+    }
+}
+
+impl Drop for OwnedBridgeU64Buffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { __molt_bridge_free_u64(self.ptr as *mut u64, self.len) };
+        }
+    }
+}
+
+impl OwnedBridgeU64Buffer {
+    pub fn into_vec(self) -> Vec<u64> {
+        self.to_vec()
+    }
+}
+
+/// Wrap an owned runtime bridge `u8` buffer in a guard that releases it
+/// through the runtime on drop.
+///
+/// # Safety
+/// `ptr`/`len` must come from a Molt bridge function that returns an owned
+/// `u8` buffer.
+pub unsafe fn bridge_owned_u8_buffer(ptr: *const u8, len: usize) -> OwnedBridgeU8Buffer {
+    OwnedBridgeU8Buffer { ptr, len }
+}
+
+/// Wrap an owned runtime bridge `u64` buffer in a guard that releases it
+/// through the runtime on drop.
+///
+/// # Safety
+/// `ptr`/`len` must come from a Molt bridge function that returns an owned
+/// `u64` buffer.
+pub unsafe fn bridge_owned_u64_buffer(ptr: *const u64, len: usize) -> OwnedBridgeU64Buffer {
+    OwnedBridgeU64Buffer { ptr, len }
+}
+
+/// Copy an owned UTF-8 bridge buffer into a Rust `String` and release it
+/// through the runtime that allocated it.
+///
+/// # Safety
+/// `ptr`/`len` must come from a Molt bridge function that returns an owned
+/// `u8` buffer.
+pub unsafe fn bridge_owned_u8_to_string_lossy(ptr: *const u8, len: usize) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let out = String::from_utf8_lossy(slice).into_owned();
+    unsafe { __molt_bridge_free_u8(ptr as *mut u8, len) };
+    out
+}
+
+/// Copy an owned bridge buffer into a Rust `Vec<u8>` and release it through
+/// the runtime that allocated it.
+///
+/// # Safety
+/// `ptr`/`len` must come from a Molt bridge function that returns an owned
+/// `u8` buffer.
+pub unsafe fn bridge_owned_u8_to_vec(ptr: *const u8, len: usize) -> Vec<u8> {
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let out = slice.to_vec();
+    unsafe { __molt_bridge_free_u8(ptr as *mut u8, len) };
+    out
+}
+
+/// Copy an owned bridge buffer into a Rust `Vec<u64>` and release it through
+/// the runtime that allocated it.
+///
+/// # Safety
+/// `ptr`/`len` must come from a Molt bridge function that returns an owned
+/// `u64` buffer.
+pub unsafe fn bridge_owned_u64_to_vec(ptr: *const u64, len: usize) -> Vec<u64> {
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let out = slice.to_vec();
+    unsafe { __molt_bridge_free_u64(ptr as *mut u64, len) };
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Prelude — single glob-import for extracted crates
 // ---------------------------------------------------------------------------
@@ -713,7 +848,8 @@ pub mod prelude {
     pub use crate::with_gil_entry;
     pub use crate::{
         CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken, bits_from_ptr,
-        obj_from_bits, ptr_from_bits,
+        bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec,
+        bridge_owned_u64_buffer, bridge_owned_u64_to_vec, obj_from_bits, ptr_from_bits,
     };
 
     // Safe runtime wrappers

@@ -43,6 +43,7 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 }
 
 mod async_rt;
+mod bridge_buffer;
 mod builtins;
 mod c_api;
 mod call;
@@ -441,12 +442,12 @@ pub(crate) use crate::builtins::exceptions::{
     exception_materialized_args_bits, exception_materialized_message_bits,
     exception_message_for_storage, exception_message_is_lazy, exception_method_bits,
     exception_msg_bits, exception_pending, exception_stack_baseline_get,
-    exception_stack_baseline_set, exception_stack_depth,
-    exception_stack_pop, exception_stack_pop_restore_last, exception_stack_push,
-    exception_stack_set_depth, exception_store_args_and_message, exception_suppress_bits,
-    exception_trace_bits, exception_type_bits, exception_type_bits_from_name, exception_value_bits,
-    format_exception, format_exception_message, format_exception_with_traceback, frame_stack_pop,
-    frame_stack_push, frame_stack_push_owned, frame_stack_set_line, generator_exception_stack_drop,
+    exception_stack_baseline_set, exception_stack_depth, exception_stack_pop,
+    exception_stack_pop_restore_last, exception_stack_push, exception_stack_set_depth,
+    exception_store_args_and_message, exception_suppress_bits, exception_trace_bits,
+    exception_type_bits, exception_type_bits_from_name, exception_value_bits, format_exception,
+    format_exception_message, format_exception_with_traceback, frame_stack_pop, frame_stack_push,
+    frame_stack_push_owned, frame_stack_set_line, generator_exception_stack_drop,
     generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
     global_last_exception_bits_noinc, handle_system_exit, molt_exception_active,
     molt_exception_clear, molt_exception_kind, molt_exception_last, molt_exception_pending,
