@@ -1390,15 +1390,16 @@ def _run_completed_command(
             timeout=timeout,
         )
     harness_memory_guard = _load_cli_harness_memory_guard(cwd)
-    limits = harness_memory_guard.limits_from_env(memory_guard_prefix, guard_env)
-    return harness_memory_guard.guarded_completed_process(
+    guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
+        memory_guard_prefix,
+        guard_env,
+        repo_root=(cwd or Path.cwd()),
+    )
+    return guard_context.run(
         cmd,
-        prefix=memory_guard_prefix,
-        env=guard_env,
         cwd=cwd,
         capture_output=capture_output,
         text=True,
-        limits=limits,
         timeout=timeout,
     )
 
@@ -8909,12 +8910,12 @@ def _verify_uv_lock(project_root: Path) -> str | None:
     if _is_lock_check_cache_valid(project_root, "uv", inputs):
         return None
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             ["uv", "lock", "--check"],
             cwd=project_root,
             capture_output=True,
-            text=True,
-            check=False,
+            env=None,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except OSError as exc:
         return f"Failed to run `uv lock --check`: {exc}"
@@ -9002,12 +9003,12 @@ def _verify_cargo_lock(project_root: Path) -> str | None:
     if _is_lock_check_cache_valid(project_root, "cargo", inputs):
         return None
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             ["cargo", "metadata", "--locked", "--format-version", "1"],
             cwd=project_root,
             capture_output=True,
-            text=True,
-            check=False,
+            env=None,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except OSError as exc:
         return f"Failed to run `cargo metadata --locked`: {exc}"
@@ -13680,77 +13681,96 @@ def _start_backend_daemon(
         pass
     daemon_pid: int | None = None
     daemon_proc: subprocess.Popen[bytes] | None = None
+    daemon_env = dict(os.environ)
+    harness_memory_guard = _load_cli_harness_memory_guard(project_root)
+    daemon_context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_BUILD",
+        daemon_env,
+        repo_root=project_root,
+    )
+    daemon_env = dict(daemon_context.env)
+    daemon_popen_kwargs: dict[str, Any] = {"start_new_session": True}
+    daemon_popen_kwargs.update(daemon_context.process_group_kwargs())
+    daemon_sentinel = daemon_context.start_repo_sentinel(
+        label="backend_daemon_start",
+        drain_on_exit=False,
+        drain_until_clean_sec=0.0,
+        drain_max_runtime_sec=_backend_daemon_spawn_probe_timeout(startup_wait) + 1.0,
+    )
     try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        # Rotate the log if it has grown beyond the configured cap before the
-        # new daemon starts appending. Long-running multi-session repos see
-        # daemon logs grow to tens of megabytes otherwise, which slows down
-        # post-mortem tail reads and bloats the artifact root.
-        _rotate_backend_daemon_log_if_large(log_path)
-        # Propagate all environment variables to the daemon so that
-        # debug env vars (MOLT_TRACE_EQ, MOLT_DEBUG_EXCEPTION_FLOW etc.)
-        # reach the backend process.  Daemon stderr goes to the log file
-        # so it's always available for post-mortem debugging.
-        daemon_env = dict(os.environ)
-        with log_path.open("ab") as log_file:
-            daemon_proc = subprocess.Popen(
-                [str(backend_bin), "--daemon", "--socket", str(socket_path)],
-                cwd=project_root,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=daemon_env,
-            )
-            daemon_pid = daemon_proc.pid
-            _write_backend_daemon_pid(pid_path, daemon_pid)
-    except OSError as exc:
-        if daemon_pid is not None:
-            _remove_backend_daemon_pid(pid_path)
-        if not json_output:
-            print(f"Failed to start backend daemon: {exc}", file=sys.stderr)
-        return False
-    ready, _ = _backend_daemon_wait_until_ready(
-        socket_path,
-        ready_timeout=_backend_daemon_spawn_probe_timeout(startup_wait),
-        probe_timeout=None,
-    )
-    if ready:
-        return True
-    probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
-    # Surface concrete subprocess status instead of a bare timeout. If the
-    # daemon already exited (crash, missing dynamic dep, port conflict, etc.)
-    # the returncode tells us so directly; otherwise we know it is still
-    # running but unresponsive within the probe window.
-    proc_status = "process status unavailable"
-    if daemon_proc is not None:
-        exit_code = daemon_proc.poll()
-        if exit_code is None:
-            proc_status = (
-                f"daemon process pid={daemon_pid} still running but did not "
-                f"answer readiness probes"
-            )
-        elif exit_code < 0:
-            proc_status = (
-                f"daemon process pid={daemon_pid} terminated by signal "
-                f"{-exit_code} before readiness"
-            )
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Rotate the log if it has grown beyond the configured cap before the
+            # new daemon starts appending. Long-running multi-session repos see
+            # daemon logs grow to tens of megabytes otherwise, which slows down
+            # post-mortem tail reads and bloats the artifact root.
+            _rotate_backend_daemon_log_if_large(log_path)
+            # Propagate all environment variables to the daemon so that
+            # debug env vars (MOLT_TRACE_EQ, MOLT_DEBUG_EXCEPTION_FLOW etc.)
+            # reach the backend process. Daemon stderr goes to the log file
+            # so it's always available for post-mortem debugging.
+            with log_path.open("ab") as log_file:
+                daemon_proc = subprocess.Popen(
+                    [str(backend_bin), "--daemon", "--socket", str(socket_path)],
+                    cwd=project_root,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    env=daemon_env,
+                    **daemon_popen_kwargs,
+                )
+                daemon_pid = daemon_proc.pid
+                _write_backend_daemon_pid(pid_path, daemon_pid)
+        except OSError as exc:
+            if daemon_pid is not None:
+                _remove_backend_daemon_pid(pid_path)
+            if not json_output:
+                print(f"Failed to start backend daemon: {exc}", file=sys.stderr)
+            return False
+        ready, _ = _backend_daemon_wait_until_ready(
+            socket_path,
+            ready_timeout=_backend_daemon_spawn_probe_timeout(startup_wait),
+            probe_timeout=None,
+        )
+        if ready:
+            return True
+        probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
+        # Surface concrete subprocess status instead of a bare timeout. If the
+        # daemon already exited (crash, missing dynamic dep, port conflict, etc.)
+        # the returncode tells us so directly; otherwise we know it is still
+        # running but unresponsive within the probe window.
+        proc_status = "process status unavailable"
+        if daemon_proc is not None:
+            exit_code = daemon_proc.poll()
+            if exit_code is None:
+                proc_status = (
+                    f"daemon process pid={daemon_pid} still running but did not "
+                    f"answer readiness probes"
+                )
+            elif exit_code < 0:
+                proc_status = (
+                    f"daemon process pid={daemon_pid} terminated by signal "
+                    f"{-exit_code} before readiness"
+                )
+            else:
+                proc_status = (
+                    f"daemon process pid={daemon_pid} exited with code "
+                    f"{exit_code} before readiness"
+                )
+        message = (
+            "Backend daemon did not become ready after spawn within "
+            f"{probe_window:.2f}s ({proc_status}); falling back to one-shot "
+            "compile for this build."
+        )
+        log_tail = _backend_daemon_log_tail(log_path)
+        if log_tail:
+            message = f"{message}\nLast daemon log lines:\n{log_tail}"
         else:
-            proc_status = (
-                f"daemon process pid={daemon_pid} exited with code "
-                f"{exit_code} before readiness"
-            )
-    message = (
-        "Backend daemon did not become ready after spawn within "
-        f"{probe_window:.2f}s ({proc_status}); falling back to one-shot "
-        "compile for this build."
-    )
-    log_tail = _backend_daemon_log_tail(log_path)
-    if log_tail:
-        message = f"{message}\nLast daemon log lines:\n{log_tail}"
-    else:
-        message = f"{message}\n(no daemon log output captured at {log_path})"
-    _report_daemon_issue(message)
-    return False
+            message = f"{message}\n(no daemon log output captured at {log_path})"
+        _report_daemon_issue(message)
+        return False
+    finally:
+        if daemon_sentinel is not None:
+            daemon_sentinel.__exit__(None, None, None)
 
 
 def _compile_with_backend_daemon(
@@ -17836,12 +17856,26 @@ def _run_native_link_command(
     json_output: bool,
     link_timeout: float | None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    result = _run_completed_command(
         list(link_cmd),
         capture_output=json_output,
-        text=True,
+        env=None,
+        cwd=None,
         timeout=link_timeout,
+        memory_guard_prefix="MOLT_BUILD",
     )
+    harness_memory_guard = _load_cli_harness_memory_guard(None)
+    if (
+        link_timeout is not None
+        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    ):
+        raise subprocess.TimeoutExpired(
+            list(link_cmd),
+            link_timeout,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
 
 
 def _run_native_partial_link_command(
@@ -27248,11 +27282,12 @@ def _ensure_rustup_target(target_triple: str, warnings: list[str]) -> bool:
         warnings.append(f"rustup not found; cannot ensure target {target_triple}")
         return False
     try:
-        result = subprocess.run(
-            ["rustup", "target", "list", "--installed"],
+        result = _run_completed_command(
+            [rustup_path, "target", "list", "--installed"],
             capture_output=True,
-            text=True,
-            check=False,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except OSError as exc:
         warnings.append(f"Failed to query rustup targets: {exc}")
@@ -27261,11 +27296,12 @@ def _ensure_rustup_target(target_triple: str, warnings: list[str]) -> bool:
     if target_triple in installed:
         return True
     try:
-        add = subprocess.run(
-            ["rustup", "target", "add", target_triple],
+        add = _run_completed_command(
+            [rustup_path, "target", "add", target_triple],
             capture_output=True,
-            text=True,
-            check=False,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except OSError as exc:
         warnings.append(f"Failed to add rustup target {target_triple}: {exc}")
@@ -27803,11 +27839,13 @@ def _run_mlir_backend_pipeline(
         )
 
     try:
-        result = subprocess.run(
+        result = _run_subprocess_captured_to_tempfiles(
             cmd,
             input=ir_bytes,
-            capture_output=True,
+            cwd=project_root,
+            env=None,
             timeout=120,
+            progress_label="MLIR backend",
         )
     except FileNotFoundError:
         return _fail(
@@ -38167,7 +38205,13 @@ def _run_ty_check(path: Path) -> tuple[bool, str]:
     ]
     for cmd in commands:
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            result = _run_completed_command(
+                cmd,
+                capture_output=True,
+                env=None,
+                cwd=None,
+                memory_guard_prefix="MOLT_CLI",
+            )
         except FileNotFoundError:
             continue
         if result.returncode == 0:
