@@ -125,6 +125,67 @@ fn clear_extension_metadata_validation_cache() {
     EXTENSION_METADATA_CACHE_MISSES.store(0, Ordering::Relaxed);
 }
 
+#[test]
+fn platform_constant_runtime_state_is_owned_and_clearable() {
+    let _guard = crate::TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::with_gil_entry_nopanic!(_py, {
+        platform_clear_runtime_state(_py, runtime_state(_py));
+    });
+
+    let os_name_bits = molt_os_name();
+    let sys_platform_bits = molt_sys_platform();
+    let errno_constants_bits = molt_errno_constants();
+    let socket_constants_bits = molt_socket_constants();
+    assert!(!obj_from_bits(os_name_bits).is_none());
+    assert!(!obj_from_bits(sys_platform_bits).is_none());
+    assert!(!obj_from_bits(errno_constants_bits).is_none());
+    assert!(!obj_from_bits(socket_constants_bits).is_none());
+
+    crate::with_gil_entry_nopanic!(_py, {
+        dec_ref_bits(_py, os_name_bits);
+        dec_ref_bits(_py, sys_platform_bits);
+        dec_ref_bits(_py, errno_constants_bits);
+        dec_ref_bits(_py, socket_constants_bits);
+        let state = runtime_state(_py);
+        for slot in state.platform.object_slots() {
+            assert_ne!(slot.load(Ordering::Acquire), 0);
+        }
+        platform_clear_runtime_state(_py, state);
+        for slot in state.platform.object_slots() {
+            assert_eq!(slot.load(Ordering::Acquire), 0);
+        }
+    });
+}
+
+#[test]
+fn platform_constant_cache_returns_owned_values() {
+    let _guard = crate::TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    crate::with_gil_entry_nopanic!(_py, {
+        let state = runtime_state(_py);
+        platform_clear_runtime_state(_py, state);
+        for make_bits in [
+            molt_os_name as extern "C" fn() -> u64,
+            molt_sys_platform as extern "C" fn() -> u64,
+            molt_errno_constants as extern "C" fn() -> u64,
+            molt_socket_constants as extern "C" fn() -> u64,
+        ] {
+            let first = make_bits();
+            assert!(!obj_from_bits(first).is_none());
+            dec_ref_bits(_py, first);
+
+            let second = make_bits();
+            assert!(!obj_from_bits(second).is_none());
+            dec_ref_bits(_py, second);
+        }
+        platform_clear_runtime_state(_py, state);
+    });
+}
+
 fn alloc_test_string_bits(_py: &PyToken<'_>, value: &str) -> u64 {
     let ptr = alloc_string(_py, value.as_bytes());
     assert!(!ptr.is_null(), "alloc string failed for {value:?}");

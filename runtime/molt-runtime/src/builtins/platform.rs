@@ -48,10 +48,55 @@ pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
     })
 }
 
-static ERRNO_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
-static SOCKET_CONSTANTS_CACHE: AtomicU64 = AtomicU64::new(0);
-static OS_NAME_CACHE: AtomicU64 = AtomicU64::new(0);
-static SYS_PLATFORM_CACHE: AtomicU64 = AtomicU64::new(0);
+const PLATFORM_OBJECT_SLOT_COUNT: usize = 4;
+
+pub(crate) struct PlatformRuntimeState {
+    errno_constants_cache: AtomicU64,
+    socket_constants_cache: AtomicU64,
+    os_name_cache: AtomicU64,
+    sys_platform_cache: AtomicU64,
+}
+
+impl PlatformRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            errno_constants_cache: AtomicU64::new(0),
+            socket_constants_cache: AtomicU64::new(0),
+            os_name_cache: AtomicU64::new(0),
+            sys_platform_cache: AtomicU64::new(0),
+        }
+    }
+
+    fn object_slots(&self) -> [&AtomicU64; PLATFORM_OBJECT_SLOT_COUNT] {
+        [
+            &self.errno_constants_cache,
+            &self.socket_constants_cache,
+            &self.os_name_cache,
+            &self.sys_platform_cache,
+        ]
+    }
+}
+
+fn platform_state(_py: &PyToken<'_>) -> &'static PlatformRuntimeState {
+    &runtime_state(_py).platform
+}
+
+fn init_platform_cached_owned_bits(
+    _py: &PyToken<'_>,
+    slot: &AtomicU64,
+    init: impl FnOnce() -> u64,
+) -> u64 {
+    let bits = init_atomic_bits(_py, slot, init);
+    inc_ref_bits(_py, bits);
+    bits
+}
+
+pub(crate) fn platform_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+    crate::gil_assert();
+    let slots = state.platform.object_slots();
+    crate::state::cache::clear_atomic_slots(_py, &slots);
+}
+
 static ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 static PROCESS_ENV_STATE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 static LOCALE_STATE: OnceLock<Mutex<String>> = OnceLock::new();
