@@ -15,7 +15,13 @@ document the chosen target in specs/tests and keep the differential suite aligne
 - **Parallelism**: auto-selected based on CPU and available memory (default budget: 2 GB/worker).
   - Override with `--jobs <n>` or `MOLT_DIFF_MAX_JOBS=<n>`.
   - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEM_AVAILABLE_GB=<n>`.
-- **Memory cap**: enforced per process by default (10 GB). Disable with `MOLT_DIFF_RLIMIT_GB=0`.
+- **Memory guard**: enabled by default with adaptive per-process,
+  per-test-tree, global RSS, and direct-child virtual-memory limits. Configure
+  deliberate investigation caps with `MOLT_DIFF_MAX_PROCESS_RSS_GB`,
+  `MOLT_DIFF_MAX_TREE_RSS_GB`, `MOLT_DIFF_GLOBAL_RSS_LIMIT_GB`, or
+  `MOLT_DIFF_CHILD_RLIMIT_GB`; disable the RSS guard only for explicit local
+  investigation with `MOLT_DIFF_MEMORY_GUARD=0`, and disable the child
+  virtual-memory clamp only with `MOLT_DIFF_CHILD_RLIMIT_GB=0`.
 - **OOM retry**: OOM failures are retried once with `--jobs 1` (disable via `--no-retry-oom` or `MOLT_DIFF_RETRY_OOM=0`).
 - **Warm cache**: `--warm-cache` or `MOLT_DIFF_WARM_CACHE=1` prebuilds all tests to seed `MOLT_CACHE`.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `--failures-output` or `MOLT_DIFF_FAILURES`).

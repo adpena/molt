@@ -74,16 +74,19 @@ class DxProject:
         env: Mapping[str, str],
         *,
         python: str | None,
+        project_env_matches_python: bool | None = None,
     ) -> dict[str, str]:
         run_env = dict(env)
         run_env.setdefault("PYTHONUNBUFFERED", "1")
         run_env["UV_PROJECT_ENVIRONMENT"] = str(self.project_env_dir())
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             run_env.pop(name, None)
-        if run_env.get("UV_NO_SYNC") == "1" and not self.project_env_matches_python(
-            python
-        ):
-            run_env.pop("UV_NO_SYNC", None)
+        if run_env.get("UV_NO_SYNC") == "1":
+            env_matches = project_env_matches_python
+            if env_matches is None:
+                env_matches = self.project_env_matches_python(python)
+            if not env_matches:
+                run_env.pop("UV_NO_SYNC", None)
         return run_env
 
     def canonical_env(

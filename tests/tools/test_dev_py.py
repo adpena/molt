@@ -150,11 +150,26 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch) -> None:
         raising=True,
     )
 
-    def fake_status_run(cmd, **_kwargs):
-        assert cmd == ["git", "status", "--short"]
-        return SimpleNamespace(stdout="")
+    fake_limits = object()
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "limits_from_env",
+        lambda prefix, env: fake_limits,
+        raising=True,
+    )
 
-    monkeypatch.setattr(module.subprocess, "run", fake_status_run, raising=True)
+    def fake_status_run(cmd, **kwargs):
+        assert cmd == ["git", "status", "--short"]
+        assert kwargs["prefix"] == "MOLT_TEST_SUITE"
+        assert kwargs["limits"] is fake_limits
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_status_run,
+        raising=True,
+    )
 
     module._run_dx_gates(["--allow-dirty"], tty=False)
 
@@ -300,3 +315,76 @@ def test_dev_py_tty_can_use_pty_when_memory_guard_disabled(monkeypatch) -> None:
         assert calls == [("pty", ["pytest", "-q"])]
     else:
         assert calls == []
+
+
+def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(monkeypatch) -> None:
+    module = _load_dev_py()
+    fake_python = module.ROOT / "pyproject.toml"
+    fake_limits = object()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_uv_project_python",
+        lambda: fake_python,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "limits_from_env",
+        lambda prefix, env: fake_limits,
+        raising=True,
+    )
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        calls.append((list(cmd), dict(kwargs)))
+        return SimpleNamespace(returncode=0, stdout="3.12\n", stderr="")
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+        raising=True,
+    )
+
+    assert module._uv_project_env_matches_python("3.12", {"PATH": "/usr/bin"})
+
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd == [
+        str(fake_python),
+        "-c",
+        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+    ]
+    assert kwargs["prefix"] == "MOLT_TEST_SUITE"
+    assert kwargs["cwd"] == module.ROOT
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert kwargs["limits"] is fake_limits
+    assert kwargs["env"]["MOLT_EXT_ROOT"] == str(module.ROOT)
+
+
+def test_dev_py_uv_no_sync_normalization_uses_guarded_probe(monkeypatch) -> None:
+    module = _load_dev_py()
+    probes: list[tuple[str | None, dict[str, str]]] = []
+
+    def fake_probe(requested, env):
+        probes.append((requested, dict(env)))
+        return requested == "3.12"
+
+    monkeypatch.setattr(
+        module,
+        "_uv_project_env_matches_python",
+        fake_probe,
+        raising=True,
+    )
+
+    matching = module._normalized_uv_run_env({"UV_NO_SYNC": "1"}, python="3.12")
+    mismatched = module._normalized_uv_run_env({"UV_NO_SYNC": "1"}, python="3.13")
+
+    assert matching["UV_NO_SYNC"] == "1"
+    assert "UV_NO_SYNC" not in mismatched
+    assert probes == [
+        ("3.12", {"UV_NO_SYNC": "1"}),
+        ("3.13", {"UV_NO_SYNC": "1"}),
+    ]

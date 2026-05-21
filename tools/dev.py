@@ -113,8 +113,37 @@ def _uv_project_python() -> Path:
     return DX.project_python()
 
 
-def _uv_project_env_matches_python(requested: str | None) -> bool:
-    return DX.project_env_matches_python(requested)
+def _uv_project_env_matches_python(
+    requested: str | None,
+    env: dict[str, str] | None = None,
+) -> bool:
+    project_python = _uv_project_python()
+    if not project_python.exists():
+        return False
+    if not requested:
+        return True
+    guard_env = harness_memory_guard.canonical_harness_env(
+        env or os.environ,
+        repo_root=ROOT,
+    )
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", guard_env)
+    try:
+        result = harness_memory_guard.guarded_completed_process(
+            [
+                str(project_python),
+                "-c",
+                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
+            ],
+            prefix="MOLT_TEST_SUITE",
+            cwd=ROOT,
+            env=guard_env,
+            capture_output=True,
+            text=True,
+            limits=limits,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == requested
 
 
 def _normalized_uv_run_env(
@@ -122,7 +151,14 @@ def _normalized_uv_run_env(
     *,
     python: str | None,
 ) -> dict[str, str]:
-    return DX.normalized_uv_run_env(env, python=python)
+    project_env_matches_python: bool | None = None
+    if env.get("UV_NO_SYNC") == "1":
+        project_env_matches_python = _uv_project_env_matches_python(python, env)
+    return DX.normalized_uv_run_env(
+        env,
+        python=python,
+        project_env_matches_python=project_env_matches_python,
+    )
 
 
 def run_uv(
