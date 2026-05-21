@@ -42,7 +42,8 @@ echo ""
 # Step 1: Build WASM binary
 echo "=== Step 1/6: Building WASM binary ==="
 mkdir -p "$BUILD_OUTPUT_DIR"
-python3 -m molt build "$WASM_DRIVER" --target wasm --output "$BUILD_OUTPUT_DIR" --rebuild
+python3 "$PROJECT_ROOT/tools/guarded_exec.py" --prefix MOLT_DEPLOY --cwd "$PROJECT_ROOT" -- \
+  python3 -m molt build "$WASM_DRIVER" --target wasm --output "$BUILD_OUTPUT_DIR" --rebuild
 echo "WASM binary built at: $BUILD_OUTPUT_DIR"
 echo ""
 

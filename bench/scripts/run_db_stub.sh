@@ -12,4 +12,5 @@ export MOLT_DIFF_TMPDIR="${MOLT_DIFF_TMPDIR:-$ROOT/tmp}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT/.uv-cache}"
 export TMPDIR="${TMPDIR:-$ROOT/tmp}"
 
-exec python3 "$ROOT/bench/scripts/run_db_stub.py" "$@"
+exec python3 "$ROOT/tools/guarded_exec.py" --prefix MOLT_BENCH --cwd "$ROOT" -- \
+  python3 "$ROOT/bench/scripts/run_db_stub.py" "$@"

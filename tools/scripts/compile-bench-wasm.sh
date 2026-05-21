@@ -24,15 +24,27 @@ BENCH_DIR="$REPO_ROOT/tests/benchmarks"
 OUT_DIR="$REPO_ROOT/wasm/bench"
 RUNTIME_WASM="$REPO_ROOT/wasm/molt_runtime.wasm"
 WASM_LINK="$REPO_ROOT/tools/wasm_link.py"
-CARGO_TARGET="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+export MOLT_EXT_ROOT="${MOLT_EXT_ROOT:-$REPO_ROOT}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+export MOLT_DIFF_CARGO_TARGET_DIR="${MOLT_DIFF_CARGO_TARGET_DIR:-$CARGO_TARGET_DIR}"
+export MOLT_CACHE="${MOLT_CACHE:-$REPO_ROOT/.molt_cache}"
+export MOLT_DIFF_ROOT="${MOLT_DIFF_ROOT:-$REPO_ROOT/tmp/diff}"
+export MOLT_DIFF_TMPDIR="${MOLT_DIFF_TMPDIR:-$REPO_ROOT/tmp}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$REPO_ROOT/.uv-cache}"
+export TMPDIR="${TMPDIR:-$REPO_ROOT/tmp}"
+CARGO_TARGET="$CARGO_TARGET_DIR"
 
 mkdir -p "$OUT_DIR"
+
+_guard() {
+  python3 "$REPO_ROOT/tools/guarded_exec.py" --prefix MOLT_BENCH --cwd "$REPO_ROOT" -- "$@"
+}
 
 BACKEND_BIN="$CARGO_TARGET/release/molt-backend"
 if [[ ! -f "$BACKEND_BIN" ]]; then
   echo "molt-backend not found at $BACKEND_BIN — building..."
   cd "$REPO_ROOT"
-  CARGO_TARGET_DIR="$CARGO_TARGET" cargo build --release -p molt-lang-backend
+  _guard cargo build --release -p molt-lang-backend
 fi
 
 FRONTEND_CMD=(uv run --python 3.12 python3 -m molt_lang_python)
@@ -54,7 +66,7 @@ _compile_one() {
 
   echo "  [1/3] Python -> IR..."
   cd "$REPO_ROOT"
-  uv run --python 3.12 python3 -c "
+  _guard uv run --python 3.12 python3 -c "
 import sys, json
 sys.path.insert(0, '.')
 from runtime.molt_python.src import molt_lang_python as fe
@@ -65,20 +77,18 @@ with open('$ir_file', 'w') as out:
     json.dump(ir, out)
 " 2>/dev/null || {
     echo "  [1/3] Python -> IR (via tools pipeline)..."
-    uv run --python 3.12 python3 "$REPO_ROOT/tools/compile_governor.py" \
+    _guard uv run --python 3.12 python3 "$REPO_ROOT/tools/compile_governor.py" \
       --input "$py_file" \
       --ir-output "$ir_file" \
       --target wasm32-wasip1
   }
 
   echo "  [2/3] IR -> WASM object..."
-  "$BACKEND_BIN" \
-    --target wasm32-wasip1 \
-    --output "$obj_file" \
-    < "$ir_file"
+  _guard bash -c 'exec "$1" --target wasm32-wasip1 --output "$2" < "$3"' \
+    bash "$BACKEND_BIN" "$obj_file" "$ir_file"
 
   echo "  [3/3] Linking WASM..."
-  uv run --python 3.12 python3 "$WASM_LINK" \
+  _guard uv run --python 3.12 python3 "$WASM_LINK" \
     --input "$obj_file" \
     --runtime "$RUNTIME_WASM" \
     --output "$linked_file"

@@ -3,6 +3,7 @@
 # Reports binary size and compile time back to Claude's context.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FILE_PATH=$(jq -r '.tool_input.file_path // empty' 2>/dev/null || true)
 
 # Only trigger for Python files in the cloudflare demo
@@ -13,12 +14,14 @@ case "$FILE_PATH" in
     *) exit 0 ;;
 esac
 
-OUTDIR=$(mktemp -d -t molt-check-XXXXXX)
+mkdir -p "$ROOT/tmp"
+OUTDIR=$(mktemp -d "$ROOT/tmp/molt-check-XXXXXX")
 trap 'rm -rf "$OUTDIR"' EXIT
 
 START_MS=$(($(date +%s) * 1000 + $(date +%N 2>/dev/null | sed 's/^0*//' | head -c3 || echo 0)))
 
-if MOLT_WASM_PROFILE=pure .venv/bin/python -m molt build "$FILE_PATH" \
+if MOLT_WASM_PROFILE=pure python3 "$ROOT/tools/guarded_exec.py" --prefix MOLT_TEST_SUITE --cwd "$ROOT" -- \
+    .venv/bin/python -m molt build "$FILE_PATH" \
     --target wasm --stdlib-profile micro \
     --output "$OUTDIR/output.wasm" \
     --linked-output "$OUTDIR/linked.wasm" 2>/dev/null; then
