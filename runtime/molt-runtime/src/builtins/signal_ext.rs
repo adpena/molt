@@ -5,8 +5,8 @@
 //! Complements the existing `molt_signal_raise` in `object/ops.rs` with full
 //! handler registration, signal constants, and utility functions.
 //!
-//! Signal handlers are stored in a fixed-size static array indexed by signal
-//! number (max NSIG, typically 32 on macOS/Linux).  Python-level handlers are
+//! Signal handlers are stored in `RuntimeState.signal`, indexed by signal
+//! number (max NSIG, typically 32 on macOS/Linux). Python-level handlers are
 //! represented as opaque u64 bits; SIG_DFL=0, SIG_IGN=1.
 //!
 //! ABI: NaN-boxed u64 in/out.
@@ -15,7 +15,7 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
@@ -38,21 +38,171 @@ const HANDLER_SIG_IGN: u64 = 1;
 /// signal numbers against platform NSIG at API boundaries.
 const MAX_SIGNAL: usize = 128;
 
-// ── Handler table ─────────────────────────────────────────────────────────
-
-/// Stores the current Python-level handler bits for each signal number.
-/// Value 0 = SIG_DFL, 1 = SIG_IGN, anything else = MoltObject bits of a callable.
-static HANDLER_TABLE: [AtomicU64; MAX_SIGNAL] = {
-    #[allow(clippy::declare_interior_mutable_const)]
-    const ZERO: AtomicU64 = AtomicU64::new(HANDLER_SIG_DFL);
-    [ZERO; MAX_SIGNAL]
-};
-
-/// Set wakeup fd (-1 = disabled).
-static WAKEUP_FD: AtomicI32 = AtomicI32::new(-1);
-
 /// Lock protecting sigaction calls on Unix.
 static SIGACTION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Signal handlers run without the GIL and cannot touch TLS or locks. This
+/// pointer is only a signal-safe route to the currently active runtime-owned
+/// atomics; `RuntimeState.signal` remains the owner.
+static ACTIVE_SIGNAL_STATE: AtomicPtr<SignalRuntimeState> = AtomicPtr::new(std::ptr::null_mut());
+
+pub(crate) struct SignalRuntimeState {
+    handlers: [AtomicU64; MAX_SIGNAL],
+    wakeup_fd: AtomicI32,
+    pending: [AtomicU64; MAX_SIGNAL],
+}
+
+impl SignalRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            handlers: {
+                #[allow(clippy::declare_interior_mutable_const)]
+                const ZERO: AtomicU64 = AtomicU64::new(HANDLER_SIG_DFL);
+                [ZERO; MAX_SIGNAL]
+            },
+            wakeup_fd: AtomicI32::new(-1),
+            pending: {
+                #[allow(clippy::declare_interior_mutable_const)]
+                const ZERO: AtomicU64 = AtomicU64::new(0);
+                [ZERO; MAX_SIGNAL]
+            },
+        }
+    }
+
+    fn handler_bits(&self, signum: i32) -> u64 {
+        self.handlers[signum as usize].load(Ordering::SeqCst)
+    }
+
+    fn handler_bits_for_return(&self, _py: &PyToken<'_>, signum: i32) -> u64 {
+        let bits = self.handler_bits(signum);
+        if is_callable_handler_bits(bits) {
+            inc_ref_bits(_py, bits);
+        }
+        bits
+    }
+
+    fn replace_handler_retaining(
+        &self,
+        _py: &PyToken<'_>,
+        signum: i32,
+        new_handler_bits: u64,
+    ) -> u64 {
+        if is_callable_handler_bits(new_handler_bits) {
+            inc_ref_bits(_py, new_handler_bits);
+        }
+        self.handlers[signum as usize].swap(new_handler_bits, Ordering::SeqCst)
+    }
+
+    fn swap_wakeup_fd(&self, new_fd: i32) -> i32 {
+        self.wakeup_fd.swap(new_fd, Ordering::SeqCst)
+    }
+
+    fn wakeup_fd(&self) -> i32 {
+        self.wakeup_fd.load(Ordering::Relaxed)
+    }
+
+    fn mark_pending(&self, signum: i32) {
+        if (signum as usize) < MAX_SIGNAL {
+            self.pending[signum as usize].store(1, Ordering::SeqCst);
+        }
+    }
+
+    fn clear_for_teardown(&self, _py: &PyToken<'_>) {
+        self.wakeup_fd.store(-1, Ordering::SeqCst);
+        for idx in 0..MAX_SIGNAL {
+            let old_bits = self.handlers[idx].swap(HANDLER_SIG_DFL, Ordering::SeqCst);
+            if is_callable_handler_bits(old_bits) {
+                dec_ref_bits(_py, old_bits);
+            }
+            self.pending[idx].store(0, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(test)]
+    fn pending_for_test(&self, signum: i32) -> bool {
+        self.pending[signum as usize].load(Ordering::SeqCst) != 0
+    }
+}
+
+pub(crate) fn signal_runtime_state_publish(state: &crate::state::runtime_state::RuntimeState) {
+    ACTIVE_SIGNAL_STATE.store(
+        (&state.signal as *const SignalRuntimeState).cast_mut(),
+        Ordering::SeqCst,
+    );
+}
+
+fn signal_runtime_state_deactivate(signal: &SignalRuntimeState) {
+    let ptr = (signal as *const SignalRuntimeState).cast_mut();
+    let _ = ACTIVE_SIGNAL_STATE.compare_exchange(
+        ptr,
+        std::ptr::null_mut(),
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
+}
+
+fn active_signal_state() -> Option<&'static SignalRuntimeState> {
+    let ptr = ACTIVE_SIGNAL_STATE.load(Ordering::SeqCst);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
+    }
+}
+
+pub(crate) fn signal_clear_state(
+    _py: &PyToken<'_>,
+    state: &crate::state::runtime_state::RuntimeState,
+) {
+    signal_runtime_state_deactivate(&state.signal);
+    reset_os_handlers_for_teardown(&state.signal);
+    state.signal.clear_for_teardown(_py);
+}
+
+fn is_callable_handler_bits(bits: u64) -> bool {
+    bits != HANDLER_SIG_DFL && bits != HANDLER_SIG_IGN
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn install_os_handler(signum: i32, handler_bits: u64) -> Result<(), std::io::Error> {
+    let _guard = SIGACTION_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let result = unsafe {
+        match handler_bits {
+            HANDLER_SIG_DFL => libc::signal(signum, libc::SIG_DFL),
+            HANDLER_SIG_IGN => libc::signal(signum, libc::SIG_IGN),
+            _ => libc::signal(
+                signum,
+                molt_c_signal_handler as *const () as libc::sighandler_t,
+            ),
+        }
+    };
+    if result == libc::SIG_ERR {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(not(unix), target_arch = "wasm32"))]
+fn install_os_handler(_signum: i32, _handler_bits: u64) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn reset_os_handlers_for_teardown(signal: &SignalRuntimeState) {
+    let _guard = SIGACTION_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let nsig = effective_nsig().min(MAX_SIGNAL as i64);
+    for signum in 1..nsig {
+        if signal.handler_bits(signum as i32) != HANDLER_SIG_DFL {
+            unsafe {
+                libc::signal(signum as libc::c_int, libc::SIG_DFL);
+            }
+        }
+    }
+}
+
+#[cfg(any(not(unix), target_arch = "wasm32"))]
+fn reset_os_handlers_for_teardown(_signal: &SignalRuntimeState) {}
 
 // ── Raw C signal handler ──────────────────────────────────────────────────
 //
@@ -63,8 +213,11 @@ static SIGACTION_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 extern "C" fn molt_c_signal_handler(signum: libc::c_int) {
+    let Some(signal) = active_signal_state() else {
+        return;
+    };
     // Write signal number byte to wakeup fd if configured.
-    let fd = WAKEUP_FD.load(Ordering::Relaxed);
+    let fd = signal.wakeup_fd();
     if fd >= 0 {
         let byte = signum as u8;
         unsafe {
@@ -73,17 +226,8 @@ extern "C" fn molt_c_signal_handler(signum: libc::c_int) {
     }
     // Note: We do not call into Rust/GIL here — that would be unsafe from
     // a signal handler. The scheduler polls PENDING_SIGNALS at safe points.
-    if (signum as usize) < MAX_SIGNAL {
-        PENDING_SIGNALS[signum as usize].store(1, Ordering::SeqCst);
-    }
+    signal.mark_pending(signum);
 }
-
-// Pending signal flags — the scheduler checks these.
-static PENDING_SIGNALS: [AtomicU64; MAX_SIGNAL] = {
-    #[allow(clippy::declare_interior_mutable_const)]
-    const ZERO: AtomicU64 = AtomicU64::new(0);
-    [ZERO; MAX_SIGNAL]
-};
 
 // ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -190,30 +334,15 @@ pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64
             handler_bits
         };
 
-        // Fetch-and-replace old handler.
-        let old_bits = HANDLER_TABLE[signum as usize].swap(new_handler_bits, Ordering::SeqCst);
-
-        #[cfg(all(unix, not(target_arch = "wasm32")))]
-        {
-            let _guard = SIGACTION_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            unsafe {
-                match new_handler_bits {
-                    HANDLER_SIG_DFL => {
-                        libc::signal(signum, libc::SIG_DFL);
-                    }
-                    HANDLER_SIG_IGN => {
-                        libc::signal(signum, libc::SIG_IGN);
-                    }
-                    _ => {
-                        libc::signal(
-                            signum,
-                            molt_c_signal_handler as *const () as libc::sighandler_t,
-                        );
-                    }
-                }
-            }
+        if let Err(err) = install_os_handler(signum, new_handler_bits) {
+            return raise_exception::<u64>(_py, "OSError", &err.to_string());
         }
 
+        let state = runtime_state(_py);
+        signal_runtime_state_publish(state);
+        let old_bits = state
+            .signal
+            .replace_handler_retaining(_py, signum, new_handler_bits);
         handler_bits_to_py(_py, signum, old_bits)
     })
 }
@@ -225,7 +354,9 @@ pub extern "C" fn molt_signal_getsignal(signum_bits: u64) -> u64 {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let bits = HANDLER_TABLE[signum as usize].load(Ordering::SeqCst);
+        let state = runtime_state(_py);
+        signal_runtime_state_publish(state);
+        let bits = state.signal.handler_bits_for_return(_py, signum);
         handler_bits_to_py(_py, signum, bits)
     })
 }
@@ -339,7 +470,9 @@ pub extern "C" fn molt_signal_set_wakeup_fd(fd_bits: u64) -> u64 {
             );
         }
         let new_fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(-1) as i32;
-        let old_fd = WAKEUP_FD.swap(new_fd, Ordering::SeqCst);
+        let state = runtime_state(_py);
+        signal_runtime_state_publish(state);
+        let old_fd = state.signal.swap_wakeup_fd(new_fd);
         int_bits_from_i64(_py, old_fd as i64)
     })
 }
@@ -990,4 +1123,92 @@ pub extern "C" fn molt_signal_valid_signals() -> u64 {
         }
         MoltObject::from_ptr(set_ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HANDLER_SIG_DFL, HANDLER_SIG_IGN, SignalRuntimeState, is_callable_handler_bits};
+    use crate::{MoltObject, alloc_string, dec_ref_bits};
+    use std::sync::atomic::Ordering as AtomicOrdering;
+
+    unsafe fn ref_count(ptr: *mut u8) -> u32 {
+        unsafe {
+            (*crate::object::header_from_obj_ptr(ptr))
+                .ref_count
+                .load(AtomicOrdering::Acquire)
+        }
+    }
+
+    #[test]
+    fn signal_runtime_state_retains_getsignal_and_clears_handlers() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = SignalRuntimeState::new();
+            let ptr = alloc_string(_py, b"signal handler sentinel");
+            assert!(!ptr.is_null());
+            let bits = MoltObject::from_ptr(ptr).bits();
+            assert_eq!(unsafe { ref_count(ptr) }, 1);
+
+            let old = state.replace_handler_retaining(_py, 2, bits);
+            assert_eq!(old, HANDLER_SIG_DFL);
+            assert_eq!(unsafe { ref_count(ptr) }, 2);
+
+            let returned = state.handler_bits_for_return(_py, 2);
+            assert_eq!(returned, bits);
+            assert_eq!(unsafe { ref_count(ptr) }, 3);
+            dec_ref_bits(_py, returned);
+            assert_eq!(unsafe { ref_count(ptr) }, 2);
+
+            state.clear_for_teardown(_py);
+            assert_eq!(unsafe { ref_count(ptr) }, 1);
+            dec_ref_bits(_py, bits);
+        });
+    }
+
+    #[test]
+    fn signal_runtime_state_replacement_transfers_old_handler_ownership() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = SignalRuntimeState::new();
+            let ptr = alloc_string(_py, b"replace handler sentinel");
+            assert!(!ptr.is_null());
+            let bits = MoltObject::from_ptr(ptr).bits();
+
+            let old = state.replace_handler_retaining(_py, 2, bits);
+            assert_eq!(old, HANDLER_SIG_DFL);
+            assert_eq!(unsafe { ref_count(ptr) }, 2);
+
+            let replaced = state.replace_handler_retaining(_py, 2, HANDLER_SIG_IGN);
+            assert_eq!(replaced, bits);
+            assert_eq!(unsafe { ref_count(ptr) }, 2);
+            dec_ref_bits(_py, replaced);
+            assert_eq!(unsafe { ref_count(ptr) }, 1);
+
+            state.clear_for_teardown(_py);
+            dec_ref_bits(_py, bits);
+        });
+    }
+
+    #[test]
+    fn signal_runtime_state_clear_resets_wakeup_and_pending_flags() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = SignalRuntimeState::new();
+            assert_eq!(state.swap_wakeup_fd(9), -1);
+            state.mark_pending(2);
+            assert!(state.pending_for_test(2));
+
+            state.clear_for_teardown(_py);
+
+            assert_eq!(state.wakeup_fd(), -1);
+            assert!(!state.pending_for_test(2));
+        });
+    }
+
+    #[test]
+    fn signal_handler_sentinels_are_not_callable_handlers() {
+        assert!(!is_callable_handler_bits(HANDLER_SIG_DFL));
+        assert!(!is_callable_handler_bits(HANDLER_SIG_IGN));
+        assert!(is_callable_handler_bits(0x1000));
+    }
 }
