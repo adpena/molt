@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex};
 
 use molt_obj_model::MoltObject;
 
@@ -18,33 +18,108 @@ use crate::{
     seq_vec_ref, string_obj_to_owned, to_i64, type_of_bits,
 };
 
-static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
+const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 22;
 
-static PARTIAL_CLASS: AtomicU64 = AtomicU64::new(0);
-static PARTIAL_CALL_FN: AtomicU64 = AtomicU64::new(0);
-static PARTIAL_REPR_FN: AtomicU64 = AtomicU64::new(0);
+pub(crate) struct FunctoolsRuntimeState {
+    kwd_mark_bits: AtomicU64,
+    partial_class: AtomicU64,
+    partial_call_fn: AtomicU64,
+    partial_repr_fn: AtomicU64,
+    cmpkey_class: AtomicU64,
+    cmpkey_lt_fn: AtomicU64,
+    cmpkey_le_fn: AtomicU64,
+    cmpkey_gt_fn: AtomicU64,
+    cmpkey_ge_fn: AtomicU64,
+    cmpkey_eq_fn: AtomicU64,
+    cmpkey_ne_fn: AtomicU64,
+    lru_wrapper_class: AtomicU64,
+    lru_factory_class: AtomicU64,
+    cacheinfo_class: AtomicU64,
+    lru_call_fn: AtomicU64,
+    lru_cache_info_fn: AtomicU64,
+    lru_cache_clear_fn: AtomicU64,
+    lru_cache_params_fn: AtomicU64,
+    lru_factory_call_fn: AtomicU64,
+    cacheinfo_iter_fn: AtomicU64,
+    cacheinfo_repr_fn: AtomicU64,
+    cacheinfo_getattr_fn: AtomicU64,
+    next_singledispatch_handle: AtomicI64,
+    singledispatch_registry: Mutex<HashMap<i64, SingleDispatchState>>,
+}
 
-static CMPKEY_CLASS: AtomicU64 = AtomicU64::new(0);
-static CMPKEY_LT_FN: AtomicU64 = AtomicU64::new(0);
-static CMPKEY_LE_FN: AtomicU64 = AtomicU64::new(0);
-static CMPKEY_GT_FN: AtomicU64 = AtomicU64::new(0);
-static CMPKEY_GE_FN: AtomicU64 = AtomicU64::new(0);
-static CMPKEY_EQ_FN: AtomicU64 = AtomicU64::new(0);
-static CMPKEY_NE_FN: AtomicU64 = AtomicU64::new(0);
+impl FunctoolsRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            kwd_mark_bits: AtomicU64::new(0),
+            partial_class: AtomicU64::new(0),
+            partial_call_fn: AtomicU64::new(0),
+            partial_repr_fn: AtomicU64::new(0),
+            cmpkey_class: AtomicU64::new(0),
+            cmpkey_lt_fn: AtomicU64::new(0),
+            cmpkey_le_fn: AtomicU64::new(0),
+            cmpkey_gt_fn: AtomicU64::new(0),
+            cmpkey_ge_fn: AtomicU64::new(0),
+            cmpkey_eq_fn: AtomicU64::new(0),
+            cmpkey_ne_fn: AtomicU64::new(0),
+            lru_wrapper_class: AtomicU64::new(0),
+            lru_factory_class: AtomicU64::new(0),
+            cacheinfo_class: AtomicU64::new(0),
+            lru_call_fn: AtomicU64::new(0),
+            lru_cache_info_fn: AtomicU64::new(0),
+            lru_cache_clear_fn: AtomicU64::new(0),
+            lru_cache_params_fn: AtomicU64::new(0),
+            lru_factory_call_fn: AtomicU64::new(0),
+            cacheinfo_iter_fn: AtomicU64::new(0),
+            cacheinfo_repr_fn: AtomicU64::new(0),
+            cacheinfo_getattr_fn: AtomicU64::new(0),
+            next_singledispatch_handle: AtomicI64::new(1),
+            singledispatch_registry: Mutex::new(HashMap::new()),
+        }
+    }
 
-static LRU_WRAPPER_CLASS: AtomicU64 = AtomicU64::new(0);
-static LRU_FACTORY_CLASS: AtomicU64 = AtomicU64::new(0);
-static CACHEINFO_CLASS: AtomicU64 = AtomicU64::new(0);
+    fn object_slots(&self) -> [&AtomicU64; FUNCTOOLS_OBJECT_SLOT_COUNT] {
+        [
+            &self.kwd_mark_bits,
+            &self.partial_class,
+            &self.partial_call_fn,
+            &self.partial_repr_fn,
+            &self.cmpkey_class,
+            &self.cmpkey_lt_fn,
+            &self.cmpkey_le_fn,
+            &self.cmpkey_gt_fn,
+            &self.cmpkey_ge_fn,
+            &self.cmpkey_eq_fn,
+            &self.cmpkey_ne_fn,
+            &self.lru_wrapper_class,
+            &self.lru_factory_class,
+            &self.cacheinfo_class,
+            &self.lru_call_fn,
+            &self.lru_cache_info_fn,
+            &self.lru_cache_clear_fn,
+            &self.lru_cache_params_fn,
+            &self.lru_factory_call_fn,
+            &self.cacheinfo_iter_fn,
+            &self.cacheinfo_repr_fn,
+            &self.cacheinfo_getattr_fn,
+        ]
+    }
+}
 
-static LRU_CALL_FN: AtomicU64 = AtomicU64::new(0);
-static LRU_CACHE_INFO_FN: AtomicU64 = AtomicU64::new(0);
-static LRU_CACHE_CLEAR_FN: AtomicU64 = AtomicU64::new(0);
-static LRU_CACHE_PARAMS_FN: AtomicU64 = AtomicU64::new(0);
-static LRU_FACTORY_CALL_FN: AtomicU64 = AtomicU64::new(0);
-
-static CACHEINFO_ITER_FN: AtomicU64 = AtomicU64::new(0);
-static CACHEINFO_REPR_FN: AtomicU64 = AtomicU64::new(0);
-static CACHEINFO_GETATTR_FN: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn functools_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+    crate::gil_assert();
+    {
+        let mut registry = state.functools.singledispatch_registry.lock().unwrap();
+        for (_, dispatch_state) in registry.drain() {
+            dispatch_state.release(_py);
+        }
+    }
+    state
+        .functools
+        .next_singledispatch_handle
+        .store(1, Ordering::Release);
+    let slots = state.functools.object_slots();
+    crate::state::cache::clear_atomic_slots(_py, &slots);
+}
 
 #[derive(Default)]
 struct LruOrderState {
@@ -118,7 +193,8 @@ fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u6
 }
 
 fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
-    init_atomic_bits(_py, &KWD_MARK_BITS, || {
+    let functools = &crate::runtime_state(_py).functools;
+    init_atomic_bits(_py, &functools.kwd_mark_bits, || {
         let total = std::mem::size_of::<crate::MoltHeader>();
         let ptr = crate::alloc_object(_py, total, crate::TYPE_ID_OBJECT);
         if ptr.is_null() {
@@ -194,16 +270,17 @@ fn set_class_method(_py: &PyToken<'_>, class_bits: u64, name: &str, fn_bits: u64
 }
 
 fn partial_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = functools_class(_py, &PARTIAL_CLASS, "partial", 32);
+    let functools = &crate::runtime_state(_py).functools;
+    let class_bits = functools_class(_py, &functools.partial_class, "partial", 32);
     let call_bits = builtin_func_bits(
         _py,
-        &PARTIAL_CALL_FN,
+        &functools.partial_call_fn,
         crate::molt_functools_partial_call as *const () as usize as u64,
         3,
     );
     let repr_bits = builtin_func_bits(
         _py,
-        &PARTIAL_REPR_FN,
+        &functools.partial_repr_fn,
         crate::molt_functools_partial_repr as *const () as usize as u64,
         1,
     );
@@ -261,40 +338,41 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = functools_class(_py, &CMPKEY_CLASS, "_CmpKey", 24);
+    let functools = &crate::runtime_state(_py).functools;
+    let class_bits = functools_class(_py, &functools.cmpkey_class, "_CmpKey", 24);
     let lt_bits = builtin_func_bits(
         _py,
-        &CMPKEY_LT_FN,
+        &functools.cmpkey_lt_fn,
         crate::molt_functools_cmpkey_lt as *const () as usize as u64,
         2,
     );
     let le_bits = builtin_func_bits(
         _py,
-        &CMPKEY_LE_FN,
+        &functools.cmpkey_le_fn,
         crate::molt_functools_cmpkey_le as *const () as usize as u64,
         2,
     );
     let gt_bits = builtin_func_bits(
         _py,
-        &CMPKEY_GT_FN,
+        &functools.cmpkey_gt_fn,
         crate::molt_functools_cmpkey_gt as *const () as usize as u64,
         2,
     );
     let ge_bits = builtin_func_bits(
         _py,
-        &CMPKEY_GE_FN,
+        &functools.cmpkey_ge_fn,
         crate::molt_functools_cmpkey_ge as *const () as usize as u64,
         2,
     );
     let eq_bits = builtin_func_bits(
         _py,
-        &CMPKEY_EQ_FN,
+        &functools.cmpkey_eq_fn,
         crate::molt_functools_cmpkey_eq as *const () as usize as u64,
         2,
     );
     let ne_bits = builtin_func_bits(
         _py,
-        &CMPKEY_NE_FN,
+        &functools.cmpkey_ne_fn,
         crate::molt_functools_cmpkey_ne as *const () as usize as u64,
         2,
     );
@@ -308,28 +386,29 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = functools_class(_py, &LRU_WRAPPER_CLASS, "_lru_cache_wrapper", 64);
+    let functools = &crate::runtime_state(_py).functools;
+    let class_bits = functools_class(_py, &functools.lru_wrapper_class, "_lru_cache_wrapper", 64);
     let call_bits = builtin_func_bits(
         _py,
-        &LRU_CALL_FN,
+        &functools.lru_call_fn,
         crate::molt_functools_lru_call as *const () as usize as u64,
         3,
     );
     let info_bits = builtin_func_bits(
         _py,
-        &LRU_CACHE_INFO_FN,
+        &functools.lru_cache_info_fn,
         crate::molt_functools_lru_cache_info as *const () as usize as u64,
         1,
     );
     let clear_bits = builtin_func_bits(
         _py,
-        &LRU_CACHE_CLEAR_FN,
+        &functools.lru_cache_clear_fn,
         crate::molt_functools_lru_cache_clear as *const () as usize as u64,
         1,
     );
     let params_bits = builtin_func_bits(
         _py,
-        &LRU_CACHE_PARAMS_FN,
+        &functools.lru_cache_params_fn,
         crate::molt_functools_lru_cache_params as *const () as usize as u64,
         1,
     );
@@ -389,10 +468,11 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = functools_class(_py, &LRU_FACTORY_CLASS, "_LruCacheFactory", 24);
+    let functools = &crate::runtime_state(_py).functools;
+    let class_bits = functools_class(_py, &functools.lru_factory_class, "_LruCacheFactory", 24);
     let call_bits = builtin_func_bits(
         _py,
-        &LRU_FACTORY_CALL_FN,
+        &functools.lru_factory_call_fn,
         crate::molt_functools_lru_factory_call as *const () as usize as u64,
         2,
     );
@@ -401,22 +481,23 @@ fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = functools_class(_py, &CACHEINFO_CLASS, "CacheInfo", 40);
+    let functools = &crate::runtime_state(_py).functools;
+    let class_bits = functools_class(_py, &functools.cacheinfo_class, "CacheInfo", 40);
     let iter_bits = builtin_func_bits(
         _py,
-        &CACHEINFO_ITER_FN,
+        &functools.cacheinfo_iter_fn,
         crate::molt_functools_cacheinfo_iter as *const () as usize as u64,
         1,
     );
     let repr_bits = builtin_func_bits(
         _py,
-        &CACHEINFO_REPR_FN,
+        &functools.cacheinfo_repr_fn,
         crate::molt_functools_cacheinfo_repr as *const () as usize as u64,
         1,
     );
     let getattr_bits = builtin_func_bits(
         _py,
-        &CACHEINFO_GETATTR_FN,
+        &functools.cacheinfo_getattr_fn,
         crate::molt_functools_cacheinfo_getattr as *const () as usize as u64,
         2,
     );
@@ -1780,7 +1861,8 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     if class_bits == 0 {
         return false;
     }
-    let class = PARTIAL_CLASS.load(Ordering::Acquire);
+    let functools = &crate::runtime_state(_py).functools;
+    let class = functools.partial_class.load(Ordering::Acquire);
     if class_bits == class {
         let func_bits = unsafe { partial_func_bits(ptr) };
         let args_bits = unsafe { partial_args_bits(ptr) };
@@ -1796,7 +1878,7 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = CMPKEY_CLASS.load(Ordering::Acquire);
+    let class = functools.cmpkey_class.load(Ordering::Acquire);
     if class_bits == class {
         let obj_bits = unsafe { cmpkey_obj_bits(ptr) };
         let cmp_bits = unsafe { cmpkey_cmp_bits(ptr) };
@@ -1808,7 +1890,7 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = LRU_WRAPPER_CLASS.load(Ordering::Acquire);
+    let class = functools.lru_wrapper_class.load(Ordering::Acquire);
     if class_bits == class {
         let func_bits = unsafe { lru_func_bits(ptr) };
         let maxsize_bits = unsafe { lru_maxsize_bits(ptr) };
@@ -1834,7 +1916,7 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = LRU_FACTORY_CLASS.load(Ordering::Acquire);
+    let class = functools.lru_factory_class.load(Ordering::Acquire);
     if class_bits == class {
         let maxsize_bits = unsafe { lru_factory_maxsize_bits(ptr) };
         let typed_bits = unsafe { lru_factory_typed_bits(ptr) };
@@ -1846,7 +1928,7 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = CACHEINFO_CLASS.load(Ordering::Acquire);
+    let class = functools.cacheinfo_class.load(Ordering::Acquire);
     if class_bits == class {
         let maxsize_bits = unsafe { cacheinfo_maxsize_bits(ptr) };
         if maxsize_bits != 0 && !obj_from_bits(maxsize_bits).is_none() {
@@ -1855,6 +1937,84 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cacheinfo_class, cmpkey_class, functools_clear_runtime_state, kwd_mark_bits,
+        lru_factory_class, lru_wrapper_class, molt_functools_singledispatch_drop,
+        molt_functools_singledispatch_new, partial_class,
+    };
+    use crate::{MoltObject, obj_from_bits, runtime_state, to_i64};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn functools_runtime_state_is_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            functools_clear_runtime_state(_py, state);
+
+            let kwd_mark = kwd_mark_bits(_py);
+            let partial = partial_class(_py);
+            let cmpkey = cmpkey_class(_py);
+            let lru_wrapper = lru_wrapper_class(_py);
+            let lru_factory = lru_factory_class(_py);
+            let cacheinfo = cacheinfo_class(_py);
+            for bits in [
+                kwd_mark,
+                partial,
+                cmpkey,
+                lru_wrapper,
+                lru_factory,
+                cacheinfo,
+            ] {
+                assert!(!obj_from_bits(bits).is_none());
+            }
+            for slot in state.functools.object_slots() {
+                assert_ne!(slot.load(Ordering::Acquire), 0);
+            }
+
+            let first = molt_functools_singledispatch_new(MoltObject::none().bits());
+            let second = molt_functools_singledispatch_new(MoltObject::none().bits());
+            assert_eq!(to_i64(obj_from_bits(first)), Some(1));
+            assert_eq!(to_i64(obj_from_bits(second)), Some(2));
+            assert_eq!(
+                state
+                    .functools
+                    .singledispatch_registry
+                    .lock()
+                    .unwrap()
+                    .len(),
+                2
+            );
+
+            functools_clear_runtime_state(_py, state);
+            for slot in state.functools.object_slots() {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+            assert_eq!(
+                state
+                    .functools
+                    .next_singledispatch_handle
+                    .load(Ordering::Acquire),
+                1
+            );
+            assert!(
+                state
+                    .functools
+                    .singledispatch_registry
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+
+            let reset = molt_functools_singledispatch_new(MoltObject::none().bits());
+            assert_eq!(to_i64(obj_from_bits(reset)), Some(1));
+            let _ = molt_functools_singledispatch_drop(reset);
+        });
+    }
 }
 
 // ─── singledispatch state ──────────────────────────────────────────────────
@@ -1872,14 +2032,26 @@ struct SingleDispatchState {
     abc_cache_token: u64,
 }
 
-static NEXT_SINGLEDISPATCH_HANDLE: AtomicI64 = AtomicI64::new(1);
-
-fn next_singledispatch_handle() -> i64 {
-    NEXT_SINGLEDISPATCH_HANDLE.fetch_add(1, Ordering::Relaxed)
+impl SingleDispatchState {
+    fn release(self, _py: &PyToken<'_>) {
+        dec_ref_bits(_py, self.default_func);
+        for (type_bits, func_bits) in self.registry {
+            dec_ref_bits(_py, type_bits);
+            dec_ref_bits(_py, func_bits);
+        }
+    }
 }
 
-static SINGLEDISPATCH_REGISTRY: LazyLock<Mutex<HashMap<i64, SingleDispatchState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+fn next_singledispatch_handle(_py: &PyToken<'_>) -> i64 {
+    crate::runtime_state(_py)
+        .functools
+        .next_singledispatch_handle
+        .fetch_add(1, Ordering::Relaxed)
+}
+
+fn singledispatch_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, SingleDispatchState>> {
+    &crate::runtime_state(_py).functools.singledispatch_registry
+}
 
 fn sd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
@@ -1933,7 +2105,7 @@ fn singledispatch_resolve_for_type(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_singledispatch_new(default_func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let id = next_singledispatch_handle();
+        let id = next_singledispatch_handle(_py);
         inc_ref_bits(_py, default_func_bits);
         let state = SingleDispatchState {
             default_func: default_func_bits,
@@ -1942,7 +2114,10 @@ pub extern "C" fn molt_functools_singledispatch_new(default_func_bits: u64) -> u
             dispatch_cache: HashMap::new(),
             abc_cache_token: singledispatch_abc_cache_token(_py),
         };
-        SINGLEDISPATCH_REGISTRY.lock().unwrap().insert(id, state);
+        singledispatch_registry(_py)
+            .lock()
+            .unwrap()
+            .insert(id, state);
         MoltObject::from_int(id).bits()
     })
 }
@@ -1960,7 +2135,7 @@ pub extern "C" fn molt_functools_singledispatch_register(
             return MoltObject::none().bits();
         };
         {
-            let mut map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
+            let mut map = singledispatch_registry(_py).lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 inc_ref_bits(_py, type_bits);
                 inc_ref_bits(_py, func_bits);
@@ -1993,7 +2168,7 @@ pub extern "C" fn molt_functools_singledispatch_dispatch(handle_bits: u64, type_
             return MoltObject::none().bits();
         };
         {
-            let mut map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
+            let mut map = singledispatch_registry(_py).lock().unwrap();
             let Some(state) = map.get_mut(&id) else {
                 return MoltObject::none().bits();
             };
@@ -2045,7 +2220,7 @@ pub extern "C" fn molt_functools_singledispatch_call(
         let arg_type_bits = type_of_bits(_py, first_arg_bits);
         // Look up the function for this type.
         {
-            let mut map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
+            let mut map = singledispatch_registry(_py).lock().unwrap();
             let Some(state) = map.get_mut(&id) else {
                 return MoltObject::none().bits();
             };
@@ -2065,7 +2240,7 @@ pub extern "C" fn molt_functools_singledispatch_registry(handle_bits: u64) -> u6
             return MoltObject::none().bits();
         };
         {
-            let map = SINGLEDISPATCH_REGISTRY.lock().unwrap();
+            let map = singledispatch_registry(_py).lock().unwrap();
             let Some(state) = map.get(&id) else {
                 return MoltObject::none().bits();
             };
@@ -2096,12 +2271,8 @@ pub extern "C" fn molt_functools_singledispatch_drop(handle_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         {
-            if let Some(state) = SINGLEDISPATCH_REGISTRY.lock().unwrap().remove(&id) {
-                dec_ref_bits(_py, state.default_func);
-                for (type_bits, func_bits) in state.registry {
-                    dec_ref_bits(_py, type_bits);
-                    dec_ref_bits(_py, func_bits);
-                }
+            if let Some(state) = singledispatch_registry(_py).lock().unwrap().remove(&id) {
+                state.release(_py);
             }
         }
         MoltObject::none().bits()
