@@ -32,7 +32,8 @@ jobs:
       - name: Run Molt conformance full suite
         run: |
           mkdir -p logs/conformance
-          PYTHONPATH=src python3 tests/harness/run_molt_conformance.py \
+          PYTHONPATH=src python3 tools/guarded_exec.py --prefix MOLT_CONFORMANCE -- \
+            python3 tests/harness/run_molt_conformance.py \
             --suite full \
             --json-out logs/conformance/full.json
 
@@ -66,7 +67,8 @@ jobs:
         env:
           MOLT_DIFF_MEASURE_RSS: "1"
         run: |
-          PYTHONPATH=src uv run python3 -u tests/molt_diff.py \
+          PYTHONPATH=src python3 tools/guarded_exec.py --prefix MOLT_DIFF -- \
+            uv run python3 -u tests/molt_diff.py \
             --build-profile dev \
             tests/differential/basic \
             tests/differential/stdlib
@@ -115,7 +117,8 @@ jobs:
 
       - name: Run CPython regrtest (G5)
         run: |
-          uv run python3 tools/cpython_regrtest.py \
+          python3 tools/guarded_exec.py --prefix MOLT_REGRTEST -- \
+            uv run python3 tools/cpython_regrtest.py \
             --uv --uv-python "$(cat .python-version)" --uv-prepare \
             --timeout 600
         continue-on-error: true
@@ -177,10 +180,13 @@ jobs:
             # default workspace target root so the sweep tests deterministic
             # compiler output rather than Cargo rebuild behavior.
             MOLT_CACHE="$REPRO_ROOT/cache_a" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_a" TMPDIR="$REPRO_ROOT/tmp_a" PYTHONPATH=src PYTHONHASHSEED=0 \
+              python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
               uv run python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/a.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
             MOLT_CACHE="$REPRO_ROOT/cache_b" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_b" TMPDIR="$REPRO_ROOT/tmp_b" PYTHONPATH=src PYTHONHASHSEED=0 \
+              python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
               uv run python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/b.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
-            uv run python3 tools/check_reproducible_build.py --object "$REPRO_ROOT/a.json" "$REPRO_ROOT/b.json" || failures=$((failures + 1))
+            python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+              uv run python3 tools/check_reproducible_build.py --object "$REPRO_ROOT/a.json" "$REPRO_ROOT/b.json" || failures=$((failures + 1))
             rm -rf "$REPRO_ROOT"
           done
           echo "Reproducible build sweep: $failures failures"
@@ -190,12 +196,14 @@ jobs:
         run: |
           for example in examples/*.py; do
             echo "=== Testing $example ==="
-            PYTHONPATH=src uv run python3 tools/check_deterministic_runtime.py --runs 3 "$example" || true
+            PYTHONPATH=src python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+              uv run python3 tools/check_deterministic_runtime.py --runs 3 "$example" || true
           done
 
       - name: IR verification sweep
         run: |
-          PYTHONPATH=src uv run python3 tools/verify_ir_suite.py \
+          PYTHONPATH=src python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            uv run python3 tools/verify_ir_suite.py \
             --dir tests/differential/basic --examples
         continue-on-error: true
 

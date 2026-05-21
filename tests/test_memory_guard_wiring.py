@@ -186,9 +186,16 @@ def test_default_memory_guard_wiring_for_harness_entrypoints() -> None:
 
 def test_legacy_shell_entrypoints_enter_guarded_python_wrappers() -> None:
     required = {
-        "bench/run_all.sh": ("tools/bench.py", "TMPDIR"),
+        "bench/run_all.sh": ("tools/guarded_exec.py", "MOLT_BENCH", "TMPDIR"),
         "bench/scripts/run_stack.sh": ("tools/guarded_exec.py", "MOLT_GUARDED_STACK_INNER"),
-        "bench/scripts/run_db_stub.sh": ("run_db_stub.py", "TMPDIR"),
+        "bench/scripts/run_db_stub.sh": ("tools/guarded_exec.py", "MOLT_BENCH", "TMPDIR"),
+        "deploy/scripts/deploy.sh": ("tools/guarded_exec.py", "MOLT_DEPLOY"),
+        "tools/scripts/compile-bench-wasm.sh": ("tools/guarded_exec.py", "MOLT_BENCH"),
+        "tools/scripts/molt-compile-check.sh": (
+            "tools/guarded_exec.py",
+            "MOLT_TEST_SUITE",
+            'mktemp -d "$ROOT/tmp/molt-check-XXXXXX"',
+        ),
         "tests/parity/run_parity.sh": ("tools/parity_gate.py", "TMPDIR"),
     }
     missing: list[str] = []

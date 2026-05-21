@@ -97,7 +97,7 @@ def test_ci_clippy_failures_are_not_swallowed() -> None:
     ]
 
     assert clippy_lines == [
-        "run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- "
+        "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
         "cargo clippy -p molt-backend --features native-backend -- -D warnings"
     ]
 
@@ -120,19 +120,19 @@ def test_ci_memory_intensive_steps_use_memory_guard() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
     assert (
-        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \\\n"
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \\\n"
         "            uv run python3 -m pytest -q"
     ) in ci_text
     assert (
-        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo build"
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build"
         in ci_text
     )
     assert (
-        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo test -p molt-backend"
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend"
         in ci_text
     )
     assert (
-        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- cargo clippy"
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy"
         in ci_text
     )
 
@@ -177,6 +177,10 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "molt-conformance-full:" in nightly_text
     assert "differential-basic-stdlib:" in nightly_text
     assert "tests/harness/run_molt_conformance.py" in nightly_text
+    assert "tools/guarded_exec.py --prefix MOLT_CONFORMANCE" in nightly_text
+    assert "tools/guarded_exec.py --prefix MOLT_DIFF" in nightly_text
+    assert "tools/guarded_exec.py --prefix MOLT_REGRTEST" in nightly_text
+    assert "tools/guarded_exec.py --prefix MOLT_TEST_SUITE" in nightly_text
     assert "--suite full" in nightly_text
     assert "--build-profile dev" in nightly_text
     assert 'MOLT_DIFF_MEASURE_RSS: "1"' in nightly_text
@@ -208,6 +212,7 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "CARGO_TARGET_DIR: ${{ github.workspace }}/target" in perf_text
     assert "MOLT_CACHE: ${{ github.workspace }}/.molt_cache" in perf_text
     assert "TMPDIR: ${{ github.workspace }}/tmp" in perf_text
+    assert "tools/guarded_exec.py --prefix MOLT_BENCH" in perf_text
     assert "tools/bench.py" in perf_text
     assert "--molt-profile release" in perf_text
     assert "bench/results/" in perf_text
@@ -280,10 +285,10 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "cargo build --release -p molt-wasm-host" not in wasm_text
     assert "cargo build --profile release-fast -p molt-wasm-host" not in wasm_text
     assert (
-        "python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr --child-rlimit-gb"
+        "python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST"
         in wasm_text
     )
     assert "-- uv run python3 -m pytest tests/test_wasm_control_flow.py -q" in wasm_text
-    assert wasm_text.count("python3 tools/memory_guard.py --poll-interval 0.1") >= 10
+    assert wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
     assert wasm_text.count("--build-profile dev") >= 5
     assert "/home/runner/.cache/molt" not in wasm_text
