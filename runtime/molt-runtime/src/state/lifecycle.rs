@@ -8,6 +8,8 @@ use crate::builtins::contextvars::contextvars_clear_state;
 use crate::builtins::copy_mod::copy_memo_clear_state;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::csv_clear_state;
+#[cfg(not(feature = "stdlib_itertools"))]
+use crate::builtins::itertools::itertools_clear_state;
 #[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::random_clear_state;
 use crate::builtins::strings::clear_const_str_cache;
@@ -108,6 +110,11 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     contextvars_clear_state(_py, state);
     trace_shutdown("process_exit_clear_copy_memo_state");
     copy_memo_clear_state(_py, state);
+    #[cfg(not(feature = "stdlib_itertools"))]
+    {
+        trace_shutdown("process_exit_clear_itertools_state");
+        itertools_clear_state(_py, state);
+    }
     #[cfg(not(feature = "stdlib_serial"))]
     {
         trace_shutdown("process_exit_clear_configparser_state");
@@ -190,6 +197,11 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     contextvars_clear_state(_py, state);
     trace_shutdown("clear_copy_memo_state");
     copy_memo_clear_state(_py, state);
+    #[cfg(not(feature = "stdlib_itertools"))]
+    {
+        trace_shutdown("clear_itertools_state");
+        itertools_clear_state(_py, state);
+    }
     #[cfg(not(feature = "stdlib_serial"))]
     {
         trace_shutdown("clear_configparser_state");

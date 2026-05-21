@@ -20,6 +20,8 @@ use crate::builtins::configparser::ConfigParserRuntimeState;
 use crate::builtins::copy_mod::CopyMemoRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::CsvRuntimeState;
+#[cfg(not(feature = "stdlib_itertools"))]
+use crate::builtins::itertools::ItertoolsRuntimeState;
 #[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::RandomRuntimeState;
 use crate::builtins::sys_ext::SysRuntimeState;
@@ -303,6 +305,8 @@ pub(crate) struct RuntimeState {
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
     pub(crate) contextvars: Mutex<ContextVarsState>,
     pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
+    #[cfg(not(feature = "stdlib_itertools"))]
+    pub(crate) itertools: ItertoolsRuntimeState,
     #[cfg(not(feature = "stdlib_serial"))]
     pub(crate) configparser: Mutex<ConfigParserRuntimeState>,
     #[cfg(not(feature = "stdlib_serial"))]
@@ -401,6 +405,8 @@ impl RuntimeState {
             }),
             contextvars: Mutex::new(ContextVarsState::new()),
             copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
+            #[cfg(not(feature = "stdlib_itertools"))]
+            itertools: ItertoolsRuntimeState::new(),
             #[cfg(not(feature = "stdlib_serial"))]
             configparser: Mutex::new(ConfigParserRuntimeState::new()),
             #[cfg(not(feature = "stdlib_serial"))]
