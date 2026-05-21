@@ -5305,7 +5305,10 @@ fn removed_stdlib_313_missing_name(resolved: &str) -> Option<&'static str> {
     })
 }
 
-fn importlib_known_absent_missing_name(_py: &PyToken<'_>, resolved: &str) -> Option<String> {
+pub(crate) fn known_absent_module_missing_name(
+    _py: &PyToken<'_>,
+    resolved: &str,
+) -> Option<String> {
     let target_minor = runtime_target_minor(_py);
     if target_minor >= 13
         && let Some(missing_name) = removed_stdlib_313_missing_name(resolved)
