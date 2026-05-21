@@ -3,7 +3,7 @@ use crate::PyToken;
 use crate::async_rt::sockets::socket_runtime_state_clear;
 use crate::builtins::asyncio_queue::asyncio_queue_clear_state;
 use crate::builtins::attr::clear_attr_tls_caches;
-use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
+use crate::builtins::attributes::attributes_clear_runtime_state;
 use crate::builtins::concurrent::concurrent_clear_runtime_state;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::configparser_clear_state;
@@ -161,6 +161,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     functools_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_operator_runtime_state");
     operator_clear_runtime_state(_py, state);
+    trace_shutdown("process_exit_clear_attributes_runtime_state");
+    attributes_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_resource_state");
     crate::resource::clear_resource_state();
     trace_shutdown("process_exit_done");
@@ -279,10 +281,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_method_cache(_py, state);
     trace_shutdown("clear_call_bind_ic_cache");
     clear_call_bind_ic_cache();
-    trace_shutdown("clear_attr_site_name_cache");
-    clear_attr_site_name_cache(_py);
-    trace_shutdown("clear_property_docs");
-    clear_property_docs(_py);
+    trace_shutdown("clear_attributes_runtime_state");
+    attributes_clear_runtime_state(_py, state);
     trace_shutdown("clear_special_cache");
     clear_special_cache(_py, state);
     trace_shutdown("clear_utf8_caches");
