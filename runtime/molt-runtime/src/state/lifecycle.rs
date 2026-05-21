@@ -1,4 +1,6 @@
 use crate::PyToken;
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use crate::async_rt::sockets::socket_runtime_state_clear;
 use crate::builtins::asyncio_queue::asyncio_queue_clear_state;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
@@ -100,6 +102,11 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     shutdown_started_runtime_workers(_py, state);
     trace_shutdown("process_exit_drain_process_registry");
     state.process_registry.drain_for_teardown();
+    #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+    {
+        trace_shutdown("process_exit_clear_socket_state");
+        socket_runtime_state_clear(state);
+    }
     trace_shutdown("process_exit_clear_task_state");
     clear_task_state(_py, state);
     trace_shutdown("process_exit_clear_asyncio_queue_state");
@@ -187,6 +194,11 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     shutdown_started_runtime_workers(_py, state);
     trace_shutdown("drain_process_registry");
     state.process_registry.drain_for_teardown();
+    #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+    {
+        trace_shutdown("clear_socket_state");
+        socket_runtime_state_clear(state);
+    }
     trace_shutdown("clear_async_hang_probe");
     clear_async_hang_probe(state);
     trace_shutdown("clear_task_state");

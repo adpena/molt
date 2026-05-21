@@ -13,6 +13,8 @@ use crate::IoPoller;
 use crate::ProcessTaskState;
 use crate::async_rt::event_loop::{EventLoopRegistry, PipeTransportRegistry};
 use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use crate::async_rt::sockets::SocketRuntimeState;
 use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::builtins::asyncio_queue::AsyncioQueueRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
@@ -336,6 +338,8 @@ pub(crate) struct RuntimeState {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_tasks: Mutex<HashMap<PtrSlot, Arc<ThreadTaskState>>>,
     pub(crate) process_registry: ProcessRegistry,
+    #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+    pub(crate) socket_state: SocketRuntimeState,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) start_time: OnceLock<Instant>,
@@ -437,6 +441,8 @@ impl RuntimeState {
             #[cfg(not(target_arch = "wasm32"))]
             thread_tasks: Mutex::new(HashMap::new()),
             process_registry: ProcessRegistry::new(),
+            #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+            socket_state: SocketRuntimeState::new(),
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
             start_time: OnceLock::new(),
