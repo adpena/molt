@@ -28,7 +28,8 @@ pub(crate) use recursion::{
     feature = "sqlite",
     feature = "stdlib_compression",
     feature = "stdlib_collections",
-    feature = "stdlib_logging_ext"
+    feature = "stdlib_logging_ext",
+    feature = "stdlib_math"
 ))]
 pub(crate) use runtime_state::runtime_extension_state_get_or_init;
 pub(crate) use runtime_state::{
