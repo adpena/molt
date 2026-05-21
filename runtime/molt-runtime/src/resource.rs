@@ -672,6 +672,13 @@ pub fn clear_global_tracker_factory() {
     *limits_guard = None;
 }
 
+pub(crate) fn clear_resource_state() {
+    clear_global_tracker_factory();
+    let _ = TRACKER.try_with(|cell| {
+        *cell.borrow_mut() = Box::new(UnlimitedTracker);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Standalone guard helpers for hot-path use in ops_arith.rs
 // ---------------------------------------------------------------------------
@@ -1114,5 +1121,26 @@ mod tests {
 
         assert!(current_result.is_err());
         assert!(spawned_result.is_err());
+    }
+
+    #[test]
+    fn clear_resource_state_resets_global_and_thread_tracker() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        install_global_limited_tracker(ResourceLimits {
+            max_memory: Some(128),
+            ..Default::default()
+        });
+        assert!(with_tracker(|t| t.on_allocate(256)).is_err());
+
+        clear_resource_state();
+        assert!(with_tracker(|t| t.on_allocate(256)).is_ok());
+
+        let handle = std::thread::spawn(|| with_tracker(|t| t.on_allocate(256)));
+        let spawned_result = handle.join().expect("child thread panicked");
+        assert!(spawned_result.is_ok());
+
+        clear_resource_state();
     }
 }
