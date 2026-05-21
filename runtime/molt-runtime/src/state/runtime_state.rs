@@ -11,6 +11,8 @@ use super::{
 
 use crate::IoPoller;
 use crate::ProcessTaskState;
+use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
+use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::{
@@ -214,12 +216,14 @@ pub(crate) struct RuntimeState {
     pub(crate) task_tokens: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) task_tokens_by_id: Mutex<HashMap<u64, HashSet<PtrSlot>>>,
     pub(crate) task_cancel_messages: Mutex<HashMap<PtrSlot, u64>>,
+    pub(crate) asyncio_core: AsyncioCoreState,
     pub(crate) asyncio_running_loops: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_event_loops: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_event_loop_policy: Mutex<u64>,
     pub(crate) asyncio_tasks: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_current_tasks: Mutex<HashMap<u64, u64>>,
     pub(crate) asyncio_event_waiters: Mutex<HashMap<u64, Vec<u64>>>,
+    pub(crate) asyncio_event_waiter_index: Mutex<HashMap<u64, AsyncioEventWaiterIndex>>,
     pub(crate) task_exception_handler_stacks: Mutex<HashMap<PtrSlot, Vec<usize>>>,
     pub(crate) task_exception_stacks: Mutex<HashMap<PtrSlot, Vec<u64>>>,
     pub(crate) task_exception_depths: Mutex<HashMap<PtrSlot, usize>>,
@@ -229,6 +233,7 @@ pub(crate) struct RuntimeState {
     pub(crate) task_results: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) dict_subclass_storage: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) await_waiters: Mutex<HashMap<PtrSlot, Vec<PtrSlot>>>,
+    pub(crate) await_waiter_index: Mutex<HashMap<PtrSlot, AwaitWaiterIndex>>,
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
     pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
@@ -290,12 +295,14 @@ impl RuntimeState {
             task_tokens: Mutex::new(HashMap::new()),
             task_tokens_by_id: Mutex::new(HashMap::new()),
             task_cancel_messages: Mutex::new(HashMap::new()),
+            asyncio_core: AsyncioCoreState::new(),
             asyncio_running_loops: Mutex::new(HashMap::new()),
             asyncio_event_loops: Mutex::new(HashMap::new()),
             asyncio_event_loop_policy: Mutex::new(MoltObject::none().bits()),
             asyncio_tasks: Mutex::new(HashMap::new()),
             asyncio_current_tasks: Mutex::new(HashMap::new()),
             asyncio_event_waiters: Mutex::new(HashMap::new()),
+            asyncio_event_waiter_index: Mutex::new(HashMap::new()),
             task_exception_handler_stacks: Mutex::new(HashMap::new()),
             task_exception_stacks: Mutex::new(HashMap::new()),
             task_exception_depths: Mutex::new(HashMap::new()),
@@ -305,6 +312,7 @@ impl RuntimeState {
             task_results: Mutex::new(HashMap::new()),
             dict_subclass_storage: Mutex::new(HashMap::new()),
             await_waiters: Mutex::new(HashMap::new()),
+            await_waiter_index: Mutex::new(HashMap::new()),
             task_waiting_on: Mutex::new(HashMap::new()),
             asyncgen_hooks: Mutex::new(AsyncGenHooks {
                 firstiter: MoltObject::none().bits(),

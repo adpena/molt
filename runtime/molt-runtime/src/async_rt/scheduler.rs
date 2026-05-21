@@ -440,25 +440,25 @@ pub(crate) fn asyncio_event_waiters_map(
 }
 
 #[derive(Default)]
-struct AwaitWaiterIndex {
+pub(crate) struct AwaitWaiterIndex {
     positions: HashMap<PtrSlot, usize>,
 }
 
-fn await_waiter_index_map() -> &'static Mutex<HashMap<PtrSlot, AwaitWaiterIndex>> {
-    static INDEX: OnceLock<Mutex<HashMap<PtrSlot, AwaitWaiterIndex>>> = OnceLock::new();
-    INDEX.get_or_init(|| Mutex::new(HashMap::new()))
+fn await_waiter_index_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, AwaitWaiterIndex>> {
+    &runtime_state(_py).await_waiter_index
 }
 
 #[derive(Default)]
-struct AsyncioEventWaiterIndex {
+pub(crate) struct AsyncioEventWaiterIndex {
     positions: HashMap<u64, VecDeque<usize>>,
     live: usize,
     slots_len: usize,
 }
 
-fn asyncio_event_waiter_index_map() -> &'static Mutex<HashMap<u64, AsyncioEventWaiterIndex>> {
-    static INDEX: OnceLock<Mutex<HashMap<u64, AsyncioEventWaiterIndex>>> = OnceLock::new();
-    INDEX.get_or_init(|| Mutex::new(HashMap::new()))
+fn asyncio_event_waiter_index_map(
+    _py: &PyToken<'_>,
+) -> &'static Mutex<HashMap<u64, AsyncioEventWaiterIndex>> {
+    &runtime_state(_py).asyncio_event_waiter_index
 }
 
 fn rebuild_unique_index<T: Copy + Eq + Hash>(values: &[T]) -> HashMap<T, usize> {
@@ -892,7 +892,7 @@ fn asyncio_event_waiters_register_impl(
         return MoltObject::none().bits();
     }
     let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
-    let mut index_guard = asyncio_event_waiter_index_map().lock().unwrap();
+    let mut index_guard = asyncio_event_waiter_index_map(_py).lock().unwrap();
     let waiters = guard.entry(token_id).or_default();
     let waiter_index = index_guard
         .entry(token_id)
@@ -923,7 +923,7 @@ fn asyncio_event_waiters_unregister_impl(
         Err(bits) => return bits,
     };
     let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
-    let mut index_guard = asyncio_event_waiter_index_map().lock().unwrap();
+    let mut index_guard = asyncio_event_waiter_index_map(_py).lock().unwrap();
     let Some(waiters) = guard.get_mut(&token_id) else {
         return MoltObject::from_bool(false).bits();
     };
@@ -971,7 +971,7 @@ fn asyncio_event_waiters_cleanup_token_impl(_py: &PyToken<'_>, token_bits: u64) 
         Err(bits) => return bits,
     };
     let mut guard = asyncio_event_waiters_map(_py).lock().unwrap();
-    let mut index_guard = asyncio_event_waiter_index_map().lock().unwrap();
+    let mut index_guard = asyncio_event_waiter_index_map(_py).lock().unwrap();
     let Some(raw_waiters) = guard.remove(&token_id) else {
         return MoltObject::from_int(0).bits();
     };
@@ -1912,7 +1912,7 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
     let awaited_key = PtrSlot(awaited_ptr);
     let mut waiting_map = task_waiting_on(_py).lock().unwrap();
     let mut awaiters_map = await_waiters(_py).lock().unwrap();
-    let mut awaiter_index_map = await_waiter_index_map().lock().unwrap();
+    let mut awaiter_index_map = await_waiter_index_map(_py).lock().unwrap();
     let prev = waiting_map.insert(waiter_key, awaited_key);
     // Keep raw pointers alive while they live in the await graph.
     unsafe {
@@ -1985,7 +1985,7 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
         }
     }
     let mut awaiters_map = await_waiters(_py).lock().unwrap();
-    let mut awaiter_index_map = await_waiter_index_map().lock().unwrap();
+    let mut awaiter_index_map = await_waiter_index_map(_py).lock().unwrap();
     if let Some(waiters) = awaiters_map.get_mut(&awaited_key) {
         let waiter_index = awaiter_index_map.entry(awaited_key).or_default();
         if waiter_index.positions.len() != waiters.len() {
@@ -2001,20 +2001,50 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
     }
 }
 
-pub(crate) fn await_waiters_take(_py: &PyToken<'_>, awaited_ptr: *mut u8) -> Vec<PtrSlot> {
+struct AwaitWaiterEdge {
+    waiter: PtrSlot,
+    awaited: PtrSlot,
+}
+
+fn await_waiter_edges_take(_py: &PyToken<'_>, awaited_ptr: *mut u8) -> Vec<AwaitWaiterEdge> {
     if awaited_ptr.is_null() {
         return Vec::new();
     }
     let awaited_key = PtrSlot(awaited_ptr);
     let mut waiting_map = task_waiting_on(_py).lock().unwrap();
     let mut awaiters_map = await_waiters(_py).lock().unwrap();
-    let mut awaiter_index_map = await_waiter_index_map().lock().unwrap();
+    let mut awaiter_index_map = await_waiter_index_map(_py).lock().unwrap();
     let waiters = awaiters_map.remove(&awaited_key).unwrap_or_default();
     awaiter_index_map.remove(&awaited_key);
-    for waiter in &waiters {
-        waiting_map.remove(waiter);
+    let mut edges = Vec::with_capacity(waiters.len());
+    for waiter in waiters {
+        match waiting_map.remove(&waiter) {
+            Some(recorded_awaited) if recorded_awaited == awaited_key => {
+                edges.push(AwaitWaiterEdge {
+                    waiter,
+                    awaited: recorded_awaited,
+                });
+            }
+            Some(recorded_awaited) => {
+                waiting_map.insert(waiter, recorded_awaited);
+            }
+            None => {}
+        }
     }
-    waiters
+    edges
+}
+
+pub(crate) fn wake_await_waiters(_py: &PyToken<'_>, awaited_ptr: *mut u8) -> usize {
+    let edges = await_waiter_edges_take(_py, awaited_ptr);
+    let count = edges.len();
+    for edge in edges {
+        wake_task_ptr(_py, edge.waiter.0);
+        unsafe {
+            dec_ref_ptr(_py, edge.awaited.0);
+            dec_ref_ptr(_py, edge.waiter.0);
+        }
+    }
+    count
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3067,10 +3097,7 @@ impl MoltScheduler {
                         clear_task_token(_py, task_ptr);
                         task_mark_done(_py, task_ptr);
                         runtime_state(_py).sleep_queue().cancel_task(_py, task_ptr);
-                        let waiters = await_waiters_take(_py, task_ptr);
-                        for waiter in waiters {
-                            wake_task_ptr(_py, waiter.0);
-                        }
+                        let _ = wake_await_waiters(_py, task_ptr);
                         set_task_raise_active(prev_raise);
                         break;
                     }
@@ -3222,10 +3249,7 @@ impl MoltScheduler {
                         task_mark_done(_py, task_ptr);
                         runtime_state(_py).sleep_queue().cancel_task(_py, task_ptr);
                         let _ = task_take_wake_pending(task_ptr);
-                        let waiters = await_waiters_take(_py, task_ptr);
-                        for waiter in waiters {
-                            wake_task_ptr(_py, waiter.0);
-                        }
+                        let _ = wake_await_waiters(_py, task_ptr);
                     }
                     set_task_raise_active(prev_raise);
                     set_current_token(_py, prev_token);
@@ -4020,5 +4044,46 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MoltObject, dec_ref_bits, header_from_obj_ptr, molt_future_new, ptr_from_bits};
+
+    fn ref_count(ptr: *mut u8) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn wake_await_waiters_releases_graph_edge_refs() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let waiter_bits = molt_future_new(0, 0);
+            let awaited_bits = molt_future_new(0, 0);
+            let waiter_ptr = ptr_from_bits(waiter_bits);
+            let awaited_ptr = ptr_from_bits(awaited_bits);
+            assert_eq!(ref_count(waiter_ptr), 1);
+            assert_eq!(ref_count(awaited_ptr), 1);
+
+            await_waiter_register(_py, waiter_ptr, awaited_ptr);
+            assert_eq!(ref_count(waiter_ptr), 2);
+            assert_eq!(ref_count(awaited_ptr), 2);
+
+            assert_eq!(wake_await_waiters(_py, awaited_ptr), 1);
+            assert_eq!(ref_count(waiter_ptr), 1);
+            assert_eq!(ref_count(awaited_ptr), 1);
+            assert!(task_waiting_on(_py).lock().unwrap().is_empty());
+            assert!(await_waiters(_py).lock().unwrap().is_empty());
+            assert!(await_waiter_index_map(_py).lock().unwrap().is_empty());
+
+            dec_ref_bits(_py, MoltObject::from_ptr(waiter_ptr).bits());
+            dec_ref_bits(_py, MoltObject::from_ptr(awaited_ptr).bits());
+        });
     }
 }
