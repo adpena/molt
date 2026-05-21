@@ -29,14 +29,14 @@
 //! ```
 //!
 //! Detection: the source of `GetIter` is considered a list if:
-//!   1. It was produced by a `BuildList` op, OR
-//!   2. The `GetIter` op has a semantic list `container_type` attr, OR
-//!   3. The source-defining op has a semantic list `container_type` attr.
+//!   1. `TirFunction.value_types` records a `TirType::List(_)` fact, OR
+//!   2. it was produced by a structural `BuildList` op, OR
+//!   3. it is a list-repeat `Mul(BuildList, count)` chain.
 //!
 //! This runs early in the pipeline (after range_devirt, before type refinement)
 //! so downstream passes can refine the index variable and element types.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
@@ -68,9 +68,9 @@ struct ListLoopCandidate {
     exit_block: BlockId,
     /// The body block (where done=false branches to).
     body_block: BlockId,
-    /// Semantic container type from the GetIter or source (e.g. "list").
-    /// Propagated to the synthesized Index op so the backend can emit
-    /// inline list access instead of a generic runtime call.
+    /// Semantic container type proven by function-owned type facts or a
+    /// structural list producer. Propagated to the synthesized Index op so
+    /// legacy SimpleIR consumers preserve the known list shape.
     container_type: Option<String>,
 }
 
@@ -92,17 +92,38 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
-/// Infer the container_type for a value known to be a list.
+/// Infer the semantic list container shape for a value.
 ///
-/// Returns `Some("list")` for BuildList, Mul(BuildList, count), or ops with
-/// an explicit semantic-list container_type.  Returns `None` when
-/// the type cannot be determined (conservative: the backend will use the
-/// generic dispatch path).
-fn infer_container_type(
+/// Input authority is restricted to function-owned TIR type facts and
+/// structural list producers. Legacy `container_type` attrs are deliberately
+/// ignored here: they are preserved as output metadata for downstream
+/// compatibility, not accepted as proof that iterator devirtualization is
+/// sound.
+fn infer_list_container_type(
     func: &TirFunction,
     source_val: ValueId,
     block_ids: &[BlockId],
 ) -> Option<String> {
+    let mut seen = HashSet::new();
+    infer_list_container_type_inner(func, source_val, block_ids, &mut seen)
+}
+
+fn infer_list_container_type_inner(
+    func: &TirFunction,
+    source_val: ValueId,
+    block_ids: &[BlockId],
+    seen: &mut HashSet<ValueId>,
+) -> Option<String> {
+    if !seen.insert(source_val) {
+        return None;
+    }
+
+    if let Some(ty) = func.value_types.get(&source_val)
+        && matches!(ty, TirType::List(_))
+    {
+        return Some("list".to_string());
+    }
+
     for &bid in block_ids {
         let Some(block) = func.blocks.get(&bid) else {
             continue;
@@ -118,18 +139,12 @@ fn infer_container_type(
             // Mul(BuildList, count) is a list repeat — inherits from operand.
             if op.opcode == OpCode::Mul && op.operands.len() == 2 {
                 let (a, b) = (op.operands[0], op.operands[1]);
-                if let Some(ct) = infer_container_type(func, a, block_ids) {
+                if let Some(ct) = infer_list_container_type_inner(func, a, block_ids, seen) {
                     return Some(ct);
                 }
-                if let Some(ct) = infer_container_type(func, b, block_ids) {
+                if let Some(ct) = infer_list_container_type_inner(func, b, block_ids, seen) {
                     return Some(ct);
                 }
-            }
-            // Explicit container_type attr.
-            if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
-                && is_semantic_list_container_type(ct)
-            {
-                return Some(ct.clone());
             }
             return None;
         }
@@ -137,38 +152,9 @@ fn infer_container_type(
     None
 }
 
-/// Determine if a value is known to be a list from the defining op.
+/// Determine if a value is known to be a list from typed facts or its defining op.
 fn is_list_source(func: &TirFunction, source_val: ValueId, block_ids: &[BlockId]) -> bool {
-    for &bid in block_ids {
-        let Some(block) = func.blocks.get(&bid) else {
-            continue;
-        };
-        for op in &block.ops {
-            if !op.results.contains(&source_val) {
-                continue;
-            }
-            // BuildList always produces a list.
-            if op.opcode == OpCode::BuildList {
-                return true;
-            }
-            // Mul(BuildList, count) is a list repeat — still a list.
-            // Pattern: `[x] * n` produces Mul where one operand is a BuildList result.
-            if op.opcode == OpCode::Mul && op.operands.len() == 2 {
-                let (a, b) = (op.operands[0], op.operands[1]);
-                if is_list_source(func, a, block_ids) || is_list_source(func, b, block_ids) {
-                    return true;
-                }
-            }
-            // Check container_type attr on the source op.
-            if let Some(AttrValue::Str(ct)) = op.attrs.get("container_type")
-                && is_semantic_list_container_type(ct)
-            {
-                return true;
-            }
-            return false;
-        }
-    }
-    false
+    infer_list_container_type(func, source_val, block_ids).is_some()
 }
 
 /// Scan the function for list-loop patterns.
@@ -220,34 +206,18 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
                 continue;
             };
 
-            // Check if source is known to be a list.
-            // Strategy 1: Check container_type on the GetIter op itself.
-            let get_iter_op = &func.blocks[&setup_block].ops[get_iter_idx];
-            let get_iter_container_type =
-                if let Some(AttrValue::Str(ct)) = get_iter_op.attrs.get("container_type") {
-                    if is_semantic_list_container_type(ct) {
-                        Some(ct.clone())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-            // Strategy 2: Check the source value's defining op.
-            let source_is_list = is_list_source(func, source_val, &block_ids);
-
-            if get_iter_container_type.is_none() && !source_is_list {
+            // Check if source is known to be a list from typed facts or a
+            // structural list producer. Transport-only container metadata is
+            // intentionally ignored.
+            if !is_list_source(func, source_val, &block_ids) {
                 // Not a list — skip. This avoids transforming dict/set/generator
                 // iteration which has different semantics.
                 continue;
             }
 
-            // Determine the container_type for the synthesized Index op.
-            // Prefer the GetIter's explicit container_type; fall back to
-            // inferring from the source defining op.
-            let container_type = get_iter_container_type
-                .or_else(|| infer_container_type(func, source_val, &block_ids));
+            // Determine the container_type for the synthesized Index op from
+            // the same typed/structural proof used for devirtualization.
+            let container_type = infer_list_container_type(func, source_val, &block_ids);
 
             // Reject if source_val is defined INSIDE the loop (mutation risk).
             // The list must be defined before the loop header.
@@ -315,10 +285,6 @@ fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
     }
 
     candidates
-}
-
-fn is_semantic_list_container_type(container_type: &str) -> bool {
-    matches!(container_type, "list" | "list_bool" | "list_float")
 }
 
 /// Apply the list iterator devirtualization transform to a single candidate.
@@ -819,17 +785,50 @@ mod tests {
     }
 
     #[test]
-    fn devirt_list_from_container_type() {
+    fn no_devirt_from_container_type_only() {
         let mut func = build_list_for_loop(false);
+        let stats = run(&mut func);
+
+        assert_eq!(
+            stats.values_changed, 0,
+            "transport-only container_type=list must not prove list iteration"
+        );
+        assert!(
+            func.blocks[&BlockId(1)]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::IterNextUnboxed),
+            "transport-only list metadata must leave iterator protocol intact"
+        );
+
+        crate::tir::verify::verify_function(&func).expect("verification should pass");
+    }
+
+    #[test]
+    fn devirt_list_from_function_value_type() {
+        let mut func = build_list_for_loop(false);
+        func.value_types
+            .insert(ValueId(0), TirType::List(Box::new(TirType::DynBox)));
         let stats = run(&mut func);
 
         assert!(
             stats.values_changed > 0,
-            "pass should transform list loop with container_type"
+            "function-owned TirType::List fact should transform list loop"
         );
 
         let header = &func.blocks[&BlockId(1)];
         assert!(header.ops.iter().any(|op| op.opcode == OpCode::Lt));
+        let body = &func.blocks[&BlockId(2)];
+        let index_op = body
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Index)
+            .expect("typed-list devirt should synthesize Index");
+        assert_eq!(
+            index_op.attrs.get("container_type"),
+            Some(&AttrValue::Str("list".to_string())),
+            "synthesized Index should carry semantic list metadata derived from the typed proof"
+        );
 
         crate::tir::verify::verify_function(&func).expect("verification should pass");
     }
@@ -858,8 +857,8 @@ mod tests {
     }
 
     #[test]
-    fn devirt_list_from_get_iter_container_type() {
-        // Test detection via container_type on the GetIter op itself.
+    fn no_devirt_from_get_iter_container_type_only() {
+        // Transport-only container_type on the GetIter op itself is not proof.
         let mut func = TirFunction::new("test".into(), vec![TirType::DynBox], TirType::None);
 
         let param = ValueId(0);
@@ -926,9 +925,88 @@ mod tests {
         func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
 
         let stats = run(&mut func);
+        assert_eq!(
+            stats.values_changed, 0,
+            "GetIter container_type=list must not prove list iteration"
+        );
+        assert!(
+            func.blocks[&header_id]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::IterNextUnboxed),
+            "transport-only GetIter metadata must leave iterator protocol intact"
+        );
+    }
+
+    #[test]
+    fn devirt_list_from_typed_param() {
+        let mut func = TirFunction::new(
+            "test".into(),
+            vec![TirType::List(Box::new(TirType::DynBox))],
+            TirType::None,
+        );
+
+        let param = ValueId(0);
+        let iter_val = func.fresh_value();
+
+        let header_id = func.fresh_block();
+        let body_id = func.fresh_block();
+        let exit_id = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![make_op(OpCode::GetIter, vec![param], vec![iter_val])];
+            entry.terminator = Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            };
+        }
+
+        let elem_val = func.fresh_value();
+        let done_val = func.fresh_value();
+        let header = TirBlock {
+            id: header_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::IterNextUnboxed,
+                vec![iter_val],
+                vec![elem_val, done_val],
+            )],
+            terminator: Terminator::CondBranch {
+                cond: done_val,
+                then_block: exit_id,
+                then_args: vec![],
+                else_block: body_id,
+                else_args: vec![],
+            },
+        };
+        func.blocks.insert(header_id, header);
+        func.loop_roles.insert(header_id, LoopRole::LoopHeader);
+
+        let body = TirBlock {
+            id: body_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![],
+            },
+        };
+        func.blocks.insert(body_id, body);
+
+        let exit = TirBlock {
+            id: exit_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        };
+        func.blocks.insert(exit_id, exit);
+        func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
+
+        let stats = run(&mut func);
         assert!(
             stats.values_changed > 0,
-            "should transform when GetIter has container_type=list"
+            "typed list parameter should devirtualize without container_type metadata"
         );
 
         crate::tir::verify::verify_function(&func).expect("verification should pass");
