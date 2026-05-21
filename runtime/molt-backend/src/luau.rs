@@ -502,6 +502,22 @@ impl LuauBackend {
                 "molt_print",
                 "local function molt_print(...)\n\tlocal n = select(\"#\", ...)\n\tif n == 0 then print(); return end\n\tif n == 1 then print(molt_str((...))) return end\n\tlocal parts = table.create(n)\n\tfor i = 1, n do\n\t\tparts[i] = molt_str((select(i, ...)))\n\tend\n\tprint(table.concat(parts, \" \"))\nend\n",
             ),
+            (
+                "molt_str_codepoint_len",
+                "local function molt_str_codepoint_len(s: string): number\n\tlocal len = utf8.len(s)\n\tif len == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn len\nend\n",
+            ),
+            (
+                "molt_str_byte_offset",
+                "local function molt_str_byte_offset(s: string, idx: number): number\n\tlocal offset = utf8.offset(s, idx)\n\tif offset == nil then error({__type=\"IndexError\", __msg=\"string index out of range\"}) end\n\treturn offset\nend\n",
+            ),
+            (
+                "molt_ord",
+                "local function molt_ord(ch: any): number\n\tif type(ch) ~= \"string\" then error({__type=\"TypeError\", __msg=\"ord() expected string of length 1, but \" .. type(ch) .. \" found\"}) end\n\tlocal len = molt_str_codepoint_len(ch)\n\tif len ~= 1 then error({__type=\"TypeError\", __msg=\"ord() expected a character, but string of length \" .. tostring(len) .. \" found\"}) end\n\tlocal code = utf8.codepoint(ch, 1)\n\tif code == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn code\nend\n",
+            ),
+            (
+                "molt_ord_at",
+                "local function molt_ord_at(obj: any, key: any): number\n\tif type(obj) ~= \"string\" then\n\t\tif type(obj) == \"table\" then\n\t\t\tlocal table_key = key\n\t\t\tif type(key) == \"boolean\" then\n\t\t\t\ttable_key = if key then 2 else 1\n\t\t\telseif type(key) == \"number\" then\n\t\t\t\ttable_key = if key >= 0 then key + 1 else #obj + key + 1\n\t\t\tend\n\t\t\treturn molt_ord(obj[table_key])\n\t\tend\n\t\terror({__type=\"TypeError\", __msg=\"'\" .. type(obj) .. \"' object is not subscriptable\"})\n\tend\n\tlocal key_num = key\n\tif type(key) == \"boolean\" then key_num = if key then 1 else 0 end\n\tif type(key_num) ~= \"number\" then error({__type=\"TypeError\", __msg=\"string indices must be integers, not '\" .. type(key_num) .. \"'\"}) end\n\tlocal len = molt_str_codepoint_len(obj)\n\tlocal idx = if key_num >= 0 then key_num + 1 else len + key_num + 1\n\tif idx < 1 or idx > len then error({__type=\"IndexError\", __msg=\"string index out of range\"}) end\n\tlocal byte_idx = molt_str_byte_offset(obj, idx)\n\tlocal code = utf8.codepoint(obj, byte_idx)\n\tif code == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn code\nend\n",
+            ),
         ];
 
         // Dependency: molt_str ↔ molt_repr are mutually recursive for table
@@ -512,12 +528,21 @@ impl LuauBackend {
         let needs_str = used_call("molt_str") || needs_print;
         let needs_repr = used_call("molt_repr");
         let needs_str_group = needs_str || needs_repr;
+        let needs_ord_group = used_call("molt_ord")
+            || used_call("molt_ord_at")
+            || used_call("molt_str_codepoint_len")
+            || used_call("molt_str_byte_offset");
         if needs_str_group {
             self.output.push_str("local molt_repr\n");
         }
         for (name, source) in helpers {
             let emit = if matches!(*name, "molt_str" | "molt_repr") {
                 needs_str_group
+            } else if matches!(
+                *name,
+                "molt_str_codepoint_len" | "molt_str_byte_offset" | "molt_ord" | "molt_ord_at"
+            ) {
+                needs_ord_group
             } else if *name == "molt_print" {
                 needs_print
             } else {
@@ -2700,8 +2725,16 @@ impl LuauBackend {
                             &container,
                             "string index out of range",
                         );
+                        let byte_idx_var = format!("__byte_idx_{out}");
+                        let next_byte_idx_var = format!("__next_byte_idx_{out}");
                         self.emit_line(&format!(
-                            "local {out} = string.sub({container}, {idx_var}, {idx_var})"
+                            "local {byte_idx_var}: number = molt_str_byte_offset({container}, {idx_var})"
+                        ));
+                        self.emit_line(&format!(
+                            "local {next_byte_idx_var} = utf8.offset({container}, {idx_var} + 1)"
+                        ));
+                        self.emit_line(&format!(
+                            "local {out} = string.sub({container}, {byte_idx_var}, if {next_byte_idx_var} == nil then #{container} else {next_byte_idx_var} - 1)"
                         ));
                         // Propagate str type to output.
                         if let Some(ref out_name) = op.out {
@@ -3068,10 +3101,7 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
-                    self.emit_line(&format!(
-                        "local {out} = string.byte({}, 1)",
-                        sanitize_ident(val)
-                    ));
+                    self.emit_line(&format!("local {out} = molt_ord({})", sanitize_ident(val)));
                 }
             }
             "ord_at" => {
@@ -3080,21 +3110,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
-                    let key_is_scalar_int = self.scalar_plan.name_is_integer_family(&args[1]);
-                    let key_known_nonneg = self.nonneg_consts.contains(&args[1])
-                        || (key_is_scalar_int && op.value.is_some_and(|v| v >= 0));
-                    let idx_var = format!("__idx_{out}");
-                    if key_known_nonneg {
-                        self.emit_line(&format!("local {idx_var}: number = {key} + 1"));
-                    } else {
-                        self.emit_line(&format!(
-                            "local {idx_var}: number = if {key} >= 0 then {key} + 1 else #{container} + {key} + 1"
-                        ));
-                    }
-                    self.emit_index_bounds_guard(&idx_var, &container, "string index out of range");
-                    self.emit_line(&format!(
-                        "local {out} = string.byte({container}, {idx_var})"
-                    ));
+                    self.emit_line(&format!("local {out} = molt_ord_at({container}, {key})"));
                 }
             }
             "chr" => {
@@ -3299,7 +3315,7 @@ impl LuauBackend {
                             "function(a, ...) return molt_issubclass(a[1], a[2]) end"
                         }
                         "molt_hash_builtin" => "function(a, ...) return molt_hash(a[1]) end",
-                        "molt_ord" => "function(a, ...) return string.byte(a[1]) end",
+                        "molt_ord" => "function(a, ...) return molt_ord(a[1]) end",
                         "molt_chr" => "function(a, ...) return string.char(a[1]) end",
                         "molt_repr_builtin" => "function(a, ...) return molt_repr(a[1]) end",
                         "molt_id" => "function(a, ...) return molt_id(a[1]) end",
@@ -3326,7 +3342,9 @@ impl LuauBackend {
                         "molt_dir_builtin" => "function(a, ...) return molt_dir(a[1]) end",
                         "molt_vars_builtin" => "function(a, ...) return molt_vars(a[1]) end",
                         // Runtime intrinsics that have no Luau equivalent.
-                        "molt_function_set_builtin"
+                        "molt_function_init_metadata_packed"
+                        | "molt_function_set_builtin"
+                        | "molt_function_set_defaults"
                         | "molt_open_builtin"
                         | "molt_set_attr_name"
                         | "molt_del_attr_name"
@@ -6000,47 +6018,48 @@ fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+fn is_ident_char_scalar(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
 /// Replace whole-word occurrences of `needle` with `replacement` in `haystack`.
 fn replace_whole_word(haystack: &str, needle: &str, replacement: &str) -> String {
-    let bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
     let mut result = String::with_capacity(haystack.len() + replacement.len());
-    let mut pos = 0;
+    let mut last = 0;
 
-    while pos < bytes.len() {
-        if pos + needle_bytes.len() <= bytes.len()
-            && &bytes[pos..pos + needle_bytes.len()] == needle_bytes
-        {
-            let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
-            let after_ok = pos + needle_bytes.len() >= bytes.len()
-                || !is_ident_char(bytes[pos + needle_bytes.len()]);
-            if before_ok && after_ok {
-                // Don't replace at declaration positions with literals —
-                // `local vN` should never become `local "string"` or `local 42`.
-                let is_decl_pos = pos >= 6 && &bytes[pos - 6..pos] == b"local ";
-                let replacement_is_literal = replacement.starts_with('"')
-                    || replacement.starts_with('{')
-                    || replacement == "nil"
-                    || replacement == "true"
-                    || replacement == "false"
-                    || replacement.starts_with(|c: char| c.is_ascii_digit())
-                    || replacement.starts_with('-');
-                if is_decl_pos && replacement_is_literal {
-                    // Skip this replacement — keep the original variable name
-                    result.push_str(
-                        std::str::from_utf8(&bytes[pos..pos + needle_bytes.len()]).unwrap_or(""),
-                    );
-                    pos += needle_bytes.len();
-                    continue;
-                }
-                result.push_str(replacement);
-                pos += needle_bytes.len();
-                continue;
-            }
+    for (pos, _) in haystack.match_indices(needle) {
+        let end = pos + needle.len();
+        let before_ok = haystack[..pos]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_ident_char_scalar(c));
+        let after_ok = haystack[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_ident_char_scalar(c));
+        if !(before_ok && after_ok) {
+            continue;
         }
-        result.push(bytes[pos] as char);
-        pos += 1;
+
+        result.push_str(&haystack[last..pos]);
+        // Don't replace at declaration positions with literals — `local vN`
+        // should never become `local "string"` or `local 42`.
+        let is_decl_pos = haystack[..pos].ends_with("local ");
+        let replacement_is_literal = replacement.starts_with('"')
+            || replacement.starts_with('{')
+            || replacement == "nil"
+            || replacement == "true"
+            || replacement == "false"
+            || replacement.starts_with(|c: char| c.is_ascii_digit())
+            || replacement.starts_with('-');
+        if is_decl_pos && replacement_is_literal {
+            result.push_str(&haystack[pos..end]);
+        } else {
+            result.push_str(replacement);
+        }
+        last = end;
     }
+    result.push_str(&haystack[last..]);
     result
 }
 
@@ -9233,6 +9252,18 @@ mod tests {
     }
 
     #[test]
+    fn test_replace_whole_word_preserves_non_ascii_literals() {
+        assert_eq!(
+            replace_whole_word("local v1: string = \"é\"", "v2", "x"),
+            "local v1: string = \"é\""
+        );
+        assert_eq!(
+            replace_whole_word("molt_print(v1, \"é\")", "v1", "value"),
+            "molt_print(value, \"é\")"
+        );
+    }
+
+    #[test]
     fn test_empty_ir() {
         let ir = SimpleIR {
             functions: vec![],
@@ -10498,6 +10529,84 @@ mod tests {
             output.contains("list index out of range")
                 && output.contains("string index out of range"),
             "expected list and string IndexError messages, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_string_get_item_uses_utf8_codepoint_offsets() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_index".to_string(),
+                params: vec!["s".to_string(), "i".to_string()],
+                param_types: Some(vec!["str".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "get_item".to_string(),
+                        args: Some(vec!["s".to_string(), "i".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("str".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("molt_str_byte_offset(s, __idx_v0)")
+                && output.contains("utf8.offset(s, __idx_v0 + 1)"),
+            "string indexing must translate codepoint index to byte offsets, got:\n{output}"
+        );
+        assert!(
+            !output.contains("string.sub(s, __idx_v0, __idx_v0)"),
+            "string indexing must not fall back to byte-indexed substring extraction, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_ord_at_emits_utf8_codepoint_helper() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "ord_at_unicode".to_string(),
+                params: vec!["s".to_string(), "i".to_string()],
+                param_types: Some(vec!["str".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "ord_at".to_string(),
+                        args: Some(vec!["s".to_string(), "i".to_string()]),
+                        out: Some("v0".to_string()),
+                        type_hint: Some("int".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+        assert!(
+            output.contains("local function molt_ord_at")
+                && output.contains("molt_ord_at(s, i)")
+                && output.contains("utf8.codepoint(obj, byte_idx)")
+                && output.contains("molt_str_codepoint_len(obj)"),
+            "ord_at must use the shared UTF-8 codepoint helper path, got:\n{output}"
         );
     }
 

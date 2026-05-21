@@ -3088,7 +3088,13 @@ impl WasmBackend {
             ("molt_class_set_base", "class_set_base", 2),
             ("molt_class_apply_set_name", "class_apply_set_name", 1),
             ("molt_class_merge_layout", "class_merge_layout", 3),
+            (
+                "molt_function_init_metadata_packed",
+                "function_init_metadata_packed",
+                4,
+            ),
             ("molt_function_set_builtin", "function_set_builtin", 1),
+            ("molt_function_set_defaults", "function_set_defaults", 3),
             ("molt_exceptiongroup_match", "exceptiongroup_match", 2),
             ("molt_exceptiongroup_combine", "exceptiongroup_combine", 1),
             ("molt_iter_checked", "iter", 1),
