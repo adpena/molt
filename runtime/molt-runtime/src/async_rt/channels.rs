@@ -6,7 +6,8 @@ use std::collections::HashSet;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(molt_has_net_io)]
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+use std::sync::{Condvar, Mutex};
 
 use super::cancel_tokens;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -77,6 +78,9 @@ pub struct MoltStream {
     pub receiver: Receiver<Vec<u8>>,
     pub closed: AtomicBool,
     pub refs: AtomicUsize,
+    max_queued_bytes: usize,
+    queue_budget: Mutex<StreamQueueBudget>,
+    queue_budget_cvar: Condvar,
     pub send_hook: Option<extern "C" fn(*mut u8, *const u8, usize) -> i64>,
     pub recv_hook: Option<extern "C" fn(*mut u8) -> i64>,
     pub close_hook: Option<extern "C" fn(*mut u8)>,
@@ -89,6 +93,13 @@ struct MoltStreamReader {
     buffer_start: usize,
     scan_cursor: usize,
     eof: bool,
+}
+
+#[derive(Debug, Default)]
+struct StreamQueueBudget {
+    queued_bytes: usize,
+    peak_queued_bytes: usize,
+    blocked_sends: usize,
 }
 
 pub struct MoltWebSocket {
@@ -144,6 +155,153 @@ enum NativeTlsEndpoint {
 }
 
 type ChanHandle = u64;
+
+const STREAM_DEFAULT_MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
+const STREAM_MIN_MAX_QUEUED_BYTES: usize = 64 * 1024;
+const STREAM_MAX_MAX_QUEUED_BYTES: usize = 1024 * 1024 * 1024;
+const STREAM_MAX_QUEUED_BYTES_ENV: &str = "MOLT_STREAM_MAX_QUEUED_BYTES";
+
+fn parse_positive_usize_env(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn bounded_stream_max_queued_bytes(value: usize) -> usize {
+    value.clamp(STREAM_MIN_MAX_QUEUED_BYTES, STREAM_MAX_MAX_QUEUED_BYTES)
+}
+
+pub(crate) fn default_stream_max_queued_bytes() -> usize {
+    parse_positive_usize_env(STREAM_MAX_QUEUED_BYTES_ENV)
+        .map(bounded_stream_max_queued_bytes)
+        .unwrap_or(STREAM_DEFAULT_MAX_QUEUED_BYTES)
+}
+
+fn new_stream_box(
+    capacity: usize,
+    max_queued_bytes: usize,
+    send_hook: Option<extern "C" fn(*mut u8, *const u8, usize) -> i64>,
+    recv_hook: Option<extern "C" fn(*mut u8) -> i64>,
+    close_hook: Option<extern "C" fn(*mut u8)>,
+    hook_ctx: *mut u8,
+) -> Box<MoltStream> {
+    let (sender, receiver) = bytes_channel(capacity);
+    Box::new(MoltStream {
+        sender,
+        receiver,
+        closed: AtomicBool::new(false),
+        refs: AtomicUsize::new(1),
+        max_queued_bytes: bounded_stream_max_queued_bytes(max_queued_bytes),
+        queue_budget: Mutex::new(StreamQueueBudget::default()),
+        queue_budget_cvar: Condvar::new(),
+        send_hook,
+        recv_hook,
+        close_hook,
+        hook_ctx,
+    })
+}
+
+pub(crate) fn stream_new_with_byte_budget(capacity: usize, max_queued_bytes: usize) -> u64 {
+    bits_from_ptr(Box::into_raw(new_stream_box(
+        capacity,
+        max_queued_bytes,
+        None,
+        None,
+        None,
+        std::ptr::null_mut(),
+    )) as *mut u8)
+}
+
+fn stream_can_reserve_bytes(current: usize, len: usize, max_queued_bytes: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    match current.checked_add(len) {
+        Some(next) => next <= max_queued_bytes || current == 0,
+        None => false,
+    }
+}
+
+fn stream_try_reserve_queued_bytes(stream: &MoltStream, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    if stream.closed.load(AtomicOrdering::Acquire) {
+        return false;
+    }
+    let mut budget = stream.queue_budget.lock().unwrap();
+    if !stream_can_reserve_bytes(budget.queued_bytes, len, stream.max_queued_bytes) {
+        budget.blocked_sends = budget.blocked_sends.saturating_add(1);
+        return false;
+    }
+    budget.queued_bytes = budget.queued_bytes.saturating_add(len);
+    budget.peak_queued_bytes = budget.peak_queued_bytes.max(budget.queued_bytes);
+    true
+}
+
+fn stream_reserve_queued_bytes_blocking(stream: &MoltStream, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let mut budget = stream.queue_budget.lock().unwrap();
+    loop {
+        if stream.closed.load(AtomicOrdering::Acquire) {
+            return false;
+        }
+        if stream_can_reserve_bytes(budget.queued_bytes, len, stream.max_queued_bytes) {
+            budget.queued_bytes = budget.queued_bytes.saturating_add(len);
+            budget.peak_queued_bytes = budget.peak_queued_bytes.max(budget.queued_bytes);
+            return true;
+        }
+        budget.blocked_sends = budget.blocked_sends.saturating_add(1);
+        budget = stream.queue_budget_cvar.wait(budget).unwrap();
+    }
+}
+
+pub(crate) fn stream_release_queued_bytes(stream: &MoltStream, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let mut budget = stream.queue_budget.lock().unwrap();
+    budget.queued_bytes = budget.queued_bytes.saturating_sub(len);
+    drop(budget);
+    stream.queue_budget_cvar.notify_all();
+}
+
+pub(crate) fn stream_close_local(stream: &MoltStream) {
+    stream.closed.store(true, AtomicOrdering::Release);
+    stream.queue_budget_cvar.notify_all();
+}
+
+#[cfg(test)]
+fn stream_enqueue_bytes(stream: &MoltStream, bytes: Vec<u8>) -> Result<(), Vec<u8>> {
+    let len = bytes.len();
+    if !stream_try_reserve_queued_bytes(stream, len) {
+        return Err(bytes);
+    }
+    match stream.sender.try_send(bytes) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(bytes)) | Err(TrySendError::Disconnected(bytes)) => {
+            stream_release_queued_bytes(stream, len);
+            Err(bytes)
+        }
+    }
+}
+
+pub(crate) fn stream_enqueue_bytes_blocking(stream: &MoltStream, bytes: Vec<u8>) -> bool {
+    let len = bytes.len();
+    if !stream_reserve_queued_bytes_blocking(stream, len) {
+        return false;
+    }
+    match stream.sender.send(bytes) {
+        Ok(()) => true,
+        Err(_) => {
+            stream_release_queued_bytes(stream, len);
+            false
+        }
+    }
+}
 
 #[inline]
 fn chan_handle_from_ptr(ptr: *mut u8) -> ChanHandle {
@@ -654,18 +812,7 @@ pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
 pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let capacity = usize_from_bits(capacity_bits);
-        let (s, r) = bytes_channel(capacity);
-        let stream = Box::new(MoltStream {
-            sender: s,
-            receiver: r,
-            closed: AtomicBool::new(false),
-            refs: AtomicUsize::new(1),
-            send_hook: None,
-            recv_hook: None,
-            close_hook: None,
-            hook_ctx: std::ptr::null_mut(),
-        });
-        bits_from_ptr(Box::into_raw(stream) as *mut u8)
+        stream_new_with_byte_budget(capacity, default_stream_max_queued_bytes())
     })
 }
 
@@ -706,17 +853,14 @@ pub extern "C" fn molt_stream_new_with_io_hooks(
         } else {
             Some(unsafe { std::mem::transmute::<usize, extern "C" fn(*mut u8) -> i64>(recv_hook) })
         };
-        let (s, r) = bytes_channel(0);
-        let stream = Box::new(MoltStream {
-            sender: s,
-            receiver: r,
-            closed: AtomicBool::new(false),
-            refs: AtomicUsize::new(1),
+        let stream = new_stream_box(
+            0,
+            default_stream_max_queued_bytes(),
             send_hook,
             recv_hook,
             close_hook,
             hook_ctx,
-        });
+        );
         Box::into_raw(stream) as *mut u8
     })
 }
@@ -765,11 +909,27 @@ pub unsafe extern "C" fn molt_stream_send(
         if let Some(hook) = stream.send_hook {
             return hook(stream.hook_ctx, data_ptr, len);
         }
+        if !stream_try_reserve_queued_bytes(stream, len) {
+            return pending_bits_i64();
+        }
         // SAFETY: caller contract guarantees `data_ptr` is readable for `len` bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(data_ptr, len) }.to_vec();
+        let source = unsafe { std::slice::from_raw_parts(data_ptr, len) };
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(len).is_err() {
+            stream_release_queued_bytes(stream, len);
+            return raise_exception::<i64>(
+                _py,
+                "MemoryError",
+                "stream send buffer allocation failed",
+            );
+        }
+        bytes.extend_from_slice(source);
         match stream.sender.try_send(bytes) {
             Ok(_) => 0,
-            Err(_) => pending_bits_i64(),
+            Err(_) => {
+                stream_release_queued_bytes(stream, len);
+                pending_bits_i64()
+            }
         }
     })
 }
@@ -813,6 +973,7 @@ pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
         }
         match stream.receiver.try_recv() {
             Ok(bytes) => {
+                stream_release_queued_bytes(stream, bytes.len());
                 let ptr = alloc_bytes(_py, &bytes);
                 if ptr.is_null() {
                     MoltObject::none().bits() as i64
@@ -830,6 +991,7 @@ pub unsafe extern "C" fn molt_stream_recv(stream_bits: u64) -> i64 {
                         let _ = unsafe { crate::molt_db_host_poll() };
                         let _ = unsafe { crate::molt_process_host_poll() };
                         if let Ok(bytes) = stream.receiver.try_recv() {
+                            stream_release_queued_bytes(stream, bytes.len());
                             let ptr = alloc_bytes(_py, &bytes);
                             return if ptr.is_null() {
                                 MoltObject::none().bits() as i64
@@ -862,7 +1024,7 @@ pub unsafe extern "C" fn molt_stream_close(stream_bits: u64) {
         if let Some(hook) = stream.close_hook {
             hook(stream.hook_ctx);
         }
-        stream.closed.store(true, AtomicOrdering::Relaxed);
+        stream_close_local(stream);
     })
 }
 
@@ -2478,6 +2640,91 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod stream_tests {
+    use super::{
+        MoltStream, STREAM_MIN_MAX_QUEUED_BYTES, molt_stream_drop, molt_stream_recv,
+        molt_stream_send, stream_enqueue_bytes_blocking, stream_new_with_byte_budget,
+        stream_release_queued_bytes,
+    };
+    use crate::{MoltObject, dec_ref_bits, obj_from_bits, pending_bits_i64, ptr_from_bits};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn stream_byte_budget_returns_pending_until_recv_releases_bytes() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
+        let full = vec![1u8; STREAM_MIN_MAX_QUEUED_BYTES];
+        let one = [2u8; 1];
+
+        let first = unsafe { molt_stream_send(stream_bits, full.as_ptr(), full.len() as u64) };
+        assert_eq!(first, 0);
+        let blocked = unsafe { molt_stream_send(stream_bits, one.as_ptr(), one.len() as u64) };
+        assert_eq!(blocked, pending_bits_i64());
+
+        crate::with_gil_entry_nopanic!(_py, {
+            let recv_bits = unsafe { molt_stream_recv(stream_bits) as u64 };
+            assert!(!obj_from_bits(recv_bits).is_none());
+            dec_ref_bits(_py, recv_bits);
+        });
+
+        let unblocked = unsafe { molt_stream_send(stream_bits, one.as_ptr(), one.len() as u64) };
+        assert_eq!(unblocked, 0);
+        unsafe { molt_stream_drop(stream_bits) };
+    }
+
+    #[test]
+    fn stream_blocking_enqueue_waits_for_byte_budget_release() {
+        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
+        let stream_ptr = ptr_from_bits(stream_bits);
+        assert!(!stream_ptr.is_null());
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
+        assert!(
+            super::stream_enqueue_bytes(stream, vec![1u8; STREAM_MIN_MAX_QUEUED_BYTES]).is_ok()
+        );
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_bits = stream_bits;
+        let worker = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let ptr = ptr_from_bits(worker_bits);
+            let stream = unsafe { &*(ptr as *mut MoltStream) };
+            let ok = stream_enqueue_bytes_blocking(stream, vec![2u8; 1]);
+            done_tx.send(ok).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+        let first = stream.receiver.try_recv().unwrap();
+        stream_release_queued_bytes(stream, first.len());
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        worker.join().unwrap();
+        let second = stream.receiver.try_recv().unwrap();
+        assert_eq!(second, vec![2u8; 1]);
+        stream_release_queued_bytes(stream, second.len());
+        unsafe { molt_stream_drop(stream_bits) };
+    }
+
+    #[test]
+    fn stream_oversized_single_message_can_make_forward_progress() {
+        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
+        let oversized = vec![3u8; STREAM_MIN_MAX_QUEUED_BYTES + 1];
+        let sent =
+            unsafe { molt_stream_send(stream_bits, oversized.as_ptr(), oversized.len() as u64) };
+        assert_eq!(sent, 0);
+        crate::with_gil_entry_nopanic!(_py, {
+            let recv_bits = unsafe { molt_stream_recv(stream_bits) as u64 };
+            assert_ne!(recv_bits, pending_bits_i64() as u64);
+            assert_ne!(recv_bits, MoltObject::none().bits());
+            dec_ref_bits(_py, recv_bits);
+        });
+        unsafe { molt_stream_drop(stream_bits) };
+    }
+}
+
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
     match code {
@@ -3207,6 +3454,7 @@ pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
         {
             hook(stream.hook_ctx);
         }
+        stream_close_local(stream);
         release_ptr(stream_ptr);
         // SAFETY: this is the final ref-counted owner.
         unsafe { drop(Box::from_raw(stream_ptr as *mut MoltStream)) };
