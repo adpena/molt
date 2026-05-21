@@ -21,6 +21,7 @@ use crate::builtins::random_mod::random_clear_state;
 use crate::builtins::signal_ext::signal_clear_state;
 use crate::builtins::strings::clear_const_str_cache;
 use crate::builtins::sys_ext::sys_ext_clear_state;
+use crate::builtins::types::types_clear_runtime_state;
 use crate::c_api::c_api_module_clear_state;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::builders::clear_builder_singletons;
@@ -163,6 +164,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     operator_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_attributes_runtime_state");
     attributes_clear_runtime_state(_py, state);
+    trace_shutdown("process_exit_clear_types_runtime_state");
+    types_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_resource_state");
     crate::resource::clear_resource_state();
     trace_shutdown("process_exit_done");
@@ -307,6 +310,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     functools_clear_runtime_state(_py, state);
     trace_shutdown("clear_operator_runtime_state");
     operator_clear_runtime_state(_py, state);
+    trace_shutdown("clear_types_runtime_state");
+    types_clear_runtime_state(_py, state);
     trace_shutdown("clear_builder_singletons");
     clear_builder_singletons(_py);
     // Keep builtin classes alive until after cache + TLS teardown: releasing
