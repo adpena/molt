@@ -10298,9 +10298,12 @@ def _run_bolt_post_link(
         )
 
     try:
-        bolt_proc = subprocess.run(
+        bolt_proc = _run_completed_command(
             bolt_cmd,
+            cwd=binary_path.parent,
+            env=None,
             capture_output=not json_output,
+            memory_guard_prefix="MOLT_BUILD",
             timeout=300,  # 5 min ceiling
         )
     except FileNotFoundError:
@@ -21195,11 +21198,12 @@ def _prepare_non_native_build_result(
             if link_skipped:
                 link_process = subprocess.CompletedProcess(link_cmd, 0, "", "")
             else:
-                link_process = subprocess.run(
+                link_process = _run_completed_command(
                     link_cmd,
                     cwd=molt_root,
+                    env=None,
                     capture_output=True,
-                    text=True,
+                    memory_guard_prefix="MOLT_WASM_LINK",
                 )
                 if link_process.returncode != 0:
                     err = link_process.stderr.strip() or link_process.stdout.strip()
@@ -21269,7 +21273,7 @@ def _prepare_non_native_build_result(
             cwasm_path = precompile_target.with_suffix(".cwasm")
             wasmtime_bin = shutil.which("wasmtime")
             if wasmtime_bin:
-                precompile_proc = subprocess.run(
+                precompile_proc = _run_completed_command(
                     [
                         wasmtime_bin,
                         "compile",
@@ -21277,8 +21281,10 @@ def _prepare_non_native_build_result(
                         "-o",
                         str(cwasm_path),
                     ],
+                    cwd=molt_root,
+                    env=None,
                     capture_output=True,
-                    text=True,
+                    memory_guard_prefix="MOLT_WASM_LINK",
                     timeout=60,
                 )
                 if precompile_proc.returncode == 0:
@@ -24981,7 +24987,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
         for chunk in export_link_args.split(" -C link-arg=")
         if (arg := chunk.strip()) and not arg.startswith("-C ")
     ]
-    process = subprocess.run(
+    process = _run_completed_command(
         [
             wasm_ld,
             "-r",
@@ -24993,10 +24999,11 @@ def _link_runtime_staticlib_to_reloc_wasm(
             "-o",
             str(output_path),
         ],
+        cwd=output_path.parent,
+        env=None,
         capture_output=True,
-        text=True,
+        memory_guard_prefix="MOLT_WASM_LINK",
         timeout=link_timeout,
-        check=False,
     )
     if process.returncode != 0:
         if not json_output:
@@ -30899,13 +30906,12 @@ def extension_build(
                 cmd.append(f"-ffile-prefix-map={prefix}=.")
                 cmd.append(f"-fdebug-prefix-map={prefix}=.")
             cmd.extend(compile_args)
-            result = subprocess.run(
+            result = _run_completed_command(
                 cmd,
                 cwd=project_root,
                 env=build_env,
                 capture_output=True,
-                text=True,
-                check=False,
+                memory_guard_prefix="MOLT_BUILD",
             )
             if result.returncode != 0:
                 detail = result.stderr.strip() or result.stdout.strip()
@@ -30946,13 +30952,12 @@ def extension_build(
         link_command.extend(cargo_search)
         link_command.extend(cargo_libs)
         link_command.extend(link_args)
-        link_result = subprocess.run(
+        link_result = _run_completed_command(
             link_command,
             cwd=project_root,
             env=build_env,
             capture_output=True,
-            text=True,
-            check=False,
+            memory_guard_prefix="MOLT_BUILD",
         )
         if link_result.returncode != 0:
             detail = link_result.stderr.strip() or link_result.stdout.strip()
