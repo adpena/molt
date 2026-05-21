@@ -94,6 +94,21 @@ pub(crate) struct SpecialCache {
     pub(crate) function_globals_descriptor: AtomicU64,
 }
 
+#[cfg(any(test, feature = "stdlib_collections", feature = "stdlib_logging_ext"))]
+pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
+pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub(crate) type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
+
+pub(crate) struct RuntimeExtensionStateSlot {
+    ptr: *mut u8,
+    clear: RuntimeExtensionStateClear,
+    drop: RuntimeExtensionStateDrop,
+}
+
+// Extension states are only accessed through the runtime GIL plus this map's
+// mutex. The raw pointer is an opaque Box owned by the registering crate.
+unsafe impl Send for RuntimeExtensionStateSlot {}
+
 #[derive(Clone)]
 pub(crate) struct AsyncGenLocalsEntry {
     pub(crate) names: Vec<u64>,
@@ -262,6 +277,8 @@ pub(crate) struct RuntimeState {
     pub(crate) start_time: OnceLock<Instant>,
     /// VFS state lazily initialized from environment variables on first access.
     pub(crate) vfs_state: OnceLock<Option<crate::vfs::VfsState>>,
+    /// Typed state owned by extracted runtime crates and scoped to this runtime.
+    pub(crate) extension_states: Mutex<HashMap<Vec<u8>, RuntimeExtensionStateSlot>>,
 }
 
 impl RuntimeState {
@@ -345,6 +362,7 @@ impl RuntimeState {
             code_slots: OnceLock::new(),
             start_time: OnceLock::new(),
             vfs_state: OnceLock::new(),
+            extension_states: Mutex::new(HashMap::new()),
         }
     }
 
@@ -390,6 +408,42 @@ impl RuntimeState {
     /// `MOLT_VFS_BUNDLE` is not set in the environment.
     pub(crate) fn get_vfs(&self) -> Option<&crate::vfs::VfsState> {
         self.vfs_state.get_or_init(crate::vfs::load_vfs).as_ref()
+    }
+}
+
+#[cfg(any(test, feature = "stdlib_collections", feature = "stdlib_logging_ext"))]
+pub(crate) fn runtime_extension_state_get_or_init(
+    state: &RuntimeState,
+    key: &[u8],
+    init: RuntimeExtensionStateInit,
+    clear: RuntimeExtensionStateClear,
+    drop: RuntimeExtensionStateDrop,
+) -> *mut u8 {
+    let mut guard = state.extension_states.lock().unwrap();
+    if let Some(slot) = guard.get(key) {
+        return slot.ptr;
+    }
+    let ptr = unsafe { init() };
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    guard.insert(key.to_vec(), RuntimeExtensionStateSlot { ptr, clear, drop });
+    ptr
+}
+
+pub(crate) fn runtime_extension_states_clear_and_drop(state: &RuntimeState) {
+    let slots: Vec<RuntimeExtensionStateSlot> = {
+        let mut guard = state.extension_states.lock().unwrap();
+        guard.drain().map(|(_, slot)| slot).collect()
+    };
+    for slot in slots {
+        if slot.ptr.is_null() {
+            continue;
+        }
+        unsafe {
+            (slot.clear)(slot.ptr);
+            (slot.drop)(slot.ptr);
+        }
     }
 }
 
@@ -730,4 +784,71 @@ pub(crate) fn molt_runtime_reset_for_testing() {
     // BUILTINS_MODULE_PTR holds a dangling pointer to the destroyed module
     // and MANIFEST_SET prevents re-setting the manifest.
     crate::intrinsics::registry::reset_for_testing();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static EXT_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static EXT_CLEAR_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static EXT_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn test_extension_init() -> *mut u8 {
+        EXT_INIT_COUNT.fetch_add(1, Ordering::SeqCst);
+        Box::into_raw(Box::new(0x5a5a_u64)) as *mut u8
+    }
+
+    unsafe extern "C" fn test_extension_clear(ptr: *mut u8) {
+        assert!(!ptr.is_null());
+        unsafe {
+            assert_eq!(*(ptr as *const u64), 0x5a5a);
+        }
+        EXT_CLEAR_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn test_extension_drop(ptr: *mut u8) {
+        assert!(!ptr.is_null());
+        EXT_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            drop(Box::from_raw(ptr as *mut u64));
+        }
+    }
+
+    #[test]
+    fn extension_state_is_scoped_to_runtime_and_drained_once() {
+        EXT_INIT_COUNT.store(0, Ordering::SeqCst);
+        EXT_CLEAR_COUNT.store(0, Ordering::SeqCst);
+        EXT_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let state = RuntimeState::new();
+        let first = runtime_extension_state_get_or_init(
+            &state,
+            b"test-extension",
+            test_extension_init,
+            test_extension_clear,
+            test_extension_drop,
+        );
+        let second = runtime_extension_state_get_or_init(
+            &state,
+            b"test-extension",
+            test_extension_init,
+            test_extension_clear,
+            test_extension_drop,
+        );
+
+        assert_eq!(first, second);
+        assert_eq!(EXT_INIT_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(state.extension_states.lock().unwrap().len(), 1);
+
+        runtime_extension_states_clear_and_drop(&state);
+        assert!(state.extension_states.lock().unwrap().is_empty());
+        assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
+
+        runtime_extension_states_clear_and_drop(&state);
+        assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
+    }
 }

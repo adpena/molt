@@ -48,6 +48,14 @@ _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
     ("molt_msgpack_", "stdlib_serialization"),
     # ast
     ("molt_ast_", "stdlib_ast"),
+    # collections + argparse live in the extracted collections crate.
+    ("molt_argparse_", "stdlib_collections"),
+    ("molt_namedtuple_", "stdlib_collections"),
+    ("molt_ordereddict_", "stdlib_collections"),
+    ("molt_defaultdict_", "stdlib_collections"),
+    ("molt_deque_", "stdlib_collections"),
+    ("molt_counter_", "stdlib_collections"),
+    ("molt_chainmap_", "stdlib_collections"),
     # fs_extra: glob, tempfile
     ("molt_glob_glob", "stdlib_fs_extra"),
     ("molt_glob_iglob", "stdlib_fs_extra"),
@@ -71,7 +79,20 @@ _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
     ("molt_email_", "stdlib_email"),
     # decimal
     ("molt_decimal_", "stdlib_decimal"),
-    # logging
+    # logging core lives behind stdlib_logging; stateful LogRecord/Logger/etc.
+    # registries live in the extracted stdlib_logging_ext crate.
+    ("molt_logging_record_", "stdlib_logging_ext"),
+    ("molt_logging_formatter_", "stdlib_logging_ext"),
+    ("molt_logging_handler_", "stdlib_logging_ext"),
+    ("molt_logging_stream_handler_", "stdlib_logging_ext"),
+    ("molt_logging_logger_", "stdlib_logging_ext"),
+    ("molt_logging_manager_", "stdlib_logging_ext"),
+    ("molt_logging_root_logger", "stdlib_logging_ext"),
+    ("molt_logging_basic_config", "stdlib_logging_ext"),
+    ("molt_logging_shutdown", "stdlib_logging_ext"),
+    ("molt_logging_get_level_name", "stdlib_logging_ext"),
+    ("molt_logging_add_level_name", "stdlib_logging_ext"),
+    ("molt_logging_level_to_int", "stdlib_logging_ext"),
     ("molt_logging_", "stdlib_logging"),
     # concurrent
     ("molt_concurrent_", "stdlib_concurrent"),
@@ -95,10 +116,13 @@ _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
 
 def _feature_gate_for_symbol(symbol: str) -> str | None:
     """Return the Cargo feature gate for *symbol*, or None if ungated."""
+    best: tuple[int, str] | None = None
     for prefix, feature in _SYMBOL_FEATURE_GATES:
         if symbol.startswith(prefix):
-            return feature
-    return None
+            prefix_len = len(prefix)
+            if best is None or prefix_len > best[0]:
+                best = (prefix_len, feature)
+    return best[1] if best is not None else None
 
 
 _DEF_RE = re.compile(
@@ -192,8 +216,9 @@ def _load_manifest() -> tuple[str, list[tuple[str, str, int]]]:
 
 
 def _validate_symbols(entries: list[tuple[str, str, int]]) -> None:
-    src_root = ROOT / "runtime/molt-runtime/src"
-    rs_files = list(src_root.rglob("*.rs"))
+    runtime_root = ROOT / "runtime"
+    src_roots = sorted(path for path in runtime_root.glob("*/src") if path.is_dir())
+    rs_files = [rs for src_root in src_roots for rs in src_root.rglob("*.rs")]
     corpus = "\n".join(path.read_text() for path in rs_files)
     # Single-pass: extract all function names defined in the corpus — O(n+m)
     # instead of O(n*m) regex searches per symbol
@@ -510,9 +535,11 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
     lines.append("}\n\n")
     lines.append("pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[\n")
     for name, symbol, arity in entries:
-        lines.append(
-            f'    IntrinsicSpec {{ name: "{name}", symbol: "{symbol}", arity: {arity} }},\n'
-        )
+        lines.append("    IntrinsicSpec {\n")
+        lines.append(f'        name: "{name}",\n')
+        lines.append(f'        symbol: "{symbol}",\n')
+        lines.append(f"        arity: {arity},\n")
+        lines.append("    },\n")
     lines.append("];\n\n")
 
     # -- Dispatcher --------------------------------------------------------
@@ -523,7 +550,9 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
     lines.append("    // so --gc-sections can strip unreferenced module resolvers.\n")
     for mod_name in module_symbols:
         fn_name = f"resolve_{mod_name}_symbol"
-        lines.append(f"    if let Some(v) = {fn_name}(symbol) {{ return Some(v); }}\n")
+        lines.append(f"    if let Some(v) = {fn_name}(symbol) {{\n")
+        lines.append("        return Some(v);\n")
+        lines.append("    }\n")
     lines.append("    None\n")
     lines.append("}\n\n")
 
@@ -546,8 +575,11 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
                 if gate:
                     lines.append(f'        #[cfg(feature = "{gate}")]\n')
                 lines.append(
-                    f'        "{sym}" => Some(crate::builtins::functions::runtime_fn_addr("crate::{sym}", crate::{sym} as *const ())),\n'
+                    f'        "{sym}" => Some(crate::builtins::functions::runtime_fn_addr(\n'
                 )
+                lines.append(f'            "crate::{sym}",\n')
+                lines.append(f"            crate::{sym} as *const (),\n")
+                lines.append("        )),\n")
         lines.append("        _ => None,\n")
         lines.append("    }\n")
         lines.append("}\n\n")

@@ -4,15 +4,15 @@
 //! Implements LogRecord, Formatter, Handler, StreamHandler, Logger, Manager,
 //! and level utilities with CPython `logging` module semantics.
 //!
-//! All handle registries use `LazyLock<Mutex<HashMap<...>>>` for cross-thread
-//! visibility.  The GIL serializes all Python-level access so the Mutex is
-//! always uncontended — it only satisfies Rust's `Send + Sync` requirements.
+//! Handle registries are scoped to the owning Molt `RuntimeState` through the
+//! runtime extension-state bridge, so nested runtimes do not share or leak
+//! logging state.
 
 use crate::bridge::{alloc_string, dec_ref_bits, raise_exception, string_obj_to_owned, to_i64};
 use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── Standard logging levels (CPython) ────────────────────────────────────────
@@ -26,25 +26,28 @@ const NOTSET: i64 = 0;
 
 // ── Handle counters ──────────────────────────────────────────────────────────
 
-static NEXT_RECORD_HANDLE: AtomicI64 = AtomicI64::new(1);
-static NEXT_FORMATTER_HANDLE: AtomicI64 = AtomicI64::new(1);
-static NEXT_HANDLER_HANDLE: AtomicI64 = AtomicI64::new(1);
-static NEXT_LOGGER_HANDLE: AtomicI64 = AtomicI64::new(1);
-
 fn next_record_handle() -> i64 {
-    NEXT_RECORD_HANDLE.fetch_add(1, Ordering::Relaxed)
+    logging_state()
+        .next_record_handle
+        .fetch_add(1, Ordering::Relaxed)
 }
 
 fn next_formatter_handle() -> i64 {
-    NEXT_FORMATTER_HANDLE.fetch_add(1, Ordering::Relaxed)
+    logging_state()
+        .next_formatter_handle
+        .fetch_add(1, Ordering::Relaxed)
 }
 
 fn next_handler_handle() -> i64 {
-    NEXT_HANDLER_HANDLE.fetch_add(1, Ordering::Relaxed)
+    logging_state()
+        .next_handler_handle
+        .fetch_add(1, Ordering::Relaxed)
 }
 
 fn next_logger_handle() -> i64 {
-    NEXT_LOGGER_HANDLE.fetch_add(1, Ordering::Relaxed)
+    logging_state()
+        .next_logger_handle
+        .fetch_add(1, Ordering::Relaxed)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -132,8 +135,6 @@ impl LevelNames {
     }
 }
 
-static LEVEL_NAMES: LazyLock<Mutex<LevelNames>> = LazyLock::new(|| Mutex::new(LevelNames::new()));
-
 // ── LogRecord ────────────────────────────────────────────────────────────────
 
 struct LogRecordState {
@@ -160,12 +161,6 @@ struct LogRecordState {
     exc_text: Option<String>,
     stack_info: Option<String>,
 }
-
-static RECORD_REGISTRY: LazyLock<Mutex<HashMap<i64, LogRecordState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Process start time for relativeCreated calculation.
-static START_TIME: LazyLock<f64> = LazyLock::new(current_time_secs);
 
 impl LogRecordState {
     fn get_message(&self) -> String {
@@ -225,10 +220,10 @@ pub extern "C" fn molt_logging_record_new(
 
         let filename = filename_from_pathname(&pathname);
         let module = module_from_filename(&filename);
-        let levelname = LEVEL_NAMES.lock().unwrap().get_name(level);
+        let levelname = logging_state().level_names.lock().unwrap().get_name(level);
         let created = current_time_secs();
         let msecs = (created - created.floor()) * 1000.0;
-        let start = *START_TIME;
+        let start = logging_state().start_time;
         let relative_created = (created - start) * 1000.0;
 
         let record = LogRecordState {
@@ -257,7 +252,11 @@ pub extern "C" fn molt_logging_record_new(
         };
 
         let id = next_record_handle();
-        RECORD_REGISTRY.lock().unwrap().insert(id, record);
+        logging_state()
+            .record_registry
+            .lock()
+            .unwrap()
+            .insert(id, record);
         MoltObject::from_int(id).bits()
     })
 }
@@ -269,7 +268,7 @@ pub extern "C" fn molt_logging_record_get_message(handle_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let message = {
-            let registry = RECORD_REGISTRY.lock().unwrap();
+            let registry = logging_state().record_registry.lock().unwrap();
             let Some(record) = registry.get(&id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
             };
@@ -288,7 +287,7 @@ pub extern "C" fn molt_logging_record_get_attr(handle_bits: u64, attr_bits: u64)
         let Some(attr_name) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "attribute name must be str");
         };
-        let registry = RECORD_REGISTRY.lock().unwrap();
+        let registry = logging_state().record_registry.lock().unwrap();
         let Some(record) = registry.get(&id) else {
             return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
         };
@@ -341,7 +340,7 @@ pub extern "C" fn molt_logging_record_drop(handle_bits: u64) -> u64 {
         let Some(id) = handle_from_bits(_py, handle_bits, "LogRecord") else {
             return MoltObject::none().bits();
         };
-        RECORD_REGISTRY.lock().unwrap().remove(&id);
+        logging_state().record_registry.lock().unwrap().remove(&id);
         MoltObject::none().bits()
     })
 }
@@ -362,9 +361,6 @@ struct FormatterState {
     default_time_format: String,
     default_msec_format: String,
 }
-
-static FORMATTER_REGISTRY: LazyLock<Mutex<HashMap<i64, FormatterState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl FormatterState {
     fn uses_time(&self) -> bool {
@@ -764,7 +760,11 @@ pub extern "C" fn molt_logging_formatter_new(
         };
 
         let id = next_formatter_handle();
-        FORMATTER_REGISTRY.lock().unwrap().insert(id, formatter);
+        logging_state()
+            .formatter_registry
+            .lock()
+            .unwrap()
+            .insert(id, formatter);
         MoltObject::from_int(id).bits()
     })
 }
@@ -779,11 +779,11 @@ pub extern "C" fn molt_logging_formatter_format(formatter_bits: u64, record_bits
             return MoltObject::none().bits();
         };
         let formatted = {
-            let fmt_reg = FORMATTER_REGISTRY.lock().unwrap();
+            let fmt_reg = logging_state().formatter_registry.lock().unwrap();
             let Some(formatter) = fmt_reg.get(&fmt_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Formatter handle");
             };
-            let mut rec_reg = RECORD_REGISTRY.lock().unwrap();
+            let mut rec_reg = logging_state().record_registry.lock().unwrap();
             let Some(record) = rec_reg.get_mut(&rec_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
             };
@@ -813,11 +813,11 @@ pub extern "C" fn molt_logging_formatter_format_time(
         };
         let override_datefmt = opt_str(datefmt_bits);
         let time_str = {
-            let fmt_reg = FORMATTER_REGISTRY.lock().unwrap();
+            let fmt_reg = logging_state().formatter_registry.lock().unwrap();
             let Some(formatter) = fmt_reg.get(&fmt_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Formatter handle");
             };
-            let rec_reg = RECORD_REGISTRY.lock().unwrap();
+            let rec_reg = logging_state().record_registry.lock().unwrap();
             let Some(record) = rec_reg.get(&rec_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
             };
@@ -837,7 +837,11 @@ pub extern "C" fn molt_logging_formatter_drop(handle_bits: u64) -> u64 {
         let Some(id) = handle_from_bits(_py, handle_bits, "Formatter") else {
             return MoltObject::none().bits();
         };
-        FORMATTER_REGISTRY.lock().unwrap().remove(&id);
+        logging_state()
+            .formatter_registry
+            .lock()
+            .unwrap()
+            .remove(&id);
         MoltObject::none().bits()
     })
 }
@@ -869,9 +873,6 @@ enum StreamTarget {
     Custom(u64),
 }
 
-static HANDLER_REGISTRY: LazyLock<Mutex<HashMap<i64, HandlerState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 impl HandlerState {
     fn new_base(level: i64) -> Self {
         Self {
@@ -897,7 +898,7 @@ impl HandlerState {
 
     fn format_record(&self, record: &mut LogRecordState) -> String {
         if let Some(fmt_id) = self.formatter_handle {
-            let fmt_reg = FORMATTER_REGISTRY.lock().unwrap();
+            let fmt_reg = logging_state().formatter_registry.lock().unwrap();
             if let Some(formatter) = fmt_reg.get(&fmt_id) {
                 record.message = Some(record.get_message());
                 if formatter.uses_time() {
@@ -920,7 +921,11 @@ pub extern "C" fn molt_logging_handler_new(level_bits: u64) -> u64 {
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let handler = HandlerState::new_base(level);
         let id = next_handler_handle();
-        HANDLER_REGISTRY.lock().unwrap().insert(id, handler);
+        logging_state()
+            .handler_registry
+            .lock()
+            .unwrap()
+            .insert(id, handler);
         MoltObject::from_int(id).bits()
     })
 }
@@ -935,18 +940,18 @@ pub extern "C" fn molt_logging_handler_emit(handler_bits: u64, record_bits: u64)
             return MoltObject::none().bits();
         };
         let formatted = {
-            let mut rec_reg = RECORD_REGISTRY.lock().unwrap();
+            let mut rec_reg = logging_state().record_registry.lock().unwrap();
             let Some(record) = rec_reg.get_mut(&r_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
             };
-            let handler_reg = HANDLER_REGISTRY.lock().unwrap();
+            let handler_reg = logging_state().handler_registry.lock().unwrap();
             let Some(handler) = handler_reg.get(&h_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
             };
             handler.format_record(record)
         };
         // Store in handler's buffer
-        let mut handler_reg = HANDLER_REGISTRY.lock().unwrap();
+        let mut handler_reg = logging_state().handler_registry.lock().unwrap();
         if let Some(handler) = handler_reg.get_mut(&h_id) {
             handler.buffer.push(formatted);
         }
@@ -961,7 +966,7 @@ pub extern "C" fn molt_logging_handler_set_level(handler_bits: u64, level_bits: 
             return MoltObject::none().bits();
         };
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
-        let mut registry = HANDLER_REGISTRY.lock().unwrap();
+        let mut registry = logging_state().handler_registry.lock().unwrap();
         if let Some(handler) = registry.get_mut(&h_id) {
             handler.level = level;
         } else {
@@ -985,7 +990,7 @@ pub extern "C" fn molt_logging_handler_set_formatter(
         } else {
             handle_from_bits(_py, formatter_bits, "Formatter")
         };
-        let mut registry = HANDLER_REGISTRY.lock().unwrap();
+        let mut registry = logging_state().handler_registry.lock().unwrap();
         if let Some(handler) = registry.get_mut(&h_id) {
             handler.formatter_handle = fmt_id;
         } else {
@@ -1003,7 +1008,7 @@ pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
         };
         // Flush buffered messages to stderr for base handlers.
         let messages: Vec<String> = {
-            let mut registry = HANDLER_REGISTRY.lock().unwrap();
+            let mut registry = logging_state().handler_registry.lock().unwrap();
             let Some(handler) = registry.get_mut(&h_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
             };
@@ -1023,7 +1028,7 @@ pub extern "C" fn molt_logging_handler_close(handler_bits: u64) -> u64 {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
-        let mut registry = HANDLER_REGISTRY.lock().unwrap();
+        let mut registry = logging_state().handler_registry.lock().unwrap();
         if let Some(handler) = registry.get_mut(&h_id) {
             handler.closed = true;
             handler.buffer.clear();
@@ -1038,7 +1043,11 @@ pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
         let Some(h_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
-        HANDLER_REGISTRY.lock().unwrap().remove(&h_id);
+        logging_state()
+            .handler_registry
+            .lock()
+            .unwrap()
+            .remove(&h_id);
         MoltObject::none().bits()
     })
 }
@@ -1065,7 +1074,11 @@ pub extern "C" fn molt_logging_stream_handler_new(stream_bits: u64, level_bits: 
         };
         let handler = HandlerState::new_stream(stream_target, level);
         let id = next_handler_handle();
-        HANDLER_REGISTRY.lock().unwrap().insert(id, handler);
+        logging_state()
+            .handler_registry
+            .lock()
+            .unwrap()
+            .insert(id, handler);
         MoltObject::from_int(id).bits()
     })
 }
@@ -1080,11 +1093,11 @@ pub extern "C" fn molt_logging_stream_handler_emit(handler_bits: u64, record_bit
             return MoltObject::none().bits();
         };
         let (formatted, stream_target) = {
-            let mut rec_reg = RECORD_REGISTRY.lock().unwrap();
+            let mut rec_reg = logging_state().record_registry.lock().unwrap();
             let Some(record) = rec_reg.get_mut(&r_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid LogRecord handle");
             };
-            let handler_reg = HANDLER_REGISTRY.lock().unwrap();
+            let handler_reg = logging_state().handler_registry.lock().unwrap();
             let Some(handler) = handler_reg.get(&h_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid StreamHandler handle");
             };
@@ -1146,9 +1159,6 @@ struct LoggerState {
     parent: Option<i64>,
 }
 
-static LOGGER_REGISTRY: LazyLock<Mutex<HashMap<i64, LoggerState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 impl LoggerState {
     fn new(name: String, level: i64) -> Self {
         Self {
@@ -1181,6 +1191,86 @@ impl LoggerState {
     }
 }
 
+struct LoggingRuntimeState {
+    next_record_handle: AtomicI64,
+    next_formatter_handle: AtomicI64,
+    next_handler_handle: AtomicI64,
+    next_logger_handle: AtomicI64,
+    level_names: Mutex<LevelNames>,
+    record_registry: Mutex<HashMap<i64, LogRecordState>>,
+    formatter_registry: Mutex<HashMap<i64, FormatterState>>,
+    handler_registry: Mutex<HashMap<i64, HandlerState>>,
+    logger_registry: Mutex<HashMap<i64, LoggerState>>,
+    root_logger_handle: Mutex<Option<i64>>,
+    logger_cache: Mutex<HashMap<String, i64>>,
+    start_time: f64,
+}
+
+impl LoggingRuntimeState {
+    fn new() -> Self {
+        Self {
+            next_record_handle: AtomicI64::new(1),
+            next_formatter_handle: AtomicI64::new(1),
+            next_handler_handle: AtomicI64::new(1),
+            next_logger_handle: AtomicI64::new(1),
+            level_names: Mutex::new(LevelNames::new()),
+            record_registry: Mutex::new(HashMap::new()),
+            formatter_registry: Mutex::new(HashMap::new()),
+            handler_registry: Mutex::new(HashMap::new()),
+            logger_registry: Mutex::new(HashMap::new()),
+            root_logger_handle: Mutex::new(None),
+            logger_cache: Mutex::new(HashMap::new()),
+            start_time: current_time_secs(),
+        }
+    }
+
+    fn clear(&self) {
+        *self.level_names.lock().unwrap() = LevelNames::new();
+        self.record_registry.lock().unwrap().clear();
+        self.formatter_registry.lock().unwrap().clear();
+        self.handler_registry.lock().unwrap().clear();
+        self.logger_registry.lock().unwrap().clear();
+        *self.root_logger_handle.lock().unwrap() = None;
+        self.logger_cache.lock().unwrap().clear();
+    }
+}
+
+unsafe extern "C" fn logging_runtime_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(LoggingRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn logging_runtime_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (&*(ptr as *const LoggingRuntimeState)).clear();
+    }
+}
+
+unsafe extern "C" fn logging_runtime_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut LoggingRuntimeState));
+    }
+}
+
+fn logging_state() -> &'static LoggingRuntimeState {
+    let ptr = crate::bridge::runtime_state_get_or_init(
+        b"molt-runtime-logging/v1",
+        logging_runtime_state_init,
+        logging_runtime_state_clear,
+        logging_runtime_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "molt logging runtime state initialization failed"
+    );
+    unsafe { &*(ptr as *const LoggingRuntimeState) }
+}
+
 // ── Logger intrinsics ────────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
@@ -1192,7 +1282,11 @@ pub extern "C" fn molt_logging_logger_new(name_bits: u64, level_bits: u64) -> u6
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let logger = LoggerState::new(name, level);
         let id = next_logger_handle();
-        LOGGER_REGISTRY.lock().unwrap().insert(id, logger);
+        logging_state()
+            .logger_registry
+            .lock()
+            .unwrap()
+            .insert(id, logger);
         MoltObject::from_int(id).bits()
     })
 }
@@ -1204,7 +1298,7 @@ pub extern "C" fn molt_logging_logger_set_level(handle_bits: u64, level_bits: u6
             return MoltObject::none().bits();
         };
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
-        let mut registry = LOGGER_REGISTRY.lock().unwrap();
+        let mut registry = logging_state().logger_registry.lock().unwrap();
         if let Some(logger) = registry.get_mut(&id) {
             logger.level = level;
         } else {
@@ -1223,7 +1317,7 @@ pub extern "C" fn molt_logging_logger_add_handler(logger_bits: u64, handler_bits
         let Some(handler_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
-        let mut registry = LOGGER_REGISTRY.lock().unwrap();
+        let mut registry = logging_state().logger_registry.lock().unwrap();
         if let Some(logger) = registry.get_mut(&logger_id) {
             if !logger.handlers.contains(&handler_id) {
                 logger.handlers.push(handler_id);
@@ -1244,7 +1338,7 @@ pub extern "C" fn molt_logging_logger_remove_handler(logger_bits: u64, handler_b
         let Some(handler_id) = handle_from_bits(_py, handler_bits, "Handler") else {
             return MoltObject::none().bits();
         };
-        let mut registry = LOGGER_REGISTRY.lock().unwrap();
+        let mut registry = logging_state().logger_registry.lock().unwrap();
         if let Some(logger) = registry.get_mut(&logger_id) {
             logger.handlers.retain(|&h| h != handler_id);
         } else {
@@ -1271,7 +1365,7 @@ pub extern "C" fn molt_logging_logger_log(
 
         // Check if enabled, collect handler IDs, and get logger name.
         let (handler_ids, logger_name) = {
-            let registry = LOGGER_REGISTRY.lock().unwrap();
+            let registry = logging_state().logger_registry.lock().unwrap();
             let Some(logger) = registry.get(&logger_id) else {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Logger handle");
             };
@@ -1303,10 +1397,10 @@ pub extern "C" fn molt_logging_logger_log(
         }
 
         // Create a temporary record.
-        let levelname = LEVEL_NAMES.lock().unwrap().get_name(level);
+        let levelname = logging_state().level_names.lock().unwrap().get_name(level);
         let created = current_time_secs();
         let msecs = (created - created.floor()) * 1000.0;
-        let start = *START_TIME;
+        let start = logging_state().start_time;
         let relative_created = (created - start) * 1000.0;
 
         let record = LogRecordState {
@@ -1335,16 +1429,20 @@ pub extern "C" fn molt_logging_logger_log(
         };
 
         let rec_id = next_record_handle();
-        RECORD_REGISTRY.lock().unwrap().insert(rec_id, record);
+        logging_state()
+            .record_registry
+            .lock()
+            .unwrap()
+            .insert(rec_id, record);
 
         // Emit to all handlers.
         for h_id in &handler_ids {
             let (formatted, stream_target, is_stream) = {
-                let mut rec_reg = RECORD_REGISTRY.lock().unwrap();
+                let mut rec_reg = logging_state().record_registry.lock().unwrap();
                 let Some(record) = rec_reg.get_mut(&rec_id) else {
                     continue;
                 };
-                let handler_reg = HANDLER_REGISTRY.lock().unwrap();
+                let handler_reg = logging_state().handler_registry.lock().unwrap();
                 let Some(handler) = handler_reg.get(h_id) else {
                     continue;
                 };
@@ -1401,7 +1499,7 @@ pub extern "C" fn molt_logging_logger_log(
                 }
             } else {
                 // Base handler: buffer
-                let mut handler_reg = HANDLER_REGISTRY.lock().unwrap();
+                let mut handler_reg = logging_state().handler_registry.lock().unwrap();
                 if let Some(handler) = handler_reg.get_mut(h_id) {
                     handler.buffer.push(formatted);
                 }
@@ -1409,7 +1507,11 @@ pub extern "C" fn molt_logging_logger_log(
         }
 
         // Clean up the temporary record.
-        RECORD_REGISTRY.lock().unwrap().remove(&rec_id);
+        logging_state()
+            .record_registry
+            .lock()
+            .unwrap()
+            .remove(&rec_id);
 
         MoltObject::none().bits()
     })
@@ -1422,7 +1524,7 @@ pub extern "C" fn molt_logging_logger_is_enabled_for(logger_bits: u64, level_bit
             return MoltObject::from_bool(false).bits();
         };
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
-        let registry = LOGGER_REGISTRY.lock().unwrap();
+        let registry = logging_state().logger_registry.lock().unwrap();
         let Some(logger) = registry.get(&logger_id) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1437,7 +1539,7 @@ pub extern "C" fn molt_logging_logger_get_effective_level(logger_bits: u64) -> u
         let Some(logger_id) = handle_from_bits(_py, logger_bits, "Logger") else {
             return MoltObject::from_int(NOTSET).bits();
         };
-        let registry = LOGGER_REGISTRY.lock().unwrap();
+        let registry = logging_state().logger_registry.lock().unwrap();
         let Some(logger) = registry.get(&logger_id) else {
             return MoltObject::from_int(NOTSET).bits();
         };
@@ -1452,28 +1554,25 @@ pub extern "C" fn molt_logging_logger_drop(handle_bits: u64) -> u64 {
         let Some(id) = handle_from_bits(_py, handle_bits, "Logger") else {
             return MoltObject::none().bits();
         };
-        LOGGER_REGISTRY.lock().unwrap().remove(&id);
+        logging_state().logger_registry.lock().unwrap().remove(&id);
         MoltObject::none().bits()
     })
 }
 
 // ── Manager / root logger ────────────────────────────────────────────────────
 
-/// The root logger handle.  Created lazily on first access.
-static ROOT_LOGGER_HANDLE: LazyLock<Mutex<Option<i64>>> = LazyLock::new(|| Mutex::new(None));
-
-/// Named logger cache: name -> handle.
-static LOGGER_CACHE: LazyLock<Mutex<HashMap<String, i64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 fn ensure_root_logger() -> i64 {
-    let mut root_opt = ROOT_LOGGER_HANDLE.lock().unwrap();
+    let mut root_opt = logging_state().root_logger_handle.lock().unwrap();
     if let Some(id) = *root_opt {
         return id;
     }
     let logger = LoggerState::new("root".to_string(), WARNING);
     let id = next_logger_handle();
-    LOGGER_REGISTRY.lock().unwrap().insert(id, logger);
+    logging_state()
+        .logger_registry
+        .lock()
+        .unwrap()
+        .insert(id, logger);
     *root_opt = Some(id);
     id
 }
@@ -1488,7 +1587,7 @@ pub extern "C" fn molt_logging_manager_get_logger(name_bits: u64) -> u64 {
             let root_id = ensure_root_logger();
             return MoltObject::from_int(root_id).bits();
         }
-        let mut cache = LOGGER_CACHE.lock().unwrap();
+        let mut cache = logging_state().logger_cache.lock().unwrap();
         if let Some(&id) = cache.get(&name) {
             return MoltObject::from_int(id).bits();
         }
@@ -1510,7 +1609,11 @@ pub extern "C" fn molt_logging_manager_get_logger(name_bits: u64) -> u64 {
         let mut logger = LoggerState::new(name.clone(), NOTSET);
         logger.parent = Some(parent_id);
         let id = next_logger_handle();
-        LOGGER_REGISTRY.lock().unwrap().insert(id, logger);
+        logging_state()
+            .logger_registry
+            .lock()
+            .unwrap()
+            .insert(id, logger);
         cache.insert(name, id);
         MoltObject::from_int(id).bits()
     })
@@ -1537,7 +1640,7 @@ pub extern "C" fn molt_logging_basic_config(
         // Check if root already has handlers — if so, basicConfig is a no-op
         // (matching CPython behavior).
         {
-            let registry = LOGGER_REGISTRY.lock().unwrap();
+            let registry = logging_state().logger_registry.lock().unwrap();
             if let Some(logger) = registry.get(&root_id)
                 && !logger.handlers.is_empty()
             {
@@ -1560,7 +1663,11 @@ pub extern "C" fn molt_logging_basic_config(
 
         let handler = HandlerState::new_stream(stream_target, NOTSET);
         let handler_id = next_handler_handle();
-        HANDLER_REGISTRY.lock().unwrap().insert(handler_id, handler);
+        logging_state()
+            .handler_registry
+            .lock()
+            .unwrap()
+            .insert(handler_id, handler);
 
         // Create a Formatter if format or datefmt was provided.
         let fmt_str = opt_str(format_bits);
@@ -1574,15 +1681,19 @@ pub extern "C" fn molt_logging_basic_config(
                 default_msec_format: "%s,%03d".to_string(),
             };
             let fmt_id = next_formatter_handle();
-            FORMATTER_REGISTRY.lock().unwrap().insert(fmt_id, formatter);
-            let mut h_reg = HANDLER_REGISTRY.lock().unwrap();
+            logging_state()
+                .formatter_registry
+                .lock()
+                .unwrap()
+                .insert(fmt_id, formatter);
+            let mut h_reg = logging_state().handler_registry.lock().unwrap();
             if let Some(h) = h_reg.get_mut(&handler_id) {
                 h.formatter_handle = Some(fmt_id);
             }
         }
 
         // Add handler to root logger.
-        let mut registry = LOGGER_REGISTRY.lock().unwrap();
+        let mut registry = logging_state().logger_registry.lock().unwrap();
         if let Some(logger) = registry.get_mut(&root_id) {
             logger.handlers.push(handler_id);
             // Set level if provided.
@@ -1601,13 +1712,13 @@ pub extern "C" fn molt_logging_shutdown() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         // Flush and close all handlers.
         let handler_ids: Vec<i64> = {
-            let registry = HANDLER_REGISTRY.lock().unwrap();
+            let registry = logging_state().handler_registry.lock().unwrap();
             registry.keys().copied().collect()
         };
         for h_id in handler_ids {
             // Flush buffered messages.
             let messages: Vec<String> = {
-                let mut registry = HANDLER_REGISTRY.lock().unwrap();
+                let mut registry = logging_state().handler_registry.lock().unwrap();
                 if let Some(handler) = registry.get_mut(&h_id) {
                     let msgs: Vec<String> = handler.buffer.drain(..).collect();
                     handler.closed = true;
@@ -1632,7 +1743,7 @@ pub extern "C" fn molt_logging_get_level_name(level_bits: u64) -> u64 {
         let Some(level) = to_i64(obj_from_bits(level_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "level must be an int");
         };
-        let name = LEVEL_NAMES.lock().unwrap().get_name(level);
+        let name = logging_state().level_names.lock().unwrap().get_name(level);
         return_str(_py, &name)
     })
 }
@@ -1646,7 +1757,7 @@ pub extern "C" fn molt_logging_add_level_name(level_bits: u64, name_bits: u64) -
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "level name must be str");
         };
-        LEVEL_NAMES.lock().unwrap().add(level, name);
+        logging_state().level_names.lock().unwrap().add(level, name);
         MoltObject::none().bits()
     })
 }
@@ -1657,7 +1768,7 @@ pub extern "C" fn molt_logging_level_to_int(name_bits: u64) -> u64 {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "level name must be str");
         };
-        let level_names = LEVEL_NAMES.lock().unwrap();
+        let level_names = logging_state().level_names.lock().unwrap();
         if let Some(level) = level_names.get_level(&name) {
             MoltObject::from_int(level).bits()
         } else {

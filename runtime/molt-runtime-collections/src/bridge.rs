@@ -8,6 +8,35 @@
 use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
+// Runtime-scoped extension state
+// ---------------------------------------------------------------------------
+
+pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
+pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
+
+unsafe extern "C" {
+    fn __molt_collections_runtime_state_get_or_init(
+        key_ptr: *const u8,
+        key_len: usize,
+        init: RuntimeExtensionStateInit,
+        clear: RuntimeExtensionStateClear,
+        drop: RuntimeExtensionStateDrop,
+    ) -> *mut u8;
+}
+
+pub fn runtime_state_get_or_init(
+    key: &[u8],
+    init: RuntimeExtensionStateInit,
+    clear: RuntimeExtensionStateClear,
+    drop: RuntimeExtensionStateDrop,
+) -> *mut u8 {
+    unsafe {
+        __molt_collections_runtime_state_get_or_init(key.as_ptr(), key.len(), init, clear, drop)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
