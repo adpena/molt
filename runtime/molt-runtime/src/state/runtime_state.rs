@@ -15,6 +15,7 @@ use crate::async_rt::event_loop::{EventLoopRegistry, PipeTransportRegistry};
 use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
 use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::builtins::configparser::ConfigParserRuntimeState;
+use crate::builtins::csv::CsvRuntimeState;
 use crate::builtins::random_mod::RandomRuntimeState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
@@ -293,6 +294,7 @@ pub(crate) struct RuntimeState {
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
     pub(crate) contextvars: Mutex<ContextVarsState>,
     pub(crate) configparser: Mutex<ConfigParserRuntimeState>,
+    pub(crate) csv: Mutex<CsvRuntimeState>,
     pub(crate) random: Mutex<RandomRuntimeState>,
     pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
     pub(crate) gen_locals: Mutex<HashMap<u64, GenLocalsEntry>>,
@@ -382,6 +384,7 @@ impl RuntimeState {
             }),
             contextvars: Mutex::new(ContextVarsState::new()),
             configparser: Mutex::new(ConfigParserRuntimeState::new()),
+            csv: Mutex::new(CsvRuntimeState::new()),
             random: Mutex::new(RandomRuntimeState::new()),
             asyncgen_locals: Mutex::new(HashMap::new()),
             gen_locals: Mutex::new(HashMap::new()),
