@@ -644,6 +644,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
+        captured["kwargs"] = dict(kwargs)
         runtime_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
@@ -651,7 +652,7 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     monkeypatch.setattr(
         cli, "_wasm_wasi_libc_archive", lambda: libc_archive, raising=True
     )
-    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run, raising=True)
     monkeypatch.setattr(
         cli, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True
     )
@@ -668,3 +669,4 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     assert "--no-whole-archive" in cmd
     no_whole_index = cmd.index("--no-whole-archive")
     assert cmd[no_whole_index + 1] == str(libc_archive)
+    assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_WASM_LINK"
