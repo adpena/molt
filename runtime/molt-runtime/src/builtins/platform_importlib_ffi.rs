@@ -721,11 +721,7 @@ pub extern "C" fn molt_importlib_coerce_module_name(
     spec_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static MODULE_NAME_NAME: AtomicU64 = AtomicU64::new(0);
-        static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-
-        let module_name_name = intern_static_name(_py, &MODULE_NAME_NAME, b"__name__");
+        let module_name_name = intern_runtime_static_name(_py, b"__name__");
         if let Some(module_name_bits) =
             match getattr_optional_bits(_py, module_bits, module_name_name) {
                 Ok(value) => value,
@@ -743,7 +739,7 @@ pub extern "C" fn molt_importlib_coerce_module_name(
         let mut module_spec_bits = spec_bits;
         let mut module_spec_owned = false;
         if obj_from_bits(module_spec_bits).is_none() {
-            let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+            let spec_name = intern_runtime_static_name(_py, b"__spec__");
             if let Some(bits) = match getattr_optional_bits(_py, module_bits, spec_name) {
                 Ok(value) => value,
                 Err(err) => return err,
@@ -788,7 +784,7 @@ pub extern "C" fn molt_importlib_coerce_module_name(
             dec_ref_bits(_py, module_spec_bits);
         }
 
-        let loader_name = intern_static_name(_py, &LOADER_NAME, b"name");
+        let loader_name = intern_runtime_static_name(_py, b"name");
         if let Some(loader_name_bits) = match getattr_optional_bits(_py, loader_bits, loader_name) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1969,8 +1965,6 @@ pub extern "C" fn molt_importlib_load_module_shim(
     fullname_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static LOAD_MODULE_SHIM_NAME: AtomicU64 = AtomicU64::new(0);
-
         let fullname = match string_arg_from_bits(_py, fullname_bits, "fullname") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1978,7 +1972,7 @@ pub extern "C" fn molt_importlib_load_module_shim(
         let call_bits = match importlib_required_callable(
             _py,
             bootstrap_bits,
-            &LOAD_MODULE_SHIM_NAME,
+            runtime_static_name_slot(_py, b"_load_module_shim"),
             b"_load_module_shim",
             "importlib._bootstrap",
         ) {
@@ -2014,9 +2008,7 @@ pub extern "C" fn molt_importlib_load_module_shim(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static JOINPATH_NAME: AtomicU64 = AtomicU64::new(0);
-
-        let joinpath_name = intern_static_name(_py, &JOINPATH_NAME, b"joinpath");
+        let joinpath_name = intern_runtime_static_name(_py, b"joinpath");
         let missing = missing_bits(_py);
         let call_bits = molt_getattr_builtin(traversable_bits, joinpath_name, missing);
         if exception_pending(_py) {
@@ -2219,19 +2211,13 @@ pub extern "C" fn molt_importlib_import_module(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static BUILTIN_IMPORTER_NAME: AtomicU64 = AtomicU64::new(0);
-        static FROZEN_IMPORTER_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_FROM_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static SPEC_FROM_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(5);
 
         let builtin_importer_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &BUILTIN_IMPORTER_NAME,
+            runtime_static_name_slot(_py, b"BuiltinImporter"),
             b"BuiltinImporter",
             "importlib.machinery",
         ) {
@@ -2244,7 +2230,7 @@ pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: 
         let frozen_importer_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &FROZEN_IMPORTER_NAME,
+            runtime_static_name_slot(_py, b"FrozenImporter"),
             b"FrozenImporter",
             "importlib.machinery",
         ) {
@@ -2262,7 +2248,7 @@ pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: 
         let module_spec_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &MODULE_SPEC_NAME,
+            runtime_static_name_slot(_py, b"ModuleSpec"),
             b"ModuleSpec",
             "importlib.machinery",
         ) {
@@ -2280,7 +2266,7 @@ pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: 
         let module_from_spec_bits = match importlib_required_attribute(
             _py,
             util_bits,
-            &MODULE_FROM_SPEC_NAME,
+            runtime_static_name_slot(_py, b"module_from_spec"),
             b"module_from_spec",
             "importlib.util",
         ) {
@@ -2298,7 +2284,7 @@ pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: 
         let spec_from_loader_bits = match importlib_required_attribute(
             _py,
             util_bits,
-            &SPEC_FROM_LOADER_NAME,
+            runtime_static_name_slot(_py, b"spec_from_loader"),
             b"spec_from_loader",
             "importlib.util",
         ) {
@@ -2342,21 +2328,13 @@ pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static GENERIC_NAME: AtomicU64 = AtomicU64::new(0);
-        static PARAM_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static PARAM_SPEC_ARGS_NAME: AtomicU64 = AtomicU64::new(0);
-        static PARAM_SPEC_KWARGS_NAME: AtomicU64 = AtomicU64::new(0);
-        static TYPE_ALIAS_TYPE_NAME: AtomicU64 = AtomicU64::new(0);
-        static TYPE_VAR_NAME: AtomicU64 = AtomicU64::new(0);
-        static TYPE_VAR_TUPLE_NAME: AtomicU64 = AtomicU64::new(0);
-
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(7);
 
         let generic_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &GENERIC_NAME,
+            runtime_static_name_slot(_py, b"Generic"),
             b"Generic",
             "typing",
         ) {
@@ -2374,7 +2352,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let param_spec_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &PARAM_SPEC_NAME,
+            runtime_static_name_slot(_py, b"_ParamSpec"),
             b"_ParamSpec",
             "typing",
         ) {
@@ -2392,7 +2370,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let param_spec_args_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &PARAM_SPEC_ARGS_NAME,
+            runtime_static_name_slot(_py, b"_ParamSpecArgs"),
             b"_ParamSpecArgs",
             "typing",
         ) {
@@ -2410,7 +2388,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let param_spec_kwargs_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &PARAM_SPEC_KWARGS_NAME,
+            runtime_static_name_slot(_py, b"_ParamSpecKwargs"),
             b"_ParamSpecKwargs",
             "typing",
         ) {
@@ -2428,7 +2406,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let type_alias_type_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &TYPE_ALIAS_TYPE_NAME,
+            runtime_static_name_slot(_py, b"_MoltTypeAlias"),
             b"_MoltTypeAlias",
             "typing",
         ) {
@@ -2446,7 +2424,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let type_var_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &TYPE_VAR_NAME,
+            runtime_static_name_slot(_py, b"_TypeVar"),
             b"_TypeVar",
             "typing",
         ) {
@@ -2464,7 +2442,7 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
         let type_var_tuple_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &TYPE_VAR_TUPLE_NAME,
+            runtime_static_name_slot(_py, b"_TypeVarTuple"),
             b"_TypeVarTuple",
             "typing",
         ) {
@@ -2513,51 +2491,49 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
     _itertools_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static ANY_NAME: AtomicU64 = AtomicU64::new(0);
-        static DICT_NAME: AtomicU64 = AtomicU64::new(0);
-        static ITERATOR_NAME: AtomicU64 = AtomicU64::new(0);
-        static LIST_NAME: AtomicU64 = AtomicU64::new(0);
-        static META_PATH_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
-        static OPTIONAL_NAME: AtomicU64 = AtomicU64::new(0);
-        static OVERLOAD_NAME: AtomicU64 = AtomicU64::new(0);
-        static PROTOCOL_NAME: AtomicU64 = AtomicU64::new(0);
-        static SUPPRESS_NAME: AtomicU64 = AtomicU64::new(0);
-        static TYPE_VAR_NAME: AtomicU64 = AtomicU64::new(0);
-        static UNION_NAME: AtomicU64 = AtomicU64::new(0);
-
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(11);
 
-        let any_bits =
-            match importlib_required_attribute(_py, typing_bits, &ANY_NAME, b"Any", "typing") {
-                Ok(bits) => bits,
-                Err(err) => {
-                    for bits in owned {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return err;
+        let any_bits = match importlib_required_attribute(
+            _py,
+            typing_bits,
+            runtime_static_name_slot(_py, b"Any"),
+            b"Any",
+            "typing",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
                 }
-            };
+                return err;
+            }
+        };
         owned.push(any_bits);
         values.push((b"Any", any_bits));
 
-        let dict_bits =
-            match importlib_required_attribute(_py, typing_bits, &DICT_NAME, b"Dict", "typing") {
-                Ok(bits) => bits,
-                Err(err) => {
-                    for bits in owned {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return err;
+        let dict_bits = match importlib_required_attribute(
+            _py,
+            typing_bits,
+            runtime_static_name_slot(_py, b"Dict"),
+            b"Dict",
+            "typing",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
                 }
-            };
+                return err;
+            }
+        };
         owned.push(dict_bits);
         values.push((b"Dict", dict_bits));
 
         let iterator_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &ITERATOR_NAME,
+            runtime_static_name_slot(_py, b"Iterator"),
             b"Iterator",
             "typing",
         ) {
@@ -2572,16 +2548,21 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         owned.push(iterator_bits);
         values.push((b"Iterator", iterator_bits));
 
-        let list_bits =
-            match importlib_required_attribute(_py, typing_bits, &LIST_NAME, b"List", "typing") {
-                Ok(bits) => bits,
-                Err(err) => {
-                    for bits in owned {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return err;
+        let list_bits = match importlib_required_attribute(
+            _py,
+            typing_bits,
+            runtime_static_name_slot(_py, b"List"),
+            b"List",
+            "typing",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
                 }
-            };
+                return err;
+            }
+        };
         owned.push(list_bits);
         values.push((b"List", list_bits));
 
@@ -2593,7 +2574,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         let optional_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &OPTIONAL_NAME,
+            runtime_static_name_slot(_py, b"Optional"),
             b"Optional",
             "typing",
         ) {
@@ -2611,7 +2592,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         let protocol_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &PROTOCOL_NAME,
+            runtime_static_name_slot(_py, b"Protocol"),
             b"Protocol",
             "typing",
         ) {
@@ -2629,7 +2610,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         let type_var_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &TYPE_VAR_NAME,
+            runtime_static_name_slot(_py, b"_TypeVar"),
             b"_TypeVar",
             "typing",
         ) {
@@ -2644,23 +2625,28 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         owned.push(type_var_bits);
         values.push((b"TypeVar", type_var_bits));
 
-        let union_bits =
-            match importlib_required_attribute(_py, typing_bits, &UNION_NAME, b"Union", "typing") {
-                Ok(bits) => bits,
-                Err(err) => {
-                    for bits in owned {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return err;
+        let union_bits = match importlib_required_attribute(
+            _py,
+            typing_bits,
+            runtime_static_name_slot(_py, b"Union"),
+            b"Union",
+            "typing",
+        ) {
+            Ok(bits) => bits,
+            Err(err) => {
+                for bits in owned {
+                    dec_ref_bits(_py, bits);
                 }
-            };
+                return err;
+            }
+        };
         owned.push(union_bits);
         values.push((b"Union", union_bits));
 
         let overload_bits = match importlib_required_attribute(
             _py,
             typing_bits,
-            &OVERLOAD_NAME,
+            runtime_static_name_slot(_py, b"overload"),
             b"overload",
             "typing",
         ) {
@@ -2678,7 +2664,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         let meta_path_finder_bits = match importlib_required_attribute(
             _py,
             abc_bits,
-            &META_PATH_FINDER_NAME,
+            runtime_static_name_slot(_py, b"MetaPathFinder"),
             b"MetaPathFinder",
             "importlib.abc",
         ) {
@@ -2696,7 +2682,7 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
         let suppress_bits = match importlib_required_attribute(
             _py,
             contextlib_bits,
-            &SUPPRESS_NAME,
+            runtime_static_name_slot(_py, b"suppress"),
             b"suppress",
             "contextlib",
         ) {
@@ -2743,34 +2729,13 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
     util_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static BYTECODE_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
-        static DEBUG_BYTECODE_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
-        static EXTENSION_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
-        static MAGIC_NUMBER_NAME: AtomicU64 = AtomicU64::new(0);
-        static OPTIMIZED_BYTECODE_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
-        static SOURCE_SUFFIXES_NAME: AtomicU64 = AtomicU64::new(0);
-        static EXTENSION_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static FILE_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
-        static PRIVATE_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static NAMESPACE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static PATH_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
-        static SOURCE_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static PRIVATE_SOURCE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static SOURCELESS_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static LOADER_BASICS_NAME: AtomicU64 = AtomicU64::new(0);
-        static WINDOWS_REGISTRY_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
-        static CACHE_FROM_SOURCE_NAME: AtomicU64 = AtomicU64::new(0);
-        static DECODE_SOURCE_NAME: AtomicU64 = AtomicU64::new(0);
-        static SOURCE_FROM_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-        static SPEC_FROM_FILE_LOCATION_NAME: AtomicU64 = AtomicU64::new(0);
-
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(20);
 
         let bytecode_suffixes_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &BYTECODE_SUFFIXES_NAME,
+            runtime_static_name_slot(_py, b"BYTECODE_SUFFIXES"),
             b"BYTECODE_SUFFIXES",
             "importlib.machinery",
         ) {
@@ -2788,7 +2753,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let debug_bytecode_suffixes_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &DEBUG_BYTECODE_SUFFIXES_NAME,
+            runtime_static_name_slot(_py, b"DEBUG_BYTECODE_SUFFIXES"),
             b"DEBUG_BYTECODE_SUFFIXES",
             "importlib.machinery",
         ) {
@@ -2806,7 +2771,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let extension_suffixes_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &EXTENSION_SUFFIXES_NAME,
+            runtime_static_name_slot(_py, b"EXTENSION_SUFFIXES"),
             b"EXTENSION_SUFFIXES",
             "importlib.machinery",
         ) {
@@ -2824,7 +2789,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let magic_number_bits = match importlib_required_attribute(
             _py,
             util_bits,
-            &MAGIC_NUMBER_NAME,
+            runtime_static_name_slot(_py, b"MAGIC_NUMBER"),
             b"MAGIC_NUMBER",
             "importlib.util",
         ) {
@@ -2842,7 +2807,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let optimized_bytecode_suffixes_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &OPTIMIZED_BYTECODE_SUFFIXES_NAME,
+            runtime_static_name_slot(_py, b"OPTIMIZED_BYTECODE_SUFFIXES"),
             b"OPTIMIZED_BYTECODE_SUFFIXES",
             "importlib.machinery",
         ) {
@@ -2863,7 +2828,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let source_suffixes_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &SOURCE_SUFFIXES_NAME,
+            runtime_static_name_slot(_py, b"SOURCE_SUFFIXES"),
             b"SOURCE_SUFFIXES",
             "importlib.machinery",
         ) {
@@ -2881,7 +2846,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let extension_file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &EXTENSION_FILE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"ExtensionFileLoader"),
             b"ExtensionFileLoader",
             "importlib.machinery",
         ) {
@@ -2899,7 +2864,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let file_finder_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &FILE_FINDER_NAME,
+            runtime_static_name_slot(_py, b"FileFinder"),
             b"FileFinder",
             "importlib.machinery",
         ) {
@@ -2917,7 +2882,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &PRIVATE_FILE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"_FileLoader"),
             b"_FileLoader",
             "importlib.machinery",
         ) {
@@ -2935,7 +2900,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let namespace_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &NAMESPACE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"NamespaceLoader"),
             b"NamespaceLoader",
             "importlib.machinery",
         ) {
@@ -2953,7 +2918,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let path_finder_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &PATH_FINDER_NAME,
+            runtime_static_name_slot(_py, b"PathFinder"),
             b"PathFinder",
             "importlib.machinery",
         ) {
@@ -2971,7 +2936,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let source_file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &SOURCE_FILE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"SourceFileLoader"),
             b"SourceFileLoader",
             "importlib.machinery",
         ) {
@@ -2989,7 +2954,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let source_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &PRIVATE_SOURCE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"_SourceLoader"),
             b"_SourceLoader",
             "importlib.machinery",
         ) {
@@ -3007,7 +2972,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let sourceless_file_loader_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &SOURCELESS_FILE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"SourcelessFileLoader"),
             b"SourcelessFileLoader",
             "importlib.machinery",
         ) {
@@ -3025,7 +2990,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let loader_basics_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &LOADER_BASICS_NAME,
+            runtime_static_name_slot(_py, b"_LoaderBasics"),
             b"_LoaderBasics",
             "importlib.machinery",
         ) {
@@ -3043,7 +3008,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let windows_registry_finder_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &WINDOWS_REGISTRY_FINDER_NAME,
+            runtime_static_name_slot(_py, b"WindowsRegistryFinder"),
             b"WindowsRegistryFinder",
             "importlib.machinery",
         ) {
@@ -3061,7 +3026,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let cache_from_source_bits = match importlib_required_attribute(
             _py,
             util_bits,
-            &CACHE_FROM_SOURCE_NAME,
+            runtime_static_name_slot(_py, b"cache_from_source"),
             b"cache_from_source",
             "importlib.util",
         ) {
@@ -3079,7 +3044,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let decode_source_bits = match importlib_required_attribute(
             _py,
             util_bits,
-            &DECODE_SOURCE_NAME,
+            runtime_static_name_slot(_py, b"decode_source"),
             b"decode_source",
             "importlib.util",
         ) {
@@ -3097,7 +3062,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let source_from_cache_bits = match importlib_required_attribute(
             _py,
             util_bits,
-            &SOURCE_FROM_CACHE_NAME,
+            runtime_static_name_slot(_py, b"source_from_cache"),
             b"source_from_cache",
             "importlib.util",
         ) {
@@ -3115,7 +3080,7 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         let spec_from_file_location_bits = match importlib_required_attribute(
             _py,
             util_bits,
-            &SPEC_FROM_FILE_LOCATION_NAME,
+            runtime_static_name_slot(_py, b"spec_from_file_location"),
             b"spec_from_file_location",
             "importlib.util",
         ) {
@@ -3465,7 +3430,6 @@ fn importlib_find_spec_orchestrated_search_paths(
         ));
     };
 
-    static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
     let parent_spec_bits = importlib_find_spec_orchestrated_impl(
         _py,
         &parent_name,
@@ -3479,7 +3443,7 @@ fn importlib_find_spec_orchestrated_search_paths(
     }
     let submodule_search_locations_name = intern_static_name(
         _py,
-        &SUBMODULE_SEARCH_LOCATIONS_NAME,
+        runtime_static_name_slot(_py, b"submodule_search_locations"),
         b"submodule_search_locations",
     );
     let parent_paths_bits =
@@ -3683,8 +3647,7 @@ fn importlib_machinery_module_file(
     _py: &PyToken<'_>,
     machinery_bits: u64,
 ) -> Result<Option<String>, u64> {
-    static FILE_NAME: AtomicU64 = AtomicU64::new(0);
-    let file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
+    let file_name = intern_runtime_static_name(_py, b"__file__");
     let file_bits = getattr_optional_bits(_py, machinery_bits, file_name)?;
     match file_bits {
         Some(bits) => {
@@ -3710,9 +3673,6 @@ fn importlib_runtime_path_hooks_and_cache_bits(
     _py: &PyToken<'_>,
     sys_bits: Option<u64>,
 ) -> Result<(u64, bool, u64, bool), u64> {
-    static PATH_HOOKS_NAME: AtomicU64 = AtomicU64::new(0);
-    static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-
     let mut path_hooks_bits = MoltObject::none().bits();
     let mut owns_path_hooks = false;
     let mut path_importer_cache_bits = MoltObject::none().bits();
@@ -3721,7 +3681,7 @@ fn importlib_runtime_path_hooks_and_cache_bits(
     if let Some(sys_bits) = sys_bits
         && !obj_from_bits(sys_bits).is_none()
     {
-        let path_hooks_name = intern_static_name(_py, &PATH_HOOKS_NAME, b"path_hooks");
+        let path_hooks_name = intern_runtime_static_name(_py, b"path_hooks");
         let hooks_attr = getattr_optional_bits(_py, sys_bits, path_hooks_name)?;
         if let Some(bits) = hooks_attr {
             path_hooks_bits = bits;
@@ -3735,8 +3695,7 @@ fn importlib_runtime_path_hooks_and_cache_bits(
             owns_path_hooks = true;
         }
 
-        let path_importer_cache_name =
-            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache");
+        let path_importer_cache_name = intern_runtime_static_name(_py, b"path_importer_cache");
         let cache_attr = getattr_optional_bits(_py, sys_bits, path_importer_cache_name)?;
         if let Some(bits) = cache_attr {
             path_importer_cache_bits = bits;
@@ -3768,8 +3727,6 @@ pub extern "C" fn molt_importlib_pathfinder_find_spec(
     machinery_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static PATH_NAME: AtomicU64 = AtomicU64::new(0);
-
         let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -3794,7 +3751,7 @@ pub extern "C" fn molt_importlib_pathfinder_find_spec(
             if obj_from_bits(sys_bits).is_none() {
                 Vec::new()
             } else {
-                let path_name = intern_static_name(_py, &PATH_NAME, b"path");
+                let path_name = intern_runtime_static_name(_py, b"path");
                 let path_attr = match getattr_optional_bits(_py, sys_bits, path_name) {
                     Ok(value) => value,
                     Err(bits) => return bits,
@@ -3900,16 +3857,13 @@ pub extern "C" fn molt_importlib_filefinder_find_spec(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_invalidate_caches() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static SPEC_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-        static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-
         if let Some(util_bits) = importlib_module_cache_lookup_bits(_py, "importlib.util")
             && !obj_from_bits(util_bits).is_none()
         {
             importlib_clear_mapping_attr_best_effort(
                 _py,
                 util_bits,
-                &SPEC_CACHE_NAME,
+                runtime_static_name_slot(_py, b"_SPEC_CACHE"),
                 b"_SPEC_CACHE",
             );
         }
@@ -3919,7 +3873,7 @@ pub extern "C" fn molt_importlib_invalidate_caches() -> u64 {
             importlib_clear_mapping_attr_best_effort(
                 _py,
                 sys_bits,
-                &PATH_IMPORTER_CACHE_NAME,
+                runtime_static_name_slot(_py, b"path_importer_cache"),
                 b"path_importer_cache",
             );
         }
@@ -3930,9 +3884,6 @@ pub extern "C" fn molt_importlib_invalidate_caches() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_filefinder_invalidate(path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-        static POP_NAME: AtomicU64 = AtomicU64::new(0);
-
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -3943,8 +3894,7 @@ pub extern "C" fn molt_importlib_filefinder_invalidate(path_bits: u64) -> u64 {
         if obj_from_bits(sys_bits).is_none() {
             return MoltObject::none().bits();
         }
-        let path_importer_cache_name =
-            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache");
+        let path_importer_cache_name = intern_runtime_static_name(_py, b"path_importer_cache");
         let path_importer_cache_bits =
             match getattr_optional_bits(_py, sys_bits, path_importer_cache_name) {
                 Ok(Some(bits)) => bits,
@@ -3976,7 +3926,7 @@ pub extern "C" fn molt_importlib_filefinder_invalidate(path_bits: u64) -> u64 {
                 let pop_result = match importlib_lookup_callable_attr(
                     _py,
                     path_importer_cache_bits,
-                    &POP_NAME,
+                    runtime_static_name_slot(_py, b"pop"),
                     b"pop",
                 ) {
                     Ok(Some(pop_bits)) => {
@@ -4038,24 +3988,14 @@ pub extern "C" fn molt_importlib_reload(
     import_module_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static NAME_NAME: AtomicU64 = AtomicU64::new(0);
-        static FILE_NAME: AtomicU64 = AtomicU64::new(0);
-        static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static PATH_NAME: AtomicU64 = AtomicU64::new(0);
-        static SPEC_FROM_FILE_LOCATION_NAME: AtomicU64 = AtomicU64::new(0);
-        static FIND_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static EXEC_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
-        static LOAD_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
-
         let mut name_bits = MoltObject::none().bits();
         let mut module_loader_bits = MoltObject::none().bits();
         let mut module_loader_owned = false;
         let mut modules_bits = MoltObject::none().bits();
 
         let out = (|| -> Result<u64, u64> {
-            let module_name_name = intern_static_name(_py, &NAME_NAME, b"__name__");
-            let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+            let module_name_name = intern_runtime_static_name(_py, b"__name__");
+            let spec_name = intern_runtime_static_name(_py, b"__spec__");
             let mut module_name_bits =
                 if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
                     let out = getattr_optional_bits(_py, spec_bits, module_name_name)?;
@@ -4121,7 +4061,7 @@ pub extern "C" fn molt_importlib_reload(
             }
             name_bits = alloc_str_bits(_py, &module_name)?;
 
-            let module_file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
+            let module_file_name = intern_runtime_static_name(_py, b"__file__");
             let module_file = match getattr_optional_bits(_py, module_bits, module_file_name)? {
                 Some(bits) => {
                     let out = string_obj_to_owned(obj_from_bits(bits));
@@ -4133,7 +4073,7 @@ pub extern "C" fn molt_importlib_reload(
                 None => None,
             };
 
-            let loader_name = intern_static_name(_py, &LOADER_NAME, b"loader");
+            let loader_name = intern_runtime_static_name(_py, b"loader");
             if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
                 if !obj_from_bits(spec_bits).is_none()
                     && let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)?
@@ -4151,7 +4091,7 @@ pub extern "C" fn molt_importlib_reload(
                 let module_file_bits = alloc_str_bits(_py, &module_file)?;
                 let mut locations_bits = MoltObject::none().bits();
                 let mut locations_owned = false;
-                let path_name = intern_static_name(_py, &PATH_NAME, b"__path__");
+                let path_name = intern_runtime_static_name(_py, b"__path__");
                 if let Some(path_bits) = getattr_optional_bits(_py, module_bits, path_name)? {
                     if let Some(path_ptr) = obj_from_bits(path_bits).as_ptr() {
                         let type_id = unsafe { object_type_id(path_ptr) };
@@ -4179,7 +4119,7 @@ pub extern "C" fn molt_importlib_reload(
                 let spec_from_file_location_bits = importlib_required_callable(
                     _py,
                     util_bits,
-                    &SPEC_FROM_FILE_LOCATION_NAME,
+                    runtime_static_name_slot(_py, b"spec_from_file_location"),
                     b"spec_from_file_location",
                     "importlib.util",
                 )?;
@@ -4212,7 +4152,7 @@ pub extern "C" fn molt_importlib_reload(
                         if let Some(exec_bits) = importlib_lookup_callable_attr(
                             _py,
                             spec_loader_bits,
-                            &EXEC_MODULE_NAME,
+                            runtime_static_name_slot(_py, b"exec_module"),
                             b"exec_module",
                         )? {
                             let exec_out_bits =
@@ -4249,7 +4189,7 @@ pub extern "C" fn molt_importlib_reload(
                 && let Some(exec_bits) = importlib_lookup_callable_attr(
                     _py,
                     module_loader_bits,
-                    &EXEC_MODULE_NAME,
+                    runtime_static_name_slot(_py, b"exec_module"),
                     b"exec_module",
                 )?
             {
@@ -4268,7 +4208,7 @@ pub extern "C" fn molt_importlib_reload(
             let find_spec_bits = importlib_required_callable(
                 _py,
                 util_bits,
-                &FIND_SPEC_NAME,
+                runtime_static_name_slot(_py, b"find_spec"),
                 b"find_spec",
                 "importlib.util",
             )?;
@@ -4287,7 +4227,7 @@ pub extern "C" fn molt_importlib_reload(
                     if let Some(exec_bits) = importlib_lookup_callable_attr(
                         _py,
                         spec_loader_bits,
-                        &EXEC_MODULE_NAME,
+                        runtime_static_name_slot(_py, b"exec_module"),
                         b"exec_module",
                     )? {
                         let exec_out_bits =
@@ -4310,7 +4250,7 @@ pub extern "C" fn molt_importlib_reload(
                     if let Some(load_bits) = importlib_lookup_callable_attr(
                         _py,
                         spec_loader_bits,
-                        &LOAD_MODULE_NAME,
+                        runtime_static_name_slot(_py, b"load_module"),
                         b"load_module",
                     )? {
                         let loaded_bits = call_callable_positional(_py, load_bits, &[name_bits])?;
@@ -4739,10 +4679,6 @@ pub extern "C" fn molt_importlib_existing_spec(
     machinery_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static FILE_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -4784,7 +4720,7 @@ pub extern "C" fn molt_importlib_existing_spec(
             return MoltObject::none().bits();
         };
 
-        let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+        let spec_name = intern_runtime_static_name(_py, b"__spec__");
         if let Some(spec_bits) = match getattr_optional_bits(_py, existing_bits, spec_name) {
             Ok(value) => value,
             Err(err) => {
@@ -4801,7 +4737,7 @@ pub extern "C" fn molt_importlib_existing_spec(
             return spec_bits;
         }
 
-        let file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
+        let file_name = intern_runtime_static_name(_py, b"__file__");
         let origin_bits = match getattr_optional_bits(_py, existing_bits, file_name) {
             Ok(Some(bits)) => {
                 if string_obj_to_owned(obj_from_bits(bits)).is_some() {
@@ -4824,7 +4760,7 @@ pub extern "C" fn molt_importlib_existing_spec(
         let module_spec_cls_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &MODULE_SPEC_NAME,
+            runtime_static_name_slot(_py, b"ModuleSpec"),
             b"ModuleSpec",
             "importlib.machinery",
         ) {
@@ -4872,8 +4808,6 @@ pub extern "C" fn molt_importlib_parent_search_paths(
     modules_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -4914,7 +4848,7 @@ pub extern "C" fn molt_importlib_parent_search_paths(
                         }
                     };
                 if let Some(parent_bits) = parent_bits {
-                    let path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
+                    let path_name = intern_runtime_static_name(_py, b"__path__");
                     let parent_path_bits = match getattr_optional_bits(_py, parent_bits, path_name)
                     {
                         Ok(Some(bits)) => bits,
@@ -5028,16 +4962,14 @@ pub extern "C" fn molt_importlib_parent_search_paths(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static DEFAULT_META_PATH_BOOTSTRAPPED: AtomicU64 = AtomicU64::new(0);
-        static META_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-        static PATH_FINDER_NAME: AtomicU64 = AtomicU64::new(0);
+        let bootstrapped = &runtime_state(_py).importlib_default_meta_path_bootstrapped;
 
         let mark_bootstrapped = || {
-            DEFAULT_META_PATH_BOOTSTRAPPED.store(1, Ordering::Relaxed);
+            bootstrapped.store(true, Ordering::Release);
             MoltObject::none().bits()
         };
 
-        if DEFAULT_META_PATH_BOOTSTRAPPED.load(Ordering::Relaxed) != 0 {
+        if bootstrapped.load(Ordering::Acquire) {
             return MoltObject::none().bits();
         }
 
@@ -5053,7 +4985,7 @@ pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery_bits: u64) -
             return mark_bootstrapped();
         }
 
-        let meta_path_name = intern_static_name(_py, &META_PATH_NAME, b"meta_path");
+        let meta_path_name = intern_runtime_static_name(_py, b"meta_path");
         let Some(meta_path_bits) = (match getattr_optional_bits(_py, sys_bits, meta_path_name) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5079,7 +5011,7 @@ pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery_bits: u64) -
             return mark_bootstrapped();
         }
 
-        let path_finder_name = intern_static_name(_py, &PATH_FINDER_NAME, b"PathFinder");
+        let path_finder_name = intern_runtime_static_name(_py, b"PathFinder");
         let path_finder_bits = match getattr_optional_bits(_py, machinery_bits, path_finder_name) {
             Ok(value) => value,
             Err(bits) => {
@@ -5435,7 +5367,6 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
     errors_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static DECODE_NAME: AtomicU64 = AtomicU64::new(0);
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.read_text_from_package",
@@ -5486,7 +5417,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
             return raise_exception::<_>(_py, "MemoryError", "out of memory");
         }
         let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
-        let decode_name = intern_static_name(_py, &DECODE_NAME, b"decode");
+        let decode_name = intern_runtime_static_name(_py, b"decode");
         let decode_bits = match importlib_reader_lookup_callable(_py, bytes_bits, decode_name) {
             Ok(Some(bits)) => bits,
             Ok(None) => {
@@ -5552,7 +5483,6 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
     errors_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static DECODE_NAME: AtomicU64 = AtomicU64::new(0);
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.read_text_from_package_parts",
@@ -5603,7 +5533,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
             return raise_exception::<_>(_py, "MemoryError", "out of memory");
         }
         let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
-        let decode_name = intern_static_name(_py, &DECODE_NAME, b"decode");
+        let decode_name = intern_runtime_static_name(_py, b"decode");
         let decode_bits = match importlib_reader_lookup_callable(_py, bytes_bits, decode_name) {
             Ok(Some(bits)) => bits,
             Ok(None) => {
@@ -6824,22 +6754,8 @@ pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static CREATE_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
-        static SPEC_ATTR_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_NAME_NAME: AtomicU64 = AtomicU64::new(0);
-        static PARENT_NAME: AtomicU64 = AtomicU64::new(0);
-        static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
-        static ORIGIN_NAME: AtomicU64 = AtomicU64::new(0);
-        static CACHED_NAME: AtomicU64 = AtomicU64::new(0);
-        static DUNDER_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static DUNDER_PACKAGE_NAME: AtomicU64 = AtomicU64::new(0);
-        static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-        static DUNDER_FILE_NAME: AtomicU64 = AtomicU64::new(0);
-        static DUNDER_CACHED_NAME: AtomicU64 = AtomicU64::new(0);
-
-        let loader_name = intern_static_name(_py, &LOADER_NAME, b"loader");
-        let create_module_name = intern_static_name(_py, &CREATE_MODULE_NAME, b"create_module");
+        let loader_name = intern_runtime_static_name(_py, b"loader");
+        let create_module_name = intern_runtime_static_name(_py, b"create_module");
         let mut loader_bits = MoltObject::none().bits();
         let mut module_bits = MoltObject::none().bits();
         let out = (|| -> Result<u64, u64> {
@@ -6867,7 +6783,7 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
                 let spec_name_bits = importlib_required_attribute(
                     _py,
                     spec_bits,
-                    &MODULE_NAME_NAME,
+                    runtime_static_name_slot(_py, b"name"),
                     b"name",
                     "importlib.machinery.ModuleSpec",
                 )?;
@@ -6880,18 +6796,24 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
                 }
             }
 
-            importlib_set_attr(_py, module_bits, &SPEC_ATTR_NAME, b"__spec__", spec_bits)?;
             importlib_set_attr(
                 _py,
                 module_bits,
-                &DUNDER_LOADER_NAME,
+                runtime_static_name_slot(_py, b"__spec__"),
+                b"__spec__",
+                spec_bits,
+            )?;
+            importlib_set_attr(
+                _py,
+                module_bits,
+                runtime_static_name_slot(_py, b"__loader__"),
                 b"__loader__",
                 loader_bits,
             )?;
 
             let locations_name = intern_static_name(
                 _py,
-                &SUBMODULE_SEARCH_LOCATIONS_NAME,
+                runtime_static_name_slot(_py, b"submodule_search_locations"),
                 b"submodule_search_locations",
             );
             let locations_bits = getattr_optional_bits(_py, spec_bits, locations_name)?;
@@ -6909,14 +6831,14 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
                 let spec_name_bits = importlib_required_attribute(
                     _py,
                     spec_bits,
-                    &MODULE_NAME_NAME,
+                    runtime_static_name_slot(_py, b"name"),
                     b"name",
                     "importlib.machinery.ModuleSpec",
                 )?;
                 importlib_set_attr(
                     _py,
                     module_bits,
-                    &DUNDER_PACKAGE_NAME,
+                    runtime_static_name_slot(_py, b"__package__"),
                     b"__package__",
                     spec_name_bits,
                 )?;
@@ -6927,7 +6849,7 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
                 let locations_bits = importlib_required_attribute(
                     _py,
                     spec_bits,
-                    &SUBMODULE_SEARCH_LOCATIONS_NAME,
+                    runtime_static_name_slot(_py, b"submodule_search_locations"),
                     b"submodule_search_locations",
                     "importlib.machinery.ModuleSpec",
                 )?;
@@ -6939,7 +6861,13 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
                 if !obj_from_bits(locations_bits).is_none() {
                     dec_ref_bits(_py, locations_bits);
                 }
-                importlib_set_attr(_py, module_bits, &DUNDER_PATH_NAME, b"__path__", path_bits)?;
+                importlib_set_attr(
+                    _py,
+                    module_bits,
+                    runtime_static_name_slot(_py, b"__path__"),
+                    b"__path__",
+                    path_bits,
+                )?;
                 if !obj_from_bits(path_bits).is_none() {
                     dec_ref_bits(_py, path_bits);
                 }
@@ -6947,14 +6875,14 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
                 let parent_bits = importlib_required_attribute(
                     _py,
                     spec_bits,
-                    &PARENT_NAME,
+                    runtime_static_name_slot(_py, b"parent"),
                     b"parent",
                     "importlib.machinery.ModuleSpec",
                 )?;
                 importlib_set_attr(
                     _py,
                     module_bits,
-                    &DUNDER_PACKAGE_NAME,
+                    runtime_static_name_slot(_py, b"__package__"),
                     b"__package__",
                     parent_bits,
                 )?;
@@ -6963,14 +6891,14 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
                 }
             }
 
-            let origin_name = intern_static_name(_py, &ORIGIN_NAME, b"origin");
+            let origin_name = intern_runtime_static_name(_py, b"origin");
             if let Some(origin_bits) = getattr_optional_bits(_py, spec_bits, origin_name)?
                 && !obj_from_bits(origin_bits).is_none()
             {
                 importlib_set_attr(
                     _py,
                     module_bits,
-                    &DUNDER_FILE_NAME,
+                    runtime_static_name_slot(_py, b"__file__"),
                     b"__file__",
                     origin_bits,
                 )?;
@@ -6980,14 +6908,14 @@ pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
             let cached_bits = importlib_required_attribute(
                 _py,
                 spec_bits,
-                &CACHED_NAME,
+                runtime_static_name_slot(_py, b"cached"),
                 b"cached",
                 "importlib.machinery.ModuleSpec",
             )?;
             importlib_set_attr(
                 _py,
                 module_bits,
-                &DUNDER_CACHED_NAME,
+                runtime_static_name_slot(_py, b"__cached__"),
                 b"__cached__",
                 cached_bits,
             )?;
@@ -7021,15 +6949,13 @@ pub extern "C" fn molt_importlib_spec_from_loader(
     machinery_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static IS_PACKAGE_NAME: AtomicU64 = AtomicU64::new(0);
         let _name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
         let mut is_package_arg_bits = is_package_bits;
         if obj_from_bits(is_package_bits).is_none() && !obj_from_bits(loader_bits).is_none() {
-            let is_package_name = intern_static_name(_py, &IS_PACKAGE_NAME, b"is_package");
+            let is_package_name = intern_runtime_static_name(_py, b"is_package");
             if let Some(call_bits) =
                 match importlib_reader_lookup_callable(_py, loader_bits, is_package_name) {
                     Ok(value) => value,
@@ -7056,7 +6982,7 @@ pub extern "C" fn molt_importlib_spec_from_loader(
         let module_spec_cls_bits = match importlib_required_attribute(
             _py,
             machinery_bits,
-            &MODULE_SPEC_NAME,
+            runtime_static_name_slot(_py, b"ModuleSpec"),
             b"ModuleSpec",
             "importlib.machinery",
         ) {
@@ -7097,10 +7023,6 @@ pub extern "C" fn molt_importlib_spec_from_file_location(
     machinery_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static SOURCE_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-        static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
-
         let _name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -7138,7 +7060,7 @@ pub extern "C" fn molt_importlib_spec_from_file_location(
                 let loader_cls_bits = importlib_required_attribute(
                     _py,
                     machinery_bits,
-                    &SOURCE_FILE_LOADER_NAME,
+                    runtime_static_name_slot(_py, b"SourceFileLoader"),
                     b"SourceFileLoader",
                     "importlib.machinery",
                 )?;
@@ -7185,7 +7107,7 @@ pub extern "C" fn molt_importlib_spec_from_file_location(
             let module_spec_cls_bits = importlib_required_attribute(
                 _py,
                 machinery_bits,
-                &MODULE_SPEC_NAME,
+                runtime_static_name_slot(_py, b"ModuleSpec"),
                 b"ModuleSpec",
                 "importlib.machinery",
             )?;
@@ -7203,7 +7125,7 @@ pub extern "C" fn molt_importlib_spec_from_file_location(
                 importlib_set_attr(
                     _py,
                     spec_bits,
-                    &SUBMODULE_SEARCH_LOCATIONS_NAME,
+                    runtime_static_name_slot(_py, b"submodule_search_locations"),
                     b"submodule_search_locations",
                     locations_bits,
                 )?;
@@ -7245,11 +7167,6 @@ pub extern "C" fn molt_importlib_set_module_state(
     module_spec_cls_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static MODULE_NAME_NAME: AtomicU64 = AtomicU64::new(0);
-        static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-        static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
-
         let _module_name = match string_arg_from_bits(_py, module_name_bits, "module_name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -7278,7 +7195,7 @@ pub extern "C" fn molt_importlib_set_module_state(
         let mut modules_owned = false;
 
         let out = (|| -> Result<(), u64> {
-            let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+            let spec_name = intern_runtime_static_name(_py, b"__spec__");
             if let Some(existing_spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)?
                 && !obj_from_bits(existing_spec_bits).is_none()
             {
@@ -7300,10 +7217,16 @@ pub extern "C" fn molt_importlib_set_module_state(
                 if exception_pending(_py) {
                     return Err(MoltObject::none().bits());
                 }
-                importlib_set_attr(_py, module_bits, &SPEC_NAME, b"__spec__", spec_bits)?;
+                importlib_set_attr(
+                    _py,
+                    module_bits,
+                    runtime_static_name_slot(_py, b"__spec__"),
+                    b"__spec__",
+                    spec_bits,
+                )?;
                 spec_owned = true;
             } else {
-                let module_name_name = intern_static_name(_py, &MODULE_NAME_NAME, b"name");
+                let module_name_name = intern_runtime_static_name(_py, b"name");
                 let should_fix_name = match getattr_optional_bits(_py, spec_bits, module_name_name)?
                 {
                     Some(bits) => {
@@ -7319,7 +7242,7 @@ pub extern "C" fn molt_importlib_set_module_state(
                     && importlib_set_attr(
                         _py,
                         spec_bits,
-                        &MODULE_NAME_NAME,
+                        runtime_static_name_slot(_py, b"name"),
                         b"name",
                         module_name_bits,
                     )
@@ -7350,14 +7273,14 @@ pub extern "C" fn molt_importlib_set_module_state(
                 importlib_set_attr(
                     _py,
                     module_bits,
-                    &DUNDER_PATH_NAME,
+                    runtime_static_name_slot(_py, b"__path__"),
                     b"__path__",
                     module_path_bits,
                 )?;
 
                 let locations_name = intern_static_name(
                     _py,
-                    &SUBMODULE_SEARCH_LOCATIONS_NAME,
+                    runtime_static_name_slot(_py, b"submodule_search_locations"),
                     b"submodule_search_locations",
                 );
                 let should_set_locations =
@@ -7377,7 +7300,7 @@ pub extern "C" fn molt_importlib_set_module_state(
                     importlib_set_attr(
                         _py,
                         spec_bits,
-                        &SUBMODULE_SEARCH_LOCATIONS_NAME,
+                        runtime_static_name_slot(_py, b"submodule_search_locations"),
                         b"submodule_search_locations",
                         spec_locations_bits,
                     )?;
@@ -7484,10 +7407,6 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
     package_root_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-        static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
-
         let _origin = match string_arg_from_bits(_py, origin_bits, "origin") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -7507,7 +7426,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
         let mut module_path_bits = MoltObject::none().bits();
         let mut module_path_owned = false;
         let out = (|| -> Result<(), u64> {
-            let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+            let spec_name = intern_runtime_static_name(_py, b"__spec__");
             if let Some(existing_spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)?
                 && !obj_from_bits(existing_spec_bits).is_none()
             {
@@ -7526,7 +7445,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
 
             if is_package {
                 importlib_require_package_root_bits(_py, package_root_bits)?;
-                let dunder_path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
+                let dunder_path_name = intern_runtime_static_name(_py, b"__path__");
                 if let Some(existing_path_bits) = importlib_module_dict_get_optional_owned_bits(
                     _py,
                     module_bits,
@@ -7545,7 +7464,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
                     importlib_set_attr(
                         _py,
                         module_bits,
-                        &DUNDER_PATH_NAME,
+                        runtime_static_name_slot(_py, b"__path__"),
                         b"__path__",
                         module_path_bits,
                     )?;
@@ -7554,7 +7473,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
                 if !obj_from_bits(spec_bits).is_none() {
                     let locations_name = intern_static_name(
                         _py,
-                        &SUBMODULE_SEARCH_LOCATIONS_NAME,
+                        runtime_static_name_slot(_py, b"submodule_search_locations"),
                         b"submodule_search_locations",
                     );
                     let should_set_locations =
@@ -7574,7 +7493,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
                         let set_out = importlib_set_attr(
                             _py,
                             spec_bits,
-                            &SUBMODULE_SEARCH_LOCATIONS_NAME,
+                            runtime_static_name_slot(_py, b"submodule_search_locations"),
                             b"submodule_search_locations",
                             locations_bits,
                         );
@@ -7585,7 +7504,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
                     }
                 }
             } else {
-                let dunder_path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
+                let dunder_path_name = intern_runtime_static_name(_py, b"__path__");
                 if let Some(module_path_attr_bits) = importlib_module_dict_get_optional_owned_bits(
                     _py,
                     module_bits,

@@ -1874,8 +1874,7 @@ fn importlib_find_spec_via_meta_path(
         }
     };
     let result = (|| {
-        static FIND_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        let find_spec_name = intern_static_name(_py, &FIND_SPEC_NAME, b"find_spec");
+        let find_spec_name = intern_runtime_static_name(_py, b"find_spec");
         let iter_bits = molt_iter(meta_path_bits);
         if exception_pending(_py) {
             return Err(raise_exception::<_>(
@@ -1974,8 +1973,7 @@ fn importlib_find_spec_via_path_hooks(
     };
     let fullname_bits = alloc_str_bits(_py, fullname)?;
     let result = (|| {
-        static FIND_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-        let find_spec_name = intern_static_name(_py, &FIND_SPEC_NAME, b"find_spec");
+        let find_spec_name = intern_runtime_static_name(_py, b"find_spec");
         let hooks_iter = molt_iter(path_hooks_bits);
         if exception_pending(_py) {
             return Err(raise_exception::<_>(
@@ -2220,11 +2218,6 @@ fn importlib_runtime_state_attr_bits(
 }
 
 fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
-    static MODULES_NAME: AtomicU64 = AtomicU64::new(0);
-    static META_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-    static PATH_HOOKS_NAME: AtomicU64 = AtomicU64::new(0);
-    static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-
     let mut modules_bits = MoltObject::none().bits();
     let mut meta_path_bits = MoltObject::none().bits();
     let mut path_hooks_bits = MoltObject::none().bits();
@@ -2239,15 +2232,28 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     if let Some(sys_bits) = sys_bits
         && !obj_from_bits(sys_bits).is_none()
     {
-        modules_bits = importlib_runtime_state_attr_bits(_py, sys_bits, &MODULES_NAME, b"modules")?;
-        meta_path_bits =
-            importlib_runtime_state_attr_bits(_py, sys_bits, &META_PATH_NAME, b"meta_path")?;
-        path_hooks_bits =
-            importlib_runtime_state_attr_bits(_py, sys_bits, &PATH_HOOKS_NAME, b"path_hooks")?;
+        modules_bits = importlib_runtime_state_attr_bits(
+            _py,
+            sys_bits,
+            runtime_static_name_slot(_py, b"modules"),
+            b"modules",
+        )?;
+        meta_path_bits = importlib_runtime_state_attr_bits(
+            _py,
+            sys_bits,
+            runtime_static_name_slot(_py, b"meta_path"),
+            b"meta_path",
+        )?;
+        path_hooks_bits = importlib_runtime_state_attr_bits(
+            _py,
+            sys_bits,
+            runtime_static_name_slot(_py, b"path_hooks"),
+            b"path_hooks",
+        )?;
         path_importer_cache_bits = importlib_runtime_state_attr_bits(
             _py,
             sys_bits,
-            &PATH_IMPORTER_CACHE_NAME,
+            runtime_static_name_slot(_py, b"path_importer_cache"),
             b"path_importer_cache",
         )?;
     }
@@ -2268,20 +2274,17 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
     let entries = [
+        (intern_runtime_static_name(_py, b"modules"), modules_bits),
         (
-            intern_static_name(_py, &MODULES_NAME, b"modules"),
-            modules_bits,
-        ),
-        (
-            intern_static_name(_py, &META_PATH_NAME, b"meta_path"),
+            intern_runtime_static_name(_py, b"meta_path"),
             meta_path_bits,
         ),
         (
-            intern_static_name(_py, &PATH_HOOKS_NAME, b"path_hooks"),
+            intern_runtime_static_name(_py, b"path_hooks"),
             path_hooks_bits,
         ),
         (
-            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache"),
+            intern_runtime_static_name(_py, b"path_importer_cache"),
             path_importer_cache_bits,
         ),
     ];
@@ -2931,8 +2934,7 @@ fn importlib_best_effort_str(_py: &PyToken<'_>, value_bits: u64) -> String {
 }
 
 fn importlib_exception_name_from_bits(_py: &PyToken<'_>, class_bits: u64) -> Option<String> {
-    static NAME_NAME: AtomicU64 = AtomicU64::new(0);
-    let name_attr = intern_static_name(_py, &NAME_NAME, b"__name__");
+    let name_attr = intern_runtime_static_name(_py, b"__name__");
     let missing = missing_bits(_py);
     let name_bits = molt_getattr_builtin(class_bits, name_attr, missing);
     if exception_pending(_py) {
@@ -3556,20 +3558,26 @@ fn importlib_extension_spec_target(
     expected_module_name: &str,
     spec_bits: u64,
 ) -> Result<Option<(String, String)>, u64> {
-    static SPEC_NAME_NAME: AtomicU64 = AtomicU64::new(0);
-    static SPEC_ORIGIN_NAME: AtomicU64 = AtomicU64::new(0);
-    static SPEC_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-
     if obj_from_bits(spec_bits).is_none() {
         return Ok(None);
     }
 
-    let module_name = importlib_spec_attr_string(_py, spec_bits, &SPEC_NAME_NAME, b"name")?
-        .unwrap_or_else(|| expected_module_name.to_string());
-    let origin = importlib_spec_attr_string(_py, spec_bits, &SPEC_ORIGIN_NAME, b"origin")?;
+    let module_name = importlib_spec_attr_string(
+        _py,
+        spec_bits,
+        runtime_static_name_slot(_py, b"name"),
+        b"name",
+    )?
+    .unwrap_or_else(|| expected_module_name.to_string());
+    let origin = importlib_spec_attr_string(
+        _py,
+        spec_bits,
+        runtime_static_name_slot(_py, b"origin"),
+        b"origin",
+    )?;
     let mut has_extension_loader = false;
 
-    let loader_name = intern_static_name(_py, &SPEC_LOADER_NAME, b"loader");
+    let loader_name = intern_runtime_static_name(_py, b"loader");
     if let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)?
         && !obj_from_bits(loader_bits).is_none()
     {
@@ -3727,8 +3735,7 @@ fn linecache_loader_get_source_impl(
     loader_bits: u64,
     module_name: &str,
 ) -> Result<Option<String>, u64> {
-    static GET_SOURCE_NAME: AtomicU64 = AtomicU64::new(0);
-    let get_source_name = intern_static_name(_py, &GET_SOURCE_NAME, b"get_source");
+    let get_source_name = intern_runtime_static_name(_py, b"get_source");
     let Some(call_bits) = importlib_reader_lookup_callable(_py, loader_bits, get_source_name)?
     else {
         return Ok(None);
@@ -3812,15 +3819,13 @@ fn getattr_optional_bits(
 }
 
 fn importlib_module_spec_is_package_bits(_py: &PyToken<'_>, module_bits: u64) -> Result<bool, u64> {
-    static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
-    let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+    let spec_name = intern_runtime_static_name(_py, b"__spec__");
     let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? else {
         return Ok(false);
     };
     let submodule_search_locations_name = intern_static_name(
         _py,
-        &SUBMODULE_SEARCH_LOCATIONS_NAME,
+        runtime_static_name_slot(_py, b"submodule_search_locations"),
         b"submodule_search_locations",
     );
     let locations_bits = getattr_optional_bits(_py, spec_bits, submodule_search_locations_name)?;
@@ -3841,12 +3846,10 @@ fn traceback_exception_suppress_context_bits(
     _py: &PyToken<'_>,
     value_bits: u64,
 ) -> Result<bool, u64> {
-    static SUPPRESS_CONTEXT_NAME: AtomicU64 = AtomicU64::new(0);
     if obj_from_bits(value_bits).is_none() {
         return Ok(false);
     }
-    let suppress_context_name =
-        intern_static_name(_py, &SUPPRESS_CONTEXT_NAME, b"__suppress_context__");
+    let suppress_context_name = intern_runtime_static_name(_py, b"__suppress_context__");
     let Some(suppress_bits) = getattr_optional_bits(_py, value_bits, suppress_context_name)? else {
         return Ok(false);
     };
@@ -3862,11 +3865,7 @@ fn importlib_resources_module_name_from_bits(
     module_bits: u64,
     fallback_bits: u64,
 ) -> Result<String, u64> {
-    static NAME_NAME: AtomicU64 = AtomicU64::new(0);
-    static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static PACKAGE_NAME: AtomicU64 = AtomicU64::new(0);
-
-    let module_name_name = intern_static_name(_py, &NAME_NAME, b"__name__");
+    let module_name_name = intern_runtime_static_name(_py, b"__name__");
     if let Some(name_bits) = getattr_optional_bits(_py, module_bits, module_name_name)? {
         let out = string_obj_to_owned(obj_from_bits(name_bits));
         if !obj_from_bits(name_bits).is_none() {
@@ -3892,7 +3891,7 @@ fn importlib_resources_module_name_from_bits(
         }
     }
 
-    let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+    let spec_name = intern_runtime_static_name(_py, b"__spec__");
     if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
         if let Some(spec_mod_name_bits) = getattr_optional_bits(_py, spec_bits, module_name_name)? {
             let out = string_obj_to_owned(obj_from_bits(spec_mod_name_bits));
@@ -3912,7 +3911,7 @@ fn importlib_resources_module_name_from_bits(
         }
     }
 
-    let package_name = intern_static_name(_py, &PACKAGE_NAME, b"__package__");
+    let package_name = intern_runtime_static_name(_py, b"__package__");
     if let Some(package_bits) = getattr_optional_bits(_py, module_bits, package_name)? {
         let out = string_obj_to_owned(obj_from_bits(package_bits));
         if !obj_from_bits(package_bits).is_none() {
@@ -3933,13 +3932,8 @@ fn importlib_resources_loader_reader_from_bits(
     module_bits: u64,
     module_name: &str,
 ) -> Result<Option<u64>, u64> {
-    static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static GET_RESOURCE_READER_NAME: AtomicU64 = AtomicU64::new(0);
-
-    let loader_name = intern_static_name(_py, &LOADER_NAME, b"loader");
-    let get_resource_reader_name =
-        intern_static_name(_py, &GET_RESOURCE_READER_NAME, b"get_resource_reader");
+    let loader_name = intern_runtime_static_name(_py, b"loader");
+    let get_resource_reader_name = intern_runtime_static_name(_py, b"get_resource_reader");
 
     let try_loader = |loader_bits: u64| -> Result<Option<u64>, u64> {
         let Some(call_bits) =
@@ -3960,7 +3954,7 @@ fn importlib_resources_loader_reader_from_bits(
         Ok(Some(reader_bits))
     };
 
-    let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+    let spec_name = intern_runtime_static_name(_py, b"__spec__");
     if let Some(spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)? {
         let mut out: Option<u64> = None;
         if let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)? {
@@ -4091,8 +4085,7 @@ fn importlib_reader_files_traversable_bits(
     _py: &PyToken<'_>,
     reader_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    static FILES_NAME: AtomicU64 = AtomicU64::new(0);
-    let files_name = intern_static_name(_py, &FILES_NAME, b"files");
+    let files_name = intern_runtime_static_name(_py, b"files");
     let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, files_name)? else {
         return Ok(None);
     };
@@ -4112,8 +4105,7 @@ fn importlib_traversable_joinpath_bits(
     traversable_bits: u64,
     name: &str,
 ) -> Result<Option<u64>, u64> {
-    static JOINPATH_NAME: AtomicU64 = AtomicU64::new(0);
-    let joinpath_name = intern_static_name(_py, &JOINPATH_NAME, b"joinpath");
+    let joinpath_name = intern_runtime_static_name(_py, b"joinpath");
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, joinpath_name)?
     else {
         return Ok(None);
@@ -4164,9 +4156,7 @@ fn importlib_traversable_iterdir_names(
     _py: &PyToken<'_>,
     traversable_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    static ITERDIR_NAME: AtomicU64 = AtomicU64::new(0);
-    static NAME_NAME: AtomicU64 = AtomicU64::new(0);
-    let iterdir_name = intern_static_name(_py, &ITERDIR_NAME, b"iterdir");
+    let iterdir_name = intern_runtime_static_name(_py, b"iterdir");
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, iterdir_name)?
     else {
         return Ok(Vec::new());
@@ -4183,7 +4173,7 @@ fn importlib_traversable_iterdir_names(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let name_attr = intern_static_name(_py, &NAME_NAME, b"name");
+    let name_attr = intern_runtime_static_name(_py, b"name");
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     loop {
@@ -4243,8 +4233,7 @@ fn importlib_traversable_iterdir_names(
 }
 
 fn importlib_traversable_is_file(_py: &PyToken<'_>, traversable_bits: u64) -> Result<bool, u64> {
-    static IS_FILE_NAME: AtomicU64 = AtomicU64::new(0);
-    let is_file_name = intern_static_name(_py, &IS_FILE_NAME, b"is_file");
+    let is_file_name = intern_runtime_static_name(_py, b"is_file");
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, is_file_name)?
     else {
         return Ok(false);
@@ -4279,8 +4268,7 @@ fn importlib_traversable_is_file(_py: &PyToken<'_>, traversable_bits: u64) -> Re
 }
 
 fn importlib_traversable_is_dir(_py: &PyToken<'_>, traversable_bits: u64) -> Result<bool, u64> {
-    static IS_DIR_NAME: AtomicU64 = AtomicU64::new(0);
-    let is_dir_name = intern_static_name(_py, &IS_DIR_NAME, b"is_dir");
+    let is_dir_name = intern_runtime_static_name(_py, b"is_dir");
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, is_dir_name)? {
         let value_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -4325,8 +4313,7 @@ fn importlib_traversable_is_dir(_py: &PyToken<'_>, traversable_bits: u64) -> Res
 }
 
 fn importlib_traversable_exists(_py: &PyToken<'_>, traversable_bits: u64) -> Result<bool, u64> {
-    static EXISTS_NAME: AtomicU64 = AtomicU64::new(0);
-    let exists_name = intern_static_name(_py, &EXISTS_NAME, b"exists");
+    let exists_name = intern_runtime_static_name(_py, b"exists");
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, exists_name)? {
         let value_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -4376,10 +4363,7 @@ fn importlib_traversable_open_bytes(
     _py: &PyToken<'_>,
     traversable_bits: u64,
 ) -> Result<Vec<u8>, u64> {
-    static OPEN_NAME: AtomicU64 = AtomicU64::new(0);
-    static READ_NAME: AtomicU64 = AtomicU64::new(0);
-    static CLOSE_NAME: AtomicU64 = AtomicU64::new(0);
-    let open_name = intern_static_name(_py, &OPEN_NAME, b"open");
+    let open_name = intern_runtime_static_name(_py, b"open");
     let Some(call_bits) = importlib_reader_lookup_callable(_py, traversable_bits, open_name)?
     else {
         return Err(raise_exception::<_>(
@@ -4401,7 +4385,7 @@ fn importlib_traversable_open_bytes(
         }
         return Ok(bytes);
     }
-    let read_name = intern_static_name(_py, &READ_NAME, b"read");
+    let read_name = intern_runtime_static_name(_py, b"read");
     let read_bits = match importlib_reader_lookup_callable(_py, handle_bits, read_name)? {
         Some(bits) => bits,
         None => {
@@ -4423,7 +4407,7 @@ fn importlib_traversable_open_bytes(
         }
         return Err(MoltObject::none().bits());
     }
-    let close_name = intern_static_name(_py, &CLOSE_NAME, b"close");
+    let close_name = intern_runtime_static_name(_py, b"close");
     if let Some(close_bits) = importlib_reader_lookup_callable(_py, handle_bits, close_name)? {
         let _ = unsafe { call_callable0(_py, close_bits) };
         dec_ref_bits(_py, close_bits);
@@ -4510,8 +4494,7 @@ fn importlib_resources_reader_roots_impl(
     _py: &PyToken<'_>,
     reader_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    static MOLT_ROOTS_NAME: AtomicU64 = AtomicU64::new(0);
-    let molt_roots_name = intern_static_name(_py, &MOLT_ROOTS_NAME, b"molt_roots");
+    let molt_roots_name = intern_runtime_static_name(_py, b"molt_roots");
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, molt_roots_name)? {
         let values_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -4542,8 +4525,7 @@ fn importlib_resources_reader_contents_impl(
     _py: &PyToken<'_>,
     reader_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    static CONTENTS_NAME: AtomicU64 = AtomicU64::new(0);
-    let contents_name = intern_static_name(_py, &CONTENTS_NAME, b"contents");
+    let contents_name = intern_runtime_static_name(_py, b"contents");
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, contents_name)? {
         let values_bits = unsafe { call_callable0(_py, call_bits) };
         dec_ref_bits(_py, call_bits);
@@ -4584,8 +4566,7 @@ fn importlib_resources_reader_resource_path_impl(
     reader_bits: u64,
     name: &str,
 ) -> Result<Option<String>, u64> {
-    static RESOURCE_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-    let resource_path_name = intern_static_name(_py, &RESOURCE_PATH_NAME, b"resource_path");
+    let resource_path_name = intern_runtime_static_name(_py, b"resource_path");
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, resource_path_name)?
     {
         let name_bits = alloc_str_bits(_py, name)?;
@@ -4779,8 +4760,7 @@ fn importlib_resources_reader_is_resource_impl(
     reader_bits: u64,
     name: &str,
 ) -> Result<bool, u64> {
-    static IS_RESOURCE_NAME: AtomicU64 = AtomicU64::new(0);
-    let is_resource_name = intern_static_name(_py, &IS_RESOURCE_NAME, b"is_resource");
+    let is_resource_name = intern_runtime_static_name(_py, b"is_resource");
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, is_resource_name)? {
         let name_bits = alloc_str_bits(_py, name)?;
         let value_bits = unsafe { call_callable1(_py, call_bits, name_bits) };
@@ -4833,11 +4813,7 @@ fn importlib_resources_reader_open_resource_bytes_impl(
     reader_bits: u64,
     name: &str,
 ) -> Result<Vec<u8>, u64> {
-    static OPEN_RESOURCE_NAME: AtomicU64 = AtomicU64::new(0);
-    static READ_NAME: AtomicU64 = AtomicU64::new(0);
-    static CLOSE_NAME: AtomicU64 = AtomicU64::new(0);
-
-    let open_resource_name = intern_static_name(_py, &OPEN_RESOURCE_NAME, b"open_resource");
+    let open_resource_name = intern_runtime_static_name(_py, b"open_resource");
     if let Some(call_bits) = importlib_reader_lookup_callable(_py, reader_bits, open_resource_name)?
     {
         let name_bits = alloc_str_bits(_py, name)?;
@@ -4868,7 +4844,7 @@ fn importlib_resources_reader_open_resource_bytes_impl(
             return Ok(bytes);
         }
 
-        let read_name = intern_static_name(_py, &READ_NAME, b"read");
+        let read_name = intern_runtime_static_name(_py, b"read");
         let read_bits = match importlib_reader_lookup_callable(_py, handle_bits, read_name)? {
             Some(bits) => bits,
             None => {
@@ -4891,7 +4867,7 @@ fn importlib_resources_reader_open_resource_bytes_impl(
             return Err(MoltObject::none().bits());
         }
 
-        let close_name = intern_static_name(_py, &CLOSE_NAME, b"close");
+        let close_name = intern_runtime_static_name(_py, b"close");
         if let Some(close_bits) = importlib_reader_lookup_callable(_py, handle_bits, close_name)? {
             let _ = unsafe { call_callable0(_py, close_bits) };
             dec_ref_bits(_py, close_bits);
@@ -5389,7 +5365,6 @@ fn importlib_modules_runtime_error(_py: &PyToken<'_>) -> u64 {
 }
 
 fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
-    static MODULES_NAME: AtomicU64 = AtomicU64::new(0);
     let sys_bits = {
         let cache = crate::builtins::exceptions::internals::module_cache(_py);
         let guard = cache.lock().unwrap();
@@ -5401,7 +5376,12 @@ fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     if obj_from_bits(sys_bits).is_none() {
         return Err(importlib_modules_runtime_error(_py));
     }
-    let modules_bits = importlib_runtime_state_attr_bits(_py, sys_bits, &MODULES_NAME, b"modules")?;
+    let modules_bits = importlib_runtime_state_attr_bits(
+        _py,
+        sys_bits,
+        runtime_static_name_slot(_py, b"modules"),
+        b"modules",
+    )?;
     let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
         if !obj_from_bits(modules_bits).is_none() {
             dec_ref_bits(_py, modules_bits);
@@ -5459,10 +5439,6 @@ fn importlib_existing_spec_from_modules_bits(
     modules_bits: u64,
     machinery_bits: u64,
 ) -> Result<u64, u64> {
-    static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static FILE_NAME: AtomicU64 = AtomicU64::new(0);
-    static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-
     let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
         return Err(importlib_modules_runtime_error(_py));
     };
@@ -5488,7 +5464,7 @@ fn importlib_existing_spec_from_modules_bits(
         return Ok(MoltObject::none().bits());
     };
 
-    let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
+    let spec_name = intern_runtime_static_name(_py, b"__spec__");
     if let Some(spec_bits) = getattr_optional_bits(_py, existing_bits, spec_name)?
         && !obj_from_bits(spec_bits).is_none()
     {
@@ -5498,7 +5474,7 @@ fn importlib_existing_spec_from_modules_bits(
         return Ok(spec_bits);
     }
 
-    let file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
+    let file_name = intern_runtime_static_name(_py, b"__file__");
     let origin_bits = match getattr_optional_bits(_py, existing_bits, file_name)? {
         Some(bits) => {
             if string_obj_to_owned(obj_from_bits(bits)).is_some() {
@@ -5515,7 +5491,7 @@ fn importlib_existing_spec_from_modules_bits(
     let module_spec_cls_bits = match importlib_required_attribute(
         _py,
         machinery_bits,
-        &MODULE_SPEC_NAME,
+        runtime_static_name_slot(_py, b"ModuleSpec"),
         b"ModuleSpec",
         "importlib.machinery",
     ) {
@@ -5557,8 +5533,6 @@ fn importlib_parent_search_paths_payload(
     module_name: &str,
     modules_bits: u64,
 ) -> Result<ImportlibParentSearchPathsPayload, u64> {
-    static DUNDER_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-
     let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
         return Err(importlib_modules_runtime_error(_py));
     };
@@ -5590,7 +5564,7 @@ fn importlib_parent_search_paths_payload(
         }
     };
     if let Some(parent_bits) = parent_bits {
-        let path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
+        let path_name = intern_runtime_static_name(_py, b"__path__");
         let parent_path_bits = match getattr_optional_bits(_py, parent_bits, path_name) {
             Ok(Some(bits)) => bits,
             Ok(None) => MoltObject::none().bits(),
@@ -5647,11 +5621,6 @@ fn importlib_parent_search_paths_payload(
 fn importlib_runtime_state_view_bits(
     _py: &PyToken<'_>,
 ) -> Result<ImportlibRuntimeStateViewBits, u64> {
-    static MODULES_NAME: AtomicU64 = AtomicU64::new(0);
-    static META_PATH_NAME: AtomicU64 = AtomicU64::new(0);
-    static PATH_HOOKS_NAME: AtomicU64 = AtomicU64::new(0);
-    static PATH_IMPORTER_CACHE_NAME: AtomicU64 = AtomicU64::new(0);
-
     let runtime_state_bits = importlib_runtime_state_payload_bits(_py)?;
     let out = (|| -> Result<ImportlibRuntimeStateViewBits, u64> {
         let Some(runtime_state_ptr) = obj_from_bits(runtime_state_bits).as_ptr() else {
@@ -5669,11 +5638,10 @@ fn importlib_runtime_state_view_bits(
             ));
         }
 
-        let modules_key = intern_static_name(_py, &MODULES_NAME, b"modules");
-        let meta_path_key = intern_static_name(_py, &META_PATH_NAME, b"meta_path");
-        let path_hooks_key = intern_static_name(_py, &PATH_HOOKS_NAME, b"path_hooks");
-        let path_importer_cache_key =
-            intern_static_name(_py, &PATH_IMPORTER_CACHE_NAME, b"path_importer_cache");
+        let modules_key = intern_runtime_static_name(_py, b"modules");
+        let meta_path_key = intern_runtime_static_name(_py, b"meta_path");
+        let path_hooks_key = intern_runtime_static_name(_py, b"path_hooks");
+        let path_importer_cache_key = intern_runtime_static_name(_py, b"path_importer_cache");
         let modules_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, modules_key) }
             .unwrap_or(MoltObject::none().bits());
         let meta_path_bits = unsafe { dict_get_in_place(_py, runtime_state_ptr, meta_path_key) }
@@ -5745,7 +5713,6 @@ fn importlib_lookup_callable_attr(
 }
 
 fn importlib_clear_mapping_like_best_effort(_py: &PyToken<'_>, mapping_bits: u64) {
-    static CLEAR_NAME: AtomicU64 = AtomicU64::new(0);
     if obj_from_bits(mapping_bits).is_none() {
         return;
     }
@@ -5760,7 +5727,7 @@ fn importlib_clear_mapping_like_best_effort(_py: &PyToken<'_>, mapping_bits: u64
         }
         return;
     }
-    let clear_name = intern_static_name(_py, &CLEAR_NAME, b"clear");
+    let clear_name = intern_runtime_static_name(_py, b"clear");
     let clear_bits = match importlib_reader_lookup_callable(_py, mapping_bits, clear_name) {
         Ok(Some(bits)) => bits,
         Ok(None) => return,
@@ -5847,8 +5814,7 @@ fn importlib_module_name_matches(
     module_name: &str,
     module_bits: u64,
 ) -> Result<bool, u64> {
-    static NAME_NAME: AtomicU64 = AtomicU64::new(0);
-    let name_attr = intern_static_name(_py, &NAME_NAME, b"__name__");
+    let name_attr = intern_runtime_static_name(_py, b"__name__");
     let Some(name_bits) = getattr_optional_bits(_py, module_bits, name_attr)? else {
         return Ok(false);
     };
@@ -5899,20 +5865,25 @@ fn importlib_module_is_intrinsic_shell(
     module_name: &str,
     module_bits: u64,
 ) -> Result<bool, u64> {
-    static INTRINSIC_LOOKUP_NAME: AtomicU64 = AtomicU64::new(0);
-    static INTRINSICS_NAME: AtomicU64 = AtomicU64::new(0);
-    static RUNTIME_NAME: AtomicU64 = AtomicU64::new(0);
-
     if !importlib_module_public_surface_empty(_py, module_name, module_bits)? {
         return Ok(false);
     }
     Ok(importlib_module_has_key(
         _py,
         module_bits,
-        &INTRINSIC_LOOKUP_NAME,
+        runtime_static_name_slot(_py, b"_molt_intrinsic_lookup"),
         b"_molt_intrinsic_lookup",
-    )? || importlib_module_has_key(_py, module_bits, &INTRINSICS_NAME, b"_molt_intrinsics")?
-        || importlib_module_has_key(_py, module_bits, &RUNTIME_NAME, b"_molt_runtime")?)
+    )? || importlib_module_has_key(
+        _py,
+        module_bits,
+        runtime_static_name_slot(_py, b"_molt_intrinsics"),
+        b"_molt_intrinsics",
+    )? || importlib_module_has_key(
+        _py,
+        module_bits,
+        runtime_static_name_slot(_py, b"_molt_runtime"),
+        b"_molt_runtime",
+    )?)
 }
 
 fn importlib_module_is_empty_placeholder(
@@ -5920,10 +5891,6 @@ fn importlib_module_is_empty_placeholder(
     module_name: &str,
     module_bits: u64,
 ) -> Result<bool, u64> {
-    static SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static FILE_NAME: AtomicU64 = AtomicU64::new(0);
-    static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-
     if !importlib_module_name_matches(_py, module_name, module_bits)? {
         return Ok(false);
     }
@@ -5937,9 +5904,9 @@ fn importlib_module_is_empty_placeholder(
         }
     }
 
-    let spec_name = intern_static_name(_py, &SPEC_NAME, b"__spec__");
-    let file_name = intern_static_name(_py, &FILE_NAME, b"__file__");
-    let loader_name = intern_static_name(_py, &LOADER_NAME, b"loader");
+    let spec_name = intern_runtime_static_name(_py, b"__spec__");
+    let file_name = intern_runtime_static_name(_py, b"__file__");
+    let loader_name = intern_runtime_static_name(_py, b"loader");
     let spec_bits = importlib_dict_get_string_key_bits(_py, dict_ptr, spec_name)?;
     let file_bits = importlib_dict_get_string_key_bits(_py, dict_ptr, file_name)?;
 
@@ -6071,8 +6038,7 @@ fn importlib_loader_is_molt_loader(
     loader_bits: u64,
     machinery_bits: u64,
 ) -> Result<bool, u64> {
-    static BUILTIN_IMPORTER_NAME: AtomicU64 = AtomicU64::new(0);
-    let attr_name = intern_static_name(_py, &BUILTIN_IMPORTER_NAME, b"BuiltinImporter");
+    let attr_name = intern_runtime_static_name(_py, b"BuiltinImporter");
     let Some(loader_cls_bits) = getattr_optional_bits(_py, machinery_bits, attr_name)? else {
         return Ok(false);
     };
@@ -6132,9 +6098,7 @@ fn importlib_machinery_loader_instance(
 }
 
 fn importlib_machinery_builtin_loader(_py: &PyToken<'_>, machinery_bits: u64) -> Result<u64, u64> {
-    static MOLT_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static BUILTIN_IMPORTER_NAME: AtomicU64 = AtomicU64::new(0);
-    let cache_name = intern_static_name(_py, &MOLT_LOADER_NAME, b"_MOLT_LOADER");
+    let cache_name = intern_runtime_static_name(_py, b"_MOLT_LOADER");
     if let Some(loader_bits) = getattr_optional_bits(_py, machinery_bits, cache_name)?
         && !obj_from_bits(loader_bits).is_none()
     {
@@ -6143,14 +6107,14 @@ fn importlib_machinery_builtin_loader(_py: &PyToken<'_>, machinery_bits: u64) ->
     let loader_bits = importlib_machinery_loader_instance(
         _py,
         machinery_bits,
-        &BUILTIN_IMPORTER_NAME,
+        runtime_static_name_slot(_py, b"BuiltinImporter"),
         b"BuiltinImporter",
         &[],
     )?;
     if let Err(err) = importlib_set_attr(
         _py,
         machinery_bits,
-        &MOLT_LOADER_NAME,
+        runtime_static_name_slot(_py, b"_MOLT_LOADER"),
         b"_MOLT_LOADER",
         loader_bits,
     ) {
@@ -6168,15 +6132,6 @@ fn importlib_find_spec_object_bits(
     payload: &ImportlibFindSpecPayload,
     machinery_bits: u64,
 ) -> Result<u64, u64> {
-    static MODULE_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static SOURCE_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static EXTENSION_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static SOURCELESS_FILE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static ZIP_SOURCE_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static SUBMODULE_SEARCH_LOCATIONS_NAME: AtomicU64 = AtomicU64::new(0);
-    static CACHED_NAME: AtomicU64 = AtomicU64::new(0);
-    static HAS_LOCATION_NAME: AtomicU64 = AtomicU64::new(0);
-
     let fullname_bits = alloc_str_bits(_py, fullname)?;
     let origin_bits = match payload.origin.as_deref() {
         Some(origin) => match alloc_str_bits(_py, origin) {
@@ -6206,7 +6161,7 @@ fn importlib_find_spec_object_bits(
         "source" => match importlib_machinery_loader_instance(
             _py,
             machinery_bits,
-            &SOURCE_FILE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"SourceFileLoader"),
             b"SourceFileLoader",
             &[fullname_bits, origin_bits],
         ) {
@@ -6224,7 +6179,7 @@ fn importlib_find_spec_object_bits(
         "extension" => match importlib_machinery_loader_instance(
             _py,
             machinery_bits,
-            &EXTENSION_FILE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"ExtensionFileLoader"),
             b"ExtensionFileLoader",
             &[fullname_bits, origin_bits],
         ) {
@@ -6242,7 +6197,7 @@ fn importlib_find_spec_object_bits(
         "bytecode" => match importlib_machinery_loader_instance(
             _py,
             machinery_bits,
-            &SOURCELESS_FILE_LOADER_NAME,
+            runtime_static_name_slot(_py, b"SourcelessFileLoader"),
             b"SourcelessFileLoader",
             &[fullname_bits, origin_bits],
         ) {
@@ -6314,7 +6269,7 @@ fn importlib_find_spec_object_bits(
             let out = importlib_machinery_loader_instance(
                 _py,
                 machinery_bits,
-                &ZIP_SOURCE_LOADER_NAME,
+                runtime_static_name_slot(_py, b"_ZipSourceLoader"),
                 b"_ZipSourceLoader",
                 &[fullname_bits, zip_archive_bits, zip_inner_path_bits],
             );
@@ -6357,7 +6312,7 @@ fn importlib_find_spec_object_bits(
     let module_spec_cls_bits = match importlib_required_attribute(
         _py,
         machinery_bits,
-        &MODULE_SPEC_NAME,
+        runtime_static_name_slot(_py, b"ModuleSpec"),
         b"ModuleSpec",
         "importlib.machinery",
     ) {
@@ -6428,7 +6383,7 @@ fn importlib_find_spec_object_bits(
         let out = importlib_set_attr(
             _py,
             spec_bits,
-            &SUBMODULE_SEARCH_LOCATIONS_NAME,
+            runtime_static_name_slot(_py, b"submodule_search_locations"),
             b"submodule_search_locations",
             locations_bits,
         );
@@ -6483,7 +6438,13 @@ fn importlib_find_spec_object_bits(
         },
         None => MoltObject::none().bits(),
     };
-    if let Err(err) = importlib_set_attr(_py, spec_bits, &CACHED_NAME, b"cached", cached_bits) {
+    if let Err(err) = importlib_set_attr(
+        _py,
+        spec_bits,
+        runtime_static_name_slot(_py, b"cached"),
+        b"cached",
+        cached_bits,
+    ) {
         if !obj_from_bits(cached_bits).is_none() {
             dec_ref_bits(_py, cached_bits);
         }
@@ -6509,7 +6470,7 @@ fn importlib_find_spec_object_bits(
     if let Err(err) = importlib_set_attr(
         _py,
         spec_bits,
-        &HAS_LOCATION_NAME,
+        runtime_static_name_slot(_py, b"has_location"),
         b"has_location",
         has_location_bits,
     ) {
@@ -6582,35 +6543,31 @@ fn importlib_module_set_core_state(
     origin_bits: u64,
     module_package_bits: u64,
 ) -> Result<(), u64> {
-    static DUNDER_LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static DUNDER_FILE_NAME: AtomicU64 = AtomicU64::new(0);
-    static DUNDER_CACHED_NAME: AtomicU64 = AtomicU64::new(0);
-    static DUNDER_PACKAGE_NAME: AtomicU64 = AtomicU64::new(0);
     importlib_set_attr(
         _py,
         module_bits,
-        &DUNDER_LOADER_NAME,
+        runtime_static_name_slot(_py, b"__loader__"),
         b"__loader__",
         loader_bits,
     )?;
     importlib_set_attr(
         _py,
         module_bits,
-        &DUNDER_FILE_NAME,
+        runtime_static_name_slot(_py, b"__file__"),
         b"__file__",
         origin_bits,
     )?;
     importlib_set_attr(
         _py,
         module_bits,
-        &DUNDER_CACHED_NAME,
+        runtime_static_name_slot(_py, b"__cached__"),
         b"__cached__",
         MoltObject::none().bits(),
     )?;
     importlib_set_attr(
         _py,
         module_bits,
-        &DUNDER_PACKAGE_NAME,
+        runtime_static_name_slot(_py, b"__package__"),
         b"__package__",
         module_package_bits,
     )?;
@@ -6623,15 +6580,24 @@ fn importlib_spec_set_loader_origin(
     loader_bits: u64,
     origin_bits: u64,
 ) -> Result<(), u64> {
-    static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static ORIGIN_NAME: AtomicU64 = AtomicU64::new(0);
-    static HAS_LOCATION_NAME: AtomicU64 = AtomicU64::new(0);
-    importlib_set_attr(_py, spec_bits, &LOADER_NAME, b"loader", loader_bits)?;
-    importlib_set_attr(_py, spec_bits, &ORIGIN_NAME, b"origin", origin_bits)?;
     importlib_set_attr(
         _py,
         spec_bits,
-        &HAS_LOCATION_NAME,
+        runtime_static_name_slot(_py, b"loader"),
+        b"loader",
+        loader_bits,
+    )?;
+    importlib_set_attr(
+        _py,
+        spec_bits,
+        runtime_static_name_slot(_py, b"origin"),
+        b"origin",
+        origin_bits,
+    )?;
+    importlib_set_attr(
+        _py,
+        spec_bits,
+        runtime_static_name_slot(_py, b"has_location"),
         b"has_location",
         MoltObject::from_bool(true).bits(),
     )?;
@@ -6666,10 +6632,8 @@ fn importlib_spec_set_cached_from_origin_if_missing(
     _py: &PyToken<'_>,
     spec_bits: u64,
 ) -> Result<(), u64> {
-    static CACHED_NAME: AtomicU64 = AtomicU64::new(0);
-    static ORIGIN_NAME: AtomicU64 = AtomicU64::new(0);
-    let cached_name = intern_static_name(_py, &CACHED_NAME, b"cached");
-    let origin_name = intern_static_name(_py, &ORIGIN_NAME, b"origin");
+    let cached_name = intern_runtime_static_name(_py, b"cached");
+    let origin_name = intern_runtime_static_name(_py, b"origin");
     let cached_bits = getattr_optional_bits(_py, spec_bits, cached_name)?;
     let should_set = match cached_bits {
         Some(bits) => {
@@ -6698,7 +6662,13 @@ fn importlib_spec_set_cached_from_origin_if_missing(
     }
     let cached = importlib_cache_from_source(&origin);
     let cached_bits = alloc_str_bits(_py, &cached)?;
-    let out = importlib_set_attr(_py, spec_bits, &CACHED_NAME, b"cached", cached_bits);
+    let out = importlib_set_attr(
+        _py,
+        spec_bits,
+        runtime_static_name_slot(_py, b"cached"),
+        b"cached",
+        cached_bits,
+    );
     if !obj_from_bits(cached_bits).is_none() {
         dec_ref_bits(_py, cached_bits);
     }
@@ -6713,12 +6683,6 @@ fn importlib_import_via_spec(
     util_bits: u64,
     machinery_bits: u64,
 ) -> Result<u64, u64> {
-    static FIND_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static MODULE_FROM_SPEC_NAME: AtomicU64 = AtomicU64::new(0);
-    static LOADER_NAME: AtomicU64 = AtomicU64::new(0);
-    static EXEC_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
-    static LOAD_MODULE_NAME: AtomicU64 = AtomicU64::new(0);
-
     if let Some(existing_bits) =
         importlib_dict_get_string_key_bits(_py, modules_ptr, resolved_bits)?
     {
@@ -6729,7 +6693,7 @@ fn importlib_import_via_spec(
     let find_spec_bits = importlib_required_callable(
         _py,
         util_bits,
-        &FIND_SPEC_NAME,
+        runtime_static_name_slot(_py, b"find_spec"),
         b"find_spec",
         "importlib.util",
     )?;
@@ -6762,7 +6726,7 @@ fn importlib_import_via_spec(
     let module_from_spec_bits = importlib_required_callable(
         _py,
         util_bits,
-        &MODULE_FROM_SPEC_NAME,
+        runtime_static_name_slot(_py, b"module_from_spec"),
         b"module_from_spec",
         "importlib.util",
     )?;
@@ -6775,7 +6739,7 @@ fn importlib_import_via_spec(
         return Err(MoltObject::none().bits());
     }
 
-    let loader_name = intern_static_name(_py, &LOADER_NAME, b"loader");
+    let loader_name = intern_runtime_static_name(_py, b"loader");
     let loader_attr = match getattr_optional_bits(_py, spec_bits, loader_name) {
         Ok(value) => value,
         Err(err) => {
@@ -6833,8 +6797,8 @@ fn importlib_import_via_spec(
     }
 
     if loader_present {
-        let exec_name = intern_static_name(_py, &EXEC_MODULE_NAME, b"exec_module");
-        let load_name = intern_static_name(_py, &LOAD_MODULE_NAME, b"load_module");
+        let exec_name = intern_runtime_static_name(_py, b"exec_module");
+        let load_name = intern_runtime_static_name(_py, b"load_module");
         if let Some(exec_bits) = importlib_reader_lookup_callable(_py, loader_bits, exec_name)? {
             let out_bits = unsafe { call_callable1(_py, exec_bits, module_bits) };
             dec_ref_bits(_py, exec_bits);
@@ -7031,12 +6995,11 @@ fn importlib_try_cext_on_sys_path(
     modules_ptr: *mut u8,
 ) -> Option<u64> {
     // Retrieve sys.path as a Vec<String>.
-    static PATH_NAME_CEXT: AtomicU64 = AtomicU64::new(0);
     let sys_bits = importlib_sys_module_bits(_py)?;
     if obj_from_bits(sys_bits).is_none() {
         return None;
     }
-    let path_name = intern_static_name(_py, &PATH_NAME_CEXT, b"path");
+    let path_name = intern_runtime_static_name(_py, b"path");
     let path_attr = getattr_optional_bits(_py, sys_bits, path_name).ok()??;
     let search_paths = string_sequence_arg_from_bits(_py, path_attr, "sys.path").ok()?;
     if !obj_from_bits(path_attr).is_none() {
