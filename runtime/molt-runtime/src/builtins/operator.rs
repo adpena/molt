@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_obj_model::MoltObject;
 use num_traits::{Signed, ToPrimitive};
@@ -24,17 +24,53 @@ use crate::{
     to_bigint, to_i64, type_name, type_of_bits,
 };
 
-static ITEMGETTER_CLASS: AtomicU64 = AtomicU64::new(0);
-static ATTRGETTER_CLASS: AtomicU64 = AtomicU64::new(0);
-static METHODCALLER_CLASS: AtomicU64 = AtomicU64::new(0);
+pub(crate) struct OperatorRuntimeState {
+    pub(crate) itemgetter_class: AtomicU64,
+    pub(crate) attrgetter_class: AtomicU64,
+    pub(crate) methodcaller_class: AtomicU64,
+    pub(crate) itemgetter_call: AtomicU64,
+    pub(crate) attrgetter_call: AtomicU64,
+    pub(crate) methodcaller_call: AtomicU64,
+    pub(crate) itemgetter_init: AtomicU64,
+    pub(crate) attrgetter_init: AtomicU64,
+    pub(crate) methodcaller_init: AtomicU64,
+}
 
-static ITEMGETTER_CALL: AtomicU64 = AtomicU64::new(0);
-static ATTRGETTER_CALL: AtomicU64 = AtomicU64::new(0);
-static METHODCALLER_CALL: AtomicU64 = AtomicU64::new(0);
+impl OperatorRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            itemgetter_class: AtomicU64::new(0),
+            attrgetter_class: AtomicU64::new(0),
+            methodcaller_class: AtomicU64::new(0),
+            itemgetter_call: AtomicU64::new(0),
+            attrgetter_call: AtomicU64::new(0),
+            methodcaller_call: AtomicU64::new(0),
+            itemgetter_init: AtomicU64::new(0),
+            attrgetter_init: AtomicU64::new(0),
+            methodcaller_init: AtomicU64::new(0),
+        }
+    }
 
-static ITEMGETTER_INIT: AtomicU64 = AtomicU64::new(0);
-static ATTRGETTER_INIT: AtomicU64 = AtomicU64::new(0);
-static METHODCALLER_INIT: AtomicU64 = AtomicU64::new(0);
+    fn slots(&self) -> [&AtomicU64; 9] {
+        [
+            &self.itemgetter_class,
+            &self.attrgetter_class,
+            &self.methodcaller_class,
+            &self.itemgetter_call,
+            &self.attrgetter_call,
+            &self.methodcaller_call,
+            &self.itemgetter_init,
+            &self.attrgetter_init,
+            &self.methodcaller_init,
+        ]
+    }
+}
+
+pub(crate) fn operator_clear_runtime_state(_py: &PyToken<'_>, state: &crate::state::RuntimeState) {
+    crate::gil_assert();
+    let slots = state.operator.slots();
+    crate::state::cache::clear_atomic_slots(_py, &slots);
+}
 
 fn operator_class(
     _py: &PyToken<'_>,
@@ -258,17 +294,18 @@ unsafe fn methodcaller_set_kwargs_bits(ptr: *mut u8, bits: u64) {
 }
 
 fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
+    let operator = &crate::runtime_state(_py).operator;
     let class_bits = operator_class(
         _py,
-        &ITEMGETTER_CLASS,
+        &operator.itemgetter_class,
         "itemgetter",
         16,
-        &ITEMGETTER_CALL,
+        &operator.itemgetter_call,
         crate::molt_operator_itemgetter_call as *const () as usize as u64,
     );
     let init_bits = builtin_func_bits(
         _py,
-        &ITEMGETTER_INIT,
+        &operator.itemgetter_init,
         crate::molt_operator_itemgetter_init as *const () as usize as u64,
         2,
     );
@@ -278,17 +315,18 @@ fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
+    let operator = &crate::runtime_state(_py).operator;
     let class_bits = operator_class(
         _py,
-        &ATTRGETTER_CLASS,
+        &operator.attrgetter_class,
         "attrgetter",
         16,
-        &ATTRGETTER_CALL,
+        &operator.attrgetter_call,
         crate::molt_operator_attrgetter_call as *const () as usize as u64,
     );
     let init_bits = builtin_func_bits(
         _py,
-        &ATTRGETTER_INIT,
+        &operator.attrgetter_init,
         crate::molt_operator_attrgetter_init as *const () as usize as u64,
         2,
     );
@@ -298,17 +336,18 @@ fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
+    let operator = &crate::runtime_state(_py).operator;
     let class_bits = operator_class(
         _py,
-        &METHODCALLER_CLASS,
+        &operator.methodcaller_class,
         "methodcaller",
         32,
-        &METHODCALLER_CALL,
+        &operator.methodcaller_call,
         crate::molt_operator_methodcaller_call as *const () as usize as u64,
     );
     let init_bits = builtin_func_bits(
         _py,
-        &METHODCALLER_INIT,
+        &operator.methodcaller_init,
         crate::molt_operator_methodcaller_init as *const () as usize as u64,
         4,
     );
@@ -811,7 +850,8 @@ pub(crate) fn operator_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     if class_bits == 0 {
         return false;
     }
-    let item_class = ITEMGETTER_CLASS.load(std::sync::atomic::Ordering::Acquire);
+    let operator = &crate::runtime_state(_py).operator;
+    let item_class = operator.itemgetter_class.load(Ordering::Acquire);
     if class_bits == item_class {
         let items_bits = unsafe { itemgetter_items_bits(ptr) };
         if items_bits != 0 && !obj_from_bits(items_bits).is_none() {
@@ -819,7 +859,7 @@ pub(crate) fn operator_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let attr_class = ATTRGETTER_CLASS.load(std::sync::atomic::Ordering::Acquire);
+    let attr_class = operator.attrgetter_class.load(Ordering::Acquire);
     if class_bits == attr_class {
         let attrs_bits = unsafe { attrgetter_attrs_bits(ptr) };
         if attrs_bits != 0 && !obj_from_bits(attrs_bits).is_none() {
@@ -827,7 +867,7 @@ pub(crate) fn operator_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let method_class = METHODCALLER_CLASS.load(std::sync::atomic::Ordering::Acquire);
+    let method_class = operator.methodcaller_class.load(Ordering::Acquire);
     if class_bits == method_class {
         let name_bits = unsafe { methodcaller_name_bits(ptr) };
         let args_bits = unsafe { methodcaller_args_bits(ptr) };
@@ -844,6 +884,56 @@ pub(crate) fn operator_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        molt_operator_attrgetter_type, molt_operator_itemgetter_type,
+        molt_operator_methodcaller_type, operator_clear_runtime_state,
+    };
+    use crate::{obj_from_bits, runtime_state};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn operator_type_caches_are_runtime_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            operator_clear_runtime_state(_py, state);
+
+            let itemgetter_bits = molt_operator_itemgetter_type();
+            let attrgetter_bits = molt_operator_attrgetter_type();
+            let methodcaller_bits = molt_operator_methodcaller_type();
+            assert!(!obj_from_bits(itemgetter_bits).is_none());
+            assert!(!obj_from_bits(attrgetter_bits).is_none());
+            assert!(!obj_from_bits(methodcaller_bits).is_none());
+
+            assert_eq!(
+                state.operator.itemgetter_class.load(Ordering::Acquire),
+                itemgetter_bits
+            );
+            assert_eq!(
+                state.operator.attrgetter_class.load(Ordering::Acquire),
+                attrgetter_bits
+            );
+            assert_eq!(
+                state.operator.methodcaller_class.load(Ordering::Acquire),
+                methodcaller_bits
+            );
+            assert_ne!(state.operator.itemgetter_call.load(Ordering::Acquire), 0);
+            assert_ne!(state.operator.attrgetter_call.load(Ordering::Acquire), 0);
+            assert_ne!(state.operator.methodcaller_call.load(Ordering::Acquire), 0);
+            assert_ne!(state.operator.itemgetter_init.load(Ordering::Acquire), 0);
+            assert_ne!(state.operator.attrgetter_init.load(Ordering::Acquire), 0);
+            assert_ne!(state.operator.methodcaller_init.load(Ordering::Acquire), 0);
+
+            operator_clear_runtime_state(_py, state);
+            for slot in state.operator.slots() {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+        });
+    }
 }
 
 // Re-export operator intrinsics for stdlib operator/_operator modules.
