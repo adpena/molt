@@ -5,8 +5,8 @@ use std::ptr::{self, NonNull};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct BackingCharge {
-    alloc_bytes: usize,
-    grow_bytes: usize,
+    owner_bytes: usize,
+    buffer_bytes: usize,
 }
 
 #[repr(C)]
@@ -39,14 +39,13 @@ impl<T> Drop for TrackedVecOwner<T> {
             let boxed = Box::from_raw(self.ptr.as_ptr());
             let charge = boxed.charge;
             drop(boxed);
-            release_grow(charge.grow_bytes);
-            release_alloc(charge.alloc_bytes);
+            release_alloc(charge.owner_bytes.saturating_add(charge.buffer_bytes));
         }
     }
 }
 
 #[inline]
-fn vec_box_bytes<T>() -> usize {
+fn vec_owner_bytes<T>() -> usize {
     size_of::<TrackedVecBox<T>>()
 }
 
@@ -57,7 +56,7 @@ fn vec_buffer_bytes<T>(capacity: usize) -> Option<usize> {
 
 #[inline]
 fn vec_charge<T>(capacity: usize) -> Option<usize> {
-    vec_box_bytes::<T>().checked_add(vec_buffer_bytes::<T>(capacity)?)
+    vec_owner_bytes::<T>().checked_add(vec_buffer_bytes::<T>(capacity)?)
 }
 
 #[inline]
@@ -77,7 +76,7 @@ unsafe fn owner_ptr_from_vec<T>(ptr: *mut Vec<T>) -> *mut TrackedVecBox<T> {
 }
 
 #[inline]
-fn charge_alloc(bytes: usize) -> bool {
+pub(crate) fn charge_alloc(bytes: usize) -> bool {
     if bytes == 0 {
         return true;
     }
@@ -85,7 +84,7 @@ fn charge_alloc(bytes: usize) -> bool {
 }
 
 #[inline]
-fn charge_grow(bytes: usize) -> bool {
+pub(crate) fn charge_grow(bytes: usize) -> bool {
     if bytes == 0 {
         return true;
     }
@@ -93,7 +92,7 @@ fn charge_grow(bytes: usize) -> bool {
 }
 
 #[inline]
-fn release_alloc(bytes: usize) {
+pub(crate) fn release_alloc(bytes: usize) {
     if bytes == 0 {
         return;
     }
@@ -101,7 +100,7 @@ fn release_alloc(bytes: usize) {
 }
 
 #[inline]
-fn release_grow(bytes: usize) {
+pub(crate) fn release_grow(bytes: usize) {
     if bytes == 0 {
         return;
     }
@@ -122,7 +121,19 @@ pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut V
         return None;
     }
 
-    let actual_charge = vec_charge::<T>(vec.capacity())?;
+    let Some(actual_charge) = vec_charge::<T>(vec.capacity()) else {
+        drop(vec);
+        release_alloc(requested_charge);
+        return None;
+    };
+    let Some(actual_buffer_bytes) = vec_buffer_bytes::<T>(vec.capacity()) else {
+        drop(vec);
+        if actual_charge > requested_charge {
+            release_grow(actual_charge - requested_charge);
+        }
+        release_alloc(requested_charge);
+        return None;
+    };
     if actual_charge > requested_charge && !charge_grow(actual_charge - requested_charge) {
         drop(vec);
         release_alloc(requested_charge);
@@ -145,8 +156,8 @@ pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut V
             raw,
             TrackedVecBox {
                 charge: BackingCharge {
-                    alloc_bytes: requested_charge,
-                    grow_bytes: actual_charge.saturating_sub(requested_charge),
+                    owner_bytes: vec_owner_bytes::<T>(),
+                    buffer_bytes: actual_buffer_bytes,
                 },
                 vec,
             },
@@ -177,6 +188,12 @@ pub(crate) fn tracked_vec_box_zeroed<T: Copy + Default>(len: usize) -> Option<*m
 /// Ensure a tracked Vec has capacity for `required_len` elements before a
 /// mutating operation grows its length.
 ///
+/// Growth uses a replacement buffer that is fully charged before it becomes
+/// visible through the stored Vec pointer. This keeps the tracker aligned with
+/// actual allocator capacity, including allocator overgrant, and prevents a
+/// failed over-limit reserve from leaving a larger buffer attached to the
+/// object.
+///
 /// # Safety
 /// `ptr` must be a live Vec pointer allocated by
 /// [`tracked_vec_box_with_capacity`].
@@ -189,39 +206,43 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_l
     if required_len <= vec.capacity() {
         return true;
     }
-    let Some(old_bytes) = vec_buffer_bytes::<T>(vec.capacity()) else {
+    let old_capacity = vec.capacity();
+    let Some(old_bytes) = vec_buffer_bytes::<T>(old_capacity) else {
         return false;
     };
     let Some(target_bytes) = vec_buffer_bytes::<T>(required_len) else {
         return false;
     };
-    let Some(delta) = target_bytes.checked_sub(old_bytes) else {
-        return false;
-    };
-    if !charge_grow(delta) {
+    if !charge_grow(target_bytes) {
         return false;
     }
-    let additional = required_len.saturating_sub(vec.len());
-    if vec.try_reserve_exact(additional).is_err() {
-        release_grow(delta);
+
+    let mut replacement = Vec::new();
+    if replacement.try_reserve_exact(required_len).is_err() {
+        release_grow(target_bytes);
         return false;
     }
-    let Some(actual_bytes) = vec_buffer_bytes::<T>(vec.capacity()) else {
-        release_grow(delta);
+
+    let Some(actual_bytes) = vec_buffer_bytes::<T>(replacement.capacity()) else {
+        release_grow(target_bytes);
         return false;
     };
     if actual_bytes > target_bytes {
         let extra = actual_bytes - target_bytes;
         if !charge_grow(extra) {
-            release_grow(delta);
+            drop(replacement);
+            release_grow(target_bytes);
             return false;
         }
     } else if actual_bytes < target_bytes {
         release_grow(target_bytes - actual_bytes);
     }
-    let actual_delta = actual_bytes.saturating_sub(old_bytes);
+
+    replacement.append(vec);
+    *vec = replacement;
+    release_grow(old_bytes);
     unsafe {
-        (*owner).charge.grow_bytes = (*owner).charge.grow_bytes.saturating_add(actual_delta);
+        (*owner).charge.buffer_bytes = actual_bytes;
     }
     true
 }
@@ -256,7 +277,17 @@ pub(crate) unsafe fn tracked_vec_box_from_raw<T>(ptr: *mut Vec<T>) -> TrackedVec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::{LimitedTracker, ResourceLimits, set_tracker, with_tracker};
+    use crate::resource::{
+        LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker, with_tracker,
+    };
+
+    struct TrackerReset;
+
+    impl Drop for TrackerReset {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
 
     #[test]
     fn tracked_vec_capacity_is_charged_and_released() {
@@ -291,5 +322,26 @@ mod tests {
         }
         let result = with_tracker(|tracker| tracker.on_allocate(1));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tracked_vec_denied_growth_keeps_original_buffer() {
+        let initial_charge = vec_charge::<u64>(4).expect("initial charge");
+        let replacement_bytes = vec_buffer_bytes::<u64>(16).expect("replacement bytes");
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(initial_charge + replacement_bytes - 1),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+        let ptr = tracked_vec_box_with_capacity::<u64>(4).expect("tracked vec");
+        unsafe {
+            (*ptr).extend_from_slice(&[1, 2, 3, 4]);
+            let original_data = (*ptr).as_ptr();
+            assert!(!tracked_vec_reserve_for_len(ptr, 16));
+            assert_eq!((*ptr).capacity(), 4);
+            assert_eq!((*ptr).as_ptr(), original_data);
+            assert_eq!((*ptr).as_slice(), &[1, 2, 3, 4]);
+            drop(tracked_vec_box_from_raw(ptr));
+        }
     }
 }

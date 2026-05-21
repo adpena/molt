@@ -36,19 +36,119 @@ pub struct ListIntStorage {
     pub data: *mut i64,
     pub len: usize,
     pub cap: usize,
+    owner_bytes: usize,
+    buffer_bytes: usize,
 }
 
 impl ListIntStorage {
-    /// Convert a `Vec<i64>` into a heap-allocated `ListIntStorage`.
-    /// The Vec's buffer is taken over; the Vec itself is NOT dropped.
-    pub fn from_vec(mut vec: Vec<i64>) -> *mut ListIntStorage {
+    #[inline]
+    fn owner_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    #[inline]
+    fn buffer_bytes(capacity: usize) -> Option<usize> {
+        capacity.checked_mul(std::mem::size_of::<i64>())
+    }
+
+    pub fn with_capacity(capacity: usize) -> Option<*mut ListIntStorage> {
+        let requested_buffer = Self::buffer_bytes(capacity)?;
+        let charge = Self::owner_bytes().checked_add(requested_buffer)?;
+        if !crate::object::backing::charge_alloc(charge) {
+            return None;
+        }
+        let mut vec = Vec::new();
+        if capacity > 0 && vec.try_reserve_exact(capacity).is_err() {
+            crate::object::backing::release_alloc(charge);
+            return None;
+        }
+        let Some(actual_buffer) = Self::buffer_bytes(vec.capacity()) else {
+            drop(vec);
+            crate::object::backing::release_alloc(charge);
+            return None;
+        };
+        if actual_buffer > requested_buffer {
+            let extra = actual_buffer - requested_buffer;
+            if !crate::object::backing::charge_grow(extra) {
+                drop(vec);
+                crate::object::backing::release_alloc(charge);
+                return None;
+            }
+        } else if actual_buffer < requested_buffer {
+            crate::object::backing::release_grow(requested_buffer - actual_buffer);
+        }
+        Self::from_reserved_vec(vec, Self::owner_bytes(), actual_buffer)
+    }
+
+    pub fn filled(len: usize, value: i64) -> Option<*mut ListIntStorage> {
+        let ptr = Self::with_capacity(len)?;
+        unsafe {
+            let storage = &mut *ptr;
+            let vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
+            let mut vec = vec;
+            vec.resize(len, value);
+            storage.data = vec.as_mut_ptr();
+            storage.len = vec.len();
+            storage.cap = vec.capacity();
+            std::mem::forget(vec);
+        }
+        Some(ptr)
+    }
+
+    pub fn from_slice(slice: &[i64]) -> Option<*mut ListIntStorage> {
+        let ptr = Self::with_capacity(slice.len())?;
+        unsafe {
+            let storage = &mut *ptr;
+            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
+            vec.extend_from_slice(slice);
+            storage.data = vec.as_mut_ptr();
+            storage.len = vec.len();
+            storage.cap = vec.capacity();
+            std::mem::forget(vec);
+        }
+        Some(ptr)
+    }
+
+    pub fn repeated_slice(slice: &[i64], times: usize) -> Option<*mut ListIntStorage> {
+        let total = slice.len().checked_mul(times)?;
+        let ptr = Self::with_capacity(total)?;
+        unsafe {
+            let storage = &mut *ptr;
+            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
+            for _ in 0..times {
+                vec.extend_from_slice(slice);
+            }
+            storage.data = vec.as_mut_ptr();
+            storage.len = vec.len();
+            storage.cap = vec.capacity();
+            std::mem::forget(vec);
+        }
+        Some(ptr)
+    }
+
+    fn from_reserved_vec(
+        mut vec: Vec<i64>,
+        owner_bytes: usize,
+        buffer_bytes: usize,
+    ) -> Option<*mut ListIntStorage> {
         let storage = ListIntStorage {
             data: vec.as_mut_ptr(),
             len: vec.len(),
             cap: vec.capacity(),
+            owner_bytes,
+            buffer_bytes,
         };
+        let layout = std::alloc::Layout::new::<ListIntStorage>();
+        let raw = unsafe { std::alloc::alloc(layout) as *mut ListIntStorage };
+        if raw.is_null() {
+            crate::object::backing::release_alloc(owner_bytes.saturating_add(buffer_bytes));
+            return None;
+        }
         std::mem::forget(vec);
-        Box::into_raw(Box::new(storage))
+        unsafe {
+            std::ptr::write(raw, storage);
+        }
+        Some(raw)
     }
 
     /// Reconstruct a `Vec<i64>` that owns the buffer.
@@ -57,7 +157,60 @@ impl ListIntStorage {
     /// Must only be called once (e.g. during dealloc).  After this call
     /// the `ListIntStorage`'s `data` pointer is invalid.
     pub unsafe fn into_vec(self) -> Vec<i64> {
-        unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }
+        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
+        crate::object::backing::release_alloc(self.owner_bytes.saturating_add(self.buffer_bytes));
+        vec
+    }
+
+    pub unsafe fn reserve_for_len(&mut self, required_len: usize) -> bool {
+        if required_len <= self.cap {
+            return true;
+        }
+        let target_cap = required_len.max(self.cap.saturating_mul(2)).max(4);
+        let Some(old_bytes) = self.cap.checked_mul(std::mem::size_of::<i64>()) else {
+            return false;
+        };
+        let Some(target_bytes) = target_cap.checked_mul(std::mem::size_of::<i64>()) else {
+            return false;
+        };
+        if !crate::object::backing::charge_grow(target_bytes) {
+            return false;
+        }
+
+        let mut replacement = Vec::new();
+        if replacement.try_reserve_exact(target_cap).is_err() {
+            crate::object::backing::release_grow(target_bytes);
+            return false;
+        }
+
+        let Some(actual_bytes) = replacement
+            .capacity()
+            .checked_mul(std::mem::size_of::<i64>())
+        else {
+            crate::object::backing::release_grow(target_bytes);
+            return false;
+        };
+        if actual_bytes > target_bytes {
+            let extra = actual_bytes - target_bytes;
+            if !crate::object::backing::charge_grow(extra) {
+                drop(replacement);
+                crate::object::backing::release_grow(target_bytes);
+                return false;
+            }
+        } else if actual_bytes < target_bytes {
+            crate::object::backing::release_grow(target_bytes - actual_bytes);
+        }
+
+        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
+        replacement.extend_from_slice(vec.as_slice());
+        drop(vec);
+        self.data = replacement.as_mut_ptr();
+        self.len = replacement.len();
+        self.cap = replacement.capacity();
+        self.buffer_bytes = actual_bytes;
+        crate::object::backing::release_grow(old_bytes);
+        std::mem::forget(replacement);
+        true
     }
 
     /// Append an i64 value to the storage, growing the buffer if needed.
@@ -72,23 +225,17 @@ impl ListIntStorage {
     /// # Safety
     /// `self` must be a valid, heap-allocated `ListIntStorage` whose `data`
     /// pointer owns its buffer (as established by `from_vec`).
-    pub unsafe fn push(&mut self, value: i64) {
+    pub unsafe fn push(&mut self, value: i64) -> bool {
         if self.len == self.cap {
-            // Grow: reconstruct as Vec to use its reallocation logic,
-            // then steal the buffer back. This is zero-copy when the
-            // allocator can extend in-place.
-            let mut vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
-            vec.push(value);
-            self.data = vec.as_mut_ptr();
-            self.len = vec.len();
-            self.cap = vec.capacity();
-            std::mem::forget(vec);
-        } else {
-            unsafe {
-                std::ptr::write(self.data.add(self.len), value);
+            if !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
+                return false;
             }
-            self.len += 1;
         }
+        unsafe {
+            std::ptr::write(self.data.add(self.len), value);
+        }
+        self.len += 1;
+        true
     }
 }
 
@@ -155,19 +302,118 @@ pub struct ListBoolStorage {
     pub data: *mut u8,
     pub len: usize,
     pub cap: usize,
+    owner_bytes: usize,
+    buffer_bytes: usize,
 }
 
 impl ListBoolStorage {
-    /// Convert a `Vec<u8>` into a heap-allocated `ListBoolStorage`.
-    /// The Vec's buffer is taken over; the Vec itself is NOT dropped.
-    pub fn from_vec(mut vec: Vec<u8>) -> *mut ListBoolStorage {
+    #[inline]
+    fn owner_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    #[inline]
+    fn buffer_bytes(capacity: usize) -> Option<usize> {
+        capacity.checked_mul(std::mem::size_of::<u8>())
+    }
+
+    pub fn with_capacity(capacity: usize) -> Option<*mut ListBoolStorage> {
+        let requested_buffer = Self::buffer_bytes(capacity)?;
+        let charge = Self::owner_bytes().checked_add(requested_buffer)?;
+        if !crate::object::backing::charge_alloc(charge) {
+            return None;
+        }
+        let mut vec = Vec::new();
+        if capacity > 0 && vec.try_reserve_exact(capacity).is_err() {
+            crate::object::backing::release_alloc(charge);
+            return None;
+        }
+        let Some(actual_buffer) = Self::buffer_bytes(vec.capacity()) else {
+            drop(vec);
+            crate::object::backing::release_alloc(charge);
+            return None;
+        };
+        if actual_buffer > requested_buffer {
+            let extra = actual_buffer - requested_buffer;
+            if !crate::object::backing::charge_grow(extra) {
+                drop(vec);
+                crate::object::backing::release_alloc(charge);
+                return None;
+            }
+        } else if actual_buffer < requested_buffer {
+            crate::object::backing::release_grow(requested_buffer - actual_buffer);
+        }
+        Self::from_reserved_vec(vec, Self::owner_bytes(), actual_buffer)
+    }
+
+    pub fn filled(len: usize, value: u8) -> Option<*mut ListBoolStorage> {
+        let ptr = Self::with_capacity(len)?;
+        unsafe {
+            let storage = &mut *ptr;
+            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
+            vec.resize(len, value);
+            storage.data = vec.as_mut_ptr();
+            storage.len = vec.len();
+            storage.cap = vec.capacity();
+            std::mem::forget(vec);
+        }
+        Some(ptr)
+    }
+
+    pub fn from_slice(slice: &[u8]) -> Option<*mut ListBoolStorage> {
+        let ptr = Self::with_capacity(slice.len())?;
+        unsafe {
+            let storage = &mut *ptr;
+            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
+            vec.extend_from_slice(slice);
+            storage.data = vec.as_mut_ptr();
+            storage.len = vec.len();
+            storage.cap = vec.capacity();
+            std::mem::forget(vec);
+        }
+        Some(ptr)
+    }
+
+    pub fn repeated_slice(slice: &[u8], times: usize) -> Option<*mut ListBoolStorage> {
+        let total = slice.len().checked_mul(times)?;
+        let ptr = Self::with_capacity(total)?;
+        unsafe {
+            let storage = &mut *ptr;
+            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
+            for _ in 0..times {
+                vec.extend_from_slice(slice);
+            }
+            storage.data = vec.as_mut_ptr();
+            storage.len = vec.len();
+            storage.cap = vec.capacity();
+            std::mem::forget(vec);
+        }
+        Some(ptr)
+    }
+
+    fn from_reserved_vec(
+        mut vec: Vec<u8>,
+        owner_bytes: usize,
+        buffer_bytes: usize,
+    ) -> Option<*mut ListBoolStorage> {
         let storage = ListBoolStorage {
             data: vec.as_mut_ptr(),
             len: vec.len(),
             cap: vec.capacity(),
+            owner_bytes,
+            buffer_bytes,
         };
+        let layout = std::alloc::Layout::new::<ListBoolStorage>();
+        let raw = unsafe { std::alloc::alloc(layout) as *mut ListBoolStorage };
+        if raw.is_null() {
+            crate::object::backing::release_alloc(owner_bytes.saturating_add(buffer_bytes));
+            return None;
+        }
         std::mem::forget(vec);
-        Box::into_raw(Box::new(storage))
+        unsafe {
+            std::ptr::write(raw, storage);
+        }
+        Some(raw)
     }
 
     /// Reconstruct a `Vec<u8>` that owns the buffer.
@@ -176,7 +422,60 @@ impl ListBoolStorage {
     /// Must only be called once (e.g. during dealloc).  After this call
     /// the `ListBoolStorage`'s `data` pointer is invalid.
     pub unsafe fn into_vec(self) -> Vec<u8> {
-        unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }
+        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
+        crate::object::backing::release_alloc(self.owner_bytes.saturating_add(self.buffer_bytes));
+        vec
+    }
+
+    pub unsafe fn reserve_for_len(&mut self, required_len: usize) -> bool {
+        if required_len <= self.cap {
+            return true;
+        }
+        let target_cap = required_len.max(self.cap.saturating_mul(2)).max(8);
+        let Some(old_bytes) = self.cap.checked_mul(std::mem::size_of::<u8>()) else {
+            return false;
+        };
+        let Some(target_bytes) = target_cap.checked_mul(std::mem::size_of::<u8>()) else {
+            return false;
+        };
+        if !crate::object::backing::charge_grow(target_bytes) {
+            return false;
+        }
+
+        let mut replacement = Vec::new();
+        if replacement.try_reserve_exact(target_cap).is_err() {
+            crate::object::backing::release_grow(target_bytes);
+            return false;
+        }
+
+        let Some(actual_bytes) = replacement
+            .capacity()
+            .checked_mul(std::mem::size_of::<u8>())
+        else {
+            crate::object::backing::release_grow(target_bytes);
+            return false;
+        };
+        if actual_bytes > target_bytes {
+            let extra = actual_bytes - target_bytes;
+            if !crate::object::backing::charge_grow(extra) {
+                drop(replacement);
+                crate::object::backing::release_grow(target_bytes);
+                return false;
+            }
+        } else if actual_bytes < target_bytes {
+            crate::object::backing::release_grow(target_bytes - actual_bytes);
+        }
+
+        let vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
+        replacement.extend_from_slice(vec.as_slice());
+        drop(vec);
+        self.data = replacement.as_mut_ptr();
+        self.len = replacement.len();
+        self.cap = replacement.capacity();
+        self.buffer_bytes = actual_bytes;
+        crate::object::backing::release_grow(old_bytes);
+        std::mem::forget(replacement);
+        true
     }
 
     /// Append a u8 value (0 = False, 1 = True) to the storage, growing
@@ -192,23 +491,17 @@ impl ListBoolStorage {
     /// # Safety
     /// `self` must be a valid, heap-allocated `ListBoolStorage` whose `data`
     /// pointer owns its buffer (as established by `from_vec`).
-    pub unsafe fn push(&mut self, value: u8) {
+    pub unsafe fn push(&mut self, value: u8) -> bool {
         if self.len == self.cap {
-            // Grow: reconstruct as Vec to use its reallocation logic,
-            // then steal the buffer back. This is zero-copy when the
-            // allocator can extend in-place.
-            let mut vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
-            vec.push(value);
-            self.data = vec.as_mut_ptr();
-            self.len = vec.len();
-            self.cap = vec.capacity();
-            std::mem::forget(vec);
-        } else {
-            unsafe {
-                std::ptr::write(self.data.add(self.len), value);
+            if !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
+                return false;
             }
-            self.len += 1;
         }
+        unsafe {
+            std::ptr::write(self.data.add(self.len), value);
+        }
+        self.len += 1;
+        true
     }
 }
 
@@ -932,10 +1225,11 @@ pub(crate) fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_function_code_bits, function_code_bits, function_set_code_bits, zip_set_strict_bits,
-        zip_strict_bits,
+        ListIntStorage, ensure_function_code_bits, function_code_bits, function_set_code_bits,
+        zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
     use crate::{
         alloc_function_obj, alloc_string, dec_ref_bits, fn_ptr_code_get, fn_ptr_code_set,
         inc_ref_bits, obj_from_bits,
@@ -948,6 +1242,41 @@ mod tests {
             (*header_from_obj_ptr(ptr))
                 .ref_count
                 .load(Ordering::Relaxed)
+        }
+    }
+
+    struct TrackerReset;
+
+    impl Drop for TrackerReset {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
+
+    #[test]
+    fn list_int_storage_denied_growth_keeps_original_buffer() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let owner_bytes = std::mem::size_of::<ListIntStorage>();
+        let initial_buffer = 4 * std::mem::size_of::<i64>();
+        let replacement_buffer = 16 * std::mem::size_of::<i64>();
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(owner_bytes + initial_buffer + replacement_buffer - 1),
+            ..Default::default()
+        })));
+        let _reset = TrackerReset;
+
+        let ptr = ListIntStorage::from_slice(&[1, 2, 3, 4]).expect("storage");
+        unsafe {
+            let storage = &mut *ptr;
+            let original_data = storage.data;
+            assert!(!storage.reserve_for_len(16));
+            assert_eq!(storage.cap, 4);
+            assert_eq!(storage.data, original_data);
+            assert_eq!(
+                std::slice::from_raw_parts(storage.data, storage.len),
+                &[1, 2, 3, 4]
+            );
+            drop((*Box::from_raw(ptr)).into_vec());
         }
     }
 

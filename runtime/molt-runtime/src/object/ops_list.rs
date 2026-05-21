@@ -128,7 +128,13 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
                         // No NaN-boxing, no promotion, no IncRef (i64 is
                         // not a heap reference).
                         let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
-                        storage.push(int_val);
+                        if !storage.push(int_val) {
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "list allocation failed",
+                            );
+                        }
                         return MoltObject::none().bits();
                     }
                     // Value is not an int — fall through to promote + append.
@@ -139,7 +145,13 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
                         // No NaN-boxing, no promotion, no IncRef (bools are
                         // inline NaN-boxed values, not heap references).
                         let storage = &mut *crate::object::layout::list_bool_storage_ptr(ptr);
-                        storage.push(bool_val as u8);
+                        if !storage.push(bool_val as u8) {
+                            return raise_exception::<_>(
+                                _py,
+                                "MemoryError",
+                                "list allocation failed",
+                            );
+                        }
                         return MoltObject::none().bits();
                     }
                     // Value is not a bool — fall through to promote + append.
@@ -523,8 +535,11 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
                 if object_type_id(list_ptr) == TYPE_ID_LIST_BOOL {
                     // Copy as a new ListBoolStorage (preserves compact representation).
                     let elems = crate::object::layout::list_bool_vec_ref(list_ptr);
-                    let new_vec: Vec<u8> = elems.as_slice().to_vec();
-                    let storage_ptr = crate::object::layout::ListBoolStorage::from_vec(new_vec);
+                    let Some(storage_ptr) =
+                        crate::object::layout::ListBoolStorage::from_slice(elems.as_slice())
+                    else {
+                        return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+                    };
                     let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
                         + std::mem::size_of::<*mut crate::object::layout::ListBoolStorage>()
                         + std::mem::size_of::<u64>();
@@ -538,8 +553,11 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
                 }
                 if object_type_id(list_ptr) == TYPE_ID_LIST_INT {
                     let elems = crate::object::layout::list_int_vec_ref(list_ptr);
-                    let new_vec: Vec<i64> = elems.iter().copied().collect();
-                    let storage_ptr = crate::object::layout::ListIntStorage::from_vec(new_vec);
+                    let Some(storage_ptr) =
+                        crate::object::layout::ListIntStorage::from_slice(elems.as_slice())
+                    else {
+                        return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+                    };
                     let obj_size = std::mem::size_of::<crate::object::MoltHeader>()
                         + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
                         + std::mem::size_of::<u64>();
