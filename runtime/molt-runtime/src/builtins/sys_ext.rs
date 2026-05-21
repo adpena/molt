@@ -7,9 +7,11 @@
 // language-level constants that are always available.
 
 use crate::builtins::numbers::int_bits_from_i64;
+use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
-use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -27,31 +29,97 @@ fn str_bits(_py: &PyToken<'_>, s: &str) -> u64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// String interning table
-// ---------------------------------------------------------------------------
-
-static INTERN_TABLE: OnceLock<Mutex<std::collections::HashMap<String, u64>>> = OnceLock::new();
-
-fn intern_table() -> &'static Mutex<std::collections::HashMap<String, u64>> {
-    INTERN_TABLE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-}
-
 #[derive(Clone, Copy)]
 struct SysTraceProfileState {
     trace_bits: u64,
     profile_bits: u64,
 }
 
-static SYS_TRACE_PROFILE_STATE: OnceLock<Mutex<SysTraceProfileState>> = OnceLock::new();
-
-fn sys_trace_profile_state() -> &'static Mutex<SysTraceProfileState> {
-    SYS_TRACE_PROFILE_STATE.get_or_init(|| {
-        Mutex::new(SysTraceProfileState {
+impl SysTraceProfileState {
+    fn new() -> Self {
+        Self {
             trace_bits: MoltObject::none().bits(),
             profile_bits: MoltObject::none().bits(),
-        })
-    })
+        }
+    }
+}
+
+pub(crate) struct SysRuntimeState {
+    intern_table: Mutex<HashMap<String, u64>>,
+    trace_profile: Mutex<SysTraceProfileState>,
+    switch_interval_bits: AtomicU64,
+    int_max_str_digits: AtomicI64,
+    audit_hooks: Mutex<Vec<u64>>,
+}
+
+impl SysRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            intern_table: Mutex::new(HashMap::new()),
+            trace_profile: Mutex::new(SysTraceProfileState::new()),
+            switch_interval_bits: AtomicU64::new(DEFAULT_SWITCH_INTERVAL_BITS),
+            int_max_str_digits: AtomicI64::new(DEFAULT_INT_MAX_STR_DIGITS),
+            audit_hooks: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+fn sys_state(_py: &PyToken<'_>) -> &'static SysRuntimeState {
+    &runtime_state(_py).sys_ext
+}
+
+pub(crate) fn sys_ext_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let interned = {
+        let mut table = state
+            .sys_ext
+            .intern_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *table)
+    };
+    let (trace_bits, profile_bits) = {
+        let mut trace_profile = state
+            .sys_ext
+            .trace_profile
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let trace_bits = trace_profile.trace_bits;
+        let profile_bits = trace_profile.profile_bits;
+        *trace_profile = SysTraceProfileState::new();
+        (trace_bits, profile_bits)
+    };
+    state
+        .sys_ext
+        .switch_interval_bits
+        .store(DEFAULT_SWITCH_INTERVAL_BITS, AtomicOrdering::Relaxed);
+    state
+        .sys_ext
+        .int_max_str_digits
+        .store(DEFAULT_INT_MAX_STR_DIGITS, AtomicOrdering::Relaxed);
+    let audit_hooks = {
+        let mut hooks = state
+            .sys_ext
+            .audit_hooks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *hooks)
+    };
+
+    for bits in interned.into_values() {
+        dec_ref_sys_owned_bits(_py, bits);
+    }
+    dec_ref_sys_owned_bits(_py, trace_bits);
+    dec_ref_sys_owned_bits(_py, profile_bits);
+    for bits in audit_hooks {
+        dec_ref_sys_owned_bits(_py, bits);
+    }
+}
+
+fn dec_ref_sys_owned_bits(_py: &PyToken<'_>, bits: u64) {
+    if bits != 0 && !obj_from_bits(bits).is_none() {
+        dec_ref_bits(_py, bits);
+    }
 }
 
 fn ensure_trace_or_profile_callable(
@@ -73,17 +141,23 @@ fn ensure_trace_or_profile_callable(
     Ok(())
 }
 
-fn replace_optional_callable(_py: &PyToken<'_>, target: &mut u64, value_bits: u64) {
+fn replace_optional_callable(_py: &PyToken<'_>, target: &mut u64, value_bits: u64) -> Option<u64> {
     if *target == value_bits {
-        return;
+        return None;
     }
     if !obj_from_bits(value_bits).is_none() {
         inc_ref_bits(_py, value_bits);
     }
-    if !obj_from_bits(*target).is_none() {
-        dec_ref_bits(_py, *target);
-    }
+    let old_bits = *target;
+    let old_owned = (!obj_from_bits(old_bits).is_none()).then_some(old_bits);
     *target = value_bits;
+    old_owned
+}
+
+fn release_replaced_optional_callable(_py: &PyToken<'_>, old_bits: Option<u64>) {
+    if let Some(bits) = old_bits {
+        dec_ref_bits(_py, bits);
+    }
 }
 
 fn clone_optional_callable(_py: &PyToken<'_>, value_bits: u64) -> u64 {
@@ -91,6 +165,18 @@ fn clone_optional_callable(_py: &PyToken<'_>, value_bits: u64) -> u64 {
         inc_ref_bits(_py, value_bits);
     }
     value_bits
+}
+
+fn pin_owned_bits(_py: &PyToken<'_>, bits: u64) {
+    if bits != 0 && !obj_from_bits(bits).is_none() {
+        inc_ref_bits(_py, bits);
+    }
+}
+
+fn release_owned_bits(_py: &PyToken<'_>, bits: u64) {
+    if bits != 0 && !obj_from_bits(bits).is_none() {
+        dec_ref_bits(_py, bits);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -312,10 +398,14 @@ pub extern "C" fn molt_sys_settrace(tracefunc_bits: u64) -> u64 {
         if let Err(err) = ensure_trace_or_profile_callable(_py, tracefunc_bits, "settrace") {
             return err;
         }
-        let mut state = sys_trace_profile_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        replace_optional_callable(_py, &mut state.trace_bits, tracefunc_bits);
+        let old_bits = {
+            let mut trace_profile = sys_state(_py)
+                .trace_profile
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            replace_optional_callable(_py, &mut trace_profile.trace_bits, tracefunc_bits)
+        };
+        release_replaced_optional_callable(_py, old_bits);
         MoltObject::none().bits()
     })
 }
@@ -324,10 +414,11 @@ pub extern "C" fn molt_sys_settrace(tracefunc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_gettrace() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let state = sys_trace_profile_state()
+        let trace_profile = sys_state(_py)
+            .trace_profile
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        clone_optional_callable(_py, state.trace_bits)
+        clone_optional_callable(_py, trace_profile.trace_bits)
     })
 }
 
@@ -338,10 +429,14 @@ pub extern "C" fn molt_sys_setprofile(profilefunc_bits: u64) -> u64 {
         if let Err(err) = ensure_trace_or_profile_callable(_py, profilefunc_bits, "setprofile") {
             return err;
         }
-        let mut state = sys_trace_profile_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        replace_optional_callable(_py, &mut state.profile_bits, profilefunc_bits);
+        let old_bits = {
+            let mut trace_profile = sys_state(_py)
+                .trace_profile
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            replace_optional_callable(_py, &mut trace_profile.profile_bits, profilefunc_bits)
+        };
+        release_replaced_optional_callable(_py, old_bits);
         MoltObject::none().bits()
     })
 }
@@ -350,10 +445,11 @@ pub extern "C" fn molt_sys_setprofile(profilefunc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getprofile() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let state = sys_trace_profile_state()
+        let trace_profile = sys_state(_py)
+            .trace_profile
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        clone_optional_callable(_py, state.profile_bits)
+        clone_optional_callable(_py, trace_profile.profile_bits)
     })
 }
 
@@ -371,10 +467,16 @@ pub extern "C" fn molt_sys_intern(s_bits: u64) -> u64 {
                 );
             }
         };
-        let mut table = intern_table().lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(&bits) = table.get(&s) {
-            inc_ref_bits(_py, bits);
-            return bits;
+        let state = sys_state(_py);
+        {
+            let table = state
+                .intern_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(&bits) = table.get(&s) {
+                inc_ref_bits(_py, bits);
+                return bits;
+            }
         }
         // Allocate new interned string
         let ptr = alloc_string(_py, s.as_bytes());
@@ -382,9 +484,26 @@ pub extern "C" fn molt_sys_intern(s_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let bits = MoltObject::from_ptr(ptr).bits();
-        inc_ref_bits(_py, bits); // extra ref for the table
-        table.insert(s, bits);
-        bits
+        let existing_bits = {
+            let mut table = state
+                .intern_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(&existing_bits) = table.get(&s) {
+                Some(existing_bits)
+            } else {
+                inc_ref_bits(_py, bits); // extra ref for the table
+                table.insert(s, bits);
+                None
+            }
+        };
+        if let Some(existing_bits) = existing_bits {
+            inc_ref_bits(_py, existing_bits);
+            dec_ref_bits(_py, bits);
+            existing_bits
+        } else {
+            bits
+        }
     })
 }
 
@@ -780,16 +899,17 @@ pub extern "C" fn molt_sys_getfilesystemencoding() -> u64 {
 
 // --- Thread switch interval (GIL timeslice stub) ---
 
-static SWITCH_INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new({
-    // 0.005 as f64 bits
-    0.005f64.to_bits()
-});
+const DEFAULT_SWITCH_INTERVAL_BITS: u64 = 0.005f64.to_bits();
 
 /// `sys.getswitchinterval()` -> float seconds
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getswitchinterval() -> u64 {
-    let bits = SWITCH_INTERVAL.load(AtomicOrdering::Relaxed);
-    MoltObject::from_float(f64::from_bits(bits)).bits()
+    crate::with_gil_entry_nopanic!(_py, {
+        let bits = sys_state(_py)
+            .switch_interval_bits
+            .load(AtomicOrdering::Relaxed);
+        MoltObject::from_float(f64::from_bits(bits)).bits()
+    })
 }
 
 /// `sys.setswitchinterval(interval)` -> None
@@ -810,21 +930,27 @@ pub extern "C" fn molt_sys_setswitchinterval(interval_bits: u64) -> u64 {
                 "switch interval must be strictly positive",
             );
         }
-        SWITCH_INTERVAL.store(val.to_bits(), AtomicOrdering::Relaxed);
+        sys_state(_py)
+            .switch_interval_bits
+            .store(val.to_bits(), AtomicOrdering::Relaxed);
         MoltObject::none().bits()
     })
 }
 
 // --- Integer string conversion length limitation ---
 
-static INT_MAX_STR_DIGITS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(4300);
+const DEFAULT_INT_MAX_STR_DIGITS: i64 = 4300;
 const INT_STR_DIGITS_CHECK_THRESHOLD: i64 = 640;
 
 /// `sys.get_int_max_str_digits()` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_get_int_max_str_digits() -> u64 {
-    let val = INT_MAX_STR_DIGITS.load(AtomicOrdering::Relaxed);
-    MoltObject::from_int(val).bits()
+    crate::with_gil_entry_nopanic!(_py, {
+        let val = sys_state(_py)
+            .int_max_str_digits
+            .load(AtomicOrdering::Relaxed);
+        MoltObject::from_int(val).bits()
+    })
 }
 
 /// `sys.set_int_max_str_digits(maxdigits)` -> None
@@ -848,7 +974,9 @@ pub extern "C" fn molt_sys_set_int_max_str_digits(maxdigits_bits: u64) -> u64 {
             );
             return raise_exception::<u64>(_py, "ValueError", &msg);
         }
-        INT_MAX_STR_DIGITS.store(val, AtomicOrdering::Relaxed);
+        sys_state(_py)
+            .int_max_str_digits
+            .store(val, AtomicOrdering::Relaxed);
         MoltObject::none().bits()
     })
 }
@@ -885,12 +1013,6 @@ pub extern "C" fn molt_sys_call_tracing_validate(func_bits: u64, args_bits: u64)
 
 // --- Audit hooks ---
 
-static AUDIT_HOOKS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
-
-fn audit_hooks() -> &'static Mutex<Vec<u64>> {
-    AUDIT_HOOKS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
 /// `sys.addaudithook(hook)` -> None
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
@@ -899,8 +1021,11 @@ pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "expected a callable object");
         }
         inc_ref_bits(_py, hook_bits);
-        let mut hooks = audit_hooks().lock().unwrap();
-        hooks.push(hook_bits);
+        sys_state(_py)
+            .audit_hooks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(hook_bits);
         MoltObject::none().bits()
     })
 }
@@ -911,15 +1036,29 @@ pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
 /// handle list.  For simplicity we return count; 0 means no hooks.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_audit_hook_count() -> u64 {
-    let hooks = audit_hooks().lock().unwrap();
-    MoltObject::from_int(hooks.len() as i64).bits()
+    crate::with_gil_entry_nopanic!(_py, {
+        let hooks = sys_state(_py)
+            .audit_hooks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        MoltObject::from_int(hooks.len() as i64).bits()
+    })
 }
 
 /// `sys._audit_get_hooks()` -> list of callable bits
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_audit_get_hooks() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let hooks = audit_hooks().lock().unwrap();
+        let hooks = {
+            let hooks = sys_state(_py)
+                .audit_hooks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for &bits in hooks.iter() {
+                pin_owned_bits(_py, bits);
+            }
+            hooks.clone()
+        };
         if hooks.is_empty() {
             let ptr = alloc_list(_py, &[]);
             if ptr.is_null() {
@@ -928,6 +1067,9 @@ pub extern "C" fn molt_sys_audit_get_hooks() -> u64 {
             return MoltObject::from_ptr(ptr).bits();
         }
         let ptr = alloc_list(_py, &hooks);
+        for &bits in hooks.iter() {
+            release_owned_bits(_py, bits);
+        }
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -1084,4 +1226,118 @@ pub extern "C" fn molt_sys_path() -> u64 {
             MoltObject::from_ptr(ptr).bits()
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::builders::alloc_function_obj;
+    use std::sync::atomic::Ordering;
+
+    fn ref_count(ptr: *mut u8) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn sys_ext_state_is_runtime_scoped_and_clearable() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            sys_ext_clear_state(_py, state);
+
+            let input_ptr = alloc_string(_py, b"sys-ext-runtime-intern");
+            let input_bits = MoltObject::from_ptr(input_ptr).bits();
+            let interned_bits = molt_sys_intern(input_bits);
+            let interned_ptr = obj_from_bits(interned_bits).as_ptr().unwrap();
+            let interned_refs_with_table = ref_count(interned_ptr);
+            assert_eq!(state.sys_ext.intern_table.lock().unwrap().len(), 1);
+
+            let trace_ptr = alloc_function_obj(_py, 0, 0);
+            let trace_bits = MoltObject::from_ptr(trace_ptr).bits();
+            let trace_refs_initial = ref_count(trace_ptr);
+            assert!(obj_from_bits(molt_sys_settrace(trace_bits)).is_none());
+            assert_eq!(ref_count(trace_ptr), trace_refs_initial + 1);
+            let returned_trace = molt_sys_gettrace();
+            assert_eq!(returned_trace, trace_bits);
+            dec_ref_bits(_py, returned_trace);
+
+            let profile_ptr = alloc_function_obj(_py, 0, 0);
+            let profile_bits = MoltObject::from_ptr(profile_ptr).bits();
+            let profile_refs_initial = ref_count(profile_ptr);
+            assert!(obj_from_bits(molt_sys_setprofile(profile_bits)).is_none());
+            assert_eq!(ref_count(profile_ptr), profile_refs_initial + 1);
+            let returned_profile = molt_sys_getprofile();
+            assert_eq!(returned_profile, profile_bits);
+            dec_ref_bits(_py, returned_profile);
+
+            let hook_ptr = alloc_function_obj(_py, 0, 0);
+            let hook_bits = MoltObject::from_ptr(hook_ptr).bits();
+            let hook_refs_initial = ref_count(hook_ptr);
+            assert!(obj_from_bits(molt_sys_addaudithook(hook_bits)).is_none());
+            assert_eq!(ref_count(hook_ptr), hook_refs_initial + 1);
+            assert_eq!(to_i64(obj_from_bits(molt_sys_audit_hook_count())), Some(1));
+
+            assert!(
+                obj_from_bits(molt_sys_setswitchinterval(
+                    MoltObject::from_float(0.25).bits()
+                ))
+                .is_none()
+            );
+            assert_eq!(
+                to_f64(obj_from_bits(molt_sys_getswitchinterval())),
+                Some(0.25)
+            );
+            assert!(
+                obj_from_bits(molt_sys_set_int_max_str_digits(
+                    MoltObject::from_int(0).bits()
+                ))
+                .is_none()
+            );
+            assert_eq!(
+                to_i64(obj_from_bits(molt_sys_get_int_max_str_digits())),
+                Some(0)
+            );
+
+            sys_ext_clear_state(_py, state);
+
+            assert!(state.sys_ext.intern_table.lock().unwrap().is_empty());
+            assert_eq!(ref_count(interned_ptr), interned_refs_with_table - 1);
+            assert_eq!(ref_count(trace_ptr), trace_refs_initial);
+            assert_eq!(ref_count(profile_ptr), profile_refs_initial);
+            assert_eq!(ref_count(hook_ptr), hook_refs_initial);
+            assert!(obj_from_bits(molt_sys_gettrace()).is_none());
+            assert!(obj_from_bits(molt_sys_getprofile()).is_none());
+            assert_eq!(to_i64(obj_from_bits(molt_sys_audit_hook_count())), Some(0));
+            assert_eq!(
+                to_f64(obj_from_bits(molt_sys_getswitchinterval())),
+                Some(0.005)
+            );
+            assert_eq!(
+                to_i64(obj_from_bits(molt_sys_get_int_max_str_digits())),
+                Some(DEFAULT_INT_MAX_STR_DIGITS)
+            );
+
+            let input2_ptr = alloc_string(_py, b"sys-ext-runtime-intern-2");
+            let input2_bits = MoltObject::from_ptr(input2_ptr).bits();
+            let interned2_bits = molt_sys_intern(input2_bits);
+            assert_eq!(state.sys_ext.intern_table.lock().unwrap().len(), 1);
+
+            sys_ext_clear_state(_py, state);
+            dec_ref_bits(_py, interned2_bits);
+            dec_ref_bits(_py, input2_bits);
+            dec_ref_bits(_py, hook_bits);
+            dec_ref_bits(_py, profile_bits);
+            dec_ref_bits(_py, trace_bits);
+            dec_ref_bits(_py, interned_bits);
+            dec_ref_bits(_py, input_bits);
+            assert!(!exception_pending(_py));
+        });
+    }
 }
