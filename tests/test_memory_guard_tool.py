@@ -387,6 +387,26 @@ def test_run_command_passes_through_success() -> None:
     assert result.elapsed_s > 0
 
 
+def test_run_command_captures_large_stdout_without_pipe_deadlock() -> None:
+    script = (
+        "import sys; "
+        "sys.stdout.write('x' * (2 * 1024 * 1024)); "
+        "sys.stdout.flush(); "
+        "sys.stderr.write('done\\n')"
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", script],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        timeout=5.0,
+    )
+
+    assert result.returncode == 0
+    assert len(result.stdout) == 2 * 1024 * 1024
+    assert result.stderr == "done\n"
+
+
 def test_run_command_feeds_stdin_under_guard() -> None:
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"],

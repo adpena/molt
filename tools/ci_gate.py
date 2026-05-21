@@ -762,15 +762,21 @@ def _strip_background_flag(argv: Sequence[str]) -> list[str]:
     return [arg for arg in argv if arg != "--background"]
 
 
-def _background_process_kwargs(
+def _background_process_env_and_kwargs(
+    env: Mapping[str, str],
     limits: MemoryGuardLimits | None | object = _DEFAULT_MEMORY_LIMITS,
-) -> dict[str, object]:
+) -> tuple[dict[str, str], dict[str, object]]:
     kwargs: dict[str, object] = {"start_new_session": True}
     resolved_limits = _resolve_memory_limits(limits)
-    if os.name != "posix":
-        return kwargs
-    kwargs.update(harness_memory_guard.batch_process_group_kwargs(resolved_limits))
-    return kwargs
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_CI_GATE",
+        env,
+        repo_root=ROOT,
+        limits=resolved_limits,
+    )
+    if os.name == "posix":
+        kwargs.update(context.process_group_kwargs())
+    return dict(context.env), kwargs
 
 
 def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
@@ -784,6 +790,7 @@ def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
     command = [sys.executable, str(CI_GATE), *_strip_background_flag(argv)]
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env, popen_kwargs = _background_process_env_and_kwargs(env)
     with log_path.open("ab") as log:
         proc = subprocess.Popen(
             command,
@@ -791,7 +798,7 @@ def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
-            **_background_process_kwargs(),
+            **popen_kwargs,
         )
     metadata = BackgroundGateMetadata(
         pid=proc.pid,

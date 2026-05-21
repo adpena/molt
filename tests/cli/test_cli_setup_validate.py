@@ -54,6 +54,61 @@ def _run_dev(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _fake_cli_harness(
+    calls: list[dict[str, object]],
+    *,
+    result_factory=None,
+):
+    class FakeContext:
+        def __init__(
+            self,
+            prefix: str,
+            env: dict[str, str] | None,
+            repo_root: Path,
+        ) -> None:
+            self.prefix = prefix
+            self.env = env
+            self.repo_root = repo_root
+
+        @classmethod
+        def from_env(
+            cls,
+            prefix: str,
+            env: dict[str, str] | None,
+            *,
+            repo_root: Path,
+        ):
+            calls.append(
+                {
+                    "method": "context",
+                    "prefix": prefix,
+                    "env": env,
+                    "repo_root": repo_root,
+                }
+            )
+            return cls(prefix, env, repo_root)
+
+        def run(self, cmd: list[str], **kwargs: object):
+            calls.append(
+                {
+                    "method": "run",
+                    "cmd": cmd,
+                    "prefix": self.prefix,
+                    "env": self.env,
+                    "repo_root": self.repo_root,
+                    **kwargs,
+                }
+            )
+            if result_factory is not None:
+                return result_factory(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
+
+    class FakeMemoryGuard:
+        HarnessExecutionContext = FakeContext
+
+    return FakeMemoryGuard
+
+
 def test_cli_setup_json_reports_actions_and_environment() -> None:
     res = _run_cli(["setup", "--json"])
     assert res.returncode == 0, res.stderr
@@ -104,24 +159,13 @@ def test_cli_run_command_uses_memory_guard_prefix(
 
     calls: list[dict[str, object]] = []
 
-    class FakeMemoryGuard:
-        @staticmethod
-        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
-            calls.append({"method": "limits", "prefix": prefix, "env": env})
-            return object()
-
-        @staticmethod
-        def guarded_completed_process(cmd: list[str], **kwargs: object):
-            calls.append({"method": "run", "cmd": cmd, **kwargs})
-            return subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
-
     def fail_raw_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("guarded CLI command used raw subprocess.run")
 
     monkeypatch.setattr(
         cli,
         "_load_cli_harness_memory_guard",
-        lambda cwd: FakeMemoryGuard,
+        lambda cwd: _fake_cli_harness(calls),
         raising=True,
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
@@ -135,9 +179,10 @@ def test_cli_run_command_uses_memory_guard_prefix(
 
     assert rc == 0
     assert calls[0] == {
-        "method": "limits",
+        "method": "context",
         "prefix": "MOLT_BENCH",
         "env": {"PATH": "/usr/bin"},
+        "repo_root": ROOT,
     }
     assert calls[1]["method"] == "run"
     assert calls[1]["prefix"] == "MOLT_BENCH"
@@ -152,18 +197,10 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
 
     calls: list[dict[str, object]] = []
 
-    class FakeMemoryGuard:
-        @staticmethod
-        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
-            calls.append({"method": "limits", "prefix": prefix, "env": env})
-            return object()
-
-        @staticmethod
-        def guarded_completed_process(cmd: list[str], **kwargs: object):
-            calls.append({"method": "run", "cmd": cmd, **kwargs})
-            result = subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
-            result.elapsed_s = 0.125  # type: ignore[attr-defined]
-            return result
+    def result_factory(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        result = subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
+        result.elapsed_s = 0.125  # type: ignore[attr-defined]
+        return result
 
     def fail_raw_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("guarded timed CLI command used raw subprocess.run")
@@ -171,7 +208,7 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
     monkeypatch.setattr(
         cli,
         "_load_cli_harness_memory_guard",
-        lambda cwd: FakeMemoryGuard,
+        lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
         raising=True,
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
@@ -200,22 +237,14 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
 
     calls: list[dict[str, object]] = []
 
-    class FakeMemoryGuard:
-        @staticmethod
-        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
-            calls.append({"method": "limits", "prefix": prefix, "env": env})
-            return object()
-
-        @staticmethod
-        def guarded_completed_process(cmd: list[str], **kwargs: object):
-            calls.append({"method": "run", "cmd": cmd, **kwargs})
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
     monkeypatch.setenv("MOLT_CLI_MAX_PROCESS_RSS_GB", "0.05")
     monkeypatch.setattr(
         cli,
         "_load_cli_harness_memory_guard",
-        lambda cwd: FakeMemoryGuard,
+        lambda cwd: _fake_cli_harness(
+            calls,
+            result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
+        ),
         raising=True,
     )
 
@@ -233,6 +262,7 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
         "MOLT_CLI_MAX_PROCESS_RSS_GB": "0.05",
     }
     assert calls[1]["env"] == calls[0]["env"]
+    assert calls[1]["repo_root"] == ROOT
 
 
 def test_cli_cargo_build_helper_uses_default_memory_guard(
@@ -242,22 +272,14 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
 
     calls: list[dict[str, object]] = []
 
-    class FakeMemoryGuard:
-        @staticmethod
-        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
-            calls.append({"method": "limits", "prefix": prefix, "env": env})
-            return {"prefix": prefix}
-
-        @staticmethod
-        def guarded_completed_process(cmd: list[str], **kwargs: object):
-            calls.append({"method": "run", "cmd": cmd, **kwargs})
-            run_count = sum(1 for call in calls if call["method"] == "run")
-            return subprocess.CompletedProcess(
-                cmd,
-                1 if run_count == 1 else 0,
-                "",
-                "sccache: error: cache unavailable",
-            )
+    def result_factory(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        run_count = sum(1 for call in calls if call["method"] == "run")
+        return subprocess.CompletedProcess(
+            cmd,
+            1 if run_count == 1 else 0,
+            "",
+            "sccache: error: cache unavailable",
+        )
 
     def fail_raw_subprocess_run(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("cargo helper used raw subprocess.run")
@@ -267,7 +289,7 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     monkeypatch.setattr(
         cli,
         "_load_cli_harness_memory_guard",
-        lambda cwd: FakeMemoryGuard,
+        lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
         raising=True,
     )
 
@@ -305,26 +327,18 @@ def test_cli_wrapper_build_uses_default_memory_guard(
     output = tmp_path / "main_molt"
     calls: list[dict[str, object]] = []
 
-    class FakeMemoryGuard:
-        @staticmethod
-        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
-            calls.append({"method": "limits", "prefix": prefix, "env": env})
-            return object()
-
-        @staticmethod
-        def guarded_completed_process(cmd: list[str], **kwargs: object):
-            calls.append({"method": "run", "cmd": cmd, **kwargs})
-            payload = {
-                "status": "ok",
-                "data": {
-                    "output": str(output),
-                    "consumer_output": str(output),
-                    "artifacts": {},
-                },
-            }
-            result = subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
-            result.elapsed_s = 0.25  # type: ignore[attr-defined]
-            return result
+    def result_factory(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        payload = {
+            "status": "ok",
+            "data": {
+                "output": str(output),
+                "consumer_output": str(output),
+                "artifacts": {},
+            },
+        }
+        result = subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        result.elapsed_s = 0.25  # type: ignore[attr-defined]
+        return result
 
     def fail_raw_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("wrapper build used raw subprocess.run")
@@ -332,7 +346,7 @@ def test_cli_wrapper_build_uses_default_memory_guard(
     monkeypatch.setattr(
         cli,
         "_load_cli_harness_memory_guard",
-        lambda cwd: FakeMemoryGuard,
+        lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
         raising=True,
     )
     monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
@@ -352,11 +366,11 @@ def test_cli_wrapper_build_uses_default_memory_guard(
     assert contract is not None
     assert contract.consumer_output == output
     assert duration == pytest.approx(0.25)
-    assert calls[0]["prefix"] == "MOLT_CLI"
-    assert calls[1]["prefix"] == "MOLT_CLI"
-    assert calls[1]["capture_output"] is True
-    assert calls[1]["cmd"][:4] == [sys.executable, "-m", "molt.cli", "build"]
-    assert "--json" in calls[1]["cmd"]
+    run_calls = [call for call in calls if call["method"] == "run"]
+    assert run_calls[0]["prefix"] == "MOLT_CLI"
+    assert run_calls[0]["capture_output"] is True
+    assert run_calls[0]["cmd"][:4] == [sys.executable, "-m", "molt.cli", "build"]
+    assert "--json" in run_calls[0]["cmd"]
 
 
 def test_cli_diff_command_uses_diff_memory_guard(
@@ -523,7 +537,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
 ) -> None:
     from molt import cli
 
-    prefixes: list[str] = []
+    calls: list[dict[str, object]] = []
     steps = [
         cli._ValidationStep(
             "conformance-step",
@@ -554,17 +568,6 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
         ),
     ]
 
-    class FakeMemoryGuard:
-        @staticmethod
-        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
-            del env
-            return {"prefix": prefix}
-
-        @staticmethod
-        def guarded_completed_process(cmd: list[str], **kwargs: object):
-            prefixes.append(str(kwargs["prefix"]))
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
     monkeypatch.setattr(cli, "_find_molt_root", lambda *args: ROOT, raising=True)
     monkeypatch.setattr(
         cli,
@@ -575,12 +578,15 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
     monkeypatch.setattr(
         cli,
         "_load_cli_harness_memory_guard",
-        lambda cwd: FakeMemoryGuard,
+        lambda cwd: _fake_cli_harness(
+            calls,
+            result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
+        ),
         raising=True,
     )
 
     assert cli.validate(suite="smoke", json_output=True) == 0
-
+    prefixes = [call["prefix"] for call in calls if call["method"] == "run"]
     assert prefixes == ["MOLT_CONFORMANCE", "MOLT_BENCH", "MOLT_TEST_SUITE"]
 
 
