@@ -9319,12 +9319,12 @@ def _run_cargo_with_sccache_retry(
     json_output: bool,
     label: str,
 ) -> subprocess.CompletedProcess[str]:
-    build = subprocess.run(
+    build = _run_completed_command(
         cmd,
         cwd=cwd,
         env=env,
         capture_output=True,
-        text=True,
+        memory_guard_prefix="MOLT_BUILD",
         timeout=timeout,
     )
     wrapper = env.get("RUSTC_WRAPPER", "")
@@ -9341,12 +9341,12 @@ def _run_cargo_with_sccache_retry(
                 f"{label}: sccache wrapper failure detected; retrying without sccache.",
                 file=sys.stderr,
             )
-        build = subprocess.run(
+        build = _run_completed_command(
             cmd,
             cwd=cwd,
             env=retry_env,
             capture_output=True,
-            text=True,
+            memory_guard_prefix="MOLT_BUILD",
             timeout=timeout,
         )
     return build

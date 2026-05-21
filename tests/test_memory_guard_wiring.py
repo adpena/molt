@@ -167,6 +167,7 @@ GUARDED_ENTRYPOINTS = {
         "_load_cli_harness_memory_guard",
         "guarded_completed_process",
         "guarded_completed_process_to_tempfiles",
+        "MOLT_BUILD",
         "MOLT_BENCH",
         "MOLT_CONFORMANCE",
         "MOLT_DIFF",
