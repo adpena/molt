@@ -1260,6 +1260,47 @@ fn module_capi_metadata_and_state_registry_roundtrip() {
 }
 
 #[test]
+fn module_capi_state_is_runtime_scoped_and_clearable() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let state = runtime_state(_py);
+        c_api_module_clear_state(_py, state);
+
+        let module_name_bits = unsafe { molt_string_from(b"demo_capi_state".as_ptr(), 15) };
+        assert!(!obj_from_bits(module_name_bits).is_none());
+        let module_bits = molt_module_create(module_name_bits);
+        assert!(!obj_from_bits(module_bits).is_none());
+        let module_def_ptr = 0xC0FFEEusize;
+
+        assert_eq!(
+            molt_module_capi_register(module_bits, module_def_ptr, 16),
+            0
+        );
+        assert_eq!(molt_module_state_add(module_bits, module_def_ptr), 0);
+        {
+            let guard = c_api_module_state(_py);
+            assert_eq!(guard.metadata.len(), 1);
+            assert_eq!(guard.state_registry.by_def.len(), 1);
+            assert_eq!(guard.state_registry.by_module.len(), 1);
+        }
+
+        c_api_module_clear_state(_py, state);
+        {
+            let guard = c_api_module_state(_py);
+            assert!(guard.metadata.is_empty());
+            assert!(guard.state_registry.by_def.is_empty());
+            assert!(guard.state_registry.by_module.is_empty());
+        }
+        assert_eq!(molt_module_capi_get_def(module_bits), 0);
+        assert!(molt_module_capi_get_state(module_bits).is_null());
+        assert_eq!(molt_module_state_find(module_def_ptr), 0);
+
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, module_name_bits);
+    });
+}
+
+#[test]
 fn module_capi_method_bridge_handles_supported_flags() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
