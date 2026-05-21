@@ -17,6 +17,7 @@ use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
 use crate::async_rt::sockets::SocketRuntimeState;
 use crate::builtins::asyncio_core::AsyncioCoreState;
 use crate::builtins::asyncio_queue::AsyncioQueueRuntimeState;
+use crate::builtins::attributes::AttributesRuntimeState;
 use crate::builtins::concurrent::ConcurrentRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::ConfigParserRuntimeState;
@@ -306,6 +307,7 @@ pub(crate) struct RuntimeState {
     pub(crate) task_last_exceptions: Mutex<HashMap<PtrSlot, PtrSlot>>,
     pub(crate) task_last_exception_pending: AtomicBool,
     pub(crate) task_results: Mutex<HashMap<PtrSlot, u64>>,
+    pub(crate) attributes: AttributesRuntimeState,
     pub(crate) dict_subclass_storage: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) await_waiters: Mutex<HashMap<PtrSlot, Vec<PtrSlot>>>,
     pub(crate) await_waiter_index: Mutex<HashMap<PtrSlot, AwaitWaiterIndex>>,
@@ -411,6 +413,7 @@ impl RuntimeState {
             task_last_exceptions: Mutex::new(HashMap::new()),
             task_last_exception_pending: AtomicBool::new(false),
             task_results: Mutex::new(HashMap::new()),
+            attributes: AttributesRuntimeState::new(),
             dict_subclass_storage: Mutex::new(HashMap::new()),
             await_waiters: Mutex::new(HashMap::new()),
             await_waiter_index: Mutex::new(HashMap::new()),
