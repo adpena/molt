@@ -100,15 +100,15 @@ jobs:
 
       - name: Build Molt backend and WASM host
         run: |
-          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend
-          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             cargo build --profile dev-fast -p molt-wasm-host
 
       # ── WASM target: hello.py (class + arithmetic) ──
       - name: Compile hello.py to WASM
         run: |
-          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
             examples/hello.py --build-profile dev --target wasm --output /tmp/test_hello.wasm
         env:
@@ -124,12 +124,12 @@ jobs:
           fi
 
       - name: Run hello.wasm with molt-wasm-host
-        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr --child-rlimit-gb "$MOLT_WASM_TEST_CHILD_RLIMIT_GB" -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm
+        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm
 
       # ── WASM target: comprehension_fail.py (list comprehension regression gate) ──
       - name: Compile comprehension_fail.py to WASM
         run: |
-          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
             examples/comprehension_fail.py --build-profile dev --target wasm --output /tmp/test_comprehension.wasm
         env:
@@ -145,12 +145,12 @@ jobs:
           fi
 
       - name: Run comprehension.wasm with molt-wasm-host
-        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr --child-rlimit-gb "$MOLT_WASM_TEST_CHILD_RLIMIT_GB" -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_comprehension.wasm
+        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_comprehension.wasm
 
       # ── Luau target: hello.py ──
       - name: Compile hello.py to Luau
         run: |
-          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
             examples/hello.py --build-profile dev --target luau --output /tmp/test_hello.luau
         env:
@@ -168,7 +168,7 @@ jobs:
       # ── Luau target: comprehension_fail.py (comprehension regression gate) ──
       - name: Compile comprehension_fail.py to Luau
         run: |
-          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
             examples/comprehension_fail.py --build-profile dev --target luau --output /tmp/test_comprehension.luau
         env:
@@ -201,18 +201,18 @@ jobs:
           assert count == 1229, f"Expected 1229 primes, got {count}"
           print(f"Sieve(10000) = {count} primes")
           PYEOF
-          python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr -- \
+          python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
             /tmp/sieve_bench.py --build-profile dev --target wasm --output /tmp/test_sieve.wasm
         env:
           RUSTC_WRAPPER: ""
 
       - name: Run sieve.wasm with molt-wasm-host
-        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr --child-rlimit-gb "$MOLT_WASM_TEST_CHILD_RLIMIT_GB" -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_sieve.wasm
+        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_sieve.wasm
 
       # ── WASM parity tests (pytest) ──
       - name: Run WASM control flow parity tests
-        run: python3 tools/memory_guard.py --poll-interval 0.1 --stream stderr --child-rlimit-gb "$MOLT_WASM_TEST_CHILD_RLIMIT_GB" -- uv run python3 -m pytest tests/test_wasm_control_flow.py -q
+        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- uv run python3 -m pytest tests/test_wasm_control_flow.py -q
 
       # ── Summary ──
       - name: Build summary

@@ -15,7 +15,8 @@ export TMPDIR="${TMPDIR:-$ROOT/tmp}"
 SAMPLES="${MOLT_BENCH_SAMPLES:-1}"
 WARMUP="${MOLT_BENCH_WARMUP:-0}"
 
-exec python3 "$ROOT/tools/bench.py" \
+exec python3 "$ROOT/tools/guarded_exec.py" --prefix MOLT_BENCH --cwd "$ROOT" -- \
+  python3 "$ROOT/tools/bench.py" \
   --samples "$SAMPLES" \
   --warmup "$WARMUP" \
   "$@"

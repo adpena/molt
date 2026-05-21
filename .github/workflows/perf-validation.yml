@@ -36,7 +36,7 @@ jobs:
         run: uv sync --group bench --group dev
 
       - name: Run benchmarks
-        run: python3 tools/bench.py --molt-profile release --json-out bench/results/perf-validation.json
+        run: python3 tools/guarded_exec.py --prefix MOLT_BENCH -- python3 tools/bench.py --molt-profile release --json-out bench/results/perf-validation.json
 
       - name: Upload benchmark artifact
         if: always()
