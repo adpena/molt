@@ -215,6 +215,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", lambda *a, **k: (True, None))
+    monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
 
     ok = cli._start_backend_daemon(
         backend,
@@ -240,3 +241,126 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     assert captured["popen_kwargs"]["start_new_session"] is True
     assert callable(captured["popen_kwargs"]["preexec_fn"])
     assert sentinel_events == ["start", "exit"]
+
+
+def test_backend_daemon_request_uses_request_scoped_sentinel(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+    sentinel_events: list[str] = []
+
+    class FakeSentinel:
+        def __exit__(self, exc_type, exc, tb) -> None:
+            sentinel_events.append("exit")
+
+    class FakeContext:
+        def start_repo_sentinel(self, **kwargs: object) -> FakeSentinel:
+            captured["sentinel_kwargs"] = kwargs
+            sentinel_events.append("start")
+            return FakeSentinel()
+
+    class FakeHarness:
+        class HarnessExecutionContext:
+            @classmethod
+            def from_env(cls, prefix, env, *, repo_root):  # type: ignore[no-untyped-def]
+                captured["context"] = {
+                    "prefix": prefix,
+                    "env": env,
+                    "repo_root": repo_root,
+                }
+                return FakeContext()
+
+    class FakeSocket:
+        def __enter__(self) -> "FakeSocket":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def settimeout(self, value: float) -> None:
+            captured["timeout"] = value
+
+        def connect(self, path: str) -> None:
+            captured["socket_path"] = path
+
+        def sendall(self, data: bytes) -> None:
+            captured["data"] = data
+
+        def shutdown(self, how: int) -> None:
+            captured["shutdown"] = how
+
+        def recv_into(self, view: memoryview) -> int:
+            payload = b'{"ok": true, "jobs": [{"output_written": false}]}\n'
+            view[: len(payload)] = payload
+            return len(payload)
+
+    monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
+    monkeypatch.setattr(cli.socket, "socket", lambda *args, **kwargs: FakeSocket())
+
+    response, err = cli._backend_daemon_request_bytes(
+        tmp_path / "daemon.sock",
+        b'{"version": 1}\n',
+        timeout=None,
+        daemon_pid=1234,
+        project_root=tmp_path,
+    )
+
+    assert err is None
+    assert response == {"ok": True, "jobs": [{"output_written": False}]}
+    assert captured["context"]["prefix"] == "MOLT_BUILD"
+    assert captured["context"]["repo_root"] == tmp_path
+    assert captured["sentinel_kwargs"]["label"] == "backend_daemon_request_1234"
+    assert captured["sentinel_kwargs"]["drain_on_exit"] is False
+    assert sentinel_events == ["start", "exit"]
+
+
+def test_git_source_commands_use_build_memory_guard(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kwargs))
+        if cmd[:3] == ["git", "clone", "--filter=blob:none"]:
+            repo_dir = Path(cmd[-1])
+            repo_dir.mkdir(parents=True)
+            (repo_dir / "pkg").mkdir()
+            (repo_dir / "pkg" / "module.py").write_text("x = 1\n")
+        if cmd[:2] == ["git", "ls-remote"]:
+            return subprocess.CompletedProcess(cmd, 0, "abc123\trefs/heads/main\n", "")
+        if cmd[-1] == "HEAD":
+            return subprocess.CompletedProcess(cmd, 0, "abc123\n", "")
+        if cmd[-1] == "HEAD^{tree}":
+            return subprocess.CompletedProcess(cmd, 0, "tree123\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+
+    resolved, err = cli._resolve_git_ref(
+        "https://example.invalid/repo.git",
+        "main",
+        project_root=tmp_path,
+    )
+    assert err is None
+    assert resolved == "abc123"
+
+    dest = tmp_path / "vendor" / "pkg"
+    dest.parent.mkdir()
+    commit, tree = cli._clone_git_source(
+        "https://example.invalid/repo.git",
+        "abc123",
+        dest,
+        project_root=tmp_path,
+        subdirectory="pkg",
+    )
+
+    assert commit == "abc123"
+    assert tree == "tree123"
+    assert (dest / "module.py").read_text() == "x = 1\n"
+    assert calls
+    for _cmd, kwargs in calls:
+        assert kwargs["memory_guard_prefix"] == "MOLT_BUILD"
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["capture_output"] is True

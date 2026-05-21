@@ -7409,6 +7409,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "exception_last_pending" => {
+                let last_fn = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(last_fn, &[], "exception_last_pending")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "exception_active" => {
                 let active_fn = self.ensure_runtime_i64_fn("molt_exception_active", 0);
                 let result = self

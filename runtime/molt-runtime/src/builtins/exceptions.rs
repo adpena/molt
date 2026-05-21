@@ -6197,9 +6197,84 @@ fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     MoltObject::none().bits()
 }
 
+fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
+    let state = runtime_state(_py);
+    let task_pending = state
+        .task_last_exception_pending
+        .load(AtomicOrdering::Relaxed);
+    let global_pending = state.last_exception_pending.load(AtomicOrdering::Acquire);
+    if !task_pending && !global_pending {
+        if debug_exception_flow() {
+            eprintln!("molt exc last_pending task=0x0 kind=none");
+        }
+        return MoltObject::none().bits();
+    }
+
+    let debug_flow = debug_exception_flow();
+    if let Some(task_key) = current_task_key()
+        && task_pending
+    {
+        let ptr = {
+            let mut guard = task_last_exceptions(_py).lock().unwrap();
+            match guard.get(&task_key).copied() {
+                Some(ptr) if exception_slot_is_valid(ptr) => Some(ptr),
+                Some(_) => {
+                    guard.remove(&task_key);
+                    if guard.is_empty() {
+                        state
+                            .task_last_exception_pending
+                            .store(false, AtomicOrdering::Relaxed);
+                    }
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(ptr) = ptr {
+            let bits = MoltObject::from_ptr(ptr.0).bits();
+            if debug_flow {
+                let kind_bits = unsafe { exception_kind_bits(ptr.0) };
+                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                eprintln!(
+                    "molt exc last_pending task=0x{:x} kind={} ptr=0x{:x}",
+                    task_key.0 as usize, kind, ptr.0 as usize
+                );
+            }
+            inc_ref_bits(_py, bits);
+            return bits;
+        }
+    }
+
+    if let Some(ptr) = global_last_exception_pending_slot(_py) {
+        let bits = MoltObject::from_ptr(ptr.0).bits();
+        if debug_flow {
+            let kind_bits = unsafe { exception_kind_bits(ptr.0) };
+            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            eprintln!(
+                "molt exc last_pending task=0x0 kind={} ptr=0x{:x}",
+                kind, ptr.0 as usize
+            );
+        }
+        inc_ref_bits(_py, bits);
+        return bits;
+    }
+
+    if debug_flow {
+        eprintln!("molt exc last_pending task=0x0 kind=none");
+    }
+    MoltObject::none().bits()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_last() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { exception_last_public_bits(_py) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_last_pending() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { exception_last_pending_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -6630,12 +6705,12 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        alloc_exception, clear_exception, exception_context_set, exception_last_public_bits,
-        exception_stack_pop, exception_stack_push, format_exception, format_exception_message,
-        frame_stack_pop, frame_stack_push, frame_stack_push_owned, generator_exception_stack_drop,
-        generator_exception_stack_store, generator_exception_stack_take,
-        molt_exception_new_builtin_one, record_exception, task_exception_stack_drop,
-        task_exception_stack_store, task_exception_stack_take,
+        alloc_exception, clear_exception, exception_context_set, exception_last_pending_bits,
+        exception_last_public_bits, exception_pending, exception_stack_pop, exception_stack_push,
+        format_exception, format_exception_message, frame_stack_pop, frame_stack_push,
+        frame_stack_push_owned, generator_exception_stack_drop, generator_exception_stack_store,
+        generator_exception_stack_take, molt_exception_new_builtin_one, record_exception,
+        task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
     };
     use crate::builtins::containers::tuple_len;
     use crate::object::builders::alloc_code_obj;
@@ -6757,6 +6832,32 @@ mod tests {
             clear_exception(_py);
             exception_stack_pop(_py);
             dec_ref_bits(_py, exc_bits);
+        });
+    }
+
+    #[test]
+    fn exception_last_pending_ignores_active_handler_context() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let outer_ptr = alloc_exception(_py, "ValueError", "outer");
+            let outer_bits = MoltObject::from_ptr(outer_ptr).bits();
+            let inner_ptr = alloc_exception(_py, "TypeError", "inner");
+            let inner_bits = MoltObject::from_ptr(inner_ptr).bits();
+
+            exception_stack_push();
+            exception_context_set(_py, outer_bits);
+            record_exception(_py, inner_ptr);
+
+            let pending_bits = exception_last_pending_bits(_py);
+            assert_eq!(pending_bits, inner_bits);
+            assert!(exception_pending(_py));
+            dec_ref_bits(_py, pending_bits);
+
+            exception_context_set(_py, MoltObject::none().bits());
+            clear_exception(_py);
+            exception_stack_pop(_py);
+            dec_ref_bits(_py, inner_bits);
+            dec_ref_bits(_py, outer_bits);
         });
     }
 

@@ -2301,6 +2301,7 @@ pub(crate) fn simple_ir_op_is_provably_nonthrowing(op: &OpIR) -> bool {
             | "trace_exit"
             | "exception_clear"
             | "exception_last"
+            | "exception_last_pending"
             | "exception_stack_enter"
             | "exception_stack_clear"
             | "exception_stack_depth"
