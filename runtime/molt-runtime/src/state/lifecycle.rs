@@ -98,6 +98,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     crate::gil_assert();
     trace_shutdown("process_exit_start");
     shutdown_started_runtime_workers(_py, state);
+    trace_shutdown("process_exit_drain_process_registry");
+    state.process_registry.drain_for_teardown();
     trace_shutdown("process_exit_clear_task_state");
     clear_task_state(_py, state);
     trace_shutdown("process_exit_clear_asyncio_queue_state");
@@ -183,6 +185,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     crate::gil_assert();
     trace_shutdown("start");
     shutdown_started_runtime_workers(_py, state);
+    trace_shutdown("drain_process_registry");
+    state.process_registry.drain_for_teardown();
     trace_shutdown("clear_async_hang_probe");
     clear_async_hang_probe(state);
     trace_shutdown("clear_task_state");

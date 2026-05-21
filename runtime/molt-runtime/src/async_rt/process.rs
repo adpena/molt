@@ -5,7 +5,6 @@ use crate::*;
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
-#[cfg(target_arch = "wasm32")]
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::OsStr;
@@ -19,11 +18,11 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(target_arch = "wasm32")]
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
-use std::thread;
+use std::thread::{self, JoinHandle};
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // --- Process ---
 
@@ -34,6 +33,14 @@ const PROCESS_STDIO_STDOUT: i32 = -2;
 const PROCESS_STDIO_FD_BASE: i32 = 1 << 30;
 #[cfg(not(target_arch = "wasm32"))]
 const PROCESS_PIPE_MAX_QUEUED_BYTES_ENV: &str = "MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES";
+#[cfg(not(target_arch = "wasm32"))]
+const PROCESS_TEARDOWN_TERM_GRACE_MS_ENV: &str = "MOLT_PROCESS_TEARDOWN_TERM_GRACE_MS";
+#[cfg(not(target_arch = "wasm32"))]
+const PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV: &str = "MOLT_PROCESS_TEARDOWN_JOIN_TIMEOUT_MS";
+#[cfg(not(target_arch = "wasm32"))]
+const PROCESS_TEARDOWN_TERM_GRACE_MS_DEFAULT: u64 = 50;
+#[cfg(not(target_arch = "wasm32"))]
+const PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT: u64 = 1_000;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn trace_process_spawn() -> bool {
@@ -234,6 +241,39 @@ fn apply_child_memory_rlimit(cmd: &mut std::process::Command) {
             Ok(())
         });
     }
+}
+
+#[cfg(unix)]
+fn configure_unix_owned_process_group(
+    cmd: &mut std::process::Command,
+    start_new_session: bool,
+    process_group: Option<i64>,
+) -> bool {
+    use std::os::unix::process::CommandExt;
+
+    let setpgid_target = match (start_new_session, process_group) {
+        (true, None | Some(0)) => None,
+        (true, Some(pgid)) => Some(pgid),
+        (false, Some(pgid)) => Some(pgid),
+        (false, None) => Some(0),
+    };
+    let owns_group = start_new_session || setpgid_target == Some(0);
+    if start_new_session || setpgid_target.is_some() {
+        unsafe {
+            cmd.pre_exec(move || {
+                if start_new_session && libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if let Some(pgid) = setpgid_target
+                    && libc::setpgid(0, pgid as libc::pid_t) < 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    owns_group
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -906,6 +946,10 @@ pub unsafe extern "C" fn molt_process_spawn(
                 cmd.current_dir(cwd);
             }
             #[cfg(unix)]
+            let owns_process_group = configure_unix_owned_process_group(&mut cmd, false, None);
+            #[cfg(not(unix))]
+            let owns_process_group = false;
+            #[cfg(unix)]
             apply_child_memory_rlimit(&mut cmd);
             let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
             let stdout_mode = process_stdio_mode(_py, stdout_bits, "stdout");
@@ -1147,10 +1191,21 @@ pub unsafe extern "C" fn molt_process_spawn(
             }
 
             let pid = child.id();
+            let owned_process_group = if owns_process_group {
+                Some(pid as i32)
+            } else {
+                None
+            };
+            let registry_id = runtime_state(_py).process_registry.allocate_id();
             let state = Arc::new(ProcessState {
+                registry_id,
                 child: Mutex::new(child),
                 pid,
+                owned_process_group,
                 exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+                kill_requested: AtomicBool::new(false),
+                teardown_draining: AtomicBool::new(false),
+                streams_released: AtomicBool::new(false),
                 wait_future: Mutex::new(None),
                 stdin_stream,
                 stdout_stream,
@@ -1158,8 +1213,14 @@ pub unsafe extern "C" fn molt_process_spawn(
                 wait_lock: Mutex::new(()),
                 condvar: Condvar::new(),
             });
+            runtime_state(_py)
+                .process_registry
+                .register_pending(Arc::clone(&state));
             let worker_state = Arc::clone(&state);
-            thread::spawn(move || process_wait_worker(worker_state));
+            let wait_thread = thread::spawn(move || process_wait_worker(worker_state));
+            runtime_state(_py)
+                .process_registry
+                .attach_wait_thread(registry_id, wait_thread);
             let handle = Box::new(MoltProcessHandle { state });
             bits_from_ptr(Box::into_raw(handle) as *mut u8)
         })
@@ -1261,24 +1322,10 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             };
 
             #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                if new_session || process_group_val.is_some() {
-                    let pgid = process_group_val;
-                    let do_setsid = new_session;
-                    cmd.pre_exec(move || {
-                        if do_setsid && libc::setsid() < 0 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        if let Some(pg) = pgid
-                            && libc::setpgid(0, pg as libc::pid_t) < 0
-                        {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        Ok(())
-                    });
-                }
-            }
+            let owns_process_group =
+                configure_unix_owned_process_group(&mut cmd, new_session, process_group_val);
+            #[cfg(not(unix))]
+            let owns_process_group = false;
             #[cfg(unix)]
             apply_child_memory_rlimit(&mut cmd);
 
@@ -1513,10 +1560,21 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             }
 
             let pid = child.id();
+            let owned_process_group = if owns_process_group {
+                Some(pid as i32)
+            } else {
+                None
+            };
+            let registry_id = runtime_state(_py).process_registry.allocate_id();
             let state = Arc::new(ProcessState {
+                registry_id,
                 child: Mutex::new(child),
                 pid,
+                owned_process_group,
                 exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+                kill_requested: AtomicBool::new(false),
+                teardown_draining: AtomicBool::new(false),
+                streams_released: AtomicBool::new(false),
                 wait_future: Mutex::new(None),
                 stdin_stream,
                 stdout_stream,
@@ -1524,8 +1582,14 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
                 wait_lock: Mutex::new(()),
                 condvar: Condvar::new(),
             });
+            runtime_state(_py)
+                .process_registry
+                .register_pending(Arc::clone(&state));
             let worker_state = Arc::clone(&state);
-            thread::spawn(move || process_wait_worker(worker_state));
+            let wait_thread = thread::spawn(move || process_wait_worker(worker_state));
+            runtime_state(_py)
+                .process_registry
+                .attach_wait_thread(registry_id, wait_thread);
             let handle = Box::new(MoltProcessHandle { state });
             bits_from_ptr(Box::into_raw(handle) as *mut u8)
         })
@@ -1823,6 +1887,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         let state = Arc::new(ProcessState {
             handle,
             exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+            streams_released: AtomicBool::new(false),
             wait_future: Mutex::new(None),
             stdin_stream,
             stdout_stream,
@@ -1832,10 +1897,9 @@ pub unsafe extern "C" fn molt_process_spawn(
             state: Arc::clone(&state),
         });
         let handle_ptr = Box::into_raw(handle_obj) as *mut u8;
-        wasm_process_handles()
-            .lock()
-            .unwrap()
-            .insert(handle, PtrSlot(handle_ptr));
+        runtime_state(_py)
+            .process_registry
+            .insert_wasm_handle(handle, PtrSlot(handle_ptr));
         bits_from_ptr(handle_ptr)
     })
 }
@@ -2010,8 +2074,7 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
             if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
                 return MoltObject::none().bits();
             }
-            let mut guard = handle.state.child.lock().unwrap();
-            if let Err(err) = guard.kill() {
+            if let Err(err) = handle.state.request_kill() {
                 return raise_os_error::<u64>(_py, err, "kill");
             }
             MoltObject::none().bits()
@@ -2058,27 +2121,10 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
             if handle.state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
                 return MoltObject::none().bits();
             }
-            #[cfg(unix)]
-            {
-                let pid = handle.state.pid as i32;
-                let res = libc::kill(pid, libc::SIGTERM);
-                if res != 0 {
-                    return raise_os_error::<u64>(
-                        _py,
-                        std::io::Error::last_os_error(),
-                        "terminate",
-                    );
-                }
-                MoltObject::none().bits()
+            if let Err(err) = handle.state.request_terminate() {
+                return raise_os_error::<u64>(_py, err, "terminate");
             }
-            #[cfg(not(unix))]
-            {
-                let mut guard = handle.state.child.lock().unwrap();
-                if let Err(err) = guard.kill() {
-                    return raise_os_error::<u64>(_py, err, "terminate");
-                }
-                MoltObject::none().bits()
-            }
+            MoltObject::none().bits()
         })
     }
 }
@@ -2256,10 +2302,9 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
                 return;
             }
             let handle = &*(proc_ptr as *mut MoltProcessHandle);
-            wasm_process_handles()
-                .lock()
-                .unwrap()
-                .remove(&handle.state.handle);
+            runtime_state(_py)
+                .process_registry
+                .remove_wasm_handle(handle.state.handle);
             release_ptr(proc_ptr);
             drop(Box::from_raw(proc_ptr as *mut MoltProcessHandle));
         })
@@ -2273,7 +2318,7 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) {
 pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let entry = wasm_process_handles().lock().unwrap().get(&handle).cloned();
+            let entry = runtime_state(_py).process_registry.get_wasm_handle(handle);
             let Some(slot) = entry else {
                 return;
             };
@@ -2298,15 +2343,270 @@ pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct ProcessState {
+    registry_id: u64,
     child: Mutex<std::process::Child>,
     pub(crate) pid: u32,
+    owned_process_group: Option<i32>,
     pub(crate) exit_code: AtomicI32,
+    kill_requested: AtomicBool,
+    teardown_draining: AtomicBool,
+    streams_released: AtomicBool,
     pub(crate) wait_future: Mutex<Option<PtrSlot>>,
     stdin_stream: u64,
     stdout_stream: u64,
     stderr_stream: u64,
     wait_lock: Mutex<()>,
     pub(crate) condvar: Condvar,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ProcessRegistryEntry {
+    state: Arc<ProcessState>,
+    wait_thread: Option<JoinHandle<()>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ProcessRegistryInner {
+    next_id: u64,
+    entries: HashMap<u64, ProcessRegistryEntry>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct ProcessRegistry {
+    inner: Mutex<ProcessRegistryInner>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ProcessRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Mutex::new(ProcessRegistryInner {
+                next_id: 1,
+                entries: HashMap::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn allocate_id(&self) -> u64 {
+        let mut guard = self.inner.lock().unwrap();
+        let id = guard.next_id;
+        guard.next_id = guard.next_id.checked_add(1).unwrap_or(1);
+        id
+    }
+
+    pub(crate) fn register_pending(&self, state: Arc<ProcessState>) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.entries.insert(
+            state.registry_id,
+            ProcessRegistryEntry {
+                state,
+                wait_thread: None,
+            },
+        );
+    }
+
+    pub(crate) fn attach_wait_thread(&self, id: u64, wait_thread: JoinHandle<()>) {
+        let mut wait_thread = Some(wait_thread);
+        {
+            let mut guard = self.inner.lock().unwrap();
+            if let Some(entry) = guard.entries.get_mut(&id) {
+                entry.wait_thread = wait_thread.take();
+            }
+        }
+        if let Some(wait_thread) = wait_thread
+            && wait_thread.is_finished()
+        {
+            let _ = wait_thread.join();
+        }
+    }
+
+    pub(crate) fn finish_wait_worker(&self, id: u64) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.entries.remove(&id);
+    }
+
+    pub(crate) fn drain_for_teardown(&self) {
+        let entries = {
+            let mut guard = self.inner.lock().unwrap();
+            std::mem::take(&mut guard.entries)
+        };
+        if entries.is_empty() {
+            return;
+        }
+
+        let term_grace = process_teardown_duration(
+            PROCESS_TEARDOWN_TERM_GRACE_MS_ENV,
+            PROCESS_TEARDOWN_TERM_GRACE_MS_DEFAULT,
+        );
+        let join_timeout = process_teardown_duration(
+            PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
+            PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT,
+        );
+        for entry in entries.values() {
+            entry
+                .state
+                .teardown_draining
+                .store(true, AtomicOrdering::Release);
+            let _ = entry.state.wait_future.lock().unwrap().take();
+            entry.state.request_terminate_for_teardown();
+        }
+        let term_deadline = Instant::now() + term_grace;
+        for entry in entries.values() {
+            let remaining = term_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let _ = entry.state.wait_for_exit(remaining);
+        }
+        for entry in entries.values() {
+            if entry.state.exit_code.load(AtomicOrdering::Acquire) == PROCESS_EXIT_PENDING {
+                entry.state.request_kill_for_teardown();
+            }
+            entry.state.release_owned_streams();
+        }
+        let join_deadline = Instant::now() + join_timeout;
+        for mut entry in entries {
+            if let Some(wait_thread) = entry.1.wait_thread.take() {
+                let remaining = join_deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() {
+                    let _ = entry.1.state.wait_for_exit(remaining);
+                }
+                if wait_thread.is_finished() {
+                    let _ = wait_thread.join();
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn live_count(&self) -> usize {
+        self.inner.lock().unwrap().entries.len()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn process_teardown_duration(env_key: &str, default_ms: u64) -> Duration {
+    let millis = std::env::var(env_key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(default_ms);
+    Duration::from_millis(millis)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ProcessState {
+    fn wait_for_exit(&self, timeout: Duration) -> bool {
+        if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            return true;
+        }
+        let deadline = Instant::now() + timeout;
+        let mut guard = self.wait_lock.lock().unwrap();
+        loop {
+            if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next_guard, _) = self.condvar.wait_timeout(guard, remaining).unwrap();
+            guard = next_guard;
+        }
+    }
+
+    fn release_owned_streams(&self) {
+        if self.streams_released.swap(true, AtomicOrdering::AcqRel) {
+            return;
+        }
+        self.close_and_drop_stream(self.stdin_stream);
+        self.close_and_drop_stream(self.stdout_stream);
+        self.close_and_drop_stream(self.stderr_stream);
+    }
+
+    fn close_and_drop_stream(&self, stream_bits: u64) {
+        if stream_bits == 0 {
+            return;
+        }
+        let stream_ptr = ptr_from_bits(stream_bits);
+        if !stream_ptr.is_null() {
+            let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
+            super::channels::stream_close_local(stream);
+        }
+        unsafe {
+            molt_stream_drop(stream_bits);
+        }
+    }
+
+    fn request_terminate_for_teardown(&self) {
+        let _ = self.request_terminate();
+    }
+
+    fn request_kill_for_teardown(&self) {
+        let _ = self.request_kill();
+    }
+
+    fn request_kill_for_drop(&self) {
+        let _ = self.request_kill();
+    }
+
+    fn request_terminate(&self) -> Result<(), std::io::Error> {
+        if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            self.signal_unix(libc::SIGTERM)
+        }
+        #[cfg(not(unix))]
+        {
+            self.kill_child_handle()
+        }
+    }
+
+    fn request_kill(&self) -> Result<(), std::io::Error> {
+        if self.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
+            return Ok(());
+        }
+        self.kill_requested.store(true, AtomicOrdering::Release);
+        #[cfg(unix)]
+        {
+            self.signal_unix(libc::SIGKILL)
+        }
+        #[cfg(not(unix))]
+        {
+            self.kill_child_handle()
+        }
+    }
+
+    #[cfg(unix)]
+    fn signal_unix(&self, signal: i32) -> Result<(), std::io::Error> {
+        if let Some(pgid) = self.owned_process_group {
+            let rc = unsafe { libc::kill(-pgid as libc::pid_t, signal) };
+            if rc == 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(err);
+            }
+        }
+        let rc = unsafe { libc::kill(self.pid as libc::pid_t, signal) };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(err)
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn kill_child_handle(&self) -> Result<(), std::io::Error> {
+        let mut guard = self.child.lock().unwrap();
+        guard.kill()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2327,28 +2627,18 @@ struct MoltProcessHandle {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl Drop for MoltProcessHandle {
+    fn drop(&mut self) {
+        self.state.request_kill_for_drop();
+        self.state.release_owned_streams();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for ProcessState {
     fn drop(&mut self) {
-        if self.exit_code.load(AtomicOrdering::Acquire) == PROCESS_EXIT_PENDING
-            && let Ok(mut guard) = self.child.lock()
-        {
-            let _ = guard.kill();
-        }
-        if self.stdin_stream != 0 {
-            unsafe {
-                molt_stream_drop(self.stdin_stream);
-            }
-        }
-        if self.stdout_stream != 0 {
-            unsafe {
-                molt_stream_drop(self.stdout_stream);
-            }
-        }
-        if self.stderr_stream != 0 {
-            unsafe {
-                molt_stream_drop(self.stderr_stream);
-            }
-        }
+        self.request_kill_for_drop();
+        self.release_owned_streams();
     }
 }
 
@@ -2356,6 +2646,7 @@ impl Drop for ProcessState {
 pub(crate) struct ProcessState {
     handle: i64,
     pub(crate) exit_code: AtomicI32,
+    streams_released: AtomicBool,
     pub(crate) wait_future: Mutex<Option<PtrSlot>>,
     stdin_stream: u64,
     stdout_stream: u64,
@@ -2381,31 +2672,83 @@ struct MoltProcessHandle {
 #[cfg(target_arch = "wasm32")]
 impl Drop for ProcessState {
     fn drop(&mut self) {
+        self.request_terminate_for_teardown();
+        self.release_owned_streams();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ProcessState {
+    fn request_terminate_for_teardown(&self) {
         if self.exit_code.load(AtomicOrdering::Acquire) == PROCESS_EXIT_PENDING {
             let _ = unsafe { crate::molt_process_terminate_host(self.handle) };
         }
-        if self.stdin_stream != 0 {
-            unsafe {
-                molt_stream_drop(self.stdin_stream);
-            }
+    }
+
+    fn release_owned_streams(&self) {
+        if self.streams_released.swap(true, AtomicOrdering::AcqRel) {
+            return;
         }
-        if self.stdout_stream != 0 {
-            unsafe {
-                molt_stream_drop(self.stdout_stream);
-            }
+        self.close_and_drop_stream(self.stdin_stream);
+        self.close_and_drop_stream(self.stdout_stream);
+        self.close_and_drop_stream(self.stderr_stream);
+    }
+
+    fn close_and_drop_stream(&self, stream_bits: u64) {
+        if stream_bits == 0 {
+            return;
         }
-        if self.stderr_stream != 0 {
-            unsafe {
-                molt_stream_drop(self.stderr_stream);
-            }
+        let stream_ptr = ptr_from_bits(stream_bits);
+        if !stream_ptr.is_null() {
+            let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
+            super::channels::stream_close_local(stream);
+        }
+        unsafe {
+            molt_stream_drop(stream_bits);
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_process_handles() -> &'static Mutex<HashMap<i64, PtrSlot>> {
-    static HANDLES: OnceLock<Mutex<HashMap<i64, PtrSlot>>> = OnceLock::new();
-    HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
+pub(crate) struct ProcessRegistry {
+    handles: Mutex<HashMap<i64, PtrSlot>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ProcessRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn insert_wasm_handle(&self, handle: i64, slot: PtrSlot) {
+        self.handles.lock().unwrap().insert(handle, slot);
+    }
+
+    pub(crate) fn remove_wasm_handle(&self, handle: i64) {
+        self.handles.lock().unwrap().remove(&handle);
+    }
+
+    pub(crate) fn get_wasm_handle(&self, handle: i64) -> Option<PtrSlot> {
+        self.handles.lock().unwrap().get(&handle).copied()
+    }
+
+    pub(crate) fn drain_for_teardown(&self) {
+        let handles = {
+            let mut guard = self.handles.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        for slot in handles.into_values() {
+            let proc_ptr = slot.0;
+            if proc_ptr.is_null() {
+                continue;
+            }
+            let handle_obj = unsafe { &*(proc_ptr as *mut MoltProcessHandle) };
+            handle_obj.state.request_terminate_for_teardown();
+            handle_obj.state.release_owned_streams();
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2455,6 +2798,9 @@ fn process_wait_worker(state: Arc<ProcessState>) {
         if state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING {
             break;
         }
+        if state.kill_requested.load(AtomicOrdering::Acquire) {
+            let _ = state.request_kill();
+        }
         let mut guard = state.child.lock().unwrap();
         match guard.try_wait() {
             Ok(Some(status)) => {
@@ -2465,7 +2811,9 @@ fn process_wait_worker(state: Arc<ProcessState>) {
                 }
                 drop(guard);
                 state.condvar.notify_all();
-                if let Some(future) = state.wait_future.lock().unwrap().take() {
+                if !state.teardown_draining.load(AtomicOrdering::Acquire)
+                    && let Some(future) = state.wait_future.lock().unwrap().take()
+                {
                     let gil = GilGuard::new();
                     let py = gil.token();
                     let _ = wake_await_waiters(&py, future.0);
@@ -2477,5 +2825,118 @@ fn process_wait_worker(state: Arc<ProcessState>) {
         }
         drop(guard);
         thread::sleep(Duration::from_millis(10));
+    }
+    if let Some(runtime) = crate::state::runtime_state::runtime_state_for_gil() {
+        runtime
+            .process_registry
+            .finish_wait_worker(state.registry_id);
+    }
+}
+
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+mod process_registry_tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn registered_child(cmd: &mut Command, registry: &ProcessRegistry) -> Arc<ProcessState> {
+        let owns_process_group = configure_unix_owned_process_group(cmd, false, None);
+        assert!(owns_process_group);
+        let child = cmd.spawn().expect("spawn test child");
+        let pid = child.id();
+        let registry_id = registry.allocate_id();
+        let state = Arc::new(ProcessState {
+            registry_id,
+            child: Mutex::new(child),
+            pid,
+            owned_process_group: Some(pid as i32),
+            exit_code: AtomicI32::new(PROCESS_EXIT_PENDING),
+            kill_requested: AtomicBool::new(false),
+            teardown_draining: AtomicBool::new(false),
+            streams_released: AtomicBool::new(false),
+            wait_future: Mutex::new(None),
+            stdin_stream: 0,
+            stdout_stream: 0,
+            stderr_stream: 0,
+            wait_lock: Mutex::new(()),
+            condvar: Condvar::new(),
+        });
+        registry.register_pending(Arc::clone(&state));
+        let worker_state = Arc::clone(&state);
+        let wait_thread = thread::spawn(move || process_wait_worker(worker_state));
+        registry.attach_wait_thread(registry_id, wait_thread);
+        state
+    }
+
+    fn unique_temp_path(name: &str) -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("molt-{name}-{}-{stamp}.pid", std::process::id()))
+    }
+
+    fn wait_for_pid_file(path: &std::path::Path) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(raw) = fs::read_to_string(path) {
+                if let Ok(pid) = raw.trim().parse::<i32>() {
+                    return pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for child pid file"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn assert_process_exits(pid: i32) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            if rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "process {pid} is still alive");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn handle_drop_kills_child_even_while_wait_worker_holds_state() {
+        let registry = ProcessRegistry::new();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 30");
+        let state = registered_child(&mut cmd, &registry);
+        let pid = state.pid as i32;
+        drop(MoltProcessHandle {
+            state: Arc::clone(&state),
+        });
+        assert!(state.wait_for_exit(Duration::from_secs(2)));
+        registry.drain_for_teardown();
+        assert_eq!(registry.live_count(), 0);
+        assert_process_exits(pid);
+    }
+
+    #[test]
+    fn registry_teardown_kills_owned_process_group_descendants() {
+        let registry = ProcessRegistry::new();
+        let pid_path = unique_temp_path("process-group");
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("sleep 30 & echo $! > \"$MOLT_TEST_PID_FILE\"; wait")
+            .env("MOLT_TEST_PID_FILE", &pid_path);
+        let state = registered_child(&mut cmd, &registry);
+        let shell_pid = state.pid as i32;
+        let sleep_pid = wait_for_pid_file(&pid_path);
+        registry.drain_for_teardown();
+        let _ = fs::remove_file(pid_path);
+        assert_eq!(registry.live_count(), 0);
+        assert!(state.exit_code.load(AtomicOrdering::Acquire) != PROCESS_EXIT_PENDING);
+        assert_process_exits(shell_pid);
+        assert_process_exits(sleep_pid);
     }
 }
