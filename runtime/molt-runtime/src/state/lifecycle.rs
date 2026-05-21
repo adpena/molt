@@ -5,6 +5,7 @@ use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_doc
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::configparser::configparser_clear_state;
 use crate::builtins::contextvars::contextvars_clear_state;
+use crate::builtins::copy_mod::copy_memo_clear_state;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::csv_clear_state;
 #[cfg(not(feature = "stdlib_math"))]
@@ -105,6 +106,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("process_exit_clear_contextvars_state");
     contextvars_clear_state(_py, state);
+    trace_shutdown("process_exit_clear_copy_memo_state");
+    copy_memo_clear_state(_py, state);
     #[cfg(not(feature = "stdlib_serial"))]
     {
         trace_shutdown("process_exit_clear_configparser_state");
@@ -185,6 +188,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
     trace_shutdown("clear_contextvars_state");
     contextvars_clear_state(_py, state);
+    trace_shutdown("clear_copy_memo_state");
+    copy_memo_clear_state(_py, state);
     #[cfg(not(feature = "stdlib_serial"))]
     {
         trace_shutdown("clear_configparser_state");

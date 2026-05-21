@@ -1,42 +1,95 @@
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 
+use crate::state::runtime_state::{RuntimeState, runtime_state};
 use crate::*;
 
-// ─── Memo registry ──────────────────────────────────────────────────────────
+// --- Memo registry ----------------------------------------------------------
 // Deep copy requires a memo dict that maps id(original) -> copied_object.
-// We use a global handle registry keyed by handle ID so that the Python shim
-// can pass memo dicts across multiple intrinsic calls within one deepcopy
-// operation.
-
-static MEMO_COUNTER: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(0));
-static MEMO_REGISTRY: LazyLock<Mutex<HashMap<i64, HashMap<u64, u64>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn memo_alloc() -> i64 {
-    let mut counter = MEMO_COUNTER.lock().unwrap();
-    *counter += 1;
-    let id = *counter;
-    MEMO_REGISTRY.lock().unwrap().insert(id, HashMap::new());
-    id
+// The handle registry is runtime-owned so abandoned handles cannot outlive
+// RuntimeState teardown across compliance/regrtest loops.
+pub(crate) struct CopyMemoRuntimeState {
+    next_handle: i64,
+    registry: HashMap<i64, HashMap<u64, u64>>,
 }
 
-fn memo_drop(handle: i64) {
-    MEMO_REGISTRY.lock().unwrap().remove(&handle);
+impl CopyMemoRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_handle: 1,
+            registry: HashMap::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.next_handle = 1;
+        self.registry.clear();
+    }
+
+    fn alloc(&mut self) -> i64 {
+        let id = self.next_handle;
+        self.next_handle += 1;
+        self.registry.insert(id, HashMap::new());
+        id
+    }
+
+    fn drop_handle(&mut self, handle: i64) {
+        self.registry.remove(&handle);
+    }
+
+    fn get(&self, handle: i64, obj_id: u64) -> Option<u64> {
+        self.registry
+            .get(&handle)
+            .and_then(|m| m.get(&obj_id).copied())
+    }
+
+    fn put(&mut self, handle: i64, obj_id: u64, bits: u64) {
+        if let Some(m) = self.registry.get_mut(&handle) {
+            m.insert(obj_id, bits);
+        }
+    }
+
+    #[cfg(test)]
+    fn registry_len(&self) -> usize {
+        self.registry.len()
+    }
+
+    #[cfg(test)]
+    fn next_handle(&self) -> i64 {
+        self.next_handle
+    }
 }
 
-fn memo_get(handle: i64, obj_id: u64) -> Option<u64> {
-    MEMO_REGISTRY
+pub(crate) fn copy_memo_clear_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    state.copy_memo.lock().unwrap().clear();
+}
+
+fn memo_alloc(_py: &PyToken<'_>) -> i64 {
+    runtime_state(_py).copy_memo.lock().unwrap().alloc()
+}
+
+fn memo_drop(_py: &PyToken<'_>, handle: i64) {
+    runtime_state(_py)
+        .copy_memo
         .lock()
         .unwrap()
-        .get(&handle)
-        .and_then(|m| m.get(&obj_id).copied())
+        .drop_handle(handle);
 }
 
-fn memo_put(handle: i64, obj_id: u64, bits: u64) {
-    if let Some(m) = MEMO_REGISTRY.lock().unwrap().get_mut(&handle) {
-        m.insert(obj_id, bits);
-    }
+fn memo_get(_py: &PyToken<'_>, handle: i64, obj_id: u64) -> Option<u64> {
+    runtime_state(_py)
+        .copy_memo
+        .lock()
+        .unwrap()
+        .get(handle, obj_id)
+}
+
+fn memo_put(_py: &PyToken<'_>, handle: i64, obj_id: u64, bits: u64) {
+    runtime_state(_py)
+        .copy_memo
+        .lock()
+        .unwrap()
+        .put(handle, obj_id, bits);
 }
 
 // ─── Type classification ────────────────────────────────────────────────────
@@ -160,7 +213,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
 
     // Check memo for already-copied objects (cycle breaking)
     let obj_id = bits;
-    if let Some(cached) = memo_get(memo_handle, obj_id) {
+    if let Some(cached) = memo_get(_py, memo_handle, obj_id) {
         inc_ref_bits(_py, cached);
         return cached;
     }
@@ -185,7 +238,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 return raise_exception::<_>(_py, "MemoryError", "out of memory");
             }
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
-            memo_put(memo_handle, obj_id, new_bits);
+            memo_put(_py, memo_handle, obj_id, new_bits);
 
             unsafe {
                 let src = seq_vec_ref(ptr);
@@ -226,7 +279,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 }
                 if all_same {
                     inc_ref_bits(_py, bits);
-                    memo_put(memo_handle, obj_id, bits);
+                    memo_put(_py, memo_handle, obj_id, bits);
                     return bits;
                 }
                 let new_ptr = alloc_tuple(_py, &copied_elems);
@@ -234,7 +287,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
                 let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(memo_handle, obj_id, new_bits);
+                memo_put(_py, memo_handle, obj_id, new_bits);
                 new_bits
             }
         }
@@ -246,7 +299,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 return raise_exception::<_>(_py, "MemoryError", "out of memory");
             }
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
-            memo_put(memo_handle, obj_id, new_bits);
+            memo_put(_py, memo_handle, obj_id, new_bits);
 
             unsafe {
                 let order = dict_order(ptr);
@@ -289,7 +342,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
                 let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(memo_handle, obj_id, new_bits);
+                memo_put(_py, memo_handle, obj_id, new_bits);
                 new_bits
             }
         }
@@ -316,7 +369,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                 }
                 if all_same {
                     inc_ref_bits(_py, bits);
-                    memo_put(memo_handle, obj_id, bits);
+                    memo_put(_py, memo_handle, obj_id, bits);
                     return bits;
                 }
                 let new_ptr = alloc_set_like_with_entries(_py, &copied_elems, TYPE_ID_FROZENSET);
@@ -324,7 +377,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
                 let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(memo_handle, obj_id, new_bits);
+                memo_put(_py, memo_handle, obj_id, new_bits);
                 new_bits
             }
         }
@@ -337,7 +390,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
                 let new_bits = MoltObject::from_ptr(new_ptr).bits();
-                memo_put(memo_handle, obj_id, new_bits);
+                memo_put(_py, memo_handle, obj_id, new_bits);
                 new_bits
             }
         }
@@ -369,17 +422,17 @@ pub extern "C" fn molt_copy_deepcopy(obj_bits: u64, memo_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let memo_obj = obj_from_bits(memo_bits);
         let (memo_handle, owned) = if memo_obj.is_none() {
-            (memo_alloc(), true)
+            (memo_alloc(_py), true)
         } else if let Some(i) = to_i64(memo_obj) {
             (i, false)
         } else {
-            (memo_alloc(), true)
+            (memo_alloc(_py), true)
         };
 
         let result = deep_copy_bits(_py, obj_bits, memo_handle);
 
         if owned {
-            memo_drop(memo_handle);
+            memo_drop(_py, memo_handle);
         }
 
         result
@@ -392,7 +445,7 @@ pub extern "C" fn molt_copy_deepcopy(obj_bits: u64, memo_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_copy_memo_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let handle = memo_alloc();
+        let handle = memo_alloc(_py);
         MoltObject::from_int(handle).bits()
     })
 }
@@ -403,7 +456,7 @@ pub extern "C" fn molt_copy_memo_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(handle_bits);
         if let Some(i) = to_i64(obj) {
-            memo_drop(i);
+            memo_drop(_py, i);
         }
         MoltObject::none().bits()
     })
@@ -417,4 +470,54 @@ pub extern "C" fn molt_copy_error(msg_bits: u64) -> u64 {
         let msg = string_obj_to_owned(obj).unwrap_or_else(|| "copy.Error".to_string());
         raise_exception::<u64>(_py, "copy.Error", &msg)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_memo_state_is_runtime_scoped_and_clearable() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::molt_exception_clear();
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            copy_memo_clear_state(_py, state);
+
+            let first = memo_alloc(_py);
+            let second = memo_alloc(_py);
+            assert_eq!(first, 1);
+            assert_eq!(second, 2);
+
+            memo_put(_py, first, 0x101, 0x202);
+            assert_eq!(memo_get(_py, first, 0x101), Some(0x202));
+            assert_eq!(memo_get(_py, second, 0x101), None);
+
+            {
+                let guard = state.copy_memo.lock().unwrap();
+                assert_eq!(guard.next_handle(), 3);
+                assert_eq!(guard.registry_len(), 2);
+            }
+
+            memo_drop(_py, first);
+            {
+                let guard = state.copy_memo.lock().unwrap();
+                assert_eq!(guard.registry_len(), 1);
+                assert_eq!(guard.get(first, 0x101), None);
+            }
+
+            copy_memo_clear_state(_py, state);
+            {
+                let guard = state.copy_memo.lock().unwrap();
+                assert_eq!(guard.next_handle(), 1);
+                assert_eq!(guard.registry_len(), 0);
+            }
+
+            assert_eq!(memo_alloc(_py), 1);
+            copy_memo_clear_state(_py, state);
+            assert!(!exception_pending(_py));
+        });
+    }
 }
