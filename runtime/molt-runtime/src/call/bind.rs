@@ -54,10 +54,11 @@ use crate::{
     molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
     molt_type_init, molt_type_new, obj_from_bits, object_class_bits, object_set_class_bits,
     object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable,
-    raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, type_name, type_of_bits,
+    raise_not_iterable, runtime_state, runtime_state_for_gil, seq_vec_ref, string_obj_to_owned,
+    type_name, type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{MutexGuard, OnceLock};
 pub(crate) struct CallArgs {
     pos: Vec<u64>,
     kw_names: Vec<u64>,
@@ -171,52 +172,68 @@ struct CallArgsPtr(*mut CallArgs);
 unsafe impl Send for CallArgsPtr {}
 unsafe impl Sync for CallArgsPtr {}
 
-fn callargs_builder_map() -> &'static Mutex<HashMap<usize, CallArgsPtr>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<usize, CallArgsPtr>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+pub(crate) struct CallBindRuntimeState {
+    callargs_builder_map: HashMap<usize, CallArgsPtr>,
+    callargs_storage_registry: HashSet<usize>,
 }
 
-fn callargs_storage_registry() -> &'static Mutex<HashSet<usize>> {
-    static REGISTRY: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+impl CallBindRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            callargs_builder_map: HashMap::new(),
+            callargs_storage_registry: HashSet::new(),
+        }
+    }
 }
 
-pub(crate) fn note_callargs_alloc(builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
-    if !builder_ptr.is_null() {
-        callargs_builder_map()
+fn call_bind_runtime_state(_py: &PyToken<'_>) -> MutexGuard<'static, CallBindRuntimeState> {
+    runtime_state(_py)
+        .call_bind
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn call_bind_runtime_state_if_available() -> Option<MutexGuard<'static, CallBindRuntimeState>> {
+    runtime_state_for_gil().map(|state| {
+        state
+            .call_bind
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    })
+}
+
+pub(crate) fn note_callargs_alloc(
+    _py: &PyToken<'_>,
+    builder_ptr: *mut u8,
+    args_ptr: *mut CallArgs,
+) {
+    let mut state = call_bind_runtime_state(_py);
+    if !builder_ptr.is_null() {
+        state
+            .callargs_builder_map
             .insert(builder_ptr as usize, CallArgsPtr(args_ptr));
     }
     if args_ptr.is_null() {
         return;
     }
-    callargs_storage_registry()
-        .lock()
-        .unwrap()
-        .insert(args_ptr as usize);
+    state.callargs_storage_registry.insert(args_ptr as usize);
 }
 
-pub(crate) fn note_callargs_free(builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
+pub(crate) fn note_callargs_free(_py: &PyToken<'_>, builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
     if trace_callargs_enabled() && !builder_ptr.is_null() {
         eprintln!(
             "[molt callargs] free builder_ptr=0x{:x} args_ptr=0x{:x}",
             builder_ptr as usize, args_ptr as usize,
         );
     }
+    let mut state = call_bind_runtime_state(_py);
     if !builder_ptr.is_null() {
-        callargs_builder_map()
-            .lock()
-            .unwrap()
-            .remove(&(builder_ptr as usize));
+        state.callargs_builder_map.remove(&(builder_ptr as usize));
     }
     if args_ptr.is_null() {
         return;
     }
-    callargs_storage_registry()
-        .lock()
-        .unwrap()
-        .remove(&(args_ptr as usize));
+    state.callargs_storage_registry.remove(&(args_ptr as usize));
 }
 
 pub(crate) unsafe fn clone_callargs_builder_bits(
@@ -289,23 +306,21 @@ pub(crate) unsafe fn callargs_positional_snapshot(
     Ok(args.pos.clone())
 }
 
-fn callargs_builder_is_live(builder_ptr: *mut u8) -> bool {
+fn callargs_builder_is_live(_py: &PyToken<'_>, builder_ptr: *mut u8) -> bool {
     if builder_ptr.is_null() {
         return false;
     }
-    callargs_builder_map()
-        .lock()
-        .unwrap()
+    call_bind_runtime_state(_py)
+        .callargs_builder_map
         .contains_key(&(builder_ptr as usize))
 }
 
-fn callargs_storage_is_live(args_ptr: *mut CallArgs) -> bool {
+fn callargs_storage_is_live(_py: &PyToken<'_>, args_ptr: *mut CallArgs) -> bool {
     if args_ptr.is_null() {
         return false;
     }
-    callargs_storage_registry()
-        .lock()
-        .unwrap()
+    call_bind_runtime_state(_py)
+        .callargs_storage_registry
         .contains(&(args_ptr as usize))
 }
 
@@ -364,16 +379,21 @@ fn ic_tls_insert(site_id: u64, entry: CallBindIcEntry) {
     });
 }
 
-// Global mutex cache retained for cross-thread visibility and clear_call_bind_ic_cache().
-fn call_bind_ic_cache() -> &'static Mutex<HashMap<u64, CallBindIcEntry>> {
-    static CACHE: OnceLock<Mutex<HashMap<u64, CallBindIcEntry>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 pub(crate) fn clear_call_bind_ic_cache() {
-    call_bind_ic_cache().lock().unwrap().clear();
-    // Note: thread-local caches will be stale after clear but will miss
-    // and re-populate on next access. This is correct behavior.
+    IC_TLS.with(|cache| {
+        *cache.borrow_mut() = [(
+            0u64,
+            CallBindIcEntry {
+                fn_ptr: 0,
+                target_bits: 0,
+                class_bits: 0,
+                class_version: 0,
+                cached_alloc_size: 0,
+                arity: 0,
+                kind: 0,
+            },
+        ); IC_TLS_SIZE];
+    });
 }
 
 fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
@@ -1383,9 +1403,11 @@ pub(crate) unsafe fn callargs_ptr(ptr: *mut u8) -> *mut CallArgs {
     if ptr.is_null() {
         return std::ptr::null_mut();
     }
-    callargs_builder_map()
-        .lock()
-        .unwrap()
+    let Some(state) = call_bind_runtime_state_if_available() else {
+        return std::ptr::null_mut();
+    };
+    state
+        .callargs_builder_map
         .get(&(ptr as usize))
         .copied()
         .map_or(std::ptr::null_mut(), |raw| raw.0)
@@ -1399,7 +1421,7 @@ unsafe fn require_callargs_ptr(
         if builder_ptr.is_null() {
             return Ok(std::ptr::null_mut());
         }
-        if !callargs_builder_is_live(builder_ptr) {
+        if !callargs_builder_is_live(_py, builder_ptr) {
             if trace_callargs_enabled() {
                 eprintln!(
                     "[molt callargs] invalid_builder builder_ptr=0x{:x}",
@@ -1413,7 +1435,7 @@ unsafe fn require_callargs_ptr(
             ));
         }
         let args_ptr = callargs_ptr(builder_ptr);
-        if args_ptr.is_null() || !callargs_storage_is_live(args_ptr) {
+        if args_ptr.is_null() || !callargs_storage_is_live(_py, args_ptr) {
             if trace_callargs_enabled() {
                 eprintln!(
                     "[molt callargs] invalid_storage builder_ptr=0x{:x} args_ptr=0x{:x}",
@@ -1608,7 +1630,7 @@ pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u6
             ALLOC_BYTES_CALLARGS
                 .fetch_add(callargs_bytes as u64, std::sync::atomic::Ordering::Relaxed);
             let args_ptr = Box::into_raw(args);
-            note_callargs_alloc(ptr, args_ptr);
+            note_callargs_alloc(_py, ptr, args_ptr);
             *(ptr as *mut *mut CallArgs) = args_ptr;
             if trace_callargs_enabled() {
                 eprintln!(
@@ -1636,7 +1658,7 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            if !callargs_builder_is_live(builder_ptr) {
+            if !callargs_builder_is_live(_py, builder_ptr) {
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
             if trace_callargs_enabled() {
@@ -1737,7 +1759,7 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            if !callargs_builder_is_live(builder_ptr) {
+            if !callargs_builder_is_live(_py, builder_ptr) {
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
             callargs_push_kw(_py, builder_ptr, name_bits, val_bits)
@@ -1755,7 +1777,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            if !callargs_builder_is_live(builder_ptr) {
+            if !callargs_builder_is_live(_py, builder_ptr) {
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
             if trace_callargs_enabled() {
@@ -1834,7 +1856,7 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            if !callargs_builder_is_live(builder_ptr) {
+            if !callargs_builder_is_live(_py, builder_ptr) {
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
             let mapping_obj = obj_from_bits(mapping_bits);
@@ -2535,8 +2557,6 @@ unsafe fn call_bind_ic_dispatch(
         let res = molt_call_bind(call_bits, builder_bits);
         if let Some(entry) = call_bind_ic_entry_for_call(_py, call_bits) {
             ic_tls_insert(site_id, entry);
-            // Also update global cache for cross-thread visibility
-            call_bind_ic_cache().lock().unwrap().insert(site_id, entry);
         }
         res
     }
@@ -5127,8 +5147,13 @@ unsafe fn bind_builtin_pop(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64
 
 #[cfg(test)]
 mod tests {
-    use super::{protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw};
+    use super::{
+        CALL_BIND_IC_KIND_DIRECT_FUNC, CallBindIcEntry, clear_call_bind_ic_cache, ic_tls_insert,
+        ic_tls_lookup, protect_callargs_aliased_return_with_extra,
+        trace_call_type_builder_enabled_raw,
+    };
     use crate::object::builders::alloc_list;
+    use crate::{dec_ref_bits, obj_from_bits, ptr_from_bits, runtime_state};
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
@@ -5169,5 +5194,63 @@ mod tests {
             crate::dec_ref_bits(_py, list_bits);
             crate::dec_ref_bits(_py, list_bits);
         });
+    }
+
+    #[test]
+    fn callargs_registries_are_runtime_scoped() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            {
+                let mut guard = state.call_bind.lock().unwrap();
+                guard.callargs_builder_map.clear();
+                guard.callargs_storage_registry.clear();
+            }
+
+            let builder_bits = super::molt_callargs_new(1, 0);
+            assert!(!obj_from_bits(builder_bits).is_none());
+            let builder_ptr = ptr_from_bits(builder_bits);
+            assert!(!builder_ptr.is_null());
+            let args_ptr = unsafe { super::callargs_ptr(builder_ptr) };
+            assert!(!args_ptr.is_null());
+            {
+                let guard = state.call_bind.lock().unwrap();
+                assert_eq!(guard.callargs_builder_map.len(), 1);
+                assert_eq!(guard.callargs_storage_registry.len(), 1);
+                assert!(
+                    guard
+                        .callargs_builder_map
+                        .contains_key(&(builder_ptr as usize))
+                );
+                assert!(
+                    guard
+                        .callargs_storage_registry
+                        .contains(&(args_ptr as usize))
+                );
+            }
+
+            dec_ref_bits(_py, builder_bits);
+            {
+                let guard = state.call_bind.lock().unwrap();
+                assert!(guard.callargs_builder_map.is_empty());
+                assert!(guard.callargs_storage_registry.is_empty());
+            }
+        });
+    }
+
+    #[test]
+    fn clear_call_bind_ic_cache_clears_thread_local_cache() {
+        let entry = CallBindIcEntry {
+            fn_ptr: 11,
+            target_bits: 22,
+            class_bits: 0,
+            class_version: 33,
+            cached_alloc_size: 44,
+            arity: 1,
+            kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
+        };
+        ic_tls_insert(99, entry);
+        assert!(ic_tls_lookup(99).is_some());
+        clear_call_bind_ic_cache();
+        assert!(ic_tls_lookup(99).is_none());
     }
 }

@@ -2035,7 +2035,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_CALLARGS => {
                     let args_ptr = callargs_ptr(ptr);
                     if !args_ptr.is_null() {
-                        crate::call::bind::note_callargs_free(ptr, args_ptr);
+                        crate::call::bind::note_callargs_free(py, ptr, args_ptr);
                         callargs_dec_ref_all(py, args_ptr);
                         drop(Box::from_raw(args_ptr));
                     }
