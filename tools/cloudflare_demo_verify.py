@@ -18,6 +18,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    import harness_memory_guard  # type: ignore
+
 _WORKER_URL_RE = re.compile(r"https://[^\s\"'<>]+\.workers\.dev[^\s\"'<>]*")
 _EXPECTED_PROBE_PATHS = (
     "/",
@@ -312,10 +317,16 @@ def _run_command(
 ) -> subprocess.CompletedProcess[str]:
     if verbose:
         print(f"Running: {subprocess.list2cmdline(cmd)}", file=sys.stderr)
-    return subprocess.run(
+    guard_env = harness_memory_guard.canonical_harness_env(env, repo_root=REPO_ROOT)
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_CLOUDFLARE",
+        guard_env,
+        repo_root=REPO_ROOT,
+    )
+    return context.run(
         cmd,
         cwd=cwd,
-        env=env,
+        env=guard_env,
         capture_output=True,
         text=True,
     )
@@ -583,7 +594,9 @@ class VerificationReport:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def assert_clean_text_body(raw: bytes) -> str:
+def assert_clean_text_body(raw: bytes | str) -> str:
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
     if b"\x00" in raw:
         raise VerificationError("response body contains NUL byte")
     try:
@@ -808,12 +821,18 @@ def build_demo_fuzz_matrix() -> tuple[EndpointCase, ...]:
 
 def _run_source_case(entry: Path, case: EndpointCase) -> CaseResult:
     cmd = [sys.executable, str(entry.resolve()), case.path, case.query]
-    completed = subprocess.run(
+    env = harness_memory_guard.canonical_harness_env(None, repo_root=REPO_ROOT)
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_CLOUDFLARE",
+        env,
+        repo_root=REPO_ROOT,
+    )
+    completed = context.run(
         cmd,
         capture_output=True,
         cwd=str(REPO_ROOT),
-        text=False,
-        check=False,
+        env=env,
+        text=True,
     )
     stdout = assert_clean_text_body(completed.stdout)
     stderr = assert_clean_text_body(completed.stderr)

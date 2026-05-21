@@ -205,20 +205,17 @@ class ConformanceBatchCompiler:
     def start(self) -> None:
         if self._client is not None:
             return
-        limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", self._env)
+        guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
+            "MOLT_CONFORMANCE",
+            self._env,
+            repo_root=self._repo_root,
+        )
         try:
             self._client = BatchCompileServerClient(
                 self.command,
                 cwd=self._repo_root,
                 env=self._env,
-                process_group_kwargs=harness_memory_guard.batch_process_group_kwargs(
-                    limits
-                ),
-                force_close=(
-                    harness_memory_guard.force_close_process_group
-                    if limits.enabled
-                    else None
-                ),
+                guard_context=guard_context,
                 reader_name="molt-conformance-batch-server-reader",
             )
         except OSError as exc:

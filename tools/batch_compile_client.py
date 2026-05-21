@@ -6,10 +6,16 @@ import contextlib
 import json
 import queue
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct import from tools/
+    import harness_memory_guard  # type: ignore
 
 
 class BatchCompileServerClient:
@@ -21,23 +27,58 @@ class BatchCompileServerClient:
         *,
         cwd: Path,
         env: Mapping[str, str],
+        guard_context: harness_memory_guard.HarnessExecutionContext | None = None,
+        memory_guard_prefix: str | None = "MOLT",
         process_group_kwargs: Mapping[str, object] | None = None,
         force_close: Callable[[subprocess.Popen[str]], None] | None = None,
         reader_name: str = "molt-batch-server-reader",
     ) -> None:
-        self._force_close = force_close
-        self._proc = subprocess.Popen(
-            list(cmd),
-            cwd=str(cwd),
-            env=dict(env),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            errors="replace",
-            **dict(process_group_kwargs or {}),
+        self._guard_context = guard_context
+        if self._guard_context is None and memory_guard_prefix is not None:
+            self._guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
+                memory_guard_prefix,
+                env,
+                repo_root=cwd,
+            )
+        launch_env = (
+            dict(self._guard_context.env)
+            if self._guard_context is not None
+            else dict(env)
         )
+        if process_group_kwargs is None and self._guard_context is not None:
+            process_group_kwargs = self._guard_context.process_group_kwargs()
+        if (
+            force_close is None
+            and self._guard_context is not None
+            and self._guard_context.limits.enabled
+        ):
+            force_close = self._guard_context.force_close_process_group
+        self._force_close = force_close
+        self._guard_sentinel = None
+        if self._guard_context is not None:
+            label = reader_name.removesuffix("-reader").replace("-", "_")
+            self._guard_sentinel = self._guard_context.start_repo_sentinel(
+                label=label,
+                drain_until_clean_sec=0.1,
+                drain_max_runtime_sec=2.0,
+            )
+        try:
+            self._proc = subprocess.Popen(
+                list(cmd),
+                cwd=str(cwd),
+                env=launch_env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                errors="replace",
+                **dict(process_group_kwargs or {}),
+            )
+        except BaseException:
+            if self._guard_sentinel is not None:
+                self._guard_sentinel.__exit__(*sys.exc_info())
+            raise
         self._next_id = 1
         self._response_queue: queue.Queue[str | BaseException | None] = queue.Queue()
         self._response_reader = threading.Thread(
@@ -138,7 +179,12 @@ class BatchCompileServerClient:
                 self._proc.wait(timeout=0.35)
 
     def close(self, *, force: bool = False, timeout: float = 60.0) -> None:
-        if not force and self._proc.poll() is None:
-            with contextlib.suppress(Exception):
-                self.request("shutdown", timeout=timeout)
-        self.force_close()
+        try:
+            if not force and self._proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    self.request("shutdown", timeout=timeout)
+            self.force_close()
+        finally:
+            if self._guard_sentinel is not None:
+                self._guard_sentinel.__exit__(None, None, None)
+                self._guard_sentinel = None

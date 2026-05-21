@@ -10,12 +10,40 @@ GUARDED_ENTRYPOINTS = {
     "tests/molt_diff.py": (
         "harness_memory_guard",
         "_DiffGlobalMemoryMonitor",
+        "HarnessExecutionContext",
         "memory_guard.ProcessTreeTracker",
     ),
     "tools/bench.py": (
         "harness_memory_guard",
         "guarded_completed_process",
+        "HarnessExecutionContext",
         "repo_process_sentinel",
+    ),
+    "tools/batch_compile_client.py": (
+        "harness_memory_guard",
+        "HarnessExecutionContext",
+        "start_repo_sentinel",
+        "process_group_kwargs",
+    ),
+    "tools/guarded_exec.py": (
+        "harness_memory_guard",
+        "HarnessExecutionContext",
+        "canonical_harness_env",
+    ),
+    "deploy/scripts/benchmark_simd.py": (
+        "harness_memory_guard",
+        "HarnessExecutionContext",
+        "canonical_harness_env",
+    ),
+    "tools/cloudflare_demo_verify.py": (
+        "harness_memory_guard",
+        "HarnessExecutionContext",
+        "canonical_harness_env",
+    ),
+    "drivers/cloudflare/thin_adapter/verify.py": (
+        "harness_memory_guard",
+        "HarnessExecutionContext",
+        "canonical_harness_env",
     ),
     "tools/bench_wasm.py": (
         "harness_memory_guard",
@@ -106,6 +134,7 @@ GUARDED_ENTRYPOINTS = {
     "tests/harness/run_molt_conformance.py": (
         "harness_memory_guard",
         "guarded_completed_process",
+        "HarnessExecutionContext",
         "repo_process_sentinel",
     ),
     "tests/harness/run_monty_conformance.py": (
@@ -148,6 +177,23 @@ def test_default_memory_guard_wiring_for_harness_entrypoints() -> None:
     for rel_path, required_tokens in GUARDED_ENTRYPOINTS.items():
         text = (ROOT / rel_path).read_text(encoding="utf-8")
         for token in required_tokens:
+            if token not in text:
+                missing.append(f"{rel_path}: {token}")
+
+    assert missing == []
+
+
+def test_legacy_shell_entrypoints_enter_guarded_python_wrappers() -> None:
+    required = {
+        "bench/run_all.sh": ("tools/bench.py", "TMPDIR"),
+        "bench/scripts/run_stack.sh": ("tools/guarded_exec.py", "MOLT_GUARDED_STACK_INNER"),
+        "bench/scripts/run_db_stub.sh": ("run_db_stub.py", "TMPDIR"),
+        "tests/parity/run_parity.sh": ("tools/parity_gate.py", "TMPDIR"),
+    }
+    missing: list[str] = []
+    for rel_path, tokens in required.items():
+        text = (ROOT / rel_path).read_text(encoding="utf-8")
+        for token in tokens:
             if token not in text:
                 missing.append(f"{rel_path}: {token}")
 
