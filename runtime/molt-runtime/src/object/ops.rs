@@ -11092,9 +11092,11 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
             return MoltObject::none().bits();
         }
         unsafe {
-            let mut vec = Vec::with_capacity(n);
-            vec.resize(n, fill_raw);
-            let storage_ptr = crate::object::layout::ListIntStorage::from_vec(vec);
+            let Some(storage_ptr) = crate::object::layout::ListIntStorage::filled(n, fill_raw)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
+            };
             *(ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
         }
         MoltObject::from_ptr(ptr).bits()
