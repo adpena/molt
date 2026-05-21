@@ -100,7 +100,8 @@ pub(crate) struct SpecialCache {
     feature = "stdlib_compression",
     feature = "stdlib_collections",
     feature = "stdlib_logging_ext",
-    feature = "stdlib_math"
+    feature = "stdlib_math",
+    feature = "stdlib_serial"
 ))]
 pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
 pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
@@ -424,7 +425,8 @@ impl RuntimeState {
     feature = "stdlib_compression",
     feature = "stdlib_collections",
     feature = "stdlib_logging_ext",
-    feature = "stdlib_math"
+    feature = "stdlib_math",
+    feature = "stdlib_serial"
 ))]
 pub(crate) fn runtime_extension_state_get_or_init(
     state: &RuntimeState,

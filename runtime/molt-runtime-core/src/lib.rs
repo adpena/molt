@@ -461,7 +461,7 @@ pub mod ffi {
 
         /// GIL-free list[int] setitem (NaN-boxed interface).
         pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64)
-        -> u64;
+            -> u64;
 
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
         pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
@@ -847,9 +847,9 @@ pub mod prelude {
     pub use crate::with_core_gil;
     pub use crate::with_gil_entry;
     pub use crate::{
-        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken, bits_from_ptr,
-        bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec,
-        bridge_owned_u64_buffer, bridge_owned_u64_to_vec, obj_from_bits, ptr_from_bits,
+        bits_from_ptr, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, bridge_owned_u8_buffer,
+        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits, ptr_from_bits,
+        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken,
     };
 
     // Safe runtime wrappers
@@ -872,8 +872,21 @@ pub mod prelude {
 /// single `&'static RuntimeVtable` whose fields are filled in at init time by
 /// `molt-runtime`.  Every pointer uses an FFI-safe `extern "C"` signature so
 /// the struct can be shared across dynamic-library boundaries.
+pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
+pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
+
 #[repr(C)]
 pub struct RuntimeVtable {
+    // --- Runtime-scoped extension state ---
+    pub runtime_state_get_or_init: unsafe extern "C" fn(
+        *const u8,
+        usize,
+        RuntimeExtensionStateInit,
+        RuntimeExtensionStateClear,
+        RuntimeExtensionStateDrop,
+    ) -> *mut u8,
+
     // --- Exception handling ---
     pub raise_exception: unsafe extern "C" fn(*const u8, usize, *const u8, usize) -> u64,
     pub exception_pending: unsafe extern "C" fn() -> i32,

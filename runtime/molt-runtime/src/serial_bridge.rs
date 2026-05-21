@@ -740,11 +740,33 @@ extern "C" fn bridge_molt_module_import(name_bits: u64) -> u64 {
 // RuntimeVtable — single-dispatch entry point for the serial crate
 // ---------------------------------------------------------------------------
 
-use molt_runtime_core::RuntimeVtable;
+use molt_runtime_core::{
+    RuntimeExtensionStateClear, RuntimeExtensionStateDrop, RuntimeExtensionStateInit, RuntimeVtable,
+};
+
+extern "C" fn bridge_runtime_state_get_or_init(
+    key_ptr: *const u8,
+    key_len: usize,
+    init: RuntimeExtensionStateInit,
+    clear: RuntimeExtensionStateClear,
+    drop: RuntimeExtensionStateDrop,
+) -> *mut u8 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
+        crate::state::runtime_extension_state_get_or_init(
+            crate::state::runtime_state::runtime_state(_py),
+            key,
+            init,
+            clear,
+            drop,
+        )
+    })
+}
 
 /// The global vtable populated with pointers to the private bridge functions.
 /// The serial crate fetches this once at init time via `__molt_serial_get_vtable()`.
 static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
+    runtime_state_get_or_init: bridge_runtime_state_get_or_init,
     raise_exception: bridge_raise_exception,
     exception_pending: bridge_exception_pending,
     alloc_tuple: bridge_alloc_tuple,
