@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_obj_model::MoltObject;
 
+use crate::state::{RuntimeState, cache::clear_atomic_slots};
 use crate::{
     HEADER_FLAG_SKIP_CLASS_DECREF, PyToken, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS,
     TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED,
@@ -2113,46 +2114,85 @@ fn collect_classinfo_issubclass(_py: &PyToken<'_>, class_bits: u64, out: &mut Ve
     }
 }
 
-static MAPPINGPROXY_CLASS: AtomicU64 = AtomicU64::new(0);
-static SIMPLENAMESPACE_CLASS: AtomicU64 = AtomicU64::new(0);
-static CAPSULE_CLASS: AtomicU64 = AtomicU64::new(0);
-static CELL_CLASS: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_CLASS: AtomicU64 = AtomicU64::new(0);
-static METHOD_CLASS: AtomicU64 = AtomicU64::new(0);
+macro_rules! define_types_runtime_state {
+    (@unit $field:ident) => {
+        ()
+    };
+    ($($field:ident),+ $(,)?) => {
+        const TYPES_RUNTIME_SLOT_COUNT: usize = <[()]>::len(&[
+            $(define_types_runtime_state!(@unit $field)),+
+        ]);
 
-static MAPPINGPROXY_NEW_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_INIT_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_GETITEM_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_ITER_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_LEN_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_CONTAINS_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_GET_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_KEYS_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_ITEMS_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_VALUES_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_REPR_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_SETITEM_FN: AtomicU64 = AtomicU64::new(0);
-static MAPPINGPROXY_DELITEM_FN: AtomicU64 = AtomicU64::new(0);
+        pub(crate) struct TypesRuntimeState {
+            $(pub(crate) $field: AtomicU64,)+
+        }
 
-static SIMPLENAMESPACE_INIT_FN: AtomicU64 = AtomicU64::new(0);
-static SIMPLENAMESPACE_REPR_FN: AtomicU64 = AtomicU64::new(0);
-static SIMPLENAMESPACE_EQ_FN: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_INIT_FN: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_GET_FN: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_SET_FN: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_DELETE_FN: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_GETTER_FN: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_SETTER_FN: AtomicU64 = AtomicU64::new(0);
-static DYNAMICCLASSATTRIBUTE_DELETER_FN: AtomicU64 = AtomicU64::new(0);
-static CAPSULE_NEW_FN: AtomicU64 = AtomicU64::new(0);
-static CELL_NEW_FN: AtomicU64 = AtomicU64::new(0);
-static METHOD_NEW_FN: AtomicU64 = AtomicU64::new(0);
-static METHOD_INIT_FN: AtomicU64 = AtomicU64::new(0);
-static TYPES_COROUTINE_FN: AtomicU64 = AtomicU64::new(0);
-static TYPES_GET_ORIGINAL_BASES_FN: AtomicU64 = AtomicU64::new(0);
-static TYPES_PREPARE_CLASS_FN: AtomicU64 = AtomicU64::new(0);
-static TYPES_RESOLVE_BASES_FN: AtomicU64 = AtomicU64::new(0);
-static TYPES_NEW_CLASS_FN: AtomicU64 = AtomicU64::new(0);
+        impl TypesRuntimeState {
+            pub(crate) fn new() -> Self {
+                Self {
+                    $($field: AtomicU64::new(0),)+
+                }
+            }
+
+            fn slots(&self) -> Vec<&AtomicU64> {
+                let mut slots = Vec::with_capacity(TYPES_RUNTIME_SLOT_COUNT);
+                $(slots.push(&self.$field);)+
+                slots
+            }
+        }
+    };
+}
+
+define_types_runtime_state! {
+    mappingproxy_class,
+    simplenamespace_class,
+    capsule_class,
+    cell_class,
+    dynamic_class_attribute_class,
+    method_class,
+    mappingproxy_new_fn,
+    mappingproxy_init_fn,
+    mappingproxy_getitem_fn,
+    mappingproxy_iter_fn,
+    mappingproxy_len_fn,
+    mappingproxy_contains_fn,
+    mappingproxy_get_fn,
+    mappingproxy_keys_fn,
+    mappingproxy_items_fn,
+    mappingproxy_values_fn,
+    mappingproxy_repr_fn,
+    mappingproxy_setitem_fn,
+    mappingproxy_delitem_fn,
+    simplenamespace_init_fn,
+    simplenamespace_repr_fn,
+    simplenamespace_eq_fn,
+    dynamic_class_attribute_init_fn,
+    dynamic_class_attribute_get_fn,
+    dynamic_class_attribute_set_fn,
+    dynamic_class_attribute_delete_fn,
+    dynamic_class_attribute_getter_fn,
+    dynamic_class_attribute_setter_fn,
+    dynamic_class_attribute_deleter_fn,
+    capsule_new_fn,
+    cell_new_fn,
+    method_new_fn,
+    method_init_fn,
+    types_coroutine_fn,
+    types_get_original_bases_fn,
+    types_prepare_class_fn,
+    types_resolve_bases_fn,
+    types_new_class_fn,
+}
+
+fn types_state(_py: &PyToken<'_>) -> &'static TypesRuntimeState {
+    &runtime_state(_py).types
+}
+
+pub(crate) fn types_clear_runtime_state(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let slots = state.types.slots();
+    clear_atomic_slots(_py, &slots);
+}
 
 fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || {
@@ -2334,82 +2374,87 @@ unsafe fn mappingproxy_set_mapping_bits(ptr: *mut u8, bits: u64) {
 }
 
 fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &MAPPINGPROXY_CLASS, "mappingproxy", 16);
+    let class_bits = types_class(
+        _py,
+        &types_state(_py).mappingproxy_class,
+        "mappingproxy",
+        16,
+    );
     let new_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_NEW_FN,
+        &types_state(_py).mappingproxy_new_fn,
         crate::molt_types_mappingproxy_new as *const () as usize as u64,
         2,
     );
     let init_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_INIT_FN,
+        &types_state(_py).mappingproxy_init_fn,
         crate::molt_types_mappingproxy_init as *const () as usize as u64,
         2,
     );
     let getitem_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_GETITEM_FN,
+        &types_state(_py).mappingproxy_getitem_fn,
         crate::molt_types_mappingproxy_getitem as *const () as usize as u64,
         2,
     );
     let iter_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_ITER_FN,
+        &types_state(_py).mappingproxy_iter_fn,
         crate::molt_types_mappingproxy_iter as *const () as usize as u64,
         1,
     );
     let len_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_LEN_FN,
+        &types_state(_py).mappingproxy_len_fn,
         crate::molt_types_mappingproxy_len as *const () as usize as u64,
         1,
     );
     let contains_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_CONTAINS_FN,
+        &types_state(_py).mappingproxy_contains_fn,
         crate::molt_types_mappingproxy_contains as *const () as usize as u64,
         2,
     );
     let get_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_GET_FN,
+        &types_state(_py).mappingproxy_get_fn,
         crate::molt_types_mappingproxy_get as *const () as usize as u64,
         3,
     );
     let keys_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_KEYS_FN,
+        &types_state(_py).mappingproxy_keys_fn,
         crate::molt_types_mappingproxy_keys as *const () as usize as u64,
         1,
     );
     let items_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_ITEMS_FN,
+        &types_state(_py).mappingproxy_items_fn,
         crate::molt_types_mappingproxy_items as *const () as usize as u64,
         1,
     );
     let values_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_VALUES_FN,
+        &types_state(_py).mappingproxy_values_fn,
         crate::molt_types_mappingproxy_values as *const () as usize as u64,
         1,
     );
     let repr_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_REPR_FN,
+        &types_state(_py).mappingproxy_repr_fn,
         crate::molt_types_mappingproxy_repr as *const () as usize as u64,
         1,
     );
     let setitem_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_SETITEM_FN,
+        &types_state(_py).mappingproxy_setitem_fn,
         crate::molt_types_mappingproxy_setitem as *const () as usize as u64,
         3,
     );
     let delitem_bits = builtin_func_bits(
         _py,
-        &MAPPINGPROXY_DELITEM_FN,
+        &types_state(_py).mappingproxy_delitem_fn,
         crate::molt_types_mappingproxy_delitem as *const () as usize as u64,
         2,
     );
@@ -2435,16 +2480,16 @@ pub(crate) fn mappingproxy_class_bits(_py: &PyToken<'_>) -> u64 {
 }
 
 pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &METHOD_CLASS, "method", 16);
+    let class_bits = types_class(_py, &types_state(_py).method_class, "method", 16);
     let new_bits = builtin_func_bits(
         _py,
-        &METHOD_NEW_FN,
+        &types_state(_py).method_new_fn,
         crate::molt_types_method_new as *const () as usize as u64,
         3,
     );
     let init_bits = builtin_func_bits(
         _py,
-        &METHOD_INIT_FN,
+        &types_state(_py).method_init_fn,
         crate::molt_types_method_init as *const () as usize as u64,
         3,
     );
@@ -2454,22 +2499,27 @@ pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &SIMPLENAMESPACE_CLASS, "SimpleNamespace", 8);
+    let class_bits = types_class(
+        _py,
+        &types_state(_py).simplenamespace_class,
+        "SimpleNamespace",
+        8,
+    );
     let init_bits = builtin_func_bits(
         _py,
-        &SIMPLENAMESPACE_INIT_FN,
+        &types_state(_py).simplenamespace_init_fn,
         crate::molt_types_simplenamespace_init as *const () as usize as u64,
         3,
     );
     let repr_bits = builtin_func_bits(
         _py,
-        &SIMPLENAMESPACE_REPR_FN,
+        &types_state(_py).simplenamespace_repr_fn,
         crate::molt_types_simplenamespace_repr as *const () as usize as u64,
         1,
     );
     let eq_bits = builtin_func_bits(
         _py,
-        &SIMPLENAMESPACE_EQ_FN,
+        &types_state(_py).simplenamespace_eq_fn,
         crate::molt_types_simplenamespace_eq as *const () as usize as u64,
         2,
     );
@@ -2481,10 +2531,10 @@ fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn capsule_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &CAPSULE_CLASS, "capsule", 8);
+    let class_bits = types_class(_py, &types_state(_py).capsule_class, "capsule", 8);
     let new_bits = builtin_func_bits(
         _py,
-        &CAPSULE_NEW_FN,
+        &types_state(_py).capsule_new_fn,
         crate::molt_types_capsule_new as *const () as usize as u64,
         1,
     );
@@ -2493,10 +2543,10 @@ fn capsule_class(_py: &PyToken<'_>) -> u64 {
 }
 
 pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
-    let class_bits = types_class(_py, &CELL_CLASS, "cell", 8);
+    let class_bits = types_class(_py, &types_state(_py).cell_class, "cell", 8);
     let new_bits = builtin_func_bits(
         _py,
-        &CELL_NEW_FN,
+        &types_state(_py).cell_new_fn,
         crate::molt_types_cell_new as *const () as usize as u64,
         1,
     );
@@ -5188,7 +5238,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
 fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     let class_bits = types_class(
         _py,
-        &DYNAMICCLASSATTRIBUTE_CLASS,
+        &types_state(_py).dynamic_class_attribute_class,
         "DynamicClassAttribute",
         8,
     );
@@ -5197,43 +5247,43 @@ fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     }
     let init_bits = builtin_func_bits(
         _py,
-        &DYNAMICCLASSATTRIBUTE_INIT_FN,
+        &types_state(_py).dynamic_class_attribute_init_fn,
         crate::molt_types_dynamic_class_attr_init as *const () as usize as u64,
         3,
     );
     let get_bits = builtin_func_bits(
         _py,
-        &DYNAMICCLASSATTRIBUTE_GET_FN,
+        &types_state(_py).dynamic_class_attribute_get_fn,
         crate::molt_types_dynamic_class_attr_get as *const () as usize as u64,
         3,
     );
     let set_bits = builtin_func_bits(
         _py,
-        &DYNAMICCLASSATTRIBUTE_SET_FN,
+        &types_state(_py).dynamic_class_attribute_set_fn,
         crate::molt_types_dynamic_class_attr_set as *const () as usize as u64,
         3,
     );
     let delete_bits = builtin_func_bits(
         _py,
-        &DYNAMICCLASSATTRIBUTE_DELETE_FN,
+        &types_state(_py).dynamic_class_attribute_delete_fn,
         crate::molt_types_dynamic_class_attr_delete as *const () as usize as u64,
         2,
     );
     let getter_bits = builtin_func_bits(
         _py,
-        &DYNAMICCLASSATTRIBUTE_GETTER_FN,
+        &types_state(_py).dynamic_class_attribute_getter_fn,
         crate::molt_types_dynamic_class_attr_getter as *const () as usize as u64,
         2,
     );
     let setter_bits = builtin_func_bits(
         _py,
-        &DYNAMICCLASSATTRIBUTE_SETTER_FN,
+        &types_state(_py).dynamic_class_attribute_setter_fn,
         crate::molt_types_dynamic_class_attr_setter as *const () as usize as u64,
         2,
     );
     let deleter_bits = builtin_func_bits(
         _py,
-        &DYNAMICCLASSATTRIBUTE_DELETER_FN,
+        &types_state(_py).dynamic_class_attribute_deleter_fn,
         crate::molt_types_dynamic_class_attr_deleter as *const () as usize as u64,
         2,
     );
@@ -5296,7 +5346,7 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
 
     let coroutine_bits = bootstrap_runtime_func_bits(
         _py,
-        &TYPES_COROUTINE_FN,
+        &types_state(_py).types_coroutine_fn,
         crate::molt_types_coroutine as *const () as usize as u64,
         1,
     );
@@ -5308,7 +5358,7 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
 
     let get_original_bases_bits = bootstrap_runtime_func_bits(
         _py,
-        &TYPES_GET_ORIGINAL_BASES_FN,
+        &types_state(_py).types_get_original_bases_fn,
         crate::molt_types_get_original_bases as *const () as usize as u64,
         1,
     );
@@ -5320,7 +5370,7 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
 
     let prepare_bits = bootstrap_runtime_func_bits(
         _py,
-        &TYPES_PREPARE_CLASS_FN,
+        &types_state(_py).types_prepare_class_fn,
         crate::molt_types_prepare_class as *const () as usize as u64,
         2,
     );
@@ -5333,7 +5383,7 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
 
     let resolve_bits = bootstrap_runtime_func_bits(
         _py,
-        &TYPES_RESOLVE_BASES_FN,
+        &types_state(_py).types_resolve_bases_fn,
         crate::molt_types_resolve_bases as *const () as usize as u64,
         2,
     );
@@ -5346,7 +5396,7 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
 
     let new_bits = bootstrap_runtime_func_bits(
         _py,
-        &TYPES_NEW_CLASS_FN,
+        &types_state(_py).types_new_class_fn,
         crate::molt_types_new_class as *const () as usize as u64,
         2,
     );
@@ -6153,7 +6203,7 @@ pub(crate) fn types_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     if class_bits == 0 {
         return false;
     }
-    let mappingproxy = MAPPINGPROXY_CLASS.load(Ordering::Acquire);
+    let mappingproxy = types_state(_py).mappingproxy_class.load(Ordering::Acquire);
     if class_bits == mappingproxy {
         let mapping_bits = unsafe { mappingproxy_mapping_bits(ptr) };
         if mapping_bits != 0 && !obj_from_bits(mapping_bits).is_none() {
@@ -6311,6 +6361,24 @@ mod tests {
     }
 
     #[test]
+    fn types_runtime_state_is_owned_and_clearable() {
+        init_runtime();
+
+        let state = RuntimeState::new();
+        for slot in state.types.slots() {
+            slot.store(MoltObject::from_int(7).bits(), Ordering::Release);
+        }
+
+        crate::with_gil_entry_nopanic!(_py, {
+            types_clear_runtime_state(_py, &state);
+        });
+
+        for slot in state.types.slots() {
+            assert_eq!(slot.load(Ordering::Acquire), 0);
+        }
+    }
+
+    #[test]
     fn vararg_marker_reuses_function_dict_and_preserves_empty_arg_names() {
         init_runtime();
 
@@ -6318,7 +6386,7 @@ mod tests {
             unsafe {
                 let func_bits = bootstrap_runtime_func_bits(
                     _py,
-                    &TYPES_PREPARE_CLASS_FN,
+                    &types_state(_py).types_prepare_class_fn,
                     crate::molt_types_prepare_class as *const () as usize as u64,
                     2,
                 );

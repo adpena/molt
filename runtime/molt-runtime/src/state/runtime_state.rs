@@ -33,6 +33,7 @@ use crate::builtins::operator::OperatorRuntimeState;
 use crate::builtins::random_mod::RandomRuntimeState;
 use crate::builtins::signal_ext::{SignalRuntimeState, signal_runtime_state_publish};
 use crate::builtins::sys_ext::SysRuntimeState;
+use crate::builtins::types::TypesRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
 use crate::call::bind::CallBindRuntimeState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
@@ -319,6 +320,7 @@ pub(crate) struct RuntimeState {
     pub(crate) functools: FunctoolsRuntimeState,
     pub(crate) io: IoRuntimeState,
     pub(crate) operator: OperatorRuntimeState,
+    pub(crate) types: TypesRuntimeState,
     #[cfg(not(feature = "stdlib_itertools"))]
     pub(crate) itertools: ItertoolsRuntimeState,
     #[cfg(not(feature = "stdlib_serial"))]
@@ -428,6 +430,7 @@ impl RuntimeState {
             functools: FunctoolsRuntimeState::new(),
             io: IoRuntimeState::new(),
             operator: OperatorRuntimeState::new(),
+            types: TypesRuntimeState::new(),
             #[cfg(not(feature = "stdlib_itertools"))]
             itertools: ItertoolsRuntimeState::new(),
             #[cfg(not(feature = "stdlib_serial"))]
