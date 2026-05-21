@@ -3162,6 +3162,59 @@ pub(crate) fn traceback_exception_chain_payload_bits(
 // Runtime initialization from manifest environment variables
 // ---------------------------------------------------------------------------
 
+fn parse_positive_integer_resource_env<T>(name: &'static str) -> Result<Option<T>, String>
+where
+    T: Default + PartialEq + std::str::FromStr,
+{
+    let raw = match std::env::var(name) {
+        Ok(raw) => raw,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!("{name} must be valid UTF-8"));
+        }
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "{name} must be a positive integer, got an empty value"
+        ));
+    }
+    let parsed = trimmed
+        .parse::<T>()
+        .map_err(|_| format!("{name} must be a positive integer, got {raw:?}"))?;
+    if parsed == T::default() {
+        return Err(format!("{name} must be a positive integer, got 0"));
+    }
+    Ok(Some(parsed))
+}
+
+fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>, String> {
+    use std::time::Duration;
+
+    let max_memory = parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_MEMORY")?;
+    let max_duration_ms =
+        parse_positive_integer_resource_env::<u64>("MOLT_RESOURCE_MAX_DURATION_MS")?;
+    let max_allocations = parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_ALLOCATIONS")?;
+    let max_recursion_depth =
+        parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_RECURSION_DEPTH")?;
+
+    let has_any = max_memory.is_some()
+        || max_duration_ms.is_some()
+        || max_allocations.is_some()
+        || max_recursion_depth.is_some();
+    if !has_any {
+        return Ok(None);
+    }
+
+    Ok(Some(crate::resource::ResourceLimits {
+        max_memory,
+        max_duration: max_duration_ms.map(Duration::from_millis),
+        max_allocations,
+        max_recursion_depth,
+        max_operation_result_bytes: None,
+    }))
+}
+
 /// Initialize the resource tracker from environment variables set by the
 /// capability manifest. Called during runtime startup.
 ///
@@ -3169,36 +3222,86 @@ pub(crate) fn traceback_exception_chain_payload_bits(
 ///        MOLT_RESOURCE_MAX_ALLOCATIONS, MOLT_RESOURCE_MAX_RECURSION_DEPTH
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init_resources() {
-    use crate::resource::{ResourceLimits, install_global_limited_tracker};
+    use crate::resource::install_global_limited_tracker;
+
+    match resource_limits_from_env() {
+        Ok(Some(limits)) => install_global_limited_tracker(limits),
+        Ok(None) => {}
+        Err(message) => {
+            eprintln!("molt runtime resource configuration error: {message}");
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_resource_env_tests {
+    use super::resource_limits_from_env;
     use std::time::Duration;
 
-    let max_memory = std::env::var("MOLT_RESOURCE_MAX_MEMORY")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok());
-    let max_duration_ms = std::env::var("MOLT_RESOURCE_MAX_DURATION_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok());
-    let max_allocations = std::env::var("MOLT_RESOURCE_MAX_ALLOCATIONS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok());
-    let max_recursion_depth = std::env::var("MOLT_RESOURCE_MAX_RECURSION_DEPTH")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok());
+    const RESOURCE_ENV_KEYS: &[&str] = &[
+        "MOLT_RESOURCE_MAX_MEMORY",
+        "MOLT_RESOURCE_MAX_DURATION_MS",
+        "MOLT_RESOURCE_MAX_ALLOCATIONS",
+        "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
+    ];
 
-    let has_any = max_memory.is_some()
-        || max_duration_ms.is_some()
-        || max_allocations.is_some()
-        || max_recursion_depth.is_some();
+    fn clear_resource_env() {
+        for key in RESOURCE_ENV_KEYS {
+            unsafe { std::env::remove_var(key) };
+        }
+    }
 
-    if has_any {
-        let limits = ResourceLimits {
-            max_memory,
-            max_duration: max_duration_ms.map(Duration::from_millis),
-            max_allocations,
-            max_recursion_depth,
-            max_operation_result_bytes: None,
-        };
-        install_global_limited_tracker(limits);
+    #[test]
+    fn resource_limits_from_env_rejects_invalid_values() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "not-a-number") };
+
+        let err = resource_limits_from_env().unwrap_err();
+
+        clear_resource_env();
+        assert!(err.contains("MOLT_RESOURCE_MAX_MEMORY"));
+        assert!(err.contains("positive integer"));
+    }
+
+    #[test]
+    fn resource_limits_from_env_rejects_zero_values() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        unsafe { std::env::set_var("MOLT_RESOURCE_MAX_DURATION_MS", "0") };
+
+        let err = resource_limits_from_env().unwrap_err();
+
+        clear_resource_env();
+        assert!(err.contains("MOLT_RESOURCE_MAX_DURATION_MS"));
+        assert!(err.contains("positive integer"));
+    }
+
+    #[test]
+    fn resource_limits_from_env_builds_positive_limit_set() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        unsafe {
+            std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576");
+            std::env::set_var("MOLT_RESOURCE_MAX_DURATION_MS", "2500");
+            std::env::set_var("MOLT_RESOURCE_MAX_ALLOCATIONS", "1000");
+            std::env::set_var("MOLT_RESOURCE_MAX_RECURSION_DEPTH", "50");
+        }
+
+        let limits = resource_limits_from_env().unwrap().unwrap();
+
+        clear_resource_env();
+        assert_eq!(limits.max_memory, Some(1_048_576));
+        assert_eq!(limits.max_duration, Some(Duration::from_millis(2500)));
+        assert_eq!(limits.max_allocations, Some(1000));
+        assert_eq!(limits.max_recursion_depth, Some(50));
     }
 }
 

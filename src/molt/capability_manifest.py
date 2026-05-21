@@ -241,6 +241,7 @@ class CapabilityManifest:
 
     def to_env_vars(self) -> dict[str, str]:
         """Convert manifest to environment variables for runtime propagation."""
+        validate_manifest(self)
         env: dict[str, str] = {}
         effective = sorted(self.effective_capabilities())
         env["MOLT_CAPABILITIES"] = ",".join(effective)

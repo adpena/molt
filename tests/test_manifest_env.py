@@ -1,8 +1,11 @@
 import sys
 
+import pytest
+
 sys.path.insert(0, "src")
 from molt.capability_manifest import (
     CapabilityManifest,
+    ManifestError,
     ResourceLimits,
     AuditConfig,
     IoConfig,
@@ -36,6 +39,13 @@ def test_manifest_to_env_vars_with_resources():
     assert env["MOLT_RESOURCE_MAX_DURATION_MS"] == "30000"
     assert env["MOLT_RESOURCE_MAX_ALLOCATIONS"] == "1000000"
     assert env["MOLT_RESOURCE_MAX_RECURSION_DEPTH"] == "500"
+
+
+def test_manifest_to_env_vars_rejects_invalid_resource_limits():
+    m = CapabilityManifest(resources=ResourceLimits(max_memory=0))
+
+    with pytest.raises(ManifestError, match="max_memory must be positive"):
+        m.to_env_vars()
 
 
 def test_manifest_to_env_vars_with_audit():
