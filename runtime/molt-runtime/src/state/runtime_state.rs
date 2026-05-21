@@ -24,6 +24,7 @@ use crate::builtins::configparser::ConfigParserRuntimeState;
 use crate::builtins::copy_mod::CopyMemoRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::CsvRuntimeState;
+use crate::builtins::exceptions::ExceptionsRuntimeState;
 use crate::builtins::functools::FunctoolsRuntimeState;
 use crate::builtins::io::IoRuntimeState;
 #[cfg(not(feature = "stdlib_itertools"))]
@@ -268,6 +269,7 @@ pub(crate) struct RuntimeState {
     pub(crate) module_cache: Mutex<HashMap<String, u64>>,
     pub(crate) intrinsic_registry_module: AtomicPtr<u8>,
     pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
+    pub(crate) exceptions: ExceptionsRuntimeState,
     pub(crate) exception_str_cache: Mutex<HashMap<u64, (u64, bool)>>,
     pub(crate) argv: Mutex<Vec<Vec<u8>>>,
     pub(crate) sys_version_info: Mutex<Option<PythonVersionInfo>>,
@@ -375,6 +377,7 @@ impl RuntimeState {
             module_cache: Mutex::new(HashMap::new()),
             intrinsic_registry_module: AtomicPtr::new(std::ptr::null_mut()),
             exception_type_cache: Mutex::new(HashMap::new()),
+            exceptions: ExceptionsRuntimeState::new(),
             exception_str_cache: Mutex::new(HashMap::new()),
             argv: Mutex::new(Vec::new()),
             sys_version_info: Mutex::new(None),
