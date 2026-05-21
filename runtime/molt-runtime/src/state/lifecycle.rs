@@ -358,6 +358,8 @@ pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) {
 
 fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
+    state.event_loop_registry.clear(_py);
+    state.pipe_transport_registry.clear();
     state.asyncio_core.clear(_py);
     clear_await_graph_state(_py, state);
     clear_native_task_states(_py, state);
