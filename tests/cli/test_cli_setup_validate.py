@@ -235,6 +235,65 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
     assert calls[1]["env"] == calls[0]["env"]
 
 
+def test_cli_cargo_build_helper_uses_default_memory_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+
+    class FakeMemoryGuard:
+        @staticmethod
+        def limits_from_env(prefix: str, env: dict[str, str] | None) -> object:
+            calls.append({"method": "limits", "prefix": prefix, "env": env})
+            return {"prefix": prefix}
+
+        @staticmethod
+        def guarded_completed_process(cmd: list[str], **kwargs: object):
+            calls.append({"method": "run", "cmd": cmd, **kwargs})
+            run_count = sum(1 for call in calls if call["method"] == "run")
+            return subprocess.CompletedProcess(
+                cmd,
+                1 if run_count == 1 else 0,
+                "",
+                "sccache: error: cache unavailable",
+            )
+
+    def fail_raw_subprocess_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("cargo helper used raw subprocess.run")
+
+    monkeypatch.setenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", "0.25")
+    monkeypatch.setattr(cli.subprocess, "run", fail_raw_subprocess_run)
+    monkeypatch.setattr(
+        cli,
+        "_load_cli_harness_memory_guard",
+        lambda cwd: FakeMemoryGuard,
+        raising=True,
+    )
+
+    result = cli._run_cargo_with_sccache_retry(
+        ["cargo", "build"],
+        cwd=ROOT,
+        env={"PATH": "/usr/bin", "RUSTC_WRAPPER": "/usr/bin/sccache"},
+        timeout=1.0,
+        json_output=True,
+        label="Runtime build",
+    )
+
+    assert result.returncode == 0
+    run_calls = [call for call in calls if call["method"] == "run"]
+    assert [call["prefix"] for call in run_calls] == ["MOLT_BUILD", "MOLT_BUILD"]
+    assert run_calls[0]["env"] == {
+        "PATH": "/usr/bin",
+        "RUSTC_WRAPPER": "/usr/bin/sccache",
+        "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
+    }
+    assert run_calls[1]["env"] == {
+        "PATH": "/usr/bin",
+        "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
+    }
+
+
 def test_cli_wrapper_build_uses_default_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
