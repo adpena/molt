@@ -39,10 +39,12 @@ use std::os::raw::c_void;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(all(molt_has_net_io, windows))]
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+use std::sync::Mutex;
+#[cfg(molt_has_net_io)]
+use std::sync::OnceLock;
 #[cfg(molt_has_net_io)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-use std::sync::{Mutex, OnceLock};
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -98,10 +100,188 @@ type SocketFd = RawFd;
 #[cfg(all(windows, molt_has_net_io))]
 type SocketFd = RawSocket;
 
-#[cfg(molt_has_net_io)]
-fn socket_fd_map() -> &'static Mutex<HashMap<SocketFd, PtrSlot>> {
-    static SOCKET_FD_MAP: OnceLock<Mutex<HashMap<SocketFd, PtrSlot>>> = OnceLock::new();
-    SOCKET_FD_MAP.get_or_init(|| Mutex::new(HashMap::new()))
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+pub(crate) struct SocketRuntimeState {
+    #[cfg(molt_has_net_io)]
+    fd_map: Mutex<HashMap<SocketFd, PtrSlot>>,
+    #[cfg(target_arch = "wasm32")]
+    wasm_meta: Mutex<HashMap<i64, WasmSocketMeta>>,
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    peer_map: Mutex<HashMap<SocketFd, SocketFd>>,
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    ancillary_queue_map: Mutex<HashMap<SocketFd, VecDeque<PendingAncillaryChunk>>>,
+}
+
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+impl SocketRuntimeState {
+    pub(crate) fn new() -> Self {
+        Self {
+            #[cfg(molt_has_net_io)]
+            fd_map: Mutex::new(HashMap::new()),
+            #[cfg(target_arch = "wasm32")]
+            wasm_meta: Mutex::new(HashMap::new()),
+            #[cfg(all(molt_has_net_io, not(unix)))]
+            peer_map: Mutex::new(HashMap::new()),
+            #[cfg(all(molt_has_net_io, not(unix)))]
+            ancillary_queue_map: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        #[cfg(molt_has_net_io)]
+        self.fd_map.lock().unwrap().clear();
+        #[cfg(target_arch = "wasm32")]
+        self.wasm_meta.lock().unwrap().clear();
+        #[cfg(all(molt_has_net_io, not(unix)))]
+        {
+            self.peer_map.lock().unwrap().clear();
+            self.ancillary_queue_map.lock().unwrap().clear();
+        }
+    }
+
+    #[cfg(molt_has_net_io)]
+    fn register_fd(&self, fd: SocketFd, socket_ptr: *mut u8) {
+        self.fd_map.lock().unwrap().insert(fd, PtrSlot(socket_ptr));
+    }
+
+    #[cfg(molt_has_net_io)]
+    fn unregister_fd(&self, fd: SocketFd) {
+        self.fd_map.lock().unwrap().remove(&fd);
+    }
+
+    #[cfg(molt_has_net_io)]
+    fn ptr_from_fd(&self, fd: SocketFd) -> Option<*mut u8> {
+        self.fd_map.lock().unwrap().get(&fd).map(|slot| slot.0)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn wasm_meta_insert(&self, handle: i64, meta: WasmSocketMeta) {
+        self.wasm_meta.lock().unwrap().insert(handle, meta);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn wasm_meta_remove(&self, handle: i64) {
+        self.wasm_meta.lock().unwrap().remove(&handle);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn with_wasm_meta_mut<R, F>(&self, handle: i64, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&mut WasmSocketMeta) -> R,
+    {
+        let mut guard = self.wasm_meta.lock().unwrap();
+        let Some(meta) = guard.get_mut(&handle) else {
+            return Err("socket closed".to_string());
+        };
+        Ok(f(meta))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn wasm_meta_clone(&self, handle: i64) -> Option<WasmSocketMeta> {
+        self.wasm_meta.lock().unwrap().get(&handle).cloned()
+    }
+
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    fn register_peer_pair(&self, left: SocketFd, right: SocketFd) {
+        let mut map = self.peer_map.lock().unwrap();
+        map.insert(left, right);
+        map.insert(right, left);
+    }
+
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    fn unregister_peer_state(&self, fd: SocketFd) {
+        {
+            let mut map = self.peer_map.lock().unwrap();
+            let peer = map.remove(&fd);
+            if let Some(peer_fd) = peer {
+                map.remove(&peer_fd);
+            }
+        }
+        self.ancillary_queue_map.lock().unwrap().remove(&fd);
+    }
+
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    fn peer_available(&self, fd: SocketFd) -> bool {
+        self.peer_map.lock().unwrap().contains_key(&fd)
+    }
+
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    fn peer_for_fd(&self, fd: SocketFd) -> Option<SocketFd> {
+        self.peer_map.lock().unwrap().get(&fd).copied()
+    }
+
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    fn push_ancillary(&self, fd: SocketFd, chunk: PendingAncillaryChunk) {
+        self.ancillary_queue_map
+            .lock()
+            .unwrap()
+            .entry(fd)
+            .or_default()
+            .push_back(chunk);
+    }
+
+    #[cfg(all(molt_has_net_io, not(unix)))]
+    fn take_stream_ancillary(
+        &self,
+        fd: SocketFd,
+        data_len: usize,
+        peek: bool,
+    ) -> Vec<AncillaryItem> {
+        let mut map = self.ancillary_queue_map.lock().unwrap();
+        let Some(queue) = map.get_mut(&fd) else {
+            return Vec::new();
+        };
+        let mut remaining = data_len;
+        let mut out: Vec<AncillaryItem> = Vec::new();
+        for chunk in queue.iter_mut() {
+            if remaining == 0 {
+                break;
+            }
+            if chunk.remaining == 0 {
+                continue;
+            }
+            let take = remaining.min(chunk.remaining);
+            if take == 0 {
+                continue;
+            }
+            if !chunk.items.is_empty() {
+                if peek {
+                    out.extend(chunk.items.iter().cloned());
+                } else {
+                    out.extend(std::mem::take(&mut chunk.items));
+                }
+            }
+            if !peek {
+                chunk.remaining -= take;
+            }
+            remaining -= take;
+        }
+        if !peek {
+            while queue
+                .front()
+                .map(|chunk| chunk.remaining == 0)
+                .unwrap_or(false)
+            {
+                queue.pop_front();
+            }
+        }
+        out
+    }
+
+    #[cfg(all(test, molt_has_net_io))]
+    fn fd_map_len(&self) -> usize {
+        self.fd_map.lock().unwrap().len()
+    }
+}
+
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+fn socket_runtime_state_for_gil() -> Option<&'static SocketRuntimeState> {
+    crate::state::runtime_state::runtime_state_for_gil().map(|state| &state.socket_state)
+}
+
+#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+pub(crate) fn socket_runtime_state_clear(state: &crate::state::runtime_state::RuntimeState) {
+    state.socket_state.clear();
 }
 
 #[cfg(molt_has_net_io)]
@@ -150,10 +330,9 @@ fn socket_register_fd(socket_ptr: *mut u8) {
     let fd = guard.raw_socket();
     drop(guard);
     if let Some(fd) = fd {
-        socket_fd_map()
-            .lock()
-            .unwrap()
-            .insert(fd, PtrSlot(socket_ptr));
+        socket_runtime_state_for_gil()
+            .expect("socket fd registration requires an active RuntimeState")
+            .register_fd(fd, socket_ptr);
     }
 }
 
@@ -170,7 +349,9 @@ fn socket_unregister_fd(socket_ptr: *mut u8) {
     let fd = guard.raw_socket();
     drop(guard);
     if let Some(fd) = fd {
-        socket_fd_map().lock().unwrap().remove(&fd);
+        if let Some(state) = socket_runtime_state_for_gil() {
+            state.unregister_fd(fd);
+        }
         #[cfg(not(unix))]
         socket_unregister_peer_state(fd);
     }
@@ -178,7 +359,7 @@ fn socket_unregister_fd(socket_ptr: *mut u8) {
 
 #[cfg(molt_has_net_io)]
 fn socket_ptr_from_fd(fd: SocketFd) -> Option<*mut u8> {
-    socket_fd_map().lock().unwrap().get(&fd).map(|slot| slot.0)
+    socket_runtime_state_for_gil().and_then(|state| state.ptr_from_fd(fd))
 }
 
 #[cfg(molt_has_net_io)]
@@ -320,19 +501,17 @@ pub(crate) struct WasmSocketMeta {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_socket_meta_map() -> &'static Mutex<HashMap<i64, WasmSocketMeta>> {
-    static MAP: OnceLock<Mutex<HashMap<i64, WasmSocketMeta>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(target_arch = "wasm32")]
 pub(crate) fn wasm_socket_meta_insert(handle: i64, meta: WasmSocketMeta) {
-    wasm_socket_meta_map().lock().unwrap().insert(handle, meta);
+    socket_runtime_state_for_gil()
+        .expect("wasm socket metadata registration requires an active RuntimeState")
+        .wasm_meta_insert(handle, meta);
 }
 
 #[cfg(target_arch = "wasm32")]
 fn wasm_socket_meta_remove(handle: i64) {
-    wasm_socket_meta_map().lock().unwrap().remove(&handle);
+    if let Some(state) = socket_runtime_state_for_gil() {
+        state.wasm_meta_remove(handle);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -340,26 +519,24 @@ fn with_wasm_socket_meta_mut<R, F>(handle: i64, f: F) -> Result<R, String>
 where
     F: FnOnce(&mut WasmSocketMeta) -> R,
 {
-    let mut guard = wasm_socket_meta_map().lock().unwrap();
-    let Some(meta) = guard.get_mut(&handle) else {
-        return Err("socket closed".to_string());
-    };
-    Ok(f(meta))
+    socket_runtime_state_for_gil()
+        .ok_or_else(|| "socket runtime unavailable".to_string())?
+        .with_wasm_meta_mut(handle, f)
 }
 
 #[cfg(target_arch = "wasm32")]
 fn wasm_socket_family(handle: i64) -> Result<i32, String> {
-    let guard = wasm_socket_meta_map().lock().unwrap();
-    guard
-        .get(&handle)
+    socket_runtime_state_for_gil()
+        .and_then(|state| state.wasm_meta_clone(handle))
         .map(|meta| meta.family)
         .ok_or_else(|| "socket closed".to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn socket_timeout(handle: i64) -> Option<Duration> {
-    let guard = wasm_socket_meta_map().lock().unwrap();
-    guard.get(&handle).and_then(|meta| meta.timeout)
+    socket_runtime_state_for_gil()
+        .and_then(|state| state.wasm_meta_clone(handle))
+        .and_then(|meta| meta.timeout)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -371,9 +548,8 @@ fn socket_set_timeout(handle: i64, timeout: Option<Duration>) -> Result<(), Stri
 
 #[cfg(target_arch = "wasm32")]
 fn socket_connect_pending(handle: i64) -> bool {
-    let guard = wasm_socket_meta_map().lock().unwrap();
-    guard
-        .get(&handle)
+    socket_runtime_state_for_gil()
+        .and_then(|state| state.wasm_meta_clone(handle))
         .map(|meta| meta.connect_pending)
         .unwrap_or(false)
 }
@@ -414,6 +590,7 @@ pub(crate) fn socket_ref_dec(_py: &PyToken<'_>, socket_ptr: *mut u8) {
         return;
     }
     if !socket.closed.load(AtomicOrdering::Relaxed) {
+        socket_unregister_fd(socket_ptr);
         runtime_state(_py)
             .io_poller()
             .deregister_socket(_py, socket_ptr);
@@ -572,38 +749,24 @@ struct PendingAncillaryChunk {
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
-fn socket_peer_map() -> &'static Mutex<HashMap<SocketFd, SocketFd>> {
-    static MAP: OnceLock<Mutex<HashMap<SocketFd, SocketFd>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(all(molt_has_net_io, not(unix)))]
-fn socket_ancillary_queue_map() -> &'static Mutex<HashMap<SocketFd, VecDeque<PendingAncillaryChunk>>>
-{
-    static MAP: OnceLock<Mutex<HashMap<SocketFd, VecDeque<PendingAncillaryChunk>>>> =
-        OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(all(molt_has_net_io, not(unix)))]
 pub(crate) fn socket_register_peer_pair(left: SocketFd, right: SocketFd) {
-    let mut map = socket_peer_map().lock().unwrap();
-    map.insert(left, right);
-    map.insert(right, left);
+    socket_runtime_state_for_gil()
+        .expect("socket peer registration requires an active RuntimeState")
+        .register_peer_pair(left, right);
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_unregister_peer_state(fd: SocketFd) {
-    let peer = socket_peer_map().lock().unwrap().remove(&fd);
-    if let Some(peer_fd) = peer {
-        socket_peer_map().lock().unwrap().remove(&peer_fd);
+    if let Some(state) = socket_runtime_state_for_gil() {
+        state.unregister_peer_state(fd);
     }
-    socket_ancillary_queue_map().lock().unwrap().remove(&fd);
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
 fn socket_peer_available(fd: SocketFd) -> bool {
-    socket_peer_map().lock().unwrap().contains_key(&fd)
+    socket_runtime_state_for_gil()
+        .map(|state| state.peer_available(fd))
+        .unwrap_or(false)
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
@@ -615,19 +778,18 @@ fn socket_enqueue_stream_ancillary(
     if data_len == 0 || items.is_empty() {
         return Ok(());
     }
-    let peer = socket_peer_map()
-        .lock()
-        .unwrap()
-        .get(&fd)
-        .copied()
+    let state = socket_runtime_state_for_gil()
         .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EOPNOTSUPP))?;
-    let mut map = socket_ancillary_queue_map().lock().unwrap();
-    map.entry(peer)
-        .or_default()
-        .push_back(PendingAncillaryChunk {
+    let peer = state
+        .peer_for_fd(fd)
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EOPNOTSUPP))?;
+    state.push_ancillary(
+        peer,
+        PendingAncillaryChunk {
             remaining: data_len,
             items: items.to_vec(),
-        });
+        },
+    );
     Ok(())
 }
 
@@ -636,45 +798,9 @@ fn socket_take_stream_ancillary(fd: SocketFd, data_len: usize, peek: bool) -> Ve
     if data_len == 0 {
         return Vec::new();
     }
-    let mut map = socket_ancillary_queue_map().lock().unwrap();
-    let Some(queue) = map.get_mut(&fd) else {
-        return Vec::new();
-    };
-    let mut remaining = data_len;
-    let mut out: Vec<AncillaryItem> = Vec::new();
-    for chunk in queue.iter_mut() {
-        if remaining == 0 {
-            break;
-        }
-        if chunk.remaining == 0 {
-            continue;
-        }
-        let take = remaining.min(chunk.remaining);
-        if take == 0 {
-            continue;
-        }
-        if !chunk.items.is_empty() {
-            if peek {
-                out.extend(chunk.items.iter().cloned());
-            } else {
-                out.extend(std::mem::take(&mut chunk.items));
-            }
-        }
-        if !peek {
-            chunk.remaining -= take;
-        }
-        remaining -= take;
-    }
-    if !peek {
-        while queue
-            .front()
-            .map(|chunk| chunk.remaining == 0)
-            .unwrap_or(false)
-        {
-            queue.pop_front();
-        }
-    }
-    out
+    socket_runtime_state_for_gil()
+        .map(|state| state.take_stream_ancillary(fd, data_len, peek))
+        .unwrap_or_default()
 }
 
 #[cfg(all(molt_has_net_io, not(unix)))]
@@ -2407,10 +2533,7 @@ pub extern "C" fn molt_socket_clone(_sock_bits: u64) -> u64 {
         if new_handle < 0 {
             return raise_os_error_errno::<u64>(_py, (-new_handle) as i64, "socket.clone");
         }
-        let meta = {
-            let guard = wasm_socket_meta_map().lock().unwrap();
-            guard.get(&handle).cloned()
-        };
+        let meta = socket_runtime_state_for_gil().and_then(|state| state.wasm_meta_clone(handle));
         if let Some(meta) = meta {
             wasm_socket_meta_insert(new_handle, meta);
         }
@@ -6500,6 +6623,54 @@ pub(crate) fn socketpair_windows_loopback_raw(
     let client = std::net::TcpStream::connect(addr)?;
     let (server, _) = listener.accept()?;
     Ok((client.into_raw_socket(), server.into_raw_socket()))
+}
+
+#[cfg(all(test, molt_has_net_io))]
+mod socket_runtime_state_tests {
+    use super::{SocketFd, SocketRuntimeState};
+
+    fn test_fd(value: i32) -> SocketFd {
+        #[cfg(unix)]
+        {
+            value
+        }
+        #[cfg(windows)]
+        {
+            value as usize
+        }
+    }
+
+    #[test]
+    fn fd_map_is_runtime_scoped_and_clearable() {
+        let state = SocketRuntimeState::new();
+        let socket_ptr = 0x1000usize as *mut u8;
+        let fd = test_fd(41);
+
+        state.register_fd(fd, socket_ptr);
+        assert_eq!(state.ptr_from_fd(fd), Some(socket_ptr));
+        assert_eq!(state.fd_map_len(), 1);
+
+        state.clear();
+        assert_eq!(state.ptr_from_fd(fd), None);
+        assert_eq!(state.fd_map_len(), 0);
+    }
+
+    #[test]
+    fn fd_unregister_removes_only_requested_socket() {
+        let state = SocketRuntimeState::new();
+        let first_ptr = 0x1000usize as *mut u8;
+        let second_ptr = 0x2000usize as *mut u8;
+        let first_fd = test_fd(41);
+        let second_fd = test_fd(42);
+
+        state.register_fd(first_fd, first_ptr);
+        state.register_fd(second_fd, second_ptr);
+        state.unregister_fd(first_fd);
+
+        assert_eq!(state.ptr_from_fd(first_fd), None);
+        assert_eq!(state.ptr_from_fd(second_fd), Some(second_ptr));
+        assert_eq!(state.fd_map_len(), 1);
+    }
 }
 
 // ── WASM stubs for functions extracted to sockets_net.rs ──

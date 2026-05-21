@@ -124,6 +124,13 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   workers that have finished inside the bounded teardown window. WASM process
   host handles use the same runtime-owned registry surface instead of
   process-static maps.
+- Socket side registries are runtime-scoped through `RuntimeState.socket_state`.
+  Native fd-to-object mappings, WASM socket metadata, non-Unix peer links, and
+  ancillary queues are cleared immediately after worker shutdown and process
+  registry drain in both embedding shutdown and executable process-exit
+  finalization. Final socket reference release unregisters native fd mappings
+  before closing the socket, so dropped unclosed sockets cannot leave stale
+  process-lifetime fd-to-pointer entries.
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive
   runtime teardown; object pointer resolution consults the registry to satisfy
   strict provenance tooling.
