@@ -10,6 +10,7 @@ use crate::builtins::contextvars::contextvars_clear_state;
 use crate::builtins::copy_mod::copy_memo_clear_state;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::csv_clear_state;
+use crate::builtins::functools::functools_clear_runtime_state;
 use crate::builtins::io::io_clear_runtime_state;
 #[cfg(not(feature = "stdlib_itertools"))]
 use crate::builtins::itertools::itertools_clear_state;
@@ -153,6 +154,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     c_api_module_clear_state(_py, state);
     trace_shutdown("process_exit_clear_runtime_extension_states");
     runtime_extension_states_clear_and_drop(state);
+    trace_shutdown("process_exit_clear_functools_runtime_state");
+    functools_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_operator_runtime_state");
     operator_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_resource_state");
@@ -295,6 +298,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     // metadata during process shutdown.
     trace_shutdown("clear_fn_ptr_code_map");
     clear_fn_ptr_code_map(_py, state);
+    trace_shutdown("clear_functools_runtime_state");
+    functools_clear_runtime_state(_py, state);
     trace_shutdown("clear_operator_runtime_state");
     operator_clear_runtime_state(_py, state);
     trace_shutdown("clear_builder_singletons");
