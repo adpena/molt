@@ -138,6 +138,11 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   references, `getsignal()` returns owned callable references, and shutdown
   releases installed handlers after `atexit` while resetting wakeup/pending
   state.
+- VFS bundle loading enforces cumulative load quotas before retaining entry
+  contents. Native directory bundles, tar bundles, and injected WASM bundle
+  entries share byte, entry-count, per-entry, and path-byte limits with
+  explicit environment overrides; oversized configured bundles fail fast
+  instead of silently constructing unbounded in-memory file maps.
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive
   runtime teardown; object pointer resolution consults the registry to satisfy
   strict provenance tooling.

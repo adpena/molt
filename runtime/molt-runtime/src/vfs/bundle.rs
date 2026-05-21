@@ -1,6 +1,8 @@
 //! Read-only in-memory filesystem for /bundle mount.
 //! Populated from a tar archive or explicit file entries at init.
 
+#[cfg(feature = "vfs_bundle_tar")]
+use crate::vfs::VfsLoadQuota;
 use crate::vfs::{VfsBackend, VfsError, VfsStat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -39,6 +41,16 @@ impl BundleFs {
     /// Rejects symlinks and paths containing ".." (traversal protection).
     #[cfg(feature = "vfs_bundle_tar")]
     pub fn from_tar(tar_bytes: &[u8]) -> Result<Self, String> {
+        let mut quota = VfsLoadQuota::from_env();
+        Self::from_tar_with_quota(tar_bytes, &mut quota)
+    }
+
+    /// Create from raw tar bytes with cumulative load quota enforcement.
+    #[cfg(feature = "vfs_bundle_tar")]
+    pub(crate) fn from_tar_with_quota(
+        tar_bytes: &[u8],
+        quota: &mut VfsLoadQuota,
+    ) -> Result<Self, String> {
         use std::io::Read;
         let mut archive = tar::Archive::new(tar_bytes);
         let mut entries = Vec::new();
@@ -66,8 +78,21 @@ impl BundleFs {
                 return Err(format!("bundle tar contains absolute path: {path}"));
             }
             if entry.header().entry_type().is_file() {
+                let expected_len = entry
+                    .size()
+                    .ok()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(0);
+                quota
+                    .reserve_entry(&path, expected_len)
+                    .map_err(|e| e.to_string())?;
                 let mut content = Vec::new();
                 entry.read_to_end(&mut content).map_err(|e| e.to_string())?;
+                if content.len() > expected_len {
+                    quota
+                        .reserve_additional_bytes(content.len() - expected_len)
+                        .map_err(|e| e.to_string())?;
+                }
                 entries.push((path, content));
             }
         }
