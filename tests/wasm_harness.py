@@ -12784,6 +12784,24 @@ BASE_IMPORTS = """\
     }
     throw new Error(`TypeError: ord() expected string of length 1, but ${typeName(val)} found`);
   },
+  ord_at: (objBits, idxBits) => {
+    const str = getStrObj(objBits);
+    if (str !== null) {
+      const errMsg = `string indices must be integers, not '${typeName(idxBits)}'`;
+      const idx = indexFromBitsWithOverflow(idxBits, errMsg, null);
+      if (idx === null) return boxNone();
+      const chars = Array.from(str);
+      let pos = idx;
+      if (pos < 0) pos += chars.length;
+      if (pos < 0 || pos >= chars.length) {
+        throw new Error('IndexError: string index out of range');
+      }
+      return boxInt(BigInt(chars[pos].codePointAt(0)));
+    }
+    const indexed = baseImports.index(objBits, idxBits);
+    if (exceptionPending() !== 0n) return boxNone();
+    return baseImports.ord(indexed);
+  },
   chr: (val) => {
     let codePoint = null;
     if (isIntLike(val)) {

@@ -159,3 +159,10 @@ def test_wasm_harness_exposes_string_split_field_imports() -> None:
         "string_split_field_eq: (hayBits, needleBits, indexBits, expectedBits) => {"
         in text
     )
+
+
+def test_wasm_harness_exposes_ord_at_import() -> None:
+    source = Path(__file__).resolve().parent / "wasm_harness.py"
+    text = source.read_text()
+    assert "ord_at: (objBits, idxBits) => {" in text
+    assert "return boxInt(BigInt(chars[pos].codePointAt(0)))" in text
