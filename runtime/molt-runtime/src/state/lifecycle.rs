@@ -896,19 +896,61 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) {
         &state.special_cache.molt_not_implemented,
         &state.special_cache.molt_ellipsis,
         &state.special_cache.awaitable_await,
+        &state.special_cache.function_code_descriptor,
+        &state.special_cache.function_globals_descriptor,
     ];
     clear_atomic_slots(_py, &slots);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::clear_worker_thread_state;
+    use super::{clear_special_cache, clear_worker_thread_state};
+    use crate::{MoltObject, alloc_string, runtime_state};
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
         let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         crate::with_gil_entry_nopanic!(_py, {
             clear_worker_thread_state(_py);
+        });
+    }
+
+    #[test]
+    fn clear_special_cache_releases_function_descriptor_slots() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            clear_special_cache(_py, state);
+
+            let code_ptr = alloc_string(_py, b"__code__ descriptor sentinel");
+            assert!(!code_ptr.is_null());
+            let globals_ptr = alloc_string(_py, b"__globals__ descriptor sentinel");
+            assert!(!globals_ptr.is_null());
+            state
+                .special_cache
+                .function_code_descriptor
+                .store(MoltObject::from_ptr(code_ptr).bits(), Ordering::Release);
+            state
+                .special_cache
+                .function_globals_descriptor
+                .store(MoltObject::from_ptr(globals_ptr).bits(), Ordering::Release);
+
+            clear_special_cache(_py, state);
+            assert_eq!(
+                state
+                    .special_cache
+                    .function_code_descriptor
+                    .load(Ordering::Acquire),
+                0
+            );
+            assert_eq!(
+                state
+                    .special_cache
+                    .function_globals_descriptor
+                    .load(Ordering::Acquire),
+                0
+            );
         });
     }
 }
