@@ -277,7 +277,15 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
             }
             return MoltObject::none().bits();
         }
-        let iters_ptr = Box::into_raw(Box::new(iters));
+        let Some(iters_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
+        else {
+            for iter_bits in iters {
+                dec_ref_bits(_py, iter_bits);
+            }
+            dec_ref_bits(_py, MoltObject::from_ptr(map_ptr).bits());
+            return raise_exception::<_>(_py, "MemoryError", "map allocation failed");
+        };
         *(map_ptr as *mut u64) = func_bits;
         *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
         // Initialize cached-tuple slot to null (payload bytes are not
@@ -354,7 +362,15 @@ pub(crate) unsafe fn zip_new_impl(_py: &PyToken<'_>, iterables: &[u64], strict: 
             }
             return MoltObject::none().bits();
         }
-        let iters_ptr = Box::into_raw(Box::new(iters));
+        let Some(iters_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
+        else {
+            for iter_bits in iters {
+                dec_ref_bits(_py, iter_bits);
+            }
+            dec_ref_bits(_py, MoltObject::from_ptr(zip_ptr).bits());
+            return raise_exception::<_>(_py, "MemoryError", "zip allocation failed");
+        };
         *(zip_ptr as *mut *mut Vec<u64>) = iters_ptr;
         zip_set_strict_bits(zip_ptr, strict_bits);
         inc_ref_bits(_py, strict_bits);

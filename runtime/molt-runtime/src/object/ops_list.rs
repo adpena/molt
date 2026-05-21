@@ -46,13 +46,20 @@ pub(crate) unsafe fn promote_list_int_to_list(_py: &PyToken<'_>, ptr: *mut u8) {
         if int_storage_ptr.is_null() {
             return;
         }
-        let int_storage = *Box::from_raw(int_storage_ptr);
-        let int_vec = int_storage.into_vec();
-        let mut boxed_vec: Vec<u64> = Vec::with_capacity(int_vec.len());
-        for raw in int_vec {
+        let int_storage_ref = &*int_storage_ptr;
+        let int_slice = std::slice::from_raw_parts(int_storage_ref.data, int_storage_ref.len);
+        let Some(vec_ptr) =
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(int_slice.len())
+        else {
+            let _ = raise_exception::<u64>(_py, "MemoryError", "list allocation failed");
+            return;
+        };
+        let boxed_vec = &mut *vec_ptr;
+        for &raw in int_slice {
             boxed_vec.push(MoltObject::from_int(raw).bits());
         }
-        let vec_ptr = Box::into_raw(Box::new(boxed_vec));
+        let int_storage = *Box::from_raw(int_storage_ptr);
+        drop(int_storage.into_vec());
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         let header = header_from_obj_ptr(ptr);
         (*header).type_id = TYPE_ID_LIST;
@@ -78,16 +85,21 @@ pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) 
         if bool_storage_ptr.is_null() {
             return;
         }
-        let bool_storage = *Box::from_raw(bool_storage_ptr);
-        let bool_vec = bool_storage.into_vec();
-        // Convert u8 bools to NaN-boxed bools.
-        let mut boxed_vec: Vec<u64> = Vec::with_capacity(bool_vec.len());
-        for &b in &bool_vec {
+        let bool_storage_ref = &*bool_storage_ptr;
+        let bool_slice = std::slice::from_raw_parts(bool_storage_ref.data, bool_storage_ref.len);
+        let Some(vec_ptr) =
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(bool_slice.len())
+        else {
+            let _ = raise_exception::<u64>(_py, "MemoryError", "list allocation failed");
+            return;
+        };
+        let boxed_vec = &mut *vec_ptr;
+        for &b in bool_slice {
             boxed_vec.push(MoltObject::from_bool(b != 0).bits());
         }
-        drop(bool_vec);
+        let bool_storage = *Box::from_raw(bool_storage_ptr);
+        drop(bool_storage.into_vec());
         // Store the new Vec<u64> in the data area (same layout as TYPE_ID_LIST).
-        let vec_ptr = Box::into_raw(Box::new(boxed_vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         // Rewrite the header type_id.
         let header = header_from_obj_ptr(ptr);
@@ -134,7 +146,16 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
                 }
                 promote_specialized_list_to_list(_py, ptr);
                 if object_type_id(ptr) == TYPE_ID_LIST {
-                    let elems = seq_vec(ptr);
+                    let vec_ptr = seq_vec_ptr(ptr);
+                    let elems = &mut *vec_ptr;
+                    if !crate::object::backing::tracked_vec_reserve_or_raise(
+                        _py,
+                        vec_ptr,
+                        elems.len().saturating_add(1),
+                        "list allocation failed",
+                    ) {
+                        return MoltObject::none().bits();
+                    }
                     elems.push(val_bits);
                     inc_ref_bits(_py, val_bits);
                     if crate::object::refcount_opt::is_heap_ref(val_bits) {

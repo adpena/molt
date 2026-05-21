@@ -1,6 +1,6 @@
 use crate::{
     MoltHeader, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET,
-    TYPE_ID_TUPLE, alloc_object, dict_len, dict_table_capacity, dict_update_apply,
+    TYPE_ID_TUPLE, alloc_object, dec_ref_bits, dict_len, dict_table_capacity, dict_update_apply,
     dict_update_set_in_place, exception_pending, is_truthy, maybe_ptr_from_bits, molt_iter,
     molt_iter_next, obj_from_bits, object_type_id, raise_exception, seq_vec_ref,
     set_table_capacity, usize_from_bits,
@@ -18,26 +18,28 @@ pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
         }
         unsafe {
             let capacity_hint = usize_from_bits(capacity_bits);
-            let mut order = Vec::new();
-            if capacity_hint > 0 {
-                let order_cap = capacity_hint
-                    .checked_mul(2)
-                    .ok_or(())
-                    .and_then(|val| order.try_reserve(val).map_err(|_| ()));
-                if order_cap.is_err() {
-                    return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
-                }
-            }
-            let mut table = Vec::new();
-            if capacity_hint > 0 {
-                let table_cap = dict_table_capacity(capacity_hint);
-                if table.try_reserve(table_cap).is_err() {
-                    return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
-                }
-                table.resize(table_cap, 0);
-            }
-            let order_ptr = Box::into_raw(Box::new(order));
-            let table_ptr = Box::into_raw(Box::new(table));
+            let Some(order_cap) = capacity_hint.checked_mul(2) else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+            };
+            let Some(order_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(order_cap)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+            };
+            let table_cap = if capacity_hint > 0 {
+                dict_table_capacity(capacity_hint)
+            } else {
+                0
+            };
+            let Some(table_ptr) =
+                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
+            else {
+                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+            };
             *(ptr as *mut *mut Vec<u64>) = order_ptr;
             *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
         }
@@ -145,13 +147,24 @@ pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
         }
         unsafe {
             let capacity_hint = usize_from_bits(capacity_bits);
-            let order = Vec::with_capacity(capacity_hint);
-            let mut table = Vec::new();
-            if capacity_hint > 0 {
-                table.resize(set_table_capacity(capacity_hint), 0);
-            }
-            let order_ptr = Box::into_raw(Box::new(order));
-            let table_ptr = Box::into_raw(Box::new(table));
+            let Some(order_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
+            let table_cap = if capacity_hint > 0 {
+                set_table_capacity(capacity_hint)
+            } else {
+                0
+            };
+            let Some(table_ptr) =
+                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
+            else {
+                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
             *(ptr as *mut *mut Vec<u64>) = order_ptr;
             *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
         }
@@ -171,13 +184,24 @@ pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
         }
         unsafe {
             let capacity_hint = usize_from_bits(capacity_bits);
-            let order = Vec::with_capacity(capacity_hint);
-            let mut table = Vec::new();
-            if capacity_hint > 0 {
-                table.resize(set_table_capacity(capacity_hint), 0);
-            }
-            let order_ptr = Box::into_raw(Box::new(order));
-            let table_ptr = Box::into_raw(Box::new(table));
+            let Some(order_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
+            else {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
+            let table_cap = if capacity_hint > 0 {
+                set_table_capacity(capacity_hint)
+            } else {
+                0
+            };
+            let Some(table_ptr) =
+                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
+            else {
+                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
             *(ptr as *mut *mut Vec<u64>) = order_ptr;
             *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
         }
