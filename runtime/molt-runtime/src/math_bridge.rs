@@ -18,7 +18,6 @@ use crate::object::ops::{
 };
 use crate::*;
 use num_bigint::{BigInt, Sign};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
 type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
@@ -480,65 +479,21 @@ pub extern "C" fn __molt_math_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_b
     })
 }
 
-// Interning bridge: maintains static slots for known method names.
-// The math crate only needs a small set of names (__float__, __index__, etc.)
-// so we use a simple match-based approach.
-static INTERN_FLOAT: AtomicU64 = AtomicU64::new(0);
-static INTERN_INDEX: AtomicU64 = AtomicU64::new(0);
-static INTERN_TRUNC: AtomicU64 = AtomicU64::new(0);
-static INTERN_CEIL: AtomicU64 = AtomicU64::new(0);
-static INTERN_FLOOR: AtomicU64 = AtomicU64::new(0);
-static INTERN_ROUND: AtomicU64 = AtomicU64::new(0);
-static INTERN_INT: AtomicU64 = AtomicU64::new(0);
-static INTERN_BOOL: AtomicU64 = AtomicU64::new(0);
-static INTERN_ABS: AtomicU64 = AtomicU64::new(0);
-static INTERN_LEN: AtomicU64 = AtomicU64::new(0);
-
-fn intern_slot_for(key: &[u8]) -> &'static AtomicU64 {
-    match key {
-        b"__float__" => &INTERN_FLOAT,
-        b"__index__" => &INTERN_INDEX,
-        b"__trunc__" => &INTERN_TRUNC,
-        b"__ceil__" => &INTERN_CEIL,
-        b"__floor__" => &INTERN_FLOOR,
-        b"__round__" => &INTERN_ROUND,
-        b"__int__" => &INTERN_INT,
-        b"__bool__" => &INTERN_BOOL,
-        b"__abs__" => &INTERN_ABS,
-        b"__len__" => &INTERN_LEN,
-        // Fallback: use __float__ slot (will be overwritten; non-ideal but functional)
-        _ => &INTERN_FLOAT,
-    }
+fn unsupported_math_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
+    let key = String::from_utf8_lossy(key);
+    raise_exception::<u64>(
+        _py,
+        "RuntimeError",
+        &format!("molt-runtime-math requested unsupported interned static name {key:?}"),
+    )
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        let slot = intern_slot_for(key);
-        // Fast path: already interned.
-        let cached = slot.load(Ordering::Acquire);
-        if cached != 0 {
-            return cached;
-        }
-        // Slow path: allocate and cache.
-        let ptr = alloc_string(_py, key);
-        let bits = if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        };
-        // CAS: if another thread beat us, use theirs.
-        match slot.compare_exchange(0, bits, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => bits,
-            Err(existing) => {
-                // We lost the race; release what we just allocated.
-                if let Some(p) = MoltObject::from_bits(bits).as_ptr() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(p).bits());
-                }
-                existing
-            }
-        }
+        crate::state::cache::intern_bridge_protocol_name(_py, key)
+            .unwrap_or_else(|| unsupported_math_intern_name(_py, key))
     })
 }
 
@@ -749,4 +704,41 @@ pub extern "C" fn __molt_math_alloc_bytes(data_ptr: *const u8, data_len: usize) 
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         crate::alloc_bytes(_py, data)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::__molt_math_intern_static_name;
+    use crate::{clear_exception, exception_pending, runtime_state};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn math_bridge_interns_protocol_names_in_runtime_state() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_exception(_py);
+            let key = b"__bool__";
+            let bits = __molt_math_intern_static_name(key.as_ptr(), key.len());
+            assert!(!exception_pending(_py));
+            assert_eq!(
+                runtime_state(_py)
+                    .interned
+                    .bool_name
+                    .load(Ordering::Acquire),
+                bits
+            );
+        });
+    }
+
+    #[test]
+    fn math_bridge_rejects_unknown_intern_name() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_exception(_py);
+            let key = b"__molt_unknown__";
+            let _ = __molt_math_intern_static_name(key.as_ptr(), key.len());
+            assert!(exception_pending(_py));
+            clear_exception(_py);
+        });
+    }
 }
