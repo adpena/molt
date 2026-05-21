@@ -116,6 +116,14 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   extension-module, or call-binding state.
 - TLS guard drains per-thread caches on thread exit; scheduler/sleep worker threads
   still participate in shutdown cleanup and are joined before teardown completes.
+- Native subprocess ownership is runtime-scoped through `RuntimeState.process_registry`.
+  Molt-created Unix children enter an owned process group by default, so handle
+  drop and runtime teardown terminate the whole child process tree rather than
+  only the direct child. The registry drains early in shutdown, closes
+  process-owned stream references once, wakes wait futures, and only joins wait
+  workers that have finished inside the bounded teardown window. WASM process
+  host handles use the same runtime-owned registry surface instead of
+  process-static maps.
 - Pointer registry is reset on shutdown so NaN-boxed addresses cannot outlive
   runtime teardown; object pointer resolution consults the registry to satisfy
   strict provenance tooling.

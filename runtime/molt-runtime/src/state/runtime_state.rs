@@ -31,7 +31,8 @@ use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::{
     AsyncHangProbe, BuiltinClasses, CancelTokenEntry, GilGuard, HashSecret, InternedNames,
-    MethodCache, MoltObject, MoltScheduler, PtrSlot, PyToken, SleepQueue, default_cancel_tokens,
+    MethodCache, MoltObject, MoltScheduler, ProcessRegistry, PtrSlot, PyToken, SleepQueue,
+    default_cancel_tokens,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ThreadPool, ThreadTaskState, sleep_worker};
@@ -334,6 +335,7 @@ pub(crate) struct RuntimeState {
     pub(crate) thread_pool: OnceLock<ThreadPool>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_tasks: Mutex<HashMap<PtrSlot, Arc<ThreadTaskState>>>,
+    pub(crate) process_registry: ProcessRegistry,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) start_time: OnceLock<Instant>,
@@ -434,6 +436,7 @@ impl RuntimeState {
             thread_pool: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             thread_tasks: Mutex::new(HashMap::new()),
+            process_registry: ProcessRegistry::new(),
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
             start_time: OnceLock::new(),
