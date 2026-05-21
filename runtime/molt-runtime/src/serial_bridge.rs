@@ -18,7 +18,6 @@ use crate::object::ops::{
 };
 use crate::*;
 use num_bigint::{BigInt, Sign};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -448,64 +447,20 @@ extern "C" fn bridge_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64)
     })
 }
 
-// Interning bridge: maintains static slots for known method names.
-// The serial crate only needs a small set of names (__float__, __index__, etc.)
-// so we use a simple match-based approach.
-static INTERN_FLOAT: AtomicU64 = AtomicU64::new(0);
-static INTERN_INDEX: AtomicU64 = AtomicU64::new(0);
-static INTERN_TRUNC: AtomicU64 = AtomicU64::new(0);
-static INTERN_CEIL: AtomicU64 = AtomicU64::new(0);
-static INTERN_FLOOR: AtomicU64 = AtomicU64::new(0);
-static INTERN_ROUND: AtomicU64 = AtomicU64::new(0);
-static INTERN_INT: AtomicU64 = AtomicU64::new(0);
-static INTERN_BOOL: AtomicU64 = AtomicU64::new(0);
-static INTERN_ABS: AtomicU64 = AtomicU64::new(0);
-static INTERN_LEN: AtomicU64 = AtomicU64::new(0);
-
-fn intern_slot_for(key: &[u8]) -> &'static AtomicU64 {
-    match key {
-        b"__float__" => &INTERN_FLOAT,
-        b"__index__" => &INTERN_INDEX,
-        b"__trunc__" => &INTERN_TRUNC,
-        b"__ceil__" => &INTERN_CEIL,
-        b"__floor__" => &INTERN_FLOOR,
-        b"__round__" => &INTERN_ROUND,
-        b"__int__" => &INTERN_INT,
-        b"__bool__" => &INTERN_BOOL,
-        b"__abs__" => &INTERN_ABS,
-        b"__len__" => &INTERN_LEN,
-        // Fallback: use __float__ slot (will be overwritten; non-ideal but functional)
-        _ => &INTERN_FLOAT,
-    }
+fn unsupported_serial_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
+    let key = String::from_utf8_lossy(key);
+    raise_exception::<u64>(
+        _py,
+        "RuntimeError",
+        &format!("molt-runtime-serial requested unsupported interned static name {key:?}"),
+    )
 }
 
 extern "C" fn bridge_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        let slot = intern_slot_for(key);
-        // Fast path: already interned.
-        let cached = slot.load(Ordering::Acquire);
-        if cached != 0 {
-            return cached;
-        }
-        // Slow path: allocate and cache.
-        let ptr = alloc_string(_py, key);
-        let bits = if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        };
-        // CAS: if another thread beat us, use theirs.
-        match slot.compare_exchange(0, bits, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => bits,
-            Err(existing) => {
-                // We lost the race; release what we just allocated.
-                if let Some(p) = MoltObject::from_bits(bits).as_ptr() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(p).bits());
-                }
-                existing
-            }
-        }
+        crate::state::cache::intern_bridge_protocol_name(_py, key)
+            .unwrap_or_else(|| unsupported_serial_intern_name(_py, key))
     })
 }
 
@@ -836,4 +791,38 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_serial_get_vtable() -> *const RuntimeVtable {
     &RUNTIME_VTABLE as *const RuntimeVtable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bridge_intern_static_name;
+    use crate::{clear_exception, exception_pending, runtime_state};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn serial_bridge_interns_protocol_names_in_runtime_state() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_exception(_py);
+            let key = b"__abs__";
+            let bits = bridge_intern_static_name(key.as_ptr(), key.len());
+            assert!(!exception_pending(_py));
+            assert_eq!(
+                runtime_state(_py).interned.abs_name.load(Ordering::Acquire),
+                bits
+            );
+        });
+    }
+
+    #[test]
+    fn serial_bridge_rejects_unknown_intern_name() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_exception(_py);
+            let key = b"__molt_unknown__";
+            let _ = bridge_intern_static_name(key.as_ptr(), key.len());
+            assert!(exception_pending(_py));
+            clear_exception(_py);
+        });
+    }
 }
