@@ -29,6 +29,7 @@ use crate::builtins::functools::FunctoolsRuntimeState;
 use crate::builtins::io::IoRuntimeState;
 #[cfg(not(feature = "stdlib_itertools"))]
 use crate::builtins::itertools::ItertoolsRuntimeState;
+use crate::builtins::modules::ModulesRuntimeState;
 use crate::builtins::operator::OperatorRuntimeState;
 #[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::RandomRuntimeState;
@@ -321,6 +322,7 @@ pub(crate) struct RuntimeState {
     pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
     pub(crate) functools: FunctoolsRuntimeState,
     pub(crate) io: IoRuntimeState,
+    pub(crate) modules: ModulesRuntimeState,
     pub(crate) operator: OperatorRuntimeState,
     pub(crate) types: TypesRuntimeState,
     #[cfg(not(feature = "stdlib_itertools"))]
@@ -432,6 +434,7 @@ impl RuntimeState {
             copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
             functools: FunctoolsRuntimeState::new(),
             io: IoRuntimeState::new(),
+            modules: ModulesRuntimeState::new(),
             operator: OperatorRuntimeState::new(),
             types: TypesRuntimeState::new(),
             #[cfg(not(feature = "stdlib_itertools"))]
