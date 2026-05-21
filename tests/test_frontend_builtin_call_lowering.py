@@ -252,7 +252,7 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     exception_last_idx = next(
         i
         for i, op in enumerate(func_ops[handler_idx + 1 :], start=handler_idx + 1)
-        if op.get("kind") == "exception_last"
+        if op.get("kind") == "exception_last_pending"
     )
     normal_label = next(
         op["value"]
@@ -284,6 +284,58 @@ def test_sync_try_except_keeps_context_unwind_when_body_enters_with() -> None:
         "            raise ValueError(1)\n"
         "    except ValueError:\n"
         "        return 1\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+
+    assert any(op.get("kind") == "context_depth" for op in func_ops)
+    assert any(op.get("kind") == "context_unwind_to" for op in func_ops)
+
+
+def test_break_inside_try_except_nested_in_with_does_not_unwind_unmarked_try() -> None:
+    source = (
+        "class C:\n"
+        "    def __enter__(self):\n"
+        "        return self\n"
+        "    def __exit__(self, exc_type, exc, tb):\n"
+        "        return False\n"
+        "\n"
+        "def f():\n"
+        "    with C():\n"
+        "        for item in [1]:\n"
+        "            try:\n"
+        "                raise ValueError(item)\n"
+        "            except ValueError:\n"
+        "                break\n"
+        "    return 1\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+
+    assert any(op.get("kind") == "context_depth" for op in func_ops)
+    assert not any(op.get("kind") == "context_unwind_to" for op in func_ops)
+
+
+def test_return_inside_try_nested_in_with_unwinds_only_marked_scopes() -> None:
+    source = (
+        "class C:\n"
+        "    def __enter__(self):\n"
+        "        return self\n"
+        "    def __exit__(self, exc_type, exc, tb):\n"
+        "        return False\n"
+        "\n"
+        "def f(flag):\n"
+        "    with C():\n"
+        "        try:\n"
+        "            if flag:\n"
+        "                return 1\n"
+        "        except ValueError:\n"
+        "            return 2\n"
+        "    return 3\n"
     )
     ir = compile_to_tir(source)
     func_ops = next(

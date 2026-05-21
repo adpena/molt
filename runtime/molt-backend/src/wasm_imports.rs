@@ -106,7 +106,9 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("function_default_kind", 2),
     ("function_is_coroutine", 2),
     ("function_is_generator", 2),
+    ("function_init_metadata_packed", 7),
     ("function_set_builtin", 2),
+    ("function_set_defaults", 5),
     ("is_bound_method", 2),
     ("is_function_obj", 2),
     // ── INTERNAL: Call dispatch ──
@@ -1233,7 +1235,12 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("function_default_kind", &["function_default_kind"]),
     ("function_is_coroutine", &["function_is_coroutine"]),
     ("function_is_generator", &["function_is_generator"]),
+    (
+        "function_init_metadata_packed",
+        &["function_init_metadata_packed"],
+    ),
     ("function_set_builtin", &["function_set_builtin"]),
+    ("function_set_defaults", &["function_set_defaults"]),
     (
         "async_generator_yield",
         &[
