@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::io::{BufRead, BufReader};
-use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, OnceLock};
 // Vector aggregate operations (molt_vec_*) live in ops_vec.rs.
 pub(crate) enum SliceError {
@@ -2359,8 +2358,7 @@ pub(crate) fn traceback_payload_from_frame_chain(
     if obj_from_bits(source_bits).is_none() {
         return Vec::new();
     }
-    static F_BACK_NAME: AtomicU64 = AtomicU64::new(0);
-    let f_back_name = intern_static_name(_py, &F_BACK_NAME, b"f_back");
+    let f_back_name = intern_static_name(_py, &runtime_state(_py).interned.f_back_name, b"f_back");
     let f_code_name = intern_static_name(_py, &runtime_state(_py).interned.f_code_name, b"f_code");
     let f_lineno_name =
         intern_static_name(_py, &runtime_state(_py).interned.f_lineno_name, b"f_lineno");
@@ -2641,20 +2639,15 @@ pub(crate) fn traceback_payload_from_entry(
                 return None;
             }
             if type_id == TYPE_ID_DICT {
-                static FILENAME_NAME: AtomicU64 = AtomicU64::new(0);
-                static LINENO_NAME: AtomicU64 = AtomicU64::new(0);
-                static NAME_NAME: AtomicU64 = AtomicU64::new(0);
-                static LINE_NAME: AtomicU64 = AtomicU64::new(0);
-                static END_LINENO_NAME: AtomicU64 = AtomicU64::new(0);
-                static COLNO_NAME: AtomicU64 = AtomicU64::new(0);
-                static END_COLNO_NAME: AtomicU64 = AtomicU64::new(0);
-                let filename_key = intern_static_name(_py, &FILENAME_NAME, b"filename");
-                let lineno_key = intern_static_name(_py, &LINENO_NAME, b"lineno");
-                let name_key = intern_static_name(_py, &NAME_NAME, b"name");
-                let line_key = intern_static_name(_py, &LINE_NAME, b"line");
-                let end_lineno_key = intern_static_name(_py, &END_LINENO_NAME, b"end_lineno");
-                let colno_key = intern_static_name(_py, &COLNO_NAME, b"colno");
-                let end_colno_key = intern_static_name(_py, &END_COLNO_NAME, b"end_colno");
+                let interned = &runtime_state(_py).interned;
+                let filename_key = intern_static_name(_py, &interned.filename_name, b"filename");
+                let lineno_key = intern_static_name(_py, &interned.lineno_name, b"lineno");
+                let name_key = intern_static_name(_py, &interned.plain_name, b"name");
+                let line_key = intern_static_name(_py, &interned.line_name, b"line");
+                let end_lineno_key =
+                    intern_static_name(_py, &interned.end_lineno_name, b"end_lineno");
+                let colno_key = intern_static_name(_py, &interned.colno_name, b"colno");
+                let end_colno_key = intern_static_name(_py, &interned.end_colno_name, b"end_colno");
                 let filename_bits = dict_get_in_place(_py, entry_ptr, filename_key)?;
                 let lineno_bits = dict_get_in_place(_py, entry_ptr, lineno_key)?;
                 let filename = format_obj_str(_py, obj_from_bits(filename_bits));
