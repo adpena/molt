@@ -373,6 +373,64 @@ def test_cli_wrapper_build_uses_default_memory_guard(
     assert "--json" in run_calls[0]["cmd"]
 
 
+def test_cli_build_toolchain_probes_use_memory_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_completed_command(cmd: list[str], **kwargs: object):
+        calls.append({"cmd": cmd, **kwargs})
+        executable = Path(cmd[0]).name
+        if executable == "git":
+            stdout = "abc123\n"
+        elif executable == "rustc":
+            stdout = "/rust/target/lib\n" if "--print" in cmd else "rustc 1.91.0\n"
+        elif executable == "xcrun":
+            stdout = "/Applications/Xcode.app/SDKs/MacOSX.sdk\n"
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(
+        cli, "_run_completed_command", fake_run_completed_command, raising=True
+    )
+    monkeypatch.setattr(
+        cli.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}"
+        if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
+        else None,
+        raising=True,
+    )
+    monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
+    monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
+
+    wasm_path = tmp_path / "module.wasm"
+    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    obj_path = tmp_path / "module.o"
+    obj_path.write_bytes(b"")
+    archive_path = tmp_path / "libmolt_runtime.a"
+    archive_path.write_bytes(b"")
+
+    cli._rustc_version.cache_clear()
+    cli._rust_target_libdir.cache_clear()
+
+    assert cli._git_rev(ROOT) == "abc123"
+    assert cli._rustc_version() == "rustc 1.91.0"
+    assert cli._validate_wasm_structural(wasm_path) is None
+    assert cli._rust_target_libdir("wasm32-wasip1") == Path("/rust/target/lib")
+    assert cli._is_valid_cached_backend_artifact(obj_path, is_wasm=False) is False
+    assert cli._runtime_archive_crate_names(archive_path) == frozenset()
+    assert cli._detect_macos_arch(obj_path) is None
+    assert cli._resolve_macos_sdk_root() == "/Applications/Xcode.app/SDKs/MacOSX.sdk"
+
+    prefixes = [call["memory_guard_prefix"] for call in calls]
+    assert prefixes[0] == "MOLT_CLI"
+    assert set(prefixes[1:]) == {"MOLT_BUILD"}
+
+
 def test_cli_diff_command_uses_diff_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

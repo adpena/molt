@@ -787,10 +787,21 @@ def launch_background_gate(argv: Sequence[str]) -> BackgroundGateMetadata:
     base = f"ci_gate_{stamp}_{os.getpid()}"
     log_path = LOG_ROOT / f"{base}.log"
     metadata_path = LOG_ROOT / f"{base}.json"
-    command = [sys.executable, str(CI_GATE), *_strip_background_flag(argv)]
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
     env, popen_kwargs = _background_process_env_and_kwargs(env)
+    command = [
+        sys.executable,
+        str(TOOLS / "guarded_exec.py"),
+        "--prefix",
+        "MOLT_CI_GATE",
+        "--cwd",
+        str(ROOT),
+        "--",
+        sys.executable,
+        str(CI_GATE),
+        *_strip_background_flag(argv),
+    ]
     with log_path.open("ab") as log:
         proc = subprocess.Popen(
             command,

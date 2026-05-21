@@ -329,7 +329,16 @@ def test_launch_background_gate_strips_recursive_background_flag(
     assert metadata.log_path.parent == tmp_path
     assert metadata.metadata_path.parent == tmp_path
     assert "--background" not in popen_calls[0]["command"]
-    assert popen_calls[0]["command"][:2] == [module.sys.executable, str(module.CI_GATE)]
+    command = popen_calls[0]["command"]
+    assert command[:6] == [
+        module.sys.executable,
+        str(module.TOOLS / "guarded_exec.py"),
+        "--prefix",
+        "MOLT_CI_GATE",
+        "--cwd",
+        str(module.ROOT),
+    ]
+    assert command[6:9] == ["--", module.sys.executable, str(module.CI_GATE)]
     assert popen_calls[0]["start_new_session"] is True
     assert callable(popen_calls[0]["preexec_fn"])
     assert metadata.metadata_path.exists()
