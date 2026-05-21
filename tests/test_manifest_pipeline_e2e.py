@@ -13,6 +13,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from tests.native_process_guard import run_native_test_process
 
 sys.path.insert(0, "src")
@@ -174,13 +176,11 @@ def test_recursion_caught():
 
 def test_env_var_round_trip_edge_cases():
     """Verify env var values for edge-case resource limits."""
-    from molt.capability_manifest import CapabilityManifest, ResourceLimits
+    from molt.capability_manifest import CapabilityManifest, ManifestError, ResourceLimits
 
-    # Zero duration
     m = CapabilityManifest(resources=ResourceLimits(max_duration=0.0, max_memory=0))
-    env = m.to_env_vars()
-    assert env["MOLT_RESOURCE_MAX_DURATION_MS"] == "0"
-    assert env["MOLT_RESOURCE_MAX_MEMORY"] == "0"
+    with pytest.raises(ManifestError, match="max_memory must be positive"):
+        m.to_env_vars()
 
     # Fractional seconds
     m2 = CapabilityManifest(resources=ResourceLimits(max_duration=1.5))

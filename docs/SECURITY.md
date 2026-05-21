@@ -30,7 +30,7 @@ Molt employs a **Capability-based Security** model. A Molt binary has zero autho
 
 ### What Molt Does NOT (Currently) Protect Against:
 1.  **Logic Errors in Python Source**: If your Python code has a vulnerability (e.g., SQL injection), Molt will faithfully compile that vulnerability into native code.
-2.  **Resource Exhaustion (DoS)**: While we have recursion limits, we do not yet have strict memory/CPU quotas for native binaries (though WASM targets can be restricted by the host) (TODO(security, owner:runtime, milestone:RT2, priority:P1, status:missing): memory/CPU quota enforcement for native binaries).
+2.  **Full CPU Preemption for Native Binaries**: Molt enforces manifest-driven runtime resource controls for heap bytes, allocation counts, recursion depth, and sampled wall-clock duration, and the developer/test harnesses wrap subprocesses in default-on adaptive RSS guards. Native execution is still cooperative at runtime check points, so hard preemptive CPU quotas remain host/harness responsibility rather than an in-process guarantee.
 
 ## 3. Verification & Auditing
 
