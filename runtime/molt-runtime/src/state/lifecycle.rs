@@ -24,7 +24,10 @@ use crate::{
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use super::{RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache};
+use super::{
+    RuntimeState, cache::clear_atomic_slots, cache::clear_method_cache,
+    runtime_extension_states_clear_and_drop,
+};
 
 thread_local! {
     static TLS_GUARD: ThreadLocalGuard = ThreadLocalGuard::new();
@@ -92,6 +95,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     flush_stdio_handles(_py, state);
     trace_shutdown("process_exit_flush_stdio_post_finalizers");
     flush_stdio_handles(_py, state);
+    trace_shutdown("process_exit_clear_runtime_extension_states");
+    runtime_extension_states_clear_and_drop(state);
     trace_shutdown("process_exit_done");
 }
 
@@ -152,12 +157,18 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_c_api_module_state");
     crate::c_api::c_api_module_teardown(_py);
+    trace_shutdown("clear_runtime_extension_states");
+    runtime_extension_states_clear_and_drop(state);
     trace_shutdown("clear_module_cache");
     clear_module_cache(_py, state);
     trace_shutdown("flush_stdio_post_modules");
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
+    trace_shutdown("clear_gen_locals");
+    clear_gen_locals(_py, state);
+    trace_shutdown("clear_dict_subclass_storage");
+    clear_dict_subclass_storage(_py, state);
     trace_shutdown("clear_interned_names");
     clear_interned_names(_py, state);
     trace_shutdown("clear_method_cache");
@@ -250,6 +261,31 @@ fn clear_asyncgen_locals(_py: &PyToken<'_>, state: &RuntimeState) {
             if bits != 0 {
                 dec_ref_bits(_py, bits);
             }
+        }
+    }
+}
+
+fn clear_gen_locals(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let mut guard = state.gen_locals.lock().unwrap();
+    for (_, entry) in guard.drain() {
+        for bits in entry.names {
+            if bits != 0 {
+                dec_ref_bits(_py, bits);
+            }
+        }
+    }
+}
+
+fn clear_dict_subclass_storage(_py: &PyToken<'_>, state: &RuntimeState) {
+    crate::gil_assert();
+    let drained: Vec<u64> = {
+        let mut guard = state.dict_subclass_storage.lock().unwrap();
+        guard.drain().map(|(_, bits)| bits).collect()
+    };
+    for bits in drained {
+        if bits != 0 && !obj_from_bits(bits).is_none() {
+            dec_ref_bits(_py, bits);
         }
     }
 }

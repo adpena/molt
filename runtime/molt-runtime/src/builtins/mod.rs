@@ -1,7 +1,5 @@
 pub(crate) mod abc;
 pub(crate) mod annotations;
-#[cfg(not(feature = "stdlib_collections"))]
-pub(crate) mod argparse;
 pub(crate) mod array_mod;
 #[cfg(feature = "stdlib_ast")]
 pub(crate) mod ast;
@@ -23,8 +21,6 @@ pub(crate) mod classes;
 pub(crate) mod cmath_mod;
 pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
-#[cfg(not(feature = "stdlib_collections"))]
-pub(crate) mod collections_ext;
 #[cfg(not(feature = "stdlib_math"))]
 pub(crate) mod colorsys;
 #[cfg(feature = "stdlib_compression")]
@@ -94,8 +90,6 @@ pub(crate) mod ipaddress;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub(crate) mod itertools;
 pub(crate) mod json;
-#[cfg(not(feature = "stdlib_logging_ext"))]
-pub(crate) mod logging_ext;
 #[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
 pub(crate) mod lzma;
 #[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]

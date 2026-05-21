@@ -354,8 +354,6 @@ pub(crate) use crate::async_rt::{
     molt_asyncio_task_registry_live_set,
 };
 pub use crate::builtins::abc::*;
-#[cfg(not(feature = "stdlib_collections"))]
-pub use crate::builtins::argparse::*;
 pub use crate::builtins::array_mod::*;
 #[cfg(feature = "stdlib_ast")]
 pub use crate::builtins::ast::*;
@@ -388,8 +386,6 @@ pub(crate) use crate::builtins::classes::{
 pub use crate::builtins::cmath_mod::*;
 pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
-#[cfg(not(feature = "stdlib_collections"))]
-pub use crate::builtins::collections_ext::*;
 #[cfg(not(feature = "stdlib_math"))]
 pub use crate::builtins::colorsys::*;
 #[cfg(feature = "stdlib_compression")]
@@ -503,8 +499,6 @@ pub use crate::builtins::ipaddress::*;
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
-#[cfg(not(feature = "stdlib_logging_ext"))]
-pub use crate::builtins::logging_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::lzma::*;
 #[cfg(not(feature = "stdlib_math"))]
