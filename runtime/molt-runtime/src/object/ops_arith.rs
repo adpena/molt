@@ -749,7 +749,8 @@ pub(crate) fn repeat_sequence(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> Op
 
 unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
-        let elems = seq_vec(ptr);
+        let vec_ptr = seq_vec_ptr(ptr);
+        let elems = &mut *vec_ptr;
         if count <= 0 {
             for &item in elems.iter() {
                 dec_ref_bits(_py, item);
@@ -784,7 +785,14 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
                 );
             }
         };
-        elems.reserve(total.saturating_sub(snapshot.len()));
+        if !crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            vec_ptr,
+            total,
+            "list allocation failed",
+        ) {
+            return false;
+        }
         for _ in 1..count {
             for &item in snapshot.iter() {
                 elems.push(item);
@@ -797,7 +805,8 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
 
 unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
-        let elems = bytearray_vec(ptr);
+        let vec_ptr = bytearray_vec_ptr(ptr);
+        let elems = &mut *vec_ptr;
         if count <= 0 {
             elems.clear();
             return true;
@@ -829,7 +838,14 @@ unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64)
                 );
             }
         };
-        elems.reserve(total.saturating_sub(snapshot.len()));
+        if !crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            vec_ptr,
+            total,
+            "bytearray allocation failed",
+        ) {
+            return false;
+        }
         for _ in 1..count {
             elems.extend_from_slice(&snapshot);
         }
@@ -864,7 +880,20 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
             let msg = format!("can't concat {} to bytearray", type_name(_py, other));
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        bytearray_vec(ptr).extend_from_slice(&payload);
+        let vec_ptr = bytearray_vec_ptr(ptr);
+        let elems = &mut *vec_ptr;
+        let Some(required_len) = elems.len().checked_add(payload.len()) else {
+            return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+        };
+        if !crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            vec_ptr,
+            required_len,
+            "bytearray allocation failed",
+        ) {
+            return false;
+        }
+        elems.extend_from_slice(&payload);
         true
     }
 }

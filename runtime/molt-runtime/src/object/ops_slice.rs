@@ -321,12 +321,16 @@ fn dataclass_new_from_value_slice(
         return MoltObject::none().bits();
     }
     unsafe {
-        let mut vec = Vec::with_capacity(values.len());
-        vec.extend_from_slice(values);
+        let Some(vec_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(values, values.len())
+        else {
+            drop(Box::from_raw(desc_ptr));
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return raise_exception::<_>(_py, "MemoryError", "dataclass allocation failed");
+        };
         for &val in values.iter() {
             inc_ref_bits(_py, val);
         }
-        let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut DataclassDesc) = desc_ptr;
         *(ptr.add(std::mem::size_of::<*mut DataclassDesc>()) as *mut *mut Vec<u64>) = vec_ptr;
         dataclass_set_dict_bits(_py, ptr, 0);

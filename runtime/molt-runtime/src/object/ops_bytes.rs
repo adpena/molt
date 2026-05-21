@@ -73,7 +73,20 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
             return MoltObject::none().bits();
         };
         unsafe {
-            bytearray_vec(bytearray_ptr).extend_from_slice(&payload);
+            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
+            let vec = &mut *vec_ptr;
+            let Some(required_len) = vec.len().checked_add(payload.len()) else {
+                return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+            };
+            if !crate::object::backing::tracked_vec_reserve_or_raise(
+                _py,
+                vec_ptr,
+                required_len,
+                "bytearray allocation failed",
+            ) {
+                return MoltObject::none().bits();
+            }
+            vec.extend_from_slice(&payload);
         }
         MoltObject::none().bits()
     })
@@ -99,7 +112,17 @@ pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u
             return MoltObject::none().bits();
         };
         unsafe {
-            bytearray_vec(bytearray_ptr).push(byte);
+            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
+            let vec = &mut *vec_ptr;
+            if !crate::object::backing::tracked_vec_reserve_or_raise(
+                _py,
+                vec_ptr,
+                vec.len().saturating_add(1),
+                "bytearray allocation failed",
+            ) {
+                return MoltObject::none().bits();
+            }
+            vec.push(byte);
         }
         MoltObject::none().bits()
     })
@@ -243,7 +266,17 @@ pub extern "C" fn molt_bytearray_insert(
             if idx > len {
                 idx = len;
             }
-            bytearray_vec(bytearray_ptr).insert(idx as usize, byte);
+            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
+            let vec = &mut *vec_ptr;
+            if !crate::object::backing::tracked_vec_reserve_or_raise(
+                _py,
+                vec_ptr,
+                vec.len().saturating_add(1),
+                "bytearray allocation failed",
+            ) {
+                return MoltObject::none().bits();
+            }
+            vec.insert(idx as usize, byte);
             MoltObject::none().bits()
         }
     })
@@ -366,7 +399,17 @@ pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> 
                     "bytearray.resize expects bytearray",
                 );
             }
-            bytearray_vec(bytearray_ptr).resize(size as usize, 0u8);
+            let size = size as usize;
+            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
+            if !crate::object::backing::tracked_vec_reserve_or_raise(
+                _py,
+                vec_ptr,
+                size,
+                "bytearray allocation failed",
+            ) {
+                return MoltObject::none().bits();
+            }
+            bytearray_vec(bytearray_ptr).resize(size, 0u8);
         }
         MoltObject::none().bits()
     })

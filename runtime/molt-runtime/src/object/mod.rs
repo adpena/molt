@@ -27,6 +27,7 @@ pub fn bump_type_version() -> u64 {
 }
 
 pub(crate) mod accessors;
+pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
 #[allow(dead_code)]
@@ -782,7 +783,7 @@ fn reserve_object_allocation(plan: ObjectAllocationPlan) -> bool {
 
 #[inline]
 fn release_object_allocation_reservation(plan: ObjectAllocationPlan) {
-    crate::resource::with_tracker(|t| t.on_free(plan.alloc_size));
+    let _ = crate::resource::try_with_tracker(|t| t.on_free(plan.alloc_size));
 }
 
 /// Get the poll_fn for an object. Returns 0 if no cold header exists.
@@ -1956,7 +1957,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_LIST => {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
-                        let vec = Box::from_raw(vec_ptr);
+                        let vec = backing::tracked_vec_box_from_raw(vec_ptr);
                         // contains_refs fast-path: skip element dec_ref when
                         // every element is a primitive (int/float/bool/None).
                         if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
@@ -1969,7 +1970,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_TUPLE => {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
-                        let vec = Box::from_raw(vec_ptr);
+                        let vec = backing::tracked_vec_box_from_raw(vec_ptr);
                         if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
                             for bits in vec.iter() {
                                 dec_ref_bits(py, *bits);
@@ -1981,7 +1982,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let order_ptr = dict_order_ptr(ptr);
                     let table_ptr = dict_table_ptr(ptr);
                     if !order_ptr.is_null() {
-                        let order = Box::from_raw(order_ptr);
+                        let order = backing::tracked_vec_box_from_raw(order_ptr);
                         if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
                             for bits in order.iter() {
                                 dec_ref_bits(py, *bits);
@@ -1989,32 +1990,32 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         }
                     }
                     if !table_ptr.is_null() {
-                        drop(Box::from_raw(table_ptr));
+                        drop(backing::tracked_vec_box_from_raw(table_ptr));
                     }
                 }
                 TYPE_ID_LIST_BUILDER => {
                     let vec_ptr = *(ptr as *mut *mut Vec<u64>);
                     if !vec_ptr.is_null() {
-                        drop(Box::from_raw(vec_ptr));
+                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
                     }
                 }
                 TYPE_ID_BYTEARRAY => {
                     let vec_ptr = bytearray_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
-                        drop(Box::from_raw(vec_ptr));
+                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
                     }
                 }
                 TYPE_ID_DICT_BUILDER => {
                     let vec_ptr = *(ptr as *mut *mut Vec<u64>);
                     if !vec_ptr.is_null() {
-                        drop(Box::from_raw(vec_ptr));
+                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
                     }
                 }
                 TYPE_ID_SET | TYPE_ID_FROZENSET => {
                     let order_ptr = set_order_ptr(ptr);
                     let table_ptr = set_table_ptr(ptr);
                     if !order_ptr.is_null() {
-                        let order = Box::from_raw(order_ptr);
+                        let order = backing::tracked_vec_box_from_raw(order_ptr);
                         if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
                             for bits in order.iter() {
                                 dec_ref_bits(py, *bits);
@@ -2022,13 +2023,13 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         }
                     }
                     if !table_ptr.is_null() {
-                        drop(Box::from_raw(table_ptr));
+                        drop(backing::tracked_vec_box_from_raw(table_ptr));
                     }
                 }
                 TYPE_ID_SET_BUILDER => {
                     let vec_ptr = *(ptr as *mut *mut Vec<u64>);
                     if !vec_ptr.is_null() {
-                        drop(Box::from_raw(vec_ptr));
+                        drop(backing::tracked_vec_box_from_raw(vec_ptr));
                     }
                 }
                 TYPE_ID_CALLARGS => {
@@ -2043,6 +2044,18 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let owner_bits = memoryview_owner_bits(ptr);
                     if owner_bits != 0 && !obj_from_bits(owner_bits).is_none() {
                         dec_ref_bits(py, owner_bits);
+                    }
+                    let format_bits = memoryview_format_bits(ptr);
+                    if format_bits != 0 && !obj_from_bits(format_bits).is_none() {
+                        dec_ref_bits(py, format_bits);
+                    }
+                    let shape_ptr = memoryview_shape_ptr(ptr);
+                    if !shape_ptr.is_null() {
+                        drop(backing::tracked_vec_box_from_raw(shape_ptr));
+                    }
+                    let strides_ptr = memoryview_strides_ptr(ptr);
+                    if !strides_ptr.is_null() {
+                        drop(backing::tracked_vec_box_from_raw(strides_ptr));
                     }
                 }
                 TYPE_ID_RANGE => {
@@ -2077,7 +2090,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let desc_ptr = dataclass_desc_ptr(ptr);
                     let fields_ptr = dataclass_fields_ptr(ptr);
                     if !fields_ptr.is_null() {
-                        let fields = Box::from_raw(fields_ptr);
+                        let fields = backing::tracked_vec_box_from_raw(fields_ptr);
                         for &val_bits in fields.iter() {
                             if val_bits != 0 && !obj_from_bits(val_bits).is_none() {
                                 dec_ref_bits(py, val_bits);
@@ -2306,7 +2319,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         dec_ref_bits(py, func_bits);
                     }
                     if !iters_ptr.is_null() {
-                        let iters = Box::from_raw(iters_ptr);
+                        let iters = backing::tracked_vec_box_from_raw(iters_ptr);
                         for bits in iters.iter() {
                             dec_ref_bits(py, *bits);
                         }
@@ -2336,7 +2349,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_ZIP => {
                     let iters_ptr = zip_iters_ptr(ptr);
                     if !iters_ptr.is_null() {
-                        let iters = Box::from_raw(iters_ptr);
+                        let iters = backing::tracked_vec_box_from_raw(iters_ptr);
                         for bits in iters.iter() {
                             dec_ref_bits(py, *bits);
                         }
@@ -2528,7 +2541,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             release_ptr(ptr);
             let total_size = total_size_from_header_fields(header_size_class, header_cold_idx);
             // Notify the resource tracker that this object's memory is freed.
-            crate::resource::with_tracker(|t| t.on_free(total_size));
+            let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
             // Shared cold headers (per-class, see SHARED_COLD_IDX_BIT)
             // outlive any individual instance — only the class's own
             // dealloc path frees them.  Skip free for shared idx; the

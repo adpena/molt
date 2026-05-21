@@ -241,6 +241,13 @@ pub trait ResourceTracker {
     /// Called when a container (list, dict, bytes) grows.
     fn on_grow(&mut self, additional_bytes: usize) -> Result<(), ResourceError>;
 
+    /// Called when memory previously charged by [`ResourceTracker::on_grow`]
+    /// is released or a fallible growth reservation must be rolled back.
+    ///
+    /// Unlike [`ResourceTracker::on_free`], this must not affect allocation
+    /// counts: growth bytes do not represent a separate allocation event.
+    fn on_shrink(&mut self, released_bytes: usize);
+
     /// Rate-limited wall-clock time check. Implementations should avoid
     /// calling `Instant::elapsed()` on every invocation.
     fn check_time(&mut self) -> Result<(), ResourceError>;
@@ -382,6 +389,11 @@ impl ResourceTracker for LimitedTracker {
     }
 
     #[inline(always)]
+    fn on_shrink(&mut self, released_bytes: usize) {
+        self.memory_used = self.memory_used.saturating_sub(released_bytes);
+    }
+
+    #[inline(always)]
     fn check_time(&mut self) -> Result<(), ResourceError> {
         self.time_check_counter += 1;
         if self.time_check_counter < TIME_CHECK_INTERVAL {
@@ -457,6 +469,9 @@ impl ResourceTracker for UnlimitedTracker {
     fn on_grow(&mut self, _additional_bytes: usize) -> Result<(), ResourceError> {
         Ok(())
     }
+
+    #[inline(always)]
+    fn on_shrink(&mut self, _released_bytes: usize) {}
 
     #[inline(always)]
     fn check_time(&mut self) -> Result<(), ResourceError> {
