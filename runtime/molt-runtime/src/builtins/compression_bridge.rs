@@ -120,14 +120,8 @@ pub extern "C" fn molt_bridge_string_obj_to_owned(obj_bits: u64, out_len: *mut u
     let obj = obj_from_bits(obj_bits);
     match string_obj_to_owned(obj) {
         Some(s) => {
-            let len = s.len();
-            unsafe {
-                *out_len = len;
-            }
-            let mut v = s.into_bytes();
-            let ptr = v.as_mut_ptr();
-            std::mem::forget(v);
-            ptr
+            let bytes = s.into_bytes().into_boxed_slice();
+            crate::bridge_buffer::export_u8_box_ptr(bytes, out_len)
         }
         None => {
             unsafe {
@@ -140,11 +134,7 @@ pub extern "C" fn molt_bridge_string_obj_to_owned(obj_bits: u64, out_len: *mut u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_free_string(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() {
-        unsafe {
-            drop(Vec::from_raw_parts(ptr, len, len));
-        }
-    }
+    crate::bridge_buffer::__molt_bridge_free_u8(ptr, len);
 }
 
 #[unsafe(no_mangle)]

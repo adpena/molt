@@ -135,12 +135,7 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let ok = unsafe { __molt_crypto_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         // The bridge allocates via Box, we must reconstruct and own it.
-        let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                out_ptr as *mut u8,
-                out_len,
-            ))
-        };
+        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -153,12 +148,7 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_crypto_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                out_ptr as *mut u8,
-                out_len,
-            ))
-        };
+        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Cow::Owned(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         Cow::Borrowed("<unknown>")
@@ -269,12 +259,7 @@ pub fn index_bigint_from_obj(
     if out_len == 0 {
         return Some(BigInt::from(0));
     }
-    let bytes = unsafe {
-        Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-            out_ptr as *mut u8,
-            out_len,
-        ))
-    };
+    let bytes = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
 

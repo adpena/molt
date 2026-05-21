@@ -102,13 +102,7 @@ pub extern "C" fn __molt_collections_string_obj_to_owned(
     match _string_obj_to_owned(obj) {
         Some(s) => {
             let bytes = s.into_bytes().into_boxed_slice();
-            let len = bytes.len();
-            let ptr = Box::into_raw(bytes) as *const u8;
-            unsafe {
-                *out_ptr = ptr;
-                *out_len = len;
-            }
-            1
+            crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
         }
         None => 0,
     }
@@ -188,13 +182,7 @@ pub extern "C" fn __molt_collections_type_name(
         let name = type_name(_py, obj);
         let owned: String = name.into_owned();
         let bytes = owned.into_bytes().into_boxed_slice();
-        let len = bytes.len();
-        let ptr = Box::into_raw(bytes) as *const u8;
-        unsafe {
-            *out_ptr = ptr;
-            *out_len = len;
-        }
-        1
+        crate::bridge_buffer::export_u8_box(bytes, out_ptr, out_len)
     })
 }
 
@@ -339,13 +327,7 @@ pub extern "C" fn __molt_collections_dict_order_clone(
             return 0;
         }
         let boxed = order.into_boxed_slice();
-        let len = boxed.len();
-        let raw_ptr = Box::into_raw(boxed) as *const u64;
-        unsafe {
-            *out_ptr = raw_ptr;
-            *out_len = len;
-        }
-        1
+        crate::bridge_buffer::export_u64_box(boxed, out_ptr, out_len)
     })
 }
 
