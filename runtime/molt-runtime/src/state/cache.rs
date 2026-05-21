@@ -2,8 +2,8 @@ use crate::PyToken;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::RuntimeState;
-use crate::object::{HEADER_FLAG_INTERNED, header_from_obj_ptr, obj_from_bits};
-use crate::{MoltObject, alloc_string, init_atomic_bits};
+use crate::object::{header_from_obj_ptr, obj_from_bits, HEADER_FLAG_INTERNED};
+use crate::{alloc_string, init_atomic_bits, MoltObject};
 
 pub(crate) struct InternedNames {
     pub(crate) bases_name: AtomicU64,
@@ -555,6 +555,90 @@ define_method_cache! {
     exception_group_derive,
     generic_alias_new,
     generic_alias_class_getitem,
+    object_dir,
+    object_format,
+    object_hash,
+    object_getstate,
+    object_lt,
+    object_le,
+    object_gt,
+    object_ge,
+    int_abs,
+    int_add,
+    int_and,
+    int_bool,
+    int_ceil,
+    int_divmod,
+    str_add,
+    str_getitem,
+    bytes_index,
+    bytes_rindex,
+    bytes_removeprefix,
+    bytes_removesuffix,
+    bytes_capitalize,
+    bytes_swapcase,
+    bytes_title,
+    bytes_isalpha,
+    bytes_isalnum,
+    bytes_isdigit,
+    bytes_isspace,
+    bytes_islower,
+    bytes_isupper,
+    bytes_istitle,
+    bytes_isascii,
+    bytes_zfill,
+    bytes_center,
+    bytes_ljust,
+    bytes_rjust,
+    bytes_expandtabs,
+    bytearray_insert,
+    bytearray_pop,
+    bytearray_remove,
+    bytearray_reverse,
+    bytearray_resize,
+    bytearray_copy,
+    bytearray_index,
+    bytearray_rindex,
+    bytearray_removeprefix,
+    bytearray_removesuffix,
+    bytearray_join,
+    bytearray_capitalize,
+    bytearray_upper,
+    bytearray_lower,
+    bytearray_swapcase,
+    bytearray_title,
+    bytearray_isalpha,
+    bytearray_isalnum,
+    bytearray_isdigit,
+    bytearray_isspace,
+    bytearray_islower,
+    bytearray_isupper,
+    bytearray_istitle,
+    bytearray_isascii,
+    bytearray_zfill,
+    bytearray_center,
+    bytearray_ljust,
+    bytearray_rjust,
+    bytearray_expandtabs,
+    int_bit_count,
+    int_as_integer_ratio,
+    int_conjugate,
+    int_is_integer,
+    float_as_integer_ratio,
+    float_conjugate,
+    float_hex,
+    float_is_integer,
+    float_fromhex,
+    float_from_number,
+    complex_from_number,
+    memoryview_from_flags,
+    memoryview_count,
+    memoryview_index,
+    memoryview_hex,
+    memoryview_release,
+    memoryview_toreadonly,
+    range_count,
+    range_index,
     function_descriptor_get,
 }
 
@@ -598,8 +682,8 @@ pub(crate) fn clear_method_cache(_py: &PyToken<'_>, state: &RuntimeState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{METHOD_CACHE_SLOT_COUNT, MethodCache, clear_method_cache};
-    use crate::{MoltObject, alloc_string, runtime_state};
+    use super::{clear_method_cache, MethodCache, METHOD_CACHE_SLOT_COUNT};
+    use crate::{alloc_string, runtime_state, MoltObject};
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -624,7 +708,7 @@ mod tests {
             let state = runtime_state(_py);
             clear_method_cache(_py, state);
 
-            let sentinels: [(&AtomicU64, &'static [u8]); 10] = [
+            let sentinels: [(&AtomicU64, &'static [u8]); 15] = [
                 (&state.method_cache.set_clear, b"method-cache-set-clear"),
                 (&state.method_cache.set_union, b"method-cache-set-union"),
                 (
@@ -638,6 +722,14 @@ mod tests {
                 (&state.method_cache.str_find, b"method-cache-str-find"),
                 (&state.method_cache.str_rfind, b"method-cache-str-rfind"),
                 (&state.method_cache.str_index, b"method-cache-str-index"),
+                (&state.method_cache.object_dir, b"method-cache-object-dir"),
+                (&state.method_cache.int_abs, b"method-cache-int-abs"),
+                (&state.method_cache.str_add, b"method-cache-str-add"),
+                (&state.method_cache.bytes_index, b"method-cache-bytes-index"),
+                (
+                    &state.method_cache.bytearray_upper,
+                    b"method-cache-bytearray-upper",
+                ),
             ];
 
             for (slot, name) in sentinels {
