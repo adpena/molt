@@ -14,23 +14,6 @@ pub extern "C" fn molt_init() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutdown() -> i32 {
-    if crate::state::runtime_state::runtime_state_for_gil().is_some() {
-        crate::with_gil_entry_nopanic!(_py, {
-            c_api_module_teardown(_py);
-        });
-    } else {
-        let metadata = c_api_module_metadata_registry();
-        metadata
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        let state = c_api_module_state_registry();
-        let mut guard = state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.by_def.clear();
-        guard.by_module.clear();
-    }
     // Shutdown returning 0 means "already shut down", which is still a clean state.
     let _ = molt_runtime_shutdown();
     0
@@ -450,11 +433,9 @@ pub extern "C" fn molt_module_capi_register(
             module_def_ptr,
             module_state: state,
         };
-        let registry = c_api_module_metadata_registry();
-        let mut guard = registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.insert(module_key, metadata);
+        c_api_module_state(_py)
+            .metadata
+            .insert(module_key, metadata);
         0
     })
 }
@@ -467,11 +448,8 @@ pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
             Err(_) => return 0,
         };
         let module_key = module_ptr_key(module_ptr);
-        let registry = c_api_module_metadata_registry();
-        let guard = registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard
+        c_api_module_state(_py)
+            .metadata
             .get(&module_key)
             .map_or(0, |entry| entry.module_def_ptr)
     })
@@ -485,11 +463,8 @@ pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> *mut u8
             Err(_) => return std::ptr::null_mut(),
         };
         let module_key = module_ptr_key(module_ptr);
-        let registry = c_api_module_metadata_registry();
-        let mut guard = registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard
+        c_api_module_state(_py)
+            .metadata
             .get_mut(&module_key)
             .map_or(std::ptr::null_mut(), |entry| {
                 entry
@@ -518,35 +493,35 @@ pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr:
         let def_key = module_def_ptr;
         let mut decref_bits: Vec<MoltHandle> = Vec::new();
         {
-            let registry = c_api_module_state_registry();
-            let mut guard = registry
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = c_api_module_state(_py);
 
-            if let Some(existing) = guard.by_def.get(&def_key).copied()
+            if let Some(existing) = guard.state_registry.by_def.get(&def_key).copied()
                 && existing == module_bits
-                && guard.by_module.get(&module_key).copied() == Some(def_key)
+                && guard.state_registry.by_module.get(&module_key).copied() == Some(def_key)
             {
                 return 0;
             }
 
-            if let Some(old_def) = guard.by_module.get(&module_key).copied()
+            if let Some(old_def) = guard.state_registry.by_module.get(&module_key).copied()
                 && old_def != def_key
-                && let Some(old_bits) = guard.by_def.remove(&old_def)
+                && let Some(old_bits) = guard.state_registry.by_def.remove(&old_def)
             {
                 decref_bits.push(old_bits);
             }
 
-            if let Some(old_bits) = guard.by_def.insert(def_key, module_bits)
+            if let Some(old_bits) = guard.state_registry.by_def.insert(def_key, module_bits)
                 && old_bits != module_bits
             {
                 if let Some(old_ptr) = obj_from_bits(old_bits).as_ptr() {
-                    guard.by_module.remove(&module_ptr_key(old_ptr));
+                    guard
+                        .state_registry
+                        .by_module
+                        .remove(&module_ptr_key(old_ptr));
                 }
                 decref_bits.push(old_bits);
             }
 
-            guard.by_module.insert(module_key, def_key);
+            guard.state_registry.by_module.insert(module_key, def_key);
             inc_ref_bits(_py, module_bits);
         }
         for bits in decref_bits {
@@ -569,11 +544,12 @@ pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
             );
             return 0;
         }
-        let registry = c_api_module_state_registry();
-        let guard = registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.by_def.get(&module_def_ptr).copied().unwrap_or(0)
+        c_api_module_state(_py)
+            .state_registry
+            .by_def
+            .get(&module_def_ptr)
+            .copied()
+            .unwrap_or(0)
     })
 }
 
