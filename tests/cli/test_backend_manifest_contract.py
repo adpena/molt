@@ -182,14 +182,18 @@ def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
     assert "vfs_bundle_tar" in runtime_manifest["features"]
 
 
-def test_runtime_micro_profile_includes_non_network_asyncio_only() -> None:
+def test_runtime_micro_profile_includes_core_non_network_intrinsics() -> None:
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
         runtime_manifest = tomllib.load(handle)
 
     micro_features = runtime_manifest["features"]["stdlib_micro"]
 
-    assert micro_features == ["stdlib_asyncio"]
+    assert micro_features == [
+        "stdlib_asyncio",
+        "stdlib_collections",
+        "stdlib_fs_extra",
+    ]
     assert "stdlib_net" not in micro_features
 
 
