@@ -2425,11 +2425,12 @@ def _write_runtime_wasm_integrity_sidecar(path: Path) -> None:
 
 def _git_rev(root: Path) -> str | None:
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
-            text=True,
-            check=False,
+            env=None,
+            cwd=root,
+            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
         )
     except OSError:
         return None
@@ -3233,7 +3234,13 @@ def _cosign_sign_blob(
         if not tlog_upload:
             cmd.append("--tlog-upload=false")
         cmd.append(str(artifact_path))
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = _run_completed_command(
+            cmd,
+            capture_output=True,
+            env=None,
+            cwd=artifact_path.parent,
+            memory_guard_prefix="MOLT_BUILD",
+        )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or "unknown error"
             raise RuntimeError(f"cosign sign-blob failed: {detail}")
@@ -3254,11 +3261,12 @@ def _cosign_sign_blob(
 
 
 def _codesign_identity_info(artifact_path: Path) -> dict[str, Any]:
-    result = subprocess.run(
+    result = _run_completed_command(
         ["codesign", "--display", "--verbose=4", str(artifact_path)],
         capture_output=True,
-        text=True,
-        check=False,
+        env=None,
+        cwd=artifact_path.parent,
+        memory_guard_prefix="MOLT_BUILD",
     )
     output = (result.stderr or "") + (result.stdout or "")
     info: dict[str, Any] = {"tool": {"name": "codesign"}}
@@ -3286,7 +3294,13 @@ def _codesign_sign(artifact_path: Path, identity: str) -> dict[str, Any]:
         "--timestamp=none",
         str(artifact_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = _run_completed_command(
+        cmd,
+        capture_output=True,
+        env=None,
+        cwd=artifact_path.parent,
+        memory_guard_prefix="MOLT_BUILD",
+    )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "unknown error"
         raise RuntimeError(f"codesign failed: {detail}")
@@ -3540,18 +3554,25 @@ def _verify_cosign_signature(
             "--insecure-ignore-tlog",
             str(artifact_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = _run_completed_command(
+            cmd,
+            capture_output=True,
+            env=None,
+            cwd=artifact_path.parent,
+            memory_guard_prefix="MOLT_BUILD",
+        )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or "unknown error"
             raise RuntimeError(f"cosign verify-blob failed: {detail}")
 
 
 def _verify_codesign_signature(artifact_path: Path) -> None:
-    result = subprocess.run(
+    result = _run_completed_command(
         ["codesign", "--verify", "--verbose=4", str(artifact_path)],
         capture_output=True,
-        text=True,
-        check=False,
+        env=None,
+        cwd=artifact_path.parent,
+        memory_guard_prefix="MOLT_BUILD",
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "unknown error"
@@ -8102,8 +8123,12 @@ def _latest_mtime(paths: list[Path]) -> float:
 @functools.lru_cache(maxsize=1)
 def _rustc_version() -> str | None:
     try:
-        result = subprocess.run(
-            ["rustc", "-Vv"], capture_output=True, text=True, check=False
+        result = _run_completed_command(
+            ["rustc", "-Vv"],
+            capture_output=True,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except OSError:
         return None
@@ -9135,12 +9160,13 @@ def _validate_wasm_structural(path: Path) -> str | None:
     if exe is None:
         return None
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             [exe, "validate", str(path)],
             capture_output=True,
-            text=True,
             timeout=60,
-            check=False,
+            env=None,
+            cwd=path.parent,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except Exception as exc:
         return f"wasm-tools validate failed to run: {exc}"
@@ -9156,12 +9182,13 @@ def _rust_target_libdir(target_triple: str) -> Path | None:
     if rustc is None:
         return None
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             [rustc, "--print", "target-libdir", "--target", target_triple],
             capture_output=True,
-            text=True,
             timeout=30,
-            check=False,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except OSError:
         return None
@@ -9200,12 +9227,13 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
         else [nm_bin, "-g", str(path)]
     )
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             nm_cmd,
             capture_output=True,
-            text=True,
             timeout=5,
-            check=False,
+            env=None,
+            cwd=path.parent,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -9223,12 +9251,13 @@ def _native_object_global_symbol_sets(path: Path) -> tuple[set[str], set[str]] |
     if nm_bin is None:
         return None
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             [nm_bin, "-g", str(path)],
             capture_output=True,
-            text=True,
             timeout=5,
-            check=False,
+            env=None,
+            cwd=path.parent,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -10207,9 +10236,12 @@ def _codesign_binary(binary_path: Path) -> None:
     if sys.platform != "darwin":
         return
     try:
-        subprocess.run(
+        _run_completed_command(
             ["codesign", "-f", "-s", "-", str(binary_path)],
             capture_output=True,
+            env=None,
+            cwd=binary_path.parent,
+            memory_guard_prefix="MOLT_BUILD",
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -10642,11 +10674,12 @@ def _wasm_import_function_result_kinds(
     wasm_objdump = shutil.which("wasm-objdump")
     if wasm_objdump is None:
         return {}
-    result = subprocess.run(
+    result = _run_completed_command(
         [wasm_objdump, "-x", str(path)],
         capture_output=True,
-        text=True,
-        check=False,
+        env=None,
+        cwd=path.parent,
+        memory_guard_prefix="MOLT_BUILD",
     )
     text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
     if not text:
@@ -10681,11 +10714,12 @@ def _wasm_import_function_signatures(
     wasm_objdump = shutil.which("wasm-objdump")
     if wasm_objdump is None:
         return {}
-    result = subprocess.run(
+    result = _run_completed_command(
         [wasm_objdump, "-x", str(path)],
         capture_output=True,
-        text=True,
-        check=False,
+        env=None,
+        cwd=path.parent,
+        memory_guard_prefix="MOLT_BUILD",
     )
     text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
     if not text:
@@ -10726,11 +10760,12 @@ def _wasm_export_function_signatures(
     wasm_objdump = shutil.which("wasm-objdump")
     if wasm_objdump is None:
         return {}
-    result = subprocess.run(
+    result = _run_completed_command(
         [wasm_objdump, "-x", str(path)],
         capture_output=True,
-        text=True,
-        check=False,
+        env=None,
+        cwd=path.parent,
+        memory_guard_prefix="MOLT_BUILD",
     )
     text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
     if not text:
@@ -17660,11 +17695,13 @@ def _runtime_archive_crate_names(runtime_lib: Path) -> frozenset[str]:
     if archive_tool is None:
         return frozenset()
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             [archive_tool, "-t", str(runtime_lib)],
             capture_output=True,
-            text=True,
             timeout=30,
+            env=None,
+            cwd=runtime_lib.parent,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except (OSError, subprocess.SubprocessError):
         return frozenset()
@@ -17873,15 +17910,21 @@ def _post_link_strip(binary: Path, target_triple: str | None) -> None:
         if _is_darwin:
             # -x: remove all local symbols (keeps only external/undefined).
             # Catches Rust metadata and alignment padding the linker preserves.
-            subprocess.run(
+            _run_completed_command(
                 ["strip", "-x", str(binary)],
                 capture_output=True,
+                env=None,
+                cwd=binary.parent,
+                memory_guard_prefix="MOLT_BUILD",
                 timeout=30,
             )
         elif _is_linux:
-            subprocess.run(
+            _run_completed_command(
                 ["strip", "--strip-all", str(binary)],
                 capture_output=True,
+                env=None,
+                cwd=binary.parent,
+                memory_guard_prefix="MOLT_BUILD",
                 timeout=30,
             )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -26888,11 +26931,13 @@ def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:
     if dyld_info is None or not binary_path.exists():
         return None
     try:
-        proc = subprocess.run(
+        proc = _run_completed_command(
             [dyld_info, str(binary_path)],
             capture_output=True,
-            text=True,
             timeout=10.0,
+            env=None,
+            cwd=binary_path.parent,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -27512,11 +27557,12 @@ def _zig_target_query(target_triple: str) -> str:
 
 def _detect_macos_arch(obj_path: Path) -> str | None:
     try:
-        result = subprocess.run(
+        result = _run_completed_command(
             ["lipo", "-archs", str(obj_path)],
             capture_output=True,
-            text=True,
-            check=False,
+            env=None,
+            cwd=obj_path.parent,
+            memory_guard_prefix="MOLT_BUILD",
         )
     except OSError:
         return None
@@ -27541,11 +27587,15 @@ def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
     # against.  Using platform.mac_ver() (OS version) can be lower than
     # the SDK, causing hundreds of linker version-mismatch warnings.
     try:
-        sdk_ver = subprocess.check_output(
+        result = _run_completed_command(
             ["xcrun", "--show-sdk-version"],
-            text=True,
+            capture_output=True,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
             timeout=5,
-        ).strip()
+        )
+        sdk_ver = result.stdout.strip()
         if sdk_ver:
             return sdk_ver
     except (subprocess.SubprocessError, FileNotFoundError):
@@ -27618,14 +27668,15 @@ def _append_darwin_runtime_frameworks(
 def _resolve_macos_sdk_root() -> str | None:
     """Return the active macOS SDK root via xcrun, or None if unavailable."""
     try:
-        return (
-            subprocess.check_output(
-                ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
-                text=True,
-                timeout=5,
-            ).strip()
-            or None
+        result = _run_completed_command(
+            ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+            capture_output=True,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
+            timeout=5,
         )
+        return result.stdout.strip() or None
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
 
@@ -29698,11 +29749,12 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     wasm_target_ok = False
     if rustup_path:
         try:
-            result = subprocess.run(
+            result = _run_completed_command(
                 ["rustup", "target", "list", "--installed"],
                 capture_output=True,
-                text=True,
-                check=False,
+                env=None,
+                cwd=root,
+                memory_guard_prefix="MOLT_BUILD",
             )
         except OSError as exc:
             record("rustup-targets", False, f"failed to query: {exc}")

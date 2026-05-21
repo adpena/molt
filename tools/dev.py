@@ -285,14 +285,24 @@ def _run_dx_gates(args: list[str], *, tty: bool) -> None:
     else:
         for gate_cmd in _split_command_sequence(gates, "gates"):
             _run_repo_cmd(gate_cmd, env, tty=tty)
-    status = subprocess.run(
+    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
+    status_result = harness_memory_guard.guarded_completed_process(
         ["git", "status", "--short"],
+        prefix="MOLT_TEST_SUITE",
         cwd=ROOT,
         env=env,
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout
+        limits=limits,
+    )
+    if status_result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            status_result.returncode,
+            ["git", "status", "--short"],
+            output=status_result.stdout,
+            stderr=status_result.stderr,
+        )
+    status = status_result.stdout
     if status:
         print(status, end="")
         if not allow_dirty:

@@ -5,7 +5,6 @@ import math
 import os
 import platform
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -83,7 +82,16 @@ def read_process_table() -> list[tuple[int, int, float, int, str]]:
         "-o",
         "command=",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    env = base_env()
+    proc = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix=BENCH_MEMORY_PREFIX,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=ROOT,
+        limits=bench_memory_limits(env),
+    )
     if proc.returncode != 0:
         return []
     rows: list[tuple[int, int, float, int, str]] = []

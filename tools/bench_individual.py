@@ -23,7 +23,6 @@ import platform
 import re
 import signal
 import statistics
-import subprocess
 import sys
 import tempfile
 import time
@@ -43,6 +42,25 @@ import bench_suites  # noqa: E402
 BENCHMARKS = bench_suites.BENCHMARKS
 MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH
 molt_args_for_benchmark = bench_suites.molt_args_for_benchmark
+
+
+def _guarded_bench_process(
+    cmd: list[str],
+    *,
+    timeout: float | None = None,
+) -> harness_memory_guard.GuardedCompletedProcess:
+    env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=REPO_ROOT)
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_BENCH",
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        limits=limits,
+    )
 
 
 class RunSample:
@@ -93,11 +111,9 @@ def _kill_all_molt_backends() -> int:
     if os.name != "posix":
         return 0
     try:
-        result = subprocess.run(
+        result = _guarded_bench_process(
             ["ps", "-axo", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
+            timeout=10,
         )
     except OSError:
         return 0
@@ -132,11 +148,9 @@ def _ensure_clean_slate(quiet: bool = False) -> None:
 
 def _git_rev() -> str | None:
     try:
-        res = subprocess.run(
+        res = _guarded_bench_process(
             ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
+            timeout=10,
         )
     except OSError:
         return None
