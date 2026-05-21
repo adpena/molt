@@ -18,6 +18,7 @@ use crate::builtins::configparser::ConfigParserRuntimeState;
 use crate::builtins::csv::CsvRuntimeState;
 use crate::builtins::random_mod::RandomRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
+use crate::call::bind::CallBindRuntimeState;
 use crate::concurrency::gil::{gil_held, hold_runtime_gil, release_runtime_gil};
 use crate::object::utf8_cache::{Utf8CacheStore, Utf8CountCacheStore, build_utf8_count_cache};
 use crate::{
@@ -298,6 +299,7 @@ pub(crate) struct RuntimeState {
     pub(crate) csv: Mutex<CsvRuntimeState>,
     pub(crate) random: Mutex<RandomRuntimeState>,
     pub(crate) c_api_module: Mutex<CApiModuleRuntimeState>,
+    pub(crate) call_bind: Mutex<CallBindRuntimeState>,
     pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
     pub(crate) gen_locals: Mutex<HashMap<u64, GenLocalsEntry>>,
     pub(crate) weakrefs: Mutex<WeakRefRegistry>,
@@ -389,6 +391,7 @@ impl RuntimeState {
             csv: Mutex::new(CsvRuntimeState::new()),
             random: Mutex::new(RandomRuntimeState::new()),
             c_api_module: Mutex::new(CApiModuleRuntimeState::new()),
+            call_bind: Mutex::new(CallBindRuntimeState::new()),
             asyncgen_locals: Mutex::new(HashMap::new()),
             gen_locals: Mutex::new(HashMap::new()),
             weakrefs: Mutex::new(WeakRefRegistry::new()),
