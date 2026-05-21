@@ -701,7 +701,7 @@ pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
 };
 #[allow(unused_imports)]
-pub(crate) use crate::provenance::{register_ptr, release_ptr, reset_ptr_registry, resolve_ptr};
+pub(crate) use crate::provenance::{release_ptr, reset_ptr_registry, resolve_ptr};
 pub(crate) use crate::state::cache::{InternedNames, MethodCache, intern_static_name};
 pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gil};
 #[allow(unused_imports)]
