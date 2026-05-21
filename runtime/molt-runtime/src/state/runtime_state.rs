@@ -22,6 +22,7 @@ use crate::builtins::configparser::ConfigParserRuntimeState;
 use crate::builtins::copy_mod::CopyMemoRuntimeState;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::CsvRuntimeState;
+use crate::builtins::functools::FunctoolsRuntimeState;
 use crate::builtins::io::IoRuntimeState;
 #[cfg(not(feature = "stdlib_itertools"))]
 use crate::builtins::itertools::ItertoolsRuntimeState;
@@ -311,6 +312,7 @@ pub(crate) struct RuntimeState {
     pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
     pub(crate) contextvars: Mutex<ContextVarsState>,
     pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
+    pub(crate) functools: FunctoolsRuntimeState,
     pub(crate) io: IoRuntimeState,
     pub(crate) operator: OperatorRuntimeState,
     #[cfg(not(feature = "stdlib_itertools"))]
@@ -417,6 +419,7 @@ impl RuntimeState {
             }),
             contextvars: Mutex::new(ContextVarsState::new()),
             copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
+            functools: FunctoolsRuntimeState::new(),
             io: IoRuntimeState::new(),
             operator: OperatorRuntimeState::new(),
             #[cfg(not(feature = "stdlib_itertools"))]
