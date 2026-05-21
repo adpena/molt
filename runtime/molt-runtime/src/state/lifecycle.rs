@@ -10,6 +10,7 @@ use crate::builtins::contextvars::contextvars_clear_state;
 use crate::builtins::copy_mod::copy_memo_clear_state;
 #[cfg(not(feature = "stdlib_serial"))]
 use crate::builtins::csv::csv_clear_state;
+use crate::builtins::io::io_clear_runtime_state;
 #[cfg(not(feature = "stdlib_itertools"))]
 use crate::builtins::itertools::itertools_clear_state;
 #[cfg(not(feature = "stdlib_math"))]
@@ -145,6 +146,8 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
     flush_stdio_handles(_py, state);
     trace_shutdown("process_exit_flush_stdio_post_finalizers");
     flush_stdio_handles(_py, state);
+    trace_shutdown("process_exit_clear_io_runtime_state");
+    io_clear_runtime_state(_py, state);
     trace_shutdown("process_exit_clear_c_api_module_state");
     c_api_module_clear_state(_py, state);
     trace_shutdown("process_exit_clear_runtime_extension_states");
@@ -251,6 +254,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_module_cache(_py, state);
     trace_shutdown("flush_stdio_post_modules");
     flush_stdio_handles(_py, state);
+    trace_shutdown("clear_io_runtime_state");
+    io_clear_runtime_state(_py, state);
     trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
     trace_shutdown("clear_gen_locals");
