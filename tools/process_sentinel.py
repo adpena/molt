@@ -17,7 +17,7 @@ _REPO_ROOT = _THIS_FILE.parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools import memory_guard  # noqa: E402
+from tools import guarded_entrypoints, memory_guard  # noqa: E402
 
 
 DEFAULT_MAX_PROCESS_RSS_GB = memory_guard.DEFAULT_MAX_RSS_GB
@@ -27,63 +27,7 @@ DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_GRACE_SEC = 0.5
 DEFAULT_MAX_RUNTIME_SEC = 120.0
 
-GUARDED_ENTRYPOINT_TOKENS = (
-    "/src/molt/cli.py",
-    "/src/molt/harness_layers.py",
-    "/tests/harness/adapt_monty_tests.py",
-    "/tests/harness/run_molt_conformance.py",
-    "/tests/harness/run_monty_conformance.py",
-    "/tools/bench.py",
-    "/tools/bench_audit.py",
-    "/tools/bench_backend_incremental.py",
-    "/tools/bench_friends.py",
-    "/tools/bench_individual.py",
-    "/tools/bench_rust_transpile.py",
-    "/tools/bench_wasm.py",
-    "/tools/benchmark_luau_vs_cpython.py",
-    "/tools/binary_size_analysis.py",
-    "/tools/check_codegen_quality.py",
-    "/tools/check_deterministic_runtime.py",
-    "/tools/check_formal_methods.py",
-    "/tools/check_luau_static.py",
-    "/tools/check_reproducible_build.py",
-    "/tools/check_reproducible_build_extended.py",
-    "/tools/check_translation_validation.py",
-    "/tools/check_transpiler_determinism.py",
-    "/tools/ci_gate.py",
-    "/tools/compile_progress.py",
-    "/tools/cpython_regrtest.py",
-    "/tools/cross_run.py",
-    "/tools/dev.py",
-    "/tools/dev_test_runner.py",
-    "/tools/formal_bench_validation.py",
-    "/tools/formal_bridge.py",
-    "/tools/fuzz_compiler.py",
-    "/tools/gen_stdlib_module_union.py",
-    "/tools/linear_hygiene.py",
-    "/tools/metamorphic_runner.py",
-    "/tools/molt_regrtest_shim.py",
-    "/tools/mutation_test.py",
-    "/tools/nightly_test_suite.py",
-    "/tools/parity_gate.py",
-    "/tools/profile.py",
-    "/tools/quint_trace_to_tests.py",
-    "/tools/representation_report.py",
-    "/tools/runtime_safety.py",
-    "/tools/throughput_matrix.py",
-    "/tools/translation_validate.py",
-    "/tools/verified_subset.py",
-    "/tools/verify_ir_suite.py",
-    "/tools/verify_reproducible.py",
-    "/tools/wasm_hotspot_profile.py",
-    "/tools/wasm_link.py",
-    "/tools/wasm_optimize.py",
-    "/tools/wasm_pipeline.py",
-    "/tools/wasm_profile.py",
-    "/tools/wasm_run_matrix.py",
-    "/tools/wasm_strip_unused.py",
-    "/tools/wasm_stub_wasi.py",
-)
+GUARDED_ENTRYPOINT_TOKENS = guarded_entrypoints.guarded_entrypoint_tokens(_REPO_ROOT)
 
 MOLT_PROCESS_TOKENS = tuple(
     dict.fromkeys(
