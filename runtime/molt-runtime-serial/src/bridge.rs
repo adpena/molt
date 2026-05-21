@@ -3,8 +3,10 @@
 //! All dispatch goes through a single `RuntimeVtable` fetched once at init.
 //! The only extern "C" symbol is `__molt_serial_get_vtable`.
 
-use molt_runtime_core::RuntimeVtable;
 use molt_runtime_core::prelude::*;
+use molt_runtime_core::{
+    RuntimeExtensionStateClear, RuntimeExtensionStateDrop, RuntimeExtensionStateInit, RuntimeVtable,
+};
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
@@ -31,6 +33,19 @@ fn vt() -> &'static RuntimeVtable {
         .get()
         .copied()
         .expect("molt-runtime-serial: vtable not initialized — call bridge::init_vtable() first")
+}
+
+// ---------------------------------------------------------------------------
+// Runtime-scoped extension state
+// ---------------------------------------------------------------------------
+
+pub fn runtime_state_get_or_init(
+    key: &[u8],
+    init: RuntimeExtensionStateInit,
+    clear: RuntimeExtensionStateClear,
+    drop: RuntimeExtensionStateDrop,
+) -> *mut u8 {
+    unsafe { (vt().runtime_state_get_or_init)(key.as_ptr(), key.len(), init, clear, drop) }
 }
 
 // ---------------------------------------------------------------------------
