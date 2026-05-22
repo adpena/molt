@@ -387,6 +387,9 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     )
     assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "128"' in wasm_text
     assert 'MOLT_WASM_TEST_TIMEOUT_SEC: "900"' in wasm_text
+    assert 'MOLT_BACKEND_DAEMON: "0"' in wasm_text
+    assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in wasm_text
+    assert "MOLT_BACKEND_DAEMON_CACHE_MB" not in wasm_text
     assert (
         "cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend"
         in wasm_text

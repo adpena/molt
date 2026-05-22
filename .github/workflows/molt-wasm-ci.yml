@@ -64,12 +64,11 @@ jobs:
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
       MOLT_WASM_TEST_CHILD_RLIMIT_GB: "128"
       MOLT_WASM_TEST_TIMEOUT_SEC: "900"
-      MOLT_BACKEND_DAEMON_SOCKET_DIR: /tmp/molt_backend_sockets
+      MOLT_BACKEND_DAEMON: "0"
       MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
       MOLT_BUILD_LOCK_TIMEOUT: "120"
       MOLT_CARGO_TIMEOUT: "1200"
       CARGO_BUILD_JOBS: "1"
-      MOLT_BACKEND_DAEMON_CACHE_MB: "128"
       TMPDIR: /tmp/molt-ext/tmp
       UV_CACHE_DIR: /tmp/molt-ext/uv-cache
     steps:
