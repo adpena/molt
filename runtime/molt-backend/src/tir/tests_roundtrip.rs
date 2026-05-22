@@ -814,11 +814,11 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 24: compatibility hints preserved for known transport ops
+    // Test 24: scalar transport hints are not re-emitted after TIR lift
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn roundtrip_preserves_fast_flags() {
+    fn roundtrip_drops_scalar_transport_hints() {
         let ops = vec![
             OpIR {
                 kind: "const".to_string(),
@@ -837,10 +837,14 @@ mod tests {
             op_args("ret", &["x"]),
         ];
         let result = roundtrip_no_opt(ops);
-        // Compatibility hints are transport metadata rather than the canonical
-        // backend contract, so this test only requires the round-trip to remain
-        // stable and non-crashing.
-        assert!(!result.is_empty());
+        assert!(
+            result.iter().all(|op| op.fast_int.is_none()),
+            "TIR round-trip must not re-emit fast_int transport hints: {result:?}"
+        );
+        assert!(
+            result.iter().all(|op| op.fast_float.is_none()),
+            "TIR round-trip must not re-emit fast_float transport hints: {result:?}"
+        );
     }
 
     // ---------------------------------------------------------------------------
