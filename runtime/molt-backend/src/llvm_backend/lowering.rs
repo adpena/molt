@@ -2191,6 +2191,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            // ── OrdAt: fused ord(container[index]) ──
+            OpCode::OrdAt => {
+                if op.operands.len() < 2 {
+                    return;
+                }
+                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let index_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let ord_at_fn = self.ensure_runtime_i64_fn("molt_ord_at", 2);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(ord_at_fn, &[obj_bits.into(), index_bits.into()], "ord_at")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
             // ── StackAlloc: alloca for stack-resident slots ──
             // attrs: { "type": "i64" | "dynbox" | ... }
             // result: pointer stored as i64 (ptrtoint)

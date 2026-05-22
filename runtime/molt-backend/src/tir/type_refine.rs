@@ -1197,6 +1197,7 @@ fn infer_single_result_type_with_attrs(
             }
             _ => None,
         },
+        OpCode::OrdAt => Some(TirType::I64),
 
         // Copy propagates type.
         OpCode::Copy => operand_types.first().cloned(),
@@ -2607,6 +2608,27 @@ mod tests {
 
         assert_eq!(type_map.get(&ord_result), Some(&TirType::I64));
         assert_eq!(type_map.get(&chr_result), Some(&TirType::Str));
+    }
+
+    #[test]
+    fn ord_at_return_type_refines_to_i64() {
+        let text = ValueId(0);
+        let index = ValueId(1);
+        let result = ValueId(2);
+        let ops = vec![make_op(
+            OpCode::OrdAt,
+            vec![text, index],
+            vec![result],
+            AttrDict::new(),
+        )];
+        let mut func = single_block_func(ops, 3);
+        func.value_types.insert(text, TirType::Str);
+        func.value_types.insert(index, TirType::I64);
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&result), Some(&TirType::I64));
     }
 
     #[test]

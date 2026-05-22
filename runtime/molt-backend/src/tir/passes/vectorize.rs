@@ -156,6 +156,7 @@ fn is_disqualifying(opcode: OpCode) -> bool {
                 | OpCode::ClosureStore
                 | OpCode::Raise
                 | OpCode::CheckException
+                | OpCode::OrdAt
                 | OpCode::Import
                 | OpCode::ImportFrom
                 | OpCode::Alloc

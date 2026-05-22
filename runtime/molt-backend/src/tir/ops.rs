@@ -85,6 +85,14 @@ pub enum OpCode {
     Call,
     CallMethod,
     CallBuiltin,
+    /// Fused `ord(container[index])`.
+    ///
+    /// Operands: `[container, index]`.
+    /// Result: I64 code point on the successful path. This operation may
+    /// raise for invalid indexing or invalid `ord()` inputs and therefore is
+    /// not a transparent copy even though the legacy SimpleIR spelling is a
+    /// compact helper op.
+    OrdAt,
     // Box/unbox
     BoxVal,
     UnboxVal,

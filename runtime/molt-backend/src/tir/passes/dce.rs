@@ -123,6 +123,7 @@ pub(super) fn is_potentially_throwing(opcode: OpCode) -> bool {
             | OpCode::CallBuiltin
             | OpCode::Raise
             | OpCode::Index
+            | OpCode::OrdAt
             | OpCode::StoreIndex
             | OpCode::LoadAttr
             | OpCode::StoreAttr
@@ -480,6 +481,33 @@ mod tests {
                 .iter()
                 .any(|op| op.opcode == OpCode::Index),
             "dead index must be preserved because missing keys and bad indices raise"
+        );
+    }
+
+    #[test]
+    fn ord_at_kept_when_result_dead() {
+        let mut func =
+            TirFunction::new("f".into(), vec![TirType::Str, TirType::I64], TirType::None);
+        let container = ValueId(0);
+        let key = ValueId(1);
+        let result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::OrdAt, vec![container, key], vec![result]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert!(is_potentially_throwing(OpCode::OrdAt));
+        assert!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::OrdAt),
+            "dead ord_at must be preserved because indexing and ord validation raise"
         );
     }
 
