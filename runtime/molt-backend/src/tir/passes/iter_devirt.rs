@@ -303,7 +303,6 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
         attrs: {
             let mut a = AttrDict::new();
             a.insert("name".to_string(), AttrValue::Str("len".to_string()));
-            a.insert("_fast_int".to_string(), AttrValue::Bool(true));
             a
         },
         source_span: None,
@@ -376,11 +375,7 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
             opcode: OpCode::Lt,
             operands: vec![idx_var, len_val],
             results: vec![cond_val],
-            attrs: {
-                let mut a = AttrDict::new();
-                a.insert("_fast_int".to_string(), AttrValue::Bool(true));
-                a
-            },
+            attrs: AttrDict::new(),
             source_span: None,
         };
 
@@ -460,11 +455,7 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
                 opcode: OpCode::Add,
                 operands: vec![idx_var, one_val],
                 results: vec![next_val],
-                attrs: {
-                    let mut a = AttrDict::new();
-                    a.insert("_fast_int".to_string(), AttrValue::Bool(true));
-                    a
-                },
+                attrs: AttrDict::new(),
                 source_span: None,
             };
             block.ops.push(add_op);
@@ -817,7 +808,35 @@ mod tests {
         );
 
         let header = &func.blocks[&BlockId(1)];
-        assert!(header.ops.iter().any(|op| op.opcode == OpCode::Lt));
+        let cmp_op = header
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Lt)
+            .expect("typed-list devirt should synthesize Lt compare");
+        assert!(
+            !cmp_op.attrs.contains_key("_fast_int"),
+            "list compare must use value_types for scalar proof, not _fast_int attrs"
+        );
+        let cmp_result = cmp_op
+            .results
+            .first()
+            .copied()
+            .expect("list compare result");
+        assert_eq!(
+            func.value_types.get(&cmp_result),
+            Some(&TirType::Bool),
+            "list compare result must carry a bool type fact"
+        );
+        let entry = &func.blocks[&func.entry_block];
+        let len_op = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::CallBuiltin)
+            .expect("typed-list devirt should synthesize len call");
+        assert!(
+            !len_op.attrs.contains_key("_fast_int"),
+            "synthesized len must use value_types for scalar proof, not _fast_int attrs"
+        );
         let body = &func.blocks[&BlockId(2)];
         let index_op = body
             .ops
@@ -828,6 +847,26 @@ mod tests {
             index_op.attrs.get("container_type"),
             Some(&AttrValue::Str("list".to_string())),
             "synthesized Index should carry semantic list metadata derived from the typed proof"
+        );
+        let increment_op = body
+            .ops
+            .iter()
+            .rev()
+            .find(|op| op.opcode == OpCode::Add)
+            .expect("typed-list devirt should synthesize index increment");
+        assert!(
+            !increment_op.attrs.contains_key("_fast_int"),
+            "list increment must use value_types for scalar proof, not _fast_int attrs"
+        );
+        let increment_result = increment_op
+            .results
+            .first()
+            .copied()
+            .expect("list increment result");
+        assert_eq!(
+            func.value_types.get(&increment_result),
+            Some(&TirType::I64),
+            "list increment result must carry an i64 type fact"
         );
 
         crate::tir::verify::verify_function(&func).expect("verification should pass");

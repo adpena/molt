@@ -29,8 +29,9 @@
 //!     Branch -> header(next_i)
 //! ```
 //!
-//! This runs EARLY in the pipeline, before type refinement, so the loop
-//! variable gets typed as I64 by downstream passes.
+//! This runs early in the pipeline and records the scalar facts it synthesizes
+//! directly in `TirFunction.value_types`; downstream passes and backends must
+//! read those facts rather than legacy SimpleIR `fast_int` transport hints.
 
 use std::collections::HashMap;
 
@@ -405,11 +406,7 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
             opcode: cmp_opcode,
             operands: vec![ind_var, c.stop_val],
             results: vec![cond_val],
-            attrs: {
-                let mut a = AttrDict::new();
-                a.insert("_fast_int".to_string(), AttrValue::Bool(true));
-                a
-            },
+            attrs: AttrDict::new(),
             source_span: None,
         };
 
@@ -483,7 +480,6 @@ fn apply_transform(func: &mut TirFunction, c: &RangeLoopCandidate, stats: &mut P
                 results: vec![next_val],
                 attrs: {
                     let mut a = AttrDict::new();
-                    a.insert("_fast_int".to_string(), AttrValue::Bool(true));
                     if nsw_safe {
                         a.insert("no_signed_wrap".to_string(), AttrValue::Bool(true));
                     }
@@ -718,11 +714,18 @@ mod tests {
             Some(&TirType::I64),
             "induction block arg must be mirrored into function value types"
         );
-        let cmp_result = header
+        let cmp_op = header
             .ops
             .iter()
             .find(|op| op.opcode == OpCode::Lt)
-            .and_then(|op| op.results.first())
+            .expect("range devirt comparison op");
+        assert!(
+            !cmp_op.attrs.contains_key("_fast_int"),
+            "range comparison must use value_types for scalar proof, not _fast_int attrs"
+        );
+        let cmp_result = cmp_op
+            .results
+            .first()
             .copied()
             .expect("range devirt comparison result");
         assert_eq!(
@@ -755,12 +758,19 @@ mod tests {
             add_count, 2,
             "body should have original Add + increment Add"
         );
-        let increment_result = body
+        let increment_op = body
             .ops
             .iter()
             .rev()
             .find(|op| op.opcode == OpCode::Add)
-            .and_then(|op| op.results.first())
+            .expect("range increment op");
+        assert!(
+            !increment_op.attrs.contains_key("_fast_int"),
+            "range increment must use value_types for scalar proof, not _fast_int attrs"
+        );
+        let increment_result = increment_op
+            .results
+            .first()
             .copied()
             .expect("range increment result");
         assert_eq!(
