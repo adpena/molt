@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -96,24 +96,29 @@ def test_git_clean_command_apply_uses_delete_mode() -> None:
 
 def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> None:
     module = _load_artifact_cleanup()
-    calls: list[list[str]] = []
+    calls: list[dict[str, object]] = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        assert kwargs["cwd"] == module.REPO_ROOT
-        return subprocess.CompletedProcess(cmd, 0)
+    def fake_guarded_completed_process(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), **kwargs})
+        return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
 
     rc = module.main([])
 
     assert rc == 0
-    assert calls == [
-        module.build_git_clean_command(
-            apply=False,
-            pathspecs=module.default_pathspecs(),
-        )
-    ]
+    assert calls[0]["cmd"] == module.build_git_clean_command(
+        apply=False,
+        pathspecs=module.default_pathspecs(),
+    )
+    assert calls[0]["prefix"] == "MOLT_DEV_CLEANUP"
+    assert calls[0]["cwd"] == module.REPO_ROOT
+    assert calls[0]["capture_output"] is False
+    assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
 
 
 def test_main_rejects_stateful_extra_before_git_clean(monkeypatch) -> None:
@@ -122,7 +127,11 @@ def test_main_rejects_stateful_extra_before_git_clean(monkeypatch) -> None:
     def fail_run(*_args, **_kwargs):
         raise AssertionError("git clean must not run for rejected extra pathspecs")
 
-    monkeypatch.setattr(module.subprocess, "run", fail_run)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fail_run,
+    )
 
     rc = module.main(["--extra-path", ".venv/"])
 
@@ -133,13 +142,16 @@ def test_main_apply_accepts_sentinel_kill_report(monkeypatch) -> None:
     module = _load_artifact_cleanup()
     calls: list[list[str]] = []
 
-    def fake_run(cmd, **kwargs):
+    def fake_guarded_completed_process(cmd, **_kwargs):
         calls.append(list(cmd))
-        assert kwargs["cwd"] == module.REPO_ROOT
         rc = 1 if "process_sentinel.py" in cmd[1] else 0
-        return subprocess.CompletedProcess(cmd, rc)
+        return SimpleNamespace(returncode=rc)
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
 
     rc = module.main(["--apply", "--kill-processes"])
 

@@ -19,10 +19,10 @@
 
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::state::runtime_state::{
-    runtime_state, ContextVarsState, ContextVarsThreadState, RuntimeState,
+    ContextVarsState, ContextVarsThreadState, RuntimeState, runtime_state,
 };
 use crate::{
-    dec_ref_bits, inc_ref_bits, obj_from_bits, raise_exception, to_i64, MoltObject, PyToken,
+    MoltObject, PyToken, dec_ref_bits, inc_ref_bits, obj_from_bits, raise_exception, to_i64,
 };
 use std::thread;
 

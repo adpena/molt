@@ -37,6 +37,16 @@ GUARDED_ENTRYPOINTS = {
         "canonical_harness_env",
         "MOLT_TEST_SUITE",
     ),
+    "tools/dev_test_runner.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_DEV_TEST",
+    ),
+    "tools/artifact_cleanup.py": (
+        "harness_memory_guard",
+        "guarded_completed_process",
+        "MOLT_DEV_CLEANUP",
+    ),
     "deploy/scripts/benchmark_simd.py": (
         "harness_memory_guard",
         "HarnessExecutionContext",

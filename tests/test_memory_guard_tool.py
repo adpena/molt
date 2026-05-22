@@ -564,6 +564,8 @@ def test_main_enforces_timeout_and_writes_summary(
     assert payload["timed_out"] is True
     assert payload["violation"] is None
     assert payload["exit_signal"] is None
+    assert payload["incident"]["reason"] == "timeout"
+    assert payload["incident"]["cleanup"] == "terminated tracked process tree"
 
 
 def test_main_reports_signal_status_without_guard_violation(
@@ -579,6 +581,7 @@ def test_main_reports_signal_status_without_guard_violation(
             peak_total=None,
             stdout="",
             stderr="",
+            elapsed_s=0.3,
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -612,6 +615,8 @@ def test_main_reports_signal_status_without_guard_violation(
         "name": "SIGTERM",
         "conventional_shell_status": True,
     }
+    assert payload["incident"]["reason"] == "signal_exit"
+    assert payload["incident"]["elapsed_s"] == pytest.approx(0.3)
 
 
 def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> None:
@@ -798,7 +803,9 @@ def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
         ]
         launch_env = launch.env
         assert launch_env is not None
-        assert json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
+        assert (
+            json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
+        )
         assert launch_env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
         assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV in launch_env
     memory_guard._close_fds((*launch.close_fds, launch.started_read_fd))
@@ -835,6 +842,7 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["peak_total"]["scope"] == "process_tree"
     assert payload["max_total_rss_gb"] == pytest.approx(18.0)
     assert payload["child_rlimit_gb"] is None
+    assert payload["incident"] is None
 
 
 def test_main_writes_samples_jsonl(tmp_path) -> None:

@@ -1,5 +1,5 @@
-use crate::builtins::containers::tuple_method_bits;
 use crate::PyToken;
+use crate::builtins::containers::tuple_method_bits;
 use std::sync::atomic::AtomicU64;
 
 use crate::*;
