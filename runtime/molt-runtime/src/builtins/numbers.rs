@@ -353,9 +353,65 @@ pub(crate) fn round_float_ndigits(val: f64, ndigits: i64) -> f64 {
     round_half_even(scaled) * factor
 }
 
+fn index_i64_integral_bits(bits: u64) -> Option<i64> {
+    let obj = obj_from_bits(bits);
+    if obj.is_int() {
+        return Some(obj.as_int_unchecked());
+    }
+    if obj.is_bool() {
+        return Some(if (obj.bits() & 0x1) == 1 { 1 } else { 0 });
+    }
+    if let Some(value_bits) = int_subclass_value_bits_raw(bits) {
+        let value = obj_from_bits(value_bits);
+        if let Some(i) = value.as_int() {
+            return Some(i);
+        }
+        if value.is_bool() {
+            return Some(if value.as_bool().unwrap_or(false) {
+                1
+            } else {
+                0
+            });
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(value_bits) {
+            return unsafe { bigint_ref(ptr) }.to_i64();
+        }
+    }
+    None
+}
+
+fn index_bigint_integral_bits(bits: u64) -> Option<BigInt> {
+    let obj = obj_from_bits(bits);
+    if obj.is_int() {
+        return Some(BigInt::from(obj.as_int_unchecked()));
+    }
+    if obj.is_bool() {
+        return Some(BigInt::from(if (obj.bits() & 0x1) == 1 { 1 } else { 0 }));
+    }
+    if let Some(ptr) = bigint_ptr_from_bits(bits) {
+        return Some(unsafe { bigint_ref(ptr).clone() });
+    }
+    if let Some(value_bits) = int_subclass_value_bits_raw(bits) {
+        let value = obj_from_bits(value_bits);
+        if let Some(i) = value.as_int() {
+            return Some(BigInt::from(i));
+        }
+        if value.is_bool() {
+            return Some(BigInt::from(if value.as_bool().unwrap_or(false) {
+                1
+            } else {
+                0
+            }));
+        }
+        if let Some(ptr) = bigint_ptr_from_bits(value_bits) {
+            return Some(unsafe { bigint_ref(ptr).clone() });
+        }
+    }
+    None
+}
+
 pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> i64 {
-    let obj = obj_from_bits(obj_bits);
-    if let Some(i) = to_i64(obj) {
+    if let Some(i) = index_i64_integral_bits(obj_bits) {
         return i;
     }
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
@@ -369,7 +425,10 @@ pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) ->
                     return 0;
                 }
                 let res_obj = obj_from_bits(res_bits);
-                if let Some(i) = to_i64(res_obj) {
+                if let Some(i) = index_i64_integral_bits(res_bits) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
                     return i;
                 }
                 let res_type = class_name_for_error(type_of_bits(_py, res_bits));
@@ -469,12 +528,8 @@ pub(crate) fn index_i64_with_overflow(
 }
 
 pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> Option<BigInt> {
-    let obj = obj_from_bits(obj_bits);
-    if let Some(i) = to_i64(obj) {
-        return Some(BigInt::from(i));
-    }
-    if let Some(ptr) = bigint_ptr_from_bits(obj_bits) {
-        return Some(unsafe { bigint_ref(ptr).clone() });
+    if let Some(value) = index_bigint_integral_bits(obj_bits) {
+        return Some(value);
     }
     if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
         unsafe {
@@ -487,13 +542,11 @@ pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str)
                     return None;
                 }
                 let res_obj = obj_from_bits(res_bits);
-                if let Some(i) = to_i64(res_obj) {
-                    return Some(BigInt::from(i));
-                }
-                if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let big = bigint_ref(big_ptr).clone();
-                    dec_ref_bits(_py, res_bits);
-                    return Some(big);
+                if let Some(value) = index_bigint_integral_bits(res_bits) {
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
+                    return Some(value);
                 }
                 let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                 if res_obj.as_ptr().is_some() {
