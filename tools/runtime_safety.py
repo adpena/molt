@@ -42,7 +42,10 @@ def _run(
     cwd: Path | None = None,
     log_path: Path | None = None,
 ) -> None:
-    run_env = env or os.environ.copy()
+    run_env = harness_memory_guard.canonical_harness_env(
+        env if env is not None else os.environ,
+        repo_root=ROOT,
+    )
     if log_path is None:
         result = harness_memory_guard.guarded_completed_process(
             cmd,

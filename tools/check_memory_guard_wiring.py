@@ -261,6 +261,17 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "translation validator must guard CPython/Molt comparison children",
     ),
     TokenContract(
+        "tools/runtime_safety.py",
+        (
+            "harness_memory_guard",
+            "canonical_harness_env",
+            "guarded_completed_process",
+            "MOLT_RUNTIME_SAFETY",
+        ),
+        "runtime sanitizer/Miri/fuzz safety gates must guard Cargo children "
+        "with canonical artifact roots",
+    ),
+    TokenContract(
         "tools/wasm_hotspot_profile.py",
         (
             "harness_memory_guard",
