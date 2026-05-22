@@ -454,6 +454,7 @@ def _molt_build_params(
     build_profile: str,
     extra_args: list[str] | None,
     env: dict[str, str],
+    reuse_molt_build_cache: bool = False,
 ) -> dict[str, object]:
     params: dict[str, object] = {
         "file_path": script,
@@ -462,7 +463,7 @@ def _molt_build_params(
         "trusted": True,
         "json_output": True,
         "out_dir": str(out_dir),
-        "cache": False,
+        "cache": reuse_molt_build_cache,
         "env_overrides": env,
         "codec": env.get("MOLT_CODEC", "msgpack"),
     }
@@ -535,6 +536,7 @@ def prepare_molt_binary(
     batch_server: _BenchBatchBuildServer | None = None,
     build_timeout_s: float = DEFAULT_BATCH_BUILD_TIMEOUT_S,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+    reuse_molt_build_cache: bool = False,
 ) -> MoltBinary | None:
     _prune_backend_daemons()
     env = _canonical_bench_env(env)
@@ -547,7 +549,7 @@ def prepare_molt_binary(
             *_molt_build_cmd(build_profile),
             "--trusted",
             "--json",
-            "--rebuild",
+            "--cache" if reuse_molt_build_cache else "--rebuild",
             "--out-dir",
             str(out_dir),
         ]
@@ -572,6 +574,7 @@ def prepare_molt_binary(
                     build_profile=build_profile,
                     extra_args=extra_args,
                     env=env,
+                    reuse_molt_build_cache=reuse_molt_build_cache,
                 )
                 response = batch_server.request_build(params, timeout_s=build_timeout_s)
                 res = _batch_response_completed_process(args, response)
@@ -1017,6 +1020,7 @@ def bench_results(
     tty: bool,
     nuitka_cmd: str | None,
     pyodide_cmd: str | None,
+    reuse_molt_build_cache: bool = False,
 ):
     base_env = _canonical_bench_env(_base_python_env())
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
@@ -1089,6 +1093,7 @@ def bench_results(
                         resolved_pyodide_cmd=resolved_pyodide_cmd,
                         batch_server=batch_server,
                         limits=limits,
+                        reuse_molt_build_cache=reuse_molt_build_cache,
                     )
                 )
         finally:
@@ -1117,6 +1122,7 @@ def _bench_one(
     resolved_pyodide_cmd: list[str] | None,
     batch_server: _BenchBatchBuildServer,
     limits: harness_memory_guard.HarnessMemoryLimits,
+    reuse_molt_build_cache: bool = False,
 ):
     results = {}
     runtime_ok = {}
@@ -1271,6 +1277,7 @@ def _bench_one(
         build_profile=molt_build_profile,
         batch_server=batch_server,
         limits=limits,
+        reuse_molt_build_cache=reuse_molt_build_cache,
     )
     if molt_runner is not None:
         try:
@@ -1549,6 +1556,14 @@ def main():
         default="release",
         help="Build profile used for Molt benchmark binaries (default: release).",
     )
+    parser.add_argument(
+        "--reuse-molt-build-cache",
+        action="store_true",
+        help=(
+            "Allow Molt build-cache reuse for tooling smoke runs. Full benchmark "
+            "runs default to no-cache rebuilds so build timings remain fresh."
+        ),
+    )
     args = parser.parse_args()
 
     if args.super and args.smoke:
@@ -1609,6 +1624,7 @@ def main():
         tty=use_tty,
         nuitka_cmd=args.nuitka_cmd,
         pyodide_cmd=args.pyodide_cmd,
+        reuse_molt_build_cache=args.reuse_molt_build_cache,
     )
 
     load_avg = None
