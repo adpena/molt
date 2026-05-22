@@ -1739,6 +1739,49 @@ mod tests {
     }
 
     #[test]
+    fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
+        let mut ord_at = op("ord_at", Some("code"), None, &["text", "idx"]);
+        ord_at.type_hint = Some("list".to_string());
+        ord_at.container_type = Some("list".to_string());
+        ord_at.fast_int = Some(true);
+        let add = op("add", Some("shifted"), None, &["code", "bias"]);
+        let func = function(
+            "ord_at_representation",
+            &[],
+            None,
+            vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("text".to_string()),
+                    s_value: Some("AéZ".to_string()),
+                    ..OpIR::default()
+                },
+                const_int("idx", 1),
+                ord_at,
+                const_int("bias", 1),
+                add.clone(),
+            ],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+
+        assert!(
+            int_like.contains("code"),
+            "ord_at result must be proven by first-class typed TIR/LIR lowering"
+        );
+        assert!(
+            plan.name_is_integer_family("shifted"),
+            "downstream arithmetic must consume ord_at's structural integer-family fact"
+        );
+        assert_eq!(plan.name_container_kind("code"), None);
+        assert_eq!(plan.op_scalar_lane(&add), Some(ScalarKind::Int));
+        assert!(
+            plan.integer_family_names().contains("code"),
+            "legacy result metadata must not be required for ord_at integer-family propagation"
+        );
+    }
+
+    #[test]
     fn generic_index_does_not_promote_result_from_integer_key() {
         let index = op(
             "index",

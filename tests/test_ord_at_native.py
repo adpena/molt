@@ -26,10 +26,13 @@ def show(label: str, fn) -> None:
 text = "AéZ"
 show("ascii", lambda: ord(text[0]))
 show("unicode", lambda: ord(text[1]))
+show("bool-true", lambda: ord(text[True]))
+show("bool-false", lambda: ord(text[False]))
 show("negative", lambda: ord(text[-1]))
 show("negative-unicode", lambda: ord(text[-2]))
 show("slice", lambda: ord(text[0:1]))
 show("bytes-fallback", lambda: ord(b"A"[0]))
+show("float-index", lambda: ord(text[1.0]))
 show("oob", lambda: ord(text[99]))
 """
 
@@ -37,6 +40,8 @@ LUAU_PROGRAM = """
 text = "AéZ"
 print("ascii", ord(text[0]))
 print("unicode", ord(text[1]))
+print("bool-true", ord(text[True]))
+print("bool-false", ord(text[False]))
 print("negative", ord(text[-1]))
 print("negative-unicode", ord(text[-2]))
 items = ["A", "é"]
@@ -46,10 +51,13 @@ print("list-fallback", ord(items[1]))
 EXPECTED_LINES = [
     "ascii 65",
     "unicode 233",
+    "bool-true 233",
+    "bool-false 65",
     "negative 90",
     "negative-unicode 233",
     "slice 65",
     "bytes-fallback TypeError ord() expected string of length 1, but int found",
+    "float-index TypeError string indices must be integers, not 'float'",
     "oob IndexError string index out of range",
 ]
 
@@ -57,6 +65,8 @@ LUAU_EXPECTED = "\n".join(
     [
         "ascii 65",
         "unicode 233",
+        "bool-true 233",
+        "bool-false 65",
         "negative 90",
         "negative-unicode 233",
         "list-fallback 233",
