@@ -57,6 +57,15 @@ def test_ci_push_path_is_cheap_only() -> None:
     )
     assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
     assert "uv sync --frozen --group dev" in ci_text
+    assert '-m "not slow"' in ci_text
+    assert "Run bench CLI native smoke tests" in ci_text
+    assert (
+        "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" in ci_text
+    )
+    assert (
+        "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok"
+        in ci_text
+    )
     assert "tests/test_bench_harness.py" in ci_text
     assert "tests/test_bench_tool.py" in ci_text
     assert "tests/test_ci_workflow_topology.py" in ci_text

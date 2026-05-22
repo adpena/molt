@@ -7,6 +7,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from tests.native_process_guard import run_native_test_process
 
 
@@ -30,6 +32,7 @@ def _run_bench(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.slow
 def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
     script = tmp_path / "fast_script.py"
     script.write_text("print(1)\n", encoding="utf-8")
@@ -45,6 +48,8 @@ def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
         "1",
         "--warmup",
         "0",
+        "--molt-profile",
+        "dev",
         "--json-out",
         str(out_json),
         "--script",
@@ -73,6 +78,7 @@ def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.slow
 def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
     script = tmp_path / "slow_script.py"
     script.write_text(
@@ -99,6 +105,8 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
         "1",
         "--warmup",
         "0",
+        "--molt-profile",
+        "dev",
         "--runtime-timeout-sec",
         "0.1",
         "--json-out",
