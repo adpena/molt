@@ -441,6 +441,89 @@ def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
     ]
 
 
+def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[tuple[list[str], dict[str, str], object | None]] = []
+
+    def fake_check_call_guarded(cmd, env, *, limits=None):
+        calls.append((list(cmd), dict(env), limits))
+
+    fake_limits = object()
+    monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "limits_from_env",
+        lambda prefix, env: fake_limits,
+        raising=True,
+    )
+
+    module.run_uv(
+        ["python3", "-c", "print('ok')"],
+        python="3.12",
+        env={"PATH": "/usr/bin"},
+    )
+
+    assert len(calls) == 1
+    cmd, env, limits = calls[0]
+    assert cmd == [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python3",
+        "-c",
+        "print('ok')",
+    ]
+    assert limits is fake_limits
+    assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
+    assert env["CARGO_TARGET_DIR"] == str(module.ROOT / "target")
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(module.ROOT / "target")
+    assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
+    assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
+    assert env["TMPDIR"] == str(module.ROOT / "tmp")
+    assert env["MOLT_SESSION_ID"].startswith("guard-")
+
+
+def test_dev_py_run_uv_preserves_explicit_canonical_roots(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_dev_py()
+    calls: list[dict[str, str]] = []
+    explicit_root = tmp_path / "external-root"
+    explicit_cache = tmp_path / "cache"
+
+    def fake_check_call_guarded(_cmd, env, *, limits=None):
+        del limits
+        calls.append(dict(env))
+
+    monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "limits_from_env",
+        lambda prefix, env: object(),
+        raising=True,
+    )
+
+    module.run_uv(
+        ["python3", "-c", "print('ok')"],
+        env={
+            "PATH": "/usr/bin",
+            "MOLT_EXT_ROOT": str(explicit_root),
+            "MOLT_CACHE": str(explicit_cache),
+            "MOLT_SESSION_ID": "caller-session",
+        },
+    )
+
+    assert len(calls) == 1
+    env = calls[0]
+    assert env["MOLT_EXT_ROOT"] == str(explicit_root)
+    assert env["MOLT_CACHE"] == str(explicit_cache)
+    assert env["MOLT_SESSION_ID"] == "caller-session"
+    assert env["CARGO_TARGET_DIR"] == str(explicit_root / "target")
+
+
 def test_dev_py_tty_uses_guard_when_memory_guard_enabled(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[tuple[str, list[str]]] = []

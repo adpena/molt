@@ -109,6 +109,10 @@ Interpretation:
   the smallest convincing proof matrix.
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
+- Every `tools/dev.py` command that launches through `uv run` first installs
+  the canonical Molt artifact/cache/temp roots and a session id before entering
+  the shared memory guard, while preserving explicit caller-provided root
+  overrides for deliberate external artifact placement.
 - `tools/dev.py bench` runs the pyproject-owned benchmark smoke lane by default
   and writes `bench/results/dev-bench-smoke.json`; pass explicit `molt bench`
   arguments when a custom native/WASM benchmark slice is needed. The outer
