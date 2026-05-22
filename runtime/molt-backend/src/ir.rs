@@ -17,7 +17,7 @@ pub struct PgoProfileIR {
     pub hot_functions: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
@@ -164,7 +164,7 @@ impl SimpleIR {
         Ok(ir)
     }
 
-    pub fn tree_shake_luau(&mut self) {
+    pub fn tree_shake_source_emission(&mut self) {
         for func in &mut self.functions {
             match func.name.as_str() {
                 "molt_main" => {
@@ -221,7 +221,7 @@ impl SimpleIR {
                 }
                 // Follow function object creation ops — these reference
                 // user-defined function bodies by name in s_value.  Without
-                // this, tree_shake_luau prunes user functions that are only
+                // this, source emitters prune user functions that are only
                 // referenced through func_new (not direct calls).
                 if matches!(
                     op.kind.as_str(),
@@ -242,6 +242,10 @@ impl SimpleIR {
 
         self.functions
             .retain(|func| reachable.contains(func.name.as_str()));
+    }
+
+    pub fn tree_shake_luau(&mut self) {
+        self.tree_shake_source_emission();
     }
 }
 
