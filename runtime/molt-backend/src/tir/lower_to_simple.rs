@@ -1385,6 +1385,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 ..OpIR::default()
             })
         }
+        OpCode::OrdAt => Some(OpIR {
+            kind: "ord_at".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
 
         // Box/unbox — no-ops at SimpleIR level (type info discarded).
         OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {

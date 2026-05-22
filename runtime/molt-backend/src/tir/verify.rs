@@ -272,6 +272,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 | OpCode::UnboxVal
                 | OpCode::TypeGuard
                 | OpCode::Index
+                | OpCode::OrdAt
                 | OpCode::LoadAttr
                 | OpCode::GetIter
                 | OpCode::IterNext

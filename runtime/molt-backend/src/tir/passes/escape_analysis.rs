@@ -394,6 +394,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::LoadAttr
                 | OpCode::DelAttr
                 | OpCode::Index
+                | OpCode::OrdAt
                 | OpCode::DelIndex
                 | OpCode::BoxVal
                 | OpCode::UnboxVal

@@ -1734,6 +1734,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         }
         "call_method" => OpCode::CallMethod,
         "call_builtin" | "builtin_print" | "print" | "range_new" => OpCode::CallBuiltin,
+        "ord_at" => OpCode::OrdAt,
         "box" | "box_from_raw_int" => OpCode::BoxVal,
         "unbox" | "unbox_to_raw_int" => OpCode::UnboxVal,
         "type_guard" => OpCode::TypeGuard,
@@ -1903,6 +1904,48 @@ mod tests {
         assert_eq!(
             fallback_count, 0,
             "module_get_attr must be a first-class TIR op, not Copy[_original_kind]"
+        );
+    }
+
+    #[test]
+    fn ord_at_lowers_to_first_class_tir_opcode() {
+        let ops = vec![
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("Aé".to_string()),
+                out: Some("text".to_string()),
+                ..OpIR::default()
+            },
+            op_val_out("const", 1, "idx"),
+            op_args_out("ord_at", &["text", "idx"], "code"),
+            op_args("ret", &["code"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let ord_at_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == OpCode::OrdAt)
+            .count();
+        let fallback_count = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::Copy
+                    && matches!(
+                        op.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(kind)) if kind == "ord_at"
+                    )
+            })
+            .count();
+
+        assert_eq!(ord_at_count, 1, "ord_at must be a first-class TIR opcode");
+        assert_eq!(
+            fallback_count, 0,
+            "ord_at must not lower as Copy[_original_kind]"
         );
     }
 
