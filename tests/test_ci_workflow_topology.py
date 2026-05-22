@@ -215,6 +215,20 @@ def test_formal_workflow_uses_bounded_blocking_quint_gate() -> None:
     assert "failed verification (non-blocking)" not in formal_workflow
 
 
+def test_quint_workflows_pin_patched_node24_toolchain() -> None:
+    formal_workflow = _read(".github/workflows/formal.yml")
+    nightly_workflow = _read(".github/workflows/nightly.yml")
+
+    assert "actions/setup-node@v6" in formal_workflow
+    assert "node-version: '24.16.0'" in formal_workflow
+    assert "check-latest: true" in formal_workflow
+
+    assert nightly_workflow.count("npm install -g @informalsystems/quint") == 2
+    assert nightly_workflow.count("actions/setup-node@v6") >= 2
+    assert nightly_workflow.count("node-version: '24.16.0'") >= 2
+    assert nightly_workflow.count("check-latest: true") >= 2
+
+
 def test_nightly_contains_correctness_jobs() -> None:
     nightly_text = _read(".github/workflows/nightly.yml")
 
