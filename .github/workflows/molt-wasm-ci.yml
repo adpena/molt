@@ -64,7 +64,6 @@ jobs:
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
       MOLT_WASM_TEST_CHILD_RLIMIT_GB: "128"
       MOLT_WASM_TEST_TIMEOUT_SEC: "900"
-      MOLT_BACKEND_DAEMON: "0"
       MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
       MOLT_BUILD_LOCK_TIMEOUT: "120"
       MOLT_CARGO_TIMEOUT: "1200"
@@ -133,6 +132,7 @@ jobs:
             python3 tools/venv_exec.py python3 -m molt.cli build \
             examples/hello.py --build-profile dev --target wasm --output /tmp/test_hello.wasm
         env:
+          MOLT_BACKEND_DAEMON: "0"
           RUSTC_WRAPPER: ""
 
       - name: Validate hello.wasm is non-zero
@@ -156,6 +156,7 @@ jobs:
             python3 tools/venv_exec.py python3 -m molt.cli build \
             examples/comprehension_fail.py --build-profile dev --target wasm --output /tmp/test_comprehension.wasm
         env:
+          MOLT_BACKEND_DAEMON: "0"
           RUSTC_WRAPPER: ""
 
       - name: Validate comprehension.wasm is non-zero
@@ -179,6 +180,7 @@ jobs:
             python3 tools/venv_exec.py python3 -m molt.cli build \
             examples/hello.py --build-profile dev --target luau --output /tmp/test_hello.luau
         env:
+          MOLT_BACKEND_DAEMON: "0"
           RUSTC_WRAPPER: ""
 
       - name: Validate hello.luau is non-zero
@@ -198,6 +200,7 @@ jobs:
             python3 tools/venv_exec.py python3 -m molt.cli build \
             examples/comprehension_fail.py --build-profile dev --target luau --output /tmp/test_comprehension.luau
         env:
+          MOLT_BACKEND_DAEMON: "0"
           RUSTC_WRAPPER: ""
 
       - name: Validate comprehension.luau is non-zero
@@ -232,6 +235,7 @@ jobs:
             python3 tools/venv_exec.py python3 -m molt.cli build \
             /tmp/sieve_bench.py --build-profile dev --target wasm --output /tmp/test_sieve.wasm
         env:
+          MOLT_BACKEND_DAEMON: "0"
           RUSTC_WRAPPER: ""
 
       - name: Run sieve.wasm with molt-wasm-host
