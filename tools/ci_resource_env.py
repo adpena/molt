@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
 
 
 DEFAULT_MAX_CARGO_BUILD_JOBS = 4
-DEFAULT_CARGO_BUILD_GB_PER_JOB = 5.0
+DEFAULT_CARGO_BUILD_GB_PER_JOB = 12.0
 
 
 @dataclass(frozen=True, slots=True)
