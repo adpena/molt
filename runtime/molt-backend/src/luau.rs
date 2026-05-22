@@ -1593,7 +1593,8 @@ impl LuauBackend {
                     if is_bool {
                         self.emit_line(&format!("local {out}: boolean = not {v}"));
                     } else {
-                        self.emit_line(&format!("local {out}: boolean = not molt_bool({v})"));
+                        let truthy = self.guard_truthiness(val);
+                        self.emit_line(&format!("local {out}: boolean = not {truthy}"));
                     }
                     if let Some(ref out_name) = op.out {
                         self.var_type_hints
@@ -1674,9 +1675,8 @@ impl LuauBackend {
                         self.emit_line(&format!("local {out} = {a} and {b}"));
                     } else {
                         // Python `a and b`: if a is falsy return a, else return b
-                        self.emit_line(&format!(
-                            "local {out} = if molt_bool({a}) then {b} else {a}"
-                        ));
+                        let truthy = self.guard_truthiness(&args[0]);
+                        self.emit_line(&format!("local {out} = if {truthy} then {b} else {a}"));
                     }
                 }
             }
@@ -1690,9 +1690,8 @@ impl LuauBackend {
                         self.emit_line(&format!("local {out} = {a} or {b}"));
                     } else {
                         // Python `a or b`: if a is truthy return a, else return b
-                        self.emit_line(&format!(
-                            "local {out} = if molt_bool({a}) then {a} else {b}"
-                        ));
+                        let truthy = self.guard_truthiness(&args[0]);
+                        self.emit_line(&format!("local {out} = if {truthy} then {a} else {b}"));
                     }
                 }
             }
@@ -1743,7 +1742,10 @@ impl LuauBackend {
                     let uop = op.s_value.as_deref().unwrap_or("-");
                     let expr = match uop {
                         "-" => format!("-{operand}"),
-                        "not" => format!("not molt_bool({operand})"),
+                        "not" => {
+                            let truthy = self.guard_truthiness(args.first().unwrap());
+                            format!("not {truthy}")
+                        }
                         "~" => format!("bit32.bnot({operand})"),
                         _ => format!("-{operand}"),
                     };
@@ -4730,15 +4732,24 @@ impl LuauBackend {
             Some(ScalarKind::Int | ScalarKind::Float) => format!("({ident} ~= 0)"),
             Some(ScalarKind::Str) => format!("({ident} ~= \"\")"),
             Some(ScalarKind::NoneValue) => "false".to_string(),
-            None => {
-                let hint = self.var_type_hints.get(raw_name).map(|s| s.as_str());
-                match hint {
-                    Some("list") | Some("List") => format!("(#{ident} > 0)"),
-                    Some("dict") | Some("Dict") => format!("(next({ident}) ~= nil)"),
-                    _ if ident == "true" || ident == "false" => ident,
+            None => self
+                .container_truthiness(raw_name, &ident)
+                .unwrap_or_else(|| match ident.as_str() {
+                    "true" | "false" => ident,
                     _ => format!("molt_bool({ident})"),
-                }
+                }),
+        }
+    }
+
+    fn container_truthiness(&self, raw_name: &str, ident: &str) -> Option<String> {
+        match self.scalar_plan.name_container_kind(raw_name) {
+            Some(ContainerKind::List | ContainerKind::Tuple | ContainerKind::Str) => {
+                Some(format!("(#{ident} > 0)"))
             }
+            Some(ContainerKind::Dict | ContainerKind::Set) => {
+                Some(format!("(next({ident}) ~= nil)"))
+            }
+            None => None,
         }
     }
 
@@ -10478,6 +10489,107 @@ mod tests {
         assert!(
             !output.contains("local n = molt_len(xs)"),
             "typed list len should not call runtime len, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_legacy_container_hints_do_not_authorize_luau_truthiness() {
+        let mut backend = LuauBackend::new();
+        backend
+            .var_type_hints
+            .insert("xs".to_string(), "list".to_string());
+        backend
+            .var_type_hints
+            .insert("d".to_string(), "dict".to_string());
+
+        assert_eq!(
+            backend.guard_truthiness("xs"),
+            "molt_bool(xs)",
+            "legacy list hints must not select raw Luau length truthiness"
+        );
+        assert_eq!(
+            backend.guard_truthiness("d"),
+            "molt_bool(d)",
+            "legacy dict hints must not select raw Luau next() truthiness"
+        );
+    }
+
+    #[test]
+    fn test_typed_list_truthiness_uses_luau_raw_length_for_not() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "typed_list_not".to_string(),
+                params: vec!["xs".to_string()],
+                param_types: Some(vec!["list[int]".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "not".to_string(),
+                        args: Some(vec!["xs".to_string()]),
+                        out: Some("empty".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["empty".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("local empty: boolean = not (#xs > 0)"),
+            "typed list truthiness should use raw Luau length for not, got:\n{output}"
+        );
+        assert!(
+            !output.contains("not molt_bool(xs)"),
+            "typed list truthiness should not call runtime bool for not, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_typed_dict_truthiness_uses_luau_next_for_or() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "typed_dict_or".to_string(),
+                params: vec!["d".to_string(), "fallback".to_string()],
+                param_types: Some(vec![
+                    "dict[str, int]".to_string(),
+                    "dict[str, int]".to_string(),
+                ]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "or".to_string(),
+                        args: Some(vec!["d".to_string(), "fallback".to_string()]),
+                        out: Some("selected".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["selected".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("local selected = if (next(d) ~= nil) then d else fallback"),
+            "typed dict truthiness should use raw Luau next() for or, got:\n{output}"
+        );
+        assert!(
+            !output.contains("molt_bool(d)"),
+            "typed dict truthiness should not call runtime bool for or, got:\n{output}"
         );
     }
 
