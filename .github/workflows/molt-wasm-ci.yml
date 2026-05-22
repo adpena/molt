@@ -37,6 +37,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -64,6 +68,7 @@ jobs:
       MOLT_CARGO_TIMEOUT: "1200"
       CARGO_BUILD_JOBS: "1"
       MOLT_BACKEND_DAEMON_CACHE_MB: "128"
+      MOLT_CI_PYTHON: ${{ github.workspace }}/.venv/bin/python3
       TMPDIR: /tmp/molt-ext/tmp
       UV_CACHE_DIR: /tmp/molt-ext/uv-cache
     steps:
@@ -125,7 +130,7 @@ jobs:
         timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            uv run python3 -m molt.cli build \
+            "$MOLT_CI_PYTHON" -m molt.cli build \
             examples/hello.py --build-profile dev --target wasm --output /tmp/test_hello.wasm
         env:
           RUSTC_WRAPPER: ""
@@ -148,7 +153,7 @@ jobs:
         timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            uv run python3 -m molt.cli build \
+            "$MOLT_CI_PYTHON" -m molt.cli build \
             examples/comprehension_fail.py --build-profile dev --target wasm --output /tmp/test_comprehension.wasm
         env:
           RUSTC_WRAPPER: ""
@@ -171,7 +176,7 @@ jobs:
         timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            uv run python3 -m molt.cli build \
+            "$MOLT_CI_PYTHON" -m molt.cli build \
             examples/hello.py --build-profile dev --target luau --output /tmp/test_hello.luau
         env:
           RUSTC_WRAPPER: ""
@@ -190,7 +195,7 @@ jobs:
         timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            uv run python3 -m molt.cli build \
+            "$MOLT_CI_PYTHON" -m molt.cli build \
             examples/comprehension_fail.py --build-profile dev --target luau --output /tmp/test_comprehension.luau
         env:
           RUSTC_WRAPPER: ""
@@ -224,7 +229,7 @@ jobs:
           print(f"Sieve(10000) = {count} primes")
           PYEOF
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
-            uv run python3 -m molt.cli build \
+            "$MOLT_CI_PYTHON" -m molt.cli build \
             /tmp/sieve_bench.py --build-profile dev --target wasm --output /tmp/test_sieve.wasm
         env:
           RUSTC_WRAPPER: ""
@@ -236,7 +241,7 @@ jobs:
       # ── WASM parity tests (pytest) ──
       - name: Run WASM control flow parity tests
         timeout-minutes: 16
-        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- uv run python3 -m pytest tests/test_wasm_control_flow.py -q
+        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- "$MOLT_CI_PYTHON" -m pytest tests/test_wasm_control_flow.py -q
 
       # ── Summary ──
       - name: Build summary
