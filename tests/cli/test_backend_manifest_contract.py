@@ -303,3 +303,22 @@ def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
 
     assert function_compiler_rs.exists()
     assert "fn compile_func(" not in lib_rs
+
+
+def test_native_backend_codegen_failures_are_fail_closed() -> None:
+    native_sources = [
+        ROOT / "runtime" / "molt-backend" / "src" / "lib.rs",
+        ROOT
+        / "runtime"
+        / "molt-backend"
+        / "src"
+        / "native_backend"
+        / "function_compiler.rs",
+    ]
+    combined = "\n".join(path.read_text() for path in native_sources)
+
+    assert "catch_unwind" not in combined
+    assert "emit_trap_stub" not in combined
+    assert "trap_stub_names" not in combined
+    assert "emitting trap stub" not in combined
+    assert "will retry at opt_level=none" not in combined
