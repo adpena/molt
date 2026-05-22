@@ -60,6 +60,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from molt.compat import CompatibilityError
+from molt import process_guard as _process_guard
 from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
     wasm_runtime_missing_required_exports,
@@ -1005,7 +1006,7 @@ def _write_wrapper_build_cache_manifest(
     )
 
 
-_CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
+_CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
 _CROSS_MEMORY_GUARD_PREFIX = "MOLT_CROSS"
 _DIFF_MEMORY_GUARD_PREFIX = "MOLT_DIFF"
 
@@ -1307,63 +1308,13 @@ def _base_env(
 
 
 def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
-    roots = [Path(__file__).resolve().parents[2]]
-    if cwd is not None:
-        roots.append(cwd.resolve())
-    roots.append(Path.cwd().resolve())
-    seen: set[Path] = set()
-    for root in reversed(roots):
-        if root in seen:
-            continue
-        seen.add(root)
-        root_str = str(root)
-        tools_str = str(root / "tools")
-        if root_str not in sys.path:
-            sys.path.insert(0, root_str)
-        if tools_str not in sys.path:
-            sys.path.insert(0, tools_str)
-    try:
-        from tools import harness_memory_guard
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            f"memory guard helper is required for guarded CLI subprocesses: {exc}"
-        ) from exc
-    return harness_memory_guard
+    return _process_guard.load_harness_memory_guard(cwd)
 
 
 def _with_memory_guard_env(
     env: dict[str, str] | None, memory_guard_prefix: str
 ) -> dict[str, str] | None:
-    if env is None:
-        return None
-    merged = dict(env)
-    normalized = memory_guard_prefix.strip().upper().rstrip("_")
-    suffixes = (
-        "MEMORY_GUARD",
-        "MEMORY_GUARD_POLL_SEC",
-        "MAX_PROCESS_RSS_GB",
-        "MAX_RSS_GB",
-        "MAX_TOTAL_RSS_GB",
-        "MAX_TREE_RSS_GB",
-        "GLOBAL_RSS_LIMIT_GB",
-        "MAX_GLOBAL_RSS_GB",
-        "CHILD_RLIMIT_GB",
-        "MAX_CHILD_RLIMIT_GB",
-        "TOTAL_MEMORY_GB",
-        "MEMORY_TOTAL_GB",
-        "MEM_AVAILABLE_GB",
-        "MEMORY_AVAILABLE_GB",
-        "MEMORY_RESERVE_GB",
-        "MEM_RESERVE_GB",
-    )
-    names: list[str] = []
-    if normalized:
-        names.extend(f"{normalized}_{suffix}" for suffix in suffixes)
-    names.extend(f"MOLT_{suffix}" for suffix in suffixes)
-    for name in dict.fromkeys(names):
-        if name not in merged and name in os.environ:
-            merged[name] = os.environ[name]
-    return merged
+    return _process_guard.with_memory_guard_env(env, memory_guard_prefix)
 
 
 def _run_completed_command(
@@ -1389,18 +1340,14 @@ def _run_completed_command(
             text=True,
             timeout=timeout,
         )
-    harness_memory_guard = _load_cli_harness_memory_guard(cwd)
-    guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
-        memory_guard_prefix,
-        guard_env,
-        repo_root=(cwd or Path.cwd()),
-    )
-    return guard_context.run(
+    return _process_guard.run_completed_command(
         cmd,
+        env=guard_env,
         cwd=cwd,
         capture_output=capture_output,
-        text=True,
+        memory_guard_prefix=memory_guard_prefix,
         timeout=timeout,
+        guard_loader=_load_cli_harness_memory_guard,
     )
 
 
@@ -33788,6 +33735,7 @@ def _completion_script(shell: str) -> str:
         "extension",
         "check",
         "run",
+        "repl",
         "compare",
         "parity-run",
         "test",
@@ -33886,6 +33834,12 @@ def _completion_script(shell: str) -> str:
             "--no-trusted",
             "--json",
             "--verbose",
+        ],
+        "repl": [
+            "--capabilities",
+            "--io-mode",
+            "--molt-cmd",
+            "--timeout-sec",
         ],
         "compare": [
             "--python",
@@ -36293,6 +36247,38 @@ def main() -> int:
         help="Arguments passed to the script (use -- to separate).",
     )
 
+    repl_parser = subparsers.add_parser(
+        "repl",
+        help="Start the guarded Molt REPL",
+        description=(
+            "Start an interactive Molt REPL. Each submitted snippet is compiled "
+            "and executed through the shared adaptive memory guard."
+        ),
+    )
+    repl_parser.add_argument(
+        "--capabilities",
+        help="Capability profiles/tokens or path to manifest (toml/json).",
+    )
+    repl_parser.add_argument(
+        "--io-mode",
+        choices=["real", "virtual", "callback"],
+        default="real",
+        help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
+    )
+    repl_parser.add_argument(
+        "--molt-cmd",
+        help=(
+            "Override the Molt command used for snippet execution. Defaults to "
+            "the current Python interpreter running `-m molt.cli`."
+        ),
+    )
+    repl_parser.add_argument(
+        "--timeout-sec",
+        type=float,
+        default=None,
+        help="Per-snippet timeout in seconds (default: MOLT_REPL_TIMEOUT_SEC or 30).",
+    )
+
     compare_parser = subparsers.add_parser(
         "compare",
         help="Compare CPython vs Molt output",
@@ -37710,6 +37696,20 @@ def main() -> int:
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
             type_gate=getattr(args, "type_gate", False),
+        )
+    if args.command == "repl":
+        from molt.repl import run_repl
+
+        molt_cmd: str | Sequence[str]
+        if args.molt_cmd:
+            molt_cmd = args.molt_cmd
+        else:
+            molt_cmd = [sys.executable, "-m", "molt.cli"]
+        return run_repl(
+            capabilities=args.capabilities,
+            io_mode=args.io_mode,
+            molt_cmd=molt_cmd,
+            timeout_sec=args.timeout_sec,
         )
     if args.command == "compare":
         python_exe = args.python or args.python_version
