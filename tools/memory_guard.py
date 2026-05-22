@@ -131,6 +131,7 @@ class GuardResult:
     timed_out: bool = False
     elapsed_s: float | None = None
     limit_at_violation: ResolvedMemoryLimits | None = None
+    orphaned_process_groups: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -890,6 +891,37 @@ def terminate_watched_processes(
             os.kill(pid, signal.SIGKILL)
 
 
+def cleanup_tracked_orphans(
+    root_pid: int,
+    *,
+    tracker: ProcessTreeTracker,
+    sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
+    grace: float = 0.25,
+) -> tuple[int, ...]:
+    """Terminate descendants still alive after the guarded root process exits."""
+
+    if root_pid <= 0:
+        return ()
+    samples = sampler()
+    watched = tracker.update(samples)
+    live_pgids: set[int] = set()
+    for pid in watched:
+        sample = samples.get(pid)
+        if sample is None:
+            continue
+        live_pgids.add(sample.pgid if sample.pgid is not None else sample.pid)
+    if not live_pgids:
+        return ()
+    terminate_watched_processes(
+        root_pid,
+        samples=samples,
+        watched=watched,
+        tracker=tracker,
+        grace=grace,
+    )
+    return tuple(sorted(live_pgids))
+
+
 def _terminate_process_group(pid: int) -> None:
     terminate_watched_processes(pid, grace=5.0)
 
@@ -1093,6 +1125,7 @@ def run_guarded(
     adaptive_budget_provider: Callable[[int], AdaptiveMemoryBudget] | None = None,
     dynamic_process_rss: bool = False,
     dynamic_total_rss: bool = False,
+    cleanup_orphans: bool = True,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -1288,6 +1321,7 @@ def run_guarded(
                 peak = violation
     stdout = ""
     stderr = ""
+    orphaned_process_groups: tuple[int, ...] = ()
     try:
         if proc.returncode is None:
             try:
@@ -1302,6 +1336,13 @@ def run_guarded(
                     grace=0.25,
                 )
                 proc.wait()
+        if cleanup_orphans:
+            orphaned_process_groups = cleanup_tracked_orphans(
+                proc.pid,
+                tracker=tracker,
+                sampler=sampler,
+                grace=0.25,
+            )
         if stdin_thread is not None:
             stdin_thread.join(timeout=1.0)
         if stdout_capture is not None:
@@ -1335,6 +1376,7 @@ def run_guarded(
         timed_out=timed_out,
         elapsed_s=elapsed_s,
         limit_at_violation=limit_at_violation,
+        orphaned_process_groups=orphaned_process_groups,
     )
 
 
@@ -1445,6 +1487,19 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
                 "guard timeout only for intentional long-running work."
             ),
         }
+    if result.orphaned_process_groups:
+        return {
+            "reason": "orphaned_processes_cleaned",
+            "cleanup": "terminated tracked process groups",
+            "recorded_at": _utc_timestamp(),
+            "elapsed_s": result.elapsed_s,
+            "process_groups": list(result.orphaned_process_groups),
+            "next_action": (
+                "Inspect child process lifecycle and logs; make helpers shut down "
+                "explicitly, or run intentional warm daemons inside a suite-level "
+                "sentinel that drains at scope exit."
+            ),
+        }
     exit_signal = _exit_signal_payload(result.returncode)
     if exit_signal is not None:
         return {
@@ -1491,6 +1546,7 @@ def _write_summary_json(
         "peak": _rss_record_payload(result.peak),
         "peak_total": _rss_record_payload(result.peak_total),
         "timed_out": result.timed_out,
+        "orphaned_process_groups": list(result.orphaned_process_groups),
         "limit_at_violation": (
             None
             if result.limit_at_violation is None
@@ -1788,6 +1844,23 @@ def main(
         print(
             "memory_guard: next action: inspect child logs for a hang or oversized "
             "workload; raise --timeout only for intentional long-running work.",
+            file=sys.stderr,
+        )
+    if result.orphaned_process_groups:
+        incident_at = _utc_timestamp()
+        pgids = ",".join(str(pgid) for pgid in result.orphaned_process_groups)
+        print(
+            "memory_guard: orphaned child processes detected after command exit; "
+            "terminated tracked process groups to prevent accumulation: "
+            f"killed_at={incident_at} elapsed={_elapsed_text(result.elapsed_s)} "
+            f"pgids={pgids} reason=direct child exited while descendants were "
+            "still live",
+            file=sys.stderr,
+        )
+        print(
+            "memory_guard: next action: inspect child process lifecycle and logs; "
+            "make helpers shut down explicitly, or run intentional warm daemons "
+            "inside a suite-level sentinel that drains at scope exit.",
             file=sys.stderr,
         )
     exit_signal = _exit_signal_payload(result.returncode)

@@ -374,15 +374,16 @@ def limits_from_env(
         else child_rlimit_override
     )
     if child_rlimit_gb > 0:
-        child_rlimit_cap_gb = memory_guard.default_child_rlimit_gb(
-            max_process_rss_gb=process_gb,
-            max_total_rss_gb=total_gb,
-            max_global_rss_gb=global_gb,
+        child_rlimit_cap_gb = (
+            memory_guard.default_child_rlimit_gb(
+                max_process_rss_gb=process_gb,
+                max_total_rss_gb=total_gb,
+                max_global_rss_gb=global_gb,
+            )
+            if child_rlimit_override is None
+            else HARD_CHILD_RLIMIT_GB
         )
-        child_rlimit_gb = _clamp_hard_limit(
-            child_rlimit_gb,
-            min(HARD_CHILD_RLIMIT_GB, child_rlimit_cap_gb),
-        )
+        child_rlimit_gb = _clamp_hard_limit(child_rlimit_gb, child_rlimit_cap_gb)
     return HarnessMemoryLimits(
         enabled=enabled,
         max_process_rss_gb=process_gb,
@@ -571,6 +572,27 @@ def _guard_exit_signal_message(
     )
 
 
+def _guard_orphan_cleanup_message(
+    process_groups: Sequence[int],
+    *,
+    elapsed_s: float | None,
+    killed_at: str,
+) -> str:
+    if not process_groups:
+        return ""
+    pgids = ",".join(str(pgid) for pgid in process_groups)
+    return (
+        "memory_guard: orphaned child processes detected after command exit; "
+        "terminated tracked process groups to prevent accumulation: "
+        f"killed_at={killed_at} elapsed={_elapsed_text(elapsed_s)} "
+        f"pgids={pgids} reason=direct child exited while descendants were still "
+        "live\n"
+        "memory_guard: next action: inspect child process lifecycle and logs; "
+        "make helpers shut down explicitly, or run intentional warm daemons inside "
+        "a suite-level sentinel that drains at scope exit.\n"
+    )
+
+
 @contextlib.contextmanager
 def _auto_repo_sentinel(
     *,
@@ -610,6 +632,7 @@ def guarded_completed_process(
     timeout: float | None = None,
     limits: HarnessMemoryLimits | None = None,
     stream: str = "",
+    cleanup_orphans: bool | None = None,
 ) -> GuardedCompletedProcess:
     resolved_limits = limits or limits_from_env(prefix, env)
     if not resolved_limits.enabled:
@@ -631,6 +654,10 @@ def guarded_completed_process(
             completed.stderr,
             elapsed_s=time.perf_counter() - started,
         )
+    sentinel_is_active = _sentinel_active()
+    cleanup_tracked_orphans = (
+        not sentinel_is_active if cleanup_orphans is None else cleanup_orphans
+    )
     with _auto_repo_sentinel(
         prefix=prefix,
         env=env,
@@ -657,6 +684,7 @@ def guarded_completed_process(
             ),
             dynamic_process_rss=resolved_limits.dynamic_process_rss,
             dynamic_total_rss=resolved_limits.dynamic_total_rss,
+            cleanup_orphans=cleanup_tracked_orphans,
         )
     stderr = guarded.stderr or ""
     incident_at = _utc_timestamp()
@@ -681,6 +709,12 @@ def guarded_completed_process(
             guarded.returncode,
             elapsed_s=guarded.elapsed_s,
             observed_at=incident_at,
+        )
+    if guarded.orphaned_process_groups:
+        stderr += _guard_orphan_cleanup_message(
+            guarded.orphaned_process_groups,
+            elapsed_s=guarded.elapsed_s,
+            killed_at=incident_at,
         )
     return GuardedCompletedProcess(
         list(command),
@@ -999,6 +1033,8 @@ class RepoProcessMemorySentinel:
         self._observed_pgids: set[int] = set()
         self._terminated_pgids: set[int] = set()
         self.tripped = False
+        self._started_monotonic = time.monotonic()
+        self._started_at = _utc_timestamp()
         self.events_path = artifact_root / "memory_guard" / f"{label}_sentinel.jsonl"
 
     def __enter__(self) -> "RepoProcessMemorySentinel":
@@ -1007,6 +1043,8 @@ class RepoProcessMemorySentinel:
         if self._suppress_auto_guard:
             _note_auto_sentinel_suppressor_entered()
         try:
+            self._started_monotonic = time.monotonic()
+            self._started_at = _utc_timestamp()
             self._baseline_pgids = self._current_group_pgids()
             self._thread = threading.Thread(
                 target=self._run,
@@ -1035,6 +1073,9 @@ class RepoProcessMemorySentinel:
         payload.setdefault("label", self._label)
         payload.setdefault("ts", time.time())
         _append_jsonl(self.events_path, payload)
+
+    def _elapsed_s(self) -> float:
+        return max(0.0, time.monotonic() - self._started_monotonic)
 
     def _run(self) -> None:
         while not self._stop.wait(self._limits.poll_interval):
@@ -1104,7 +1145,9 @@ class RepoProcessMemorySentinel:
                         "event": "repo_process_guard_tripped",
                         "violation": process_sentinel.violation_payload(violation),
                         "limits": memory_guard.memory_limits_payload(current_limits),
+                        "guard_started_at": self._started_at,
                         "killed_at": _utc_timestamp(),
+                        "elapsed_s": self._elapsed_s(),
                         "action": action,
                     }
                 )
@@ -1165,7 +1208,9 @@ class RepoProcessMemorySentinel:
                         {
                             "event": "repo_process_guard_drained",
                             "violation": process_sentinel.violation_payload(violation),
+                            "guard_started_at": self._started_at,
                             "killed_at": _utc_timestamp(),
+                            "elapsed_s": self._elapsed_s(),
                             "action": (
                                 "terminated process group left behind by the guarded "
                                 "scope to prevent orphaned Molt subprocesses; inspect "
@@ -1189,6 +1234,15 @@ class RepoProcessMemorySentinel:
                         {
                             "event": "repo_process_guard_drain_timeout",
                             "remaining_pgids": [group.pgid for group in groups],
+                            "guard_started_at": self._started_at,
+                            "observed_at": _utc_timestamp(),
+                            "elapsed_s": self._elapsed_s(),
+                            "action": (
+                                "drain did not reach a clean process table before "
+                                "its bounded timeout; inspect remaining process "
+                                "groups and either stop them or raise the drain "
+                                "window for this suite"
+                            ),
                         }
                     )
                 return drained

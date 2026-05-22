@@ -25,7 +25,7 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     assert limits.max_process_rss_gb == 3
     assert limits.max_total_rss_gb == 4
     assert limits.max_global_rss_gb == 7
-    assert limits.child_rlimit_gb == 3
+    assert limits.child_rlimit_gb == 6
     assert limits.poll_interval == 0.05
     assert limits.dynamic_process_rss is False
     assert limits.dynamic_total_rss is False
@@ -33,7 +33,7 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     assert limits.max_process_rss_kb == 3 * 1024 * 1024
     assert limits.max_total_rss_kb == 4 * 1024 * 1024
     assert limits.max_global_rss_kb == 7 * 1024 * 1024
-    assert limits.child_rlimit_kb == 3 * 1024 * 1024
+    assert limits.child_rlimit_kb == 6 * 1024 * 1024
 
 
 def test_enabled_from_env_matches_family_override_semantics(monkeypatch) -> None:
@@ -142,7 +142,27 @@ def test_limits_from_env_canonicalizes_implausible_overrides(monkeypatch) -> Non
     assert limits.max_process_rss_gb == pytest.approx(85.6704)
     assert limits.max_total_rss_gb == pytest.approx(85.6704)
     assert limits.max_global_rss_gb == pytest.approx(85.6704)
-    assert limits.child_rlimit_gb == pytest.approx(85.6704)
+    assert limits.child_rlimit_gb == pytest.approx(
+        harness_memory_guard.HARD_CHILD_RLIMIT_GB
+    )
+
+
+def test_limits_from_env_honors_explicit_child_rlimit_above_rss_budget(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MOLT_WASM_TEST_MAX_PROCESS_RSS_GB", "3")
+    monkeypatch.setenv("MOLT_WASM_TEST_MAX_TOTAL_RSS_GB", "4")
+    monkeypatch.setenv("MOLT_WASM_TEST_MAX_GLOBAL_RSS_GB", "5")
+    monkeypatch.setenv("MOLT_WASM_TEST_CHILD_RLIMIT_GB", "16")
+
+    limits = harness_memory_guard.limits_from_env("MOLT_WASM_TEST")
+
+    assert limits.max_process_rss_gb == 3
+    assert limits.max_total_rss_gb == 4
+    assert limits.max_global_rss_gb == 5
+    assert limits.child_rlimit_gb == 16
+    assert limits.current_child_rlimit_kb({}) == 16 * 1024 * 1024
+    assert limits.dynamic_child_rlimit is False
 
 
 def test_current_memory_limits_refreshes_unset_adaptive_caps(monkeypatch) -> None:
@@ -529,6 +549,17 @@ def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> N
     monkeypatch.setattr(
         harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
     )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+
+    @contextlib.contextmanager
+    def fake_auto_repo_sentinel(**kwargs):
+        yield None
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_auto_repo_sentinel",
+        fake_auto_repo_sentinel,
+    )
     monkeypatch.setattr(
         harness_memory_guard, "_utc_timestamp", lambda: "2026-05-21T12:00:00Z"
     )
@@ -580,6 +611,17 @@ def test_guarded_completed_process_reports_actionable_violation(
 
     monkeypatch.setattr(
         harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+
+    @contextlib.contextmanager
+    def fake_auto_repo_sentinel(**kwargs):
+        yield None
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_auto_repo_sentinel",
+        fake_auto_repo_sentinel,
     )
     monkeypatch.setattr(
         harness_memory_guard, "_utc_timestamp", lambda: "2026-05-21T12:00:00Z"
@@ -649,6 +691,100 @@ def test_guarded_completed_process_reports_actionable_timeout(
     assert "elapsed=7.01s" in result.stderr
     assert "timeout=7.00s" in result.stderr
     assert "MOLT_TEST_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC" in result.stderr
+
+
+def test_guarded_completed_process_reports_orphan_cleanup(
+    monkeypatch,
+) -> None:
+    def fake_run_guarded(command, **kwargs):
+        assert kwargs["cleanup_orphans"] is True
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+            elapsed_s=1.25,
+            orphaned_process_groups=(101, 202),
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+
+    @contextlib.contextmanager
+    def fake_auto_repo_sentinel(**kwargs):
+        yield None
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_auto_repo_sentinel",
+        fake_auto_repo_sentinel,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_utc_timestamp", lambda: "2026-05-21T12:00:00Z"
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert "orphaned child processes detected after command exit" in result.stderr
+    assert "killed_at=2026-05-21T12:00:00Z" in result.stderr
+    assert "elapsed=1.25s" in result.stderr
+    assert "pgids=101,202" in result.stderr
+    assert "next action: inspect child process lifecycle and logs" in result.stderr
+
+
+def test_guarded_completed_process_defers_orphan_cleanup_to_active_sentinel(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_guarded(command, **kwargs):
+        captured.update(kwargs)
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.1,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: True)
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        limits=limits,
+    )
+
+    assert captured["cleanup_orphans"] is False
 
 
 def test_guarded_completed_process_to_tempfiles_refreshes_dynamic_limits(
@@ -870,6 +1006,9 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     assert "repo_process_guard_tripped" in events
     assert "limits" in events
     assert "killed_at" in events
+    assert "guard_started_at" in events
+    assert "elapsed_s" in events
+    assert "global_rss" in events
     assert "terminated process group to prevent orphaned Molt subprocesses" in events
 
 
@@ -948,6 +1087,8 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     assert "repo_process_guard_drained" in events
     assert "drain_on_exit" in events
     assert "killed_at" in events
+    assert "guard_started_at" in events
+    assert "elapsed_s" in events
     assert "terminated process group left behind by the guarded scope" in events
 
 

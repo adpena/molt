@@ -387,6 +387,67 @@ def test_run_command_passes_through_success() -> None:
     assert result.elapsed_s > 0
 
 
+def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    assert tracker.known_pgids is not None
+    tracker.known_pgids.add(300)
+    samples = {
+        200: memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=100,
+            rss_kb=64,
+            command="worker same group",
+        ),
+        300: memory_guard.ProcessSample(
+            pid=300,
+            ppid=1,
+            pgid=300,
+            rss_kb=64,
+            command="worker new group",
+        ),
+    }
+    calls: list[dict[str, object]] = []
+
+    def fake_terminate(root_pid, **kwargs):
+        calls.append({"root_pid": root_pid, **kwargs})
+
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
+
+    orphaned = memory_guard.cleanup_tracked_orphans(
+        100,
+        tracker=tracker,
+        sampler=lambda: samples,
+        grace=0.125,
+    )
+
+    assert orphaned == (100, 300)
+    assert calls[0]["root_pid"] == 100
+    assert calls[0]["watched"] == {200, 300}
+    assert calls[0]["grace"] == 0.125
+
+
+def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_cleanup(root_pid, **kwargs):
+        calls.append({"root_pid": root_pid, **kwargs})
+        return (777,)
+
+    monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "print('ok')"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert result.orphaned_process_groups == (777,)
+    assert len(calls) == 1
+
+
 def test_run_command_captures_large_stdout_without_pipe_deadlock() -> None:
     script = (
         "import sys; "
@@ -842,7 +903,59 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["peak_total"]["scope"] == "process_tree"
     assert payload["max_total_rss_gb"] == pytest.approx(18.0)
     assert payload["child_rlimit_gb"] is None
+    assert payload["orphaned_process_groups"] == []
     assert payload["incident"] is None
+
+
+def test_main_reports_orphan_cleanup_with_operator_signal(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch,
+) -> None:
+    summary_path = tmp_path / "orphan-summary.json"
+
+    def fake_run_guarded(_command, **_kwargs):
+        return memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.4,
+            orphaned_process_groups=(44,),
+        )
+
+    monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--max-total-rss-gb",
+            "18",
+            "--poll-interval",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "print('ok')",
+        ]
+    )
+
+    assert rc == 0
+    stderr = capsys.readouterr().err
+    assert "orphaned child processes detected after command exit" in stderr
+    assert "elapsed=0.40s" in stderr
+    assert "pgids=44" in stderr
+    assert "next action: inspect child process lifecycle and logs" in stderr
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["orphaned_process_groups"] == [44]
+    assert payload["incident"]["reason"] == "orphaned_processes_cleaned"
+    assert payload["incident"]["elapsed_s"] == pytest.approx(0.4)
+    assert payload["incident"]["process_groups"] == [44]
 
 
 def test_main_writes_samples_jsonl(tmp_path) -> None:
