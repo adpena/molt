@@ -30383,6 +30383,41 @@ def _planned_validate_steps(
     return selected
 
 
+def _validate_guard_prefix(step: _ValidationStep) -> str:
+    if step.category == "benchmark":
+        return "MOLT_BENCH"
+    if step.category == "conformance":
+        return "MOLT_CONFORMANCE"
+    return "MOLT_TEST_SUITE"
+
+
+def _validation_guard_summary(
+    root: Path,
+    env: Mapping[str, str],
+    steps: Sequence[_ValidationStep],
+) -> dict[str, Any]:
+    harness_memory_guard = _load_cli_harness_memory_guard(root)
+    prefixes = sorted({_validate_guard_prefix(step) for step in steps})
+    summary: dict[str, Any] = {}
+    for prefix in prefixes:
+        limits = harness_memory_guard.limits_from_env(prefix, env)
+        summary[prefix] = harness_memory_guard.limits_summary(limits)
+    return summary
+
+
+def _format_validate_guard_summary(prefix: str, limits: Mapping[str, Any]) -> str:
+    def gb(name: str) -> str:
+        value = limits[name]
+        return f"{value:.2f}" if isinstance(value, float) else str(value)
+
+    return (
+        f"- {prefix}: process={gb('max_process_rss_gb')}GB "
+        f"tree={gb('max_total_rss_gb')}GB "
+        f"global={gb('max_global_rss_gb')}GB "
+        f"child_rlimit={gb('child_rlimit_gb')}GB"
+    )
+
+
 def validate(
     *,
     suite: Literal["full", "smoke", "commands", "conformance", "bench"] = "full",
@@ -30414,12 +30449,18 @@ def validate(
             "category": step.category,
             "cwd": str(step.cwd),
             "cmd": step.cmd,
+            "memory_guard_prefix": _validate_guard_prefix(step),
             "backends": list(step.backends),
             "profiles": list(step.profiles),
             "suite": step.suite,
         }
         for step in steps
     ]
+    env = _base_env(root, molt_root=root)
+    for key, value in _canonical_env_defaults(root).items():
+        env.setdefault(key, value)
+    env.setdefault("MOLT_SESSION_ID", "validate")
+    guard_summary = _validation_guard_summary(root, env, steps)
     if check_only:
         payload = _json_payload(
             "validate",
@@ -30430,6 +30471,7 @@ def validate(
                 "backend": backend,
                 "profile": profile,
                 "steps": step_rows,
+                "memory_guard": guard_summary,
             },
         )
         if json_output:
@@ -30438,12 +30480,11 @@ def validate(
             print("Validation plan:")
             for row in step_rows:
                 print(f"- [{row['category']}] {row['name']}: {shlex.join(row['cmd'])}")
+            print("Memory guard:")
+            for prefix, limits in guard_summary.items():
+                print(_format_validate_guard_summary(prefix, limits))
         return 0
 
-    env = _base_env(root, molt_root=root)
-    for key, value in _canonical_env_defaults(root).items():
-        env.setdefault(key, value)
-    env.setdefault("MOLT_SESSION_ID", "validate")
     results: list[dict[str, Any]] = []
     for step in steps:
         if verbose and not json_output:
@@ -30451,13 +30492,7 @@ def validate(
                 f"[molt validate] {step.name}: {shlex.join(step.cmd)}",
                 file=sys.stderr,
             )
-        guard_prefix = (
-            "MOLT_BENCH"
-            if step.category == "benchmark"
-            else "MOLT_CONFORMANCE"
-            if step.category == "conformance"
-            else "MOLT_TEST_SUITE"
-        )
+        guard_prefix = _validate_guard_prefix(step)
         start = time.perf_counter()
         proc = _run_completed_command(
             [str(part) for part in step.cmd],
@@ -30497,6 +30532,7 @@ def validate(
                     "profile": profile,
                     "steps": step_rows,
                     "results": results,
+                    "memory_guard": guard_summary,
                 },
                 errors=[f"{step.name} failed with exit code {proc.returncode}"],
             )
@@ -30521,6 +30557,7 @@ def validate(
             "profile": profile,
             "steps": step_rows,
             "results": results,
+            "memory_guard": guard_summary,
         },
     )
     if json_output:
@@ -30529,8 +30566,12 @@ def validate(
         print("Validation succeeded:")
         for result in results:
             print(
-                f"- [{result['category']}] {result['name']} (rc={result['returncode']})"
+                f"- [{result['category']}] {result['name']} "
+                f"(rc={result['returncode']}, {result['duration_s']:.2f}s)"
             )
+        print("Memory guard:")
+        for prefix, limits in guard_summary.items():
+            print(_format_validate_guard_summary(prefix, limits))
     return 0
 
 
