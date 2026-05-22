@@ -29,6 +29,7 @@ def test_current_repo_subprocess_guard_coverage_is_green() -> None:
 
     assert audit.ok, module._format_text(audit)
     assert len(audit.raw_calls) == len(module.ALLOWLIST)
+    assert REPO_ROOT / "src" / "molt" / "repl.py" in module.DEFAULT_TARGETS
 
 
 def test_unclassified_raw_subprocess_call_fails(tmp_path: Path) -> None:

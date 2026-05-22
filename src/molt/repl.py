@@ -22,7 +22,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from collections.abc import Sequence
+from typing import Any, Optional
+
+from molt import process_guard
 
 
 # Python keywords and builtins for tab completion
@@ -66,6 +69,9 @@ _COMPLETIONS: list[str] = sorted(
         "yield",
     ]
 )
+
+REPL_MEMORY_GUARD_PREFIX = "MOLT_REPL"
+DEFAULT_REPL_TIMEOUT_SEC = 30.0
 
 
 def _is_incomplete(source: str) -> bool:
@@ -134,10 +140,31 @@ def _wrap_for_repl(source: str, state_vars: set[str]) -> str:
     return "\n".join(lines)
 
 
+def _repl_project_root() -> Path:
+    raw_root = os.environ.get("MOLT_EXT_ROOT")
+    root = Path(raw_root).expanduser() if raw_root else Path.cwd()
+    if not root.is_absolute():
+        root = Path.cwd() / root
+    return root.resolve()
+
+
+def _repl_tmp_dir(project_root: Path) -> Path:
+    tmp_dir = project_root / "tmp" / "repl"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_dir
+
+
+def _molt_command_prefix(molt_cmd: str | Sequence[str]) -> list[str]:
+    if isinstance(molt_cmd, str):
+        return [molt_cmd]
+    return [str(part) for part in molt_cmd]
+
+
 def run_repl(
     capabilities: Optional[str] = None,
     io_mode: str = "real",
-    molt_cmd: str = "molt",
+    molt_cmd: str | Sequence[str] = "molt",
+    timeout_sec: float | None = None,
 ) -> int:
     """Run the interactive REPL.
 
@@ -147,8 +174,10 @@ def run_repl(
         Comma-separated capability tokens.
     io_mode : str
         IO mode: "real", "virtual", or "callback".
-    molt_cmd : str
-        Path to the molt CLI binary.
+    molt_cmd : str or sequence of str
+        Molt CLI command prefix.
+    timeout_sec : float, optional
+        Per-snippet timeout. Defaults to ``MOLT_REPL_TIMEOUT_SEC`` or 30s.
 
     Returns
     -------
@@ -157,22 +186,26 @@ def run_repl(
     """
     # Try to enable readline for history and completion
     history_path: Path | None = None
+    readline_module: Any | None = None
     try:
-        import readline
+        import readline as readline_module
 
-        readline.parse_and_bind("tab: complete")
+        readline_module.parse_and_bind("tab: complete")
 
         # Custom completer
         def completer(text: str, state: int) -> Optional[str]:
             matches = [c for c in _COMPLETIONS if c.startswith(text)]
             return matches[state] if state < len(matches) else None
 
-        readline.set_completer(completer)
+        readline_module.set_completer(completer)
 
         # Load history
         history_path = Path.home() / ".molt_history"
         if history_path.exists():
-            readline.read_history_file(str(history_path))
+            try:
+                readline_module.read_history_file(str(history_path))
+            except OSError:
+                pass
     except ImportError:
         pass
 
@@ -211,27 +244,38 @@ def run_repl(
         # Wrap for REPL execution
         wrapped = _wrap_for_repl(source, state_vars)
 
-        # Compile and run via molt
+        project_root = _repl_project_root()
+        tmp_dir = _repl_tmp_dir(project_root)
+
+        # Compile and run via molt under the shared process guard.
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()
+            mode="w", suffix=".py", delete=False, dir=tmp_dir
         ) as f:
             f.write(wrapped)
             tmp_path = f.name
 
         try:
-            cmd = [molt_cmd, "run", tmp_path]
+            cmd = [*_molt_command_prefix(molt_cmd), "run", tmp_path]
             if capabilities:
                 cmd.extend(["--capabilities", capabilities])
 
             env = os.environ.copy()
             env["MOLT_IO_MODE"] = io_mode
 
-            result = subprocess.run(
+            timeout = process_guard.timeout_from_env(
+                REPL_MEMORY_GUARD_PREFIX,
+                env,
+                explicit=timeout_sec,
+                default=DEFAULT_REPL_TIMEOUT_SEC,
+                cwd=project_root,
+            )
+            result = process_guard.run_completed_command(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
+                cwd=project_root,
                 env=env,
+                capture_output=True,
+                memory_guard_prefix=REPL_MEMORY_GUARD_PREFIX,
+                timeout=timeout,
             )
 
             if result.stdout:
@@ -253,10 +297,11 @@ def run_repl(
                     ):
                         print(err_line, file=sys.stderr)
         except subprocess.TimeoutExpired:
-            print("Error: execution timed out (30s limit)", file=sys.stderr)
+            timeout_text = "disabled" if timeout is None else f"{timeout:g}s limit"
+            print(f"Error: execution timed out ({timeout_text})", file=sys.stderr)
         except FileNotFoundError:
             print(
-                f"Error: '{molt_cmd}' not found. Is Molt installed?",
+                f"Error: '{' '.join(_molt_command_prefix(molt_cmd))}' not found. Is Molt installed?",
                 file=sys.stderr,
             )
             return 1
@@ -267,9 +312,9 @@ def run_repl(
                 pass
 
     # Save history
-    if readline is not None and history_path is not None:
+    if readline_module is not None and history_path is not None:
         try:
-            readline.write_history_file(str(history_path))
+            readline_module.write_history_file(str(history_path))
         except OSError:
             pass
 
