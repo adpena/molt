@@ -1137,22 +1137,16 @@ impl<'a> SsaContext<'a> {
                 attrs.insert("_simple_result_1".into(), AttrValue::Str(done_out.clone()));
             }
         }
-        // Preserve fast_int / fast_float / type_hint so that the round-trip does
-        // not lose type annotations even without the type-refine pass running.
-        if op.fast_int == Some(true) {
-            attrs.insert("_fast_int".into(), AttrValue::Bool(true));
-        }
-        if op.fast_float == Some(true) {
-            attrs.insert("_fast_float".into(), AttrValue::Bool(true));
-        }
+        // Preserve only the structural class-id hint needed by object
+        // allocation round-trips. Scalar `fast_int` / `fast_float` flags are
+        // SimpleIR transport metadata and must not become TIR attributes; TIR
+        // scalar authority lives in `value_types` and the refined LIR facts.
         if let Some(ref th) = op.type_hint {
             attrs.insert("_type_hint".into(), AttrValue::Str(th.clone()));
             // Type-refine result values from the frontend's hint.
-            // Currently we only refine to `UserClass` — builtin
-            // type refinement is already handled by the
-            // `_fast_int` / `_fast_float` side-channel attrs and
-            // by the type-refine pass; refining builtin scalars
-            // here would risk changing existing codegen paths.
+            // Currently we only refine to `UserClass` at SSA lift; builtin
+            // scalar refinement is the responsibility of the type-refine pass
+            // and function-owned `value_types`, not legacy transport hints.
             //
             // UserClass refinement is the *live* use of
             // `TirType::UserClass` — every typed-class allocation
@@ -3251,13 +3245,10 @@ mod tests {
         );
     }
 
-    /// Builtin-tagged hints (`type_hint=int`, etc.) are
-    /// intentionally NOT refined by this lift logic — that path is
-    /// already handled by the `_fast_int` / `_fast_float` side-
-    /// channel attrs and by the type-refine pass.  We pin the
-    /// non-refinement contract here so a future change doesn't
-    /// silently start refining builtin hints (which could change
-    /// existing codegen paths in unexpected ways).
+    /// Builtin-tagged hints (`type_hint=int`, etc.) are intentionally NOT
+    /// refined by this lift logic. Scalar representation must flow through
+    /// type-refine and function-owned value facts, not TIR attrs copied from
+    /// SimpleIR transport hints.
     #[test]
     fn builtin_type_hint_does_not_refine_at_lift() {
         let mut const_op = op_val_out("const", 42, "x");
@@ -3277,8 +3268,8 @@ mod tests {
             output.types[&const_result],
             TirType::DynBox,
             "builtin type hint `int` must NOT refine at lift — \
-             the refinement path for scalars goes through fast_int \
-             attrs and the type-refine pass, not the lift itself"
+             the refinement path for scalars goes through type-refine \
+             and function-owned value facts, not the lift itself"
         );
     }
 }
