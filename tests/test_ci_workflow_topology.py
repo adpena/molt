@@ -273,7 +273,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
         in wasm_text
     )
-    assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "16"' in wasm_text
+    assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "64"' in wasm_text
     assert (
         "cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend"
         in wasm_text
@@ -284,11 +284,10 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     )
     assert "cargo build --release -p molt-wasm-host" not in wasm_text
     assert "cargo build --profile release-fast -p molt-wasm-host" not in wasm_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST"
-        in wasm_text
-    )
+    assert "python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST" in wasm_text
     assert "-- uv run python3 -m pytest tests/test_wasm_control_flow.py -q" in wasm_text
-    assert wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
+    assert (
+        wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
+    )
     assert wasm_text.count("--build-profile dev") >= 5
     assert "/home/runner/.cache/molt" not in wasm_text
