@@ -37,15 +37,23 @@ def _default_python_version() -> str:
 def test_ci_push_path_is_cheap_only() -> None:
     ci_text = _read(".github/workflows/ci.yml")
 
+    assert "concurrency:" in ci_text
+    assert "group: ${{ github.workflow }}-${{ github.ref }}" in ci_text
+    assert "cancel-in-progress: true" in ci_text
     assert "docs-gates:" in ci_text
     assert "python-tooling-smoke:" in ci_text
     assert "rust-build-unit-smoke:" in ci_text
+    assert "needs: docs-gates" not in ci_text
     assert "differential-tests:" not in ci_text
     assert "benchmark:" not in ci_text
     assert "parity:" not in ci_text
     assert "runs-on: ubuntu-latest" in ci_text
     assert "runs-on: macos-14" not in ci_text
     assert "Swatinem/rust-cache@v2" in ci_text
+    assert "Configure adaptive Rust parallelism" in ci_text
+    assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in ci_text
+    assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
+    assert "uv sync --frozen --group dev" in ci_text
     assert "tests/test_bench_harness.py" in ci_text
     assert "tests/test_bench_tool.py" in ci_text
     assert "tests/test_ci_workflow_topology.py" in ci_text
@@ -80,6 +88,7 @@ def test_github_workflows_do_not_reintroduce_node20_action_pins() -> None:
         "actions/attest-build-provenance@v2",
         "astral-sh/setup-uv@v3",
         "astral-sh/setup-uv@v4",
+        "astral-sh/setup-uv@v7",
         "softprops/action-gh-release@v2",
     }
 
@@ -87,6 +96,21 @@ def test_github_workflows_do_not_reintroduce_node20_action_pins() -> None:
         text = workflow.read_text(encoding="utf-8")
         for action_pin in sorted(node20_action_pins):
             assert action_pin not in text, (workflow, action_pin)
+
+
+def test_github_workflows_use_current_setup_uv_release() -> None:
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        setup_uv_lines = [
+            line.strip() for line in text.splitlines() if "astral-sh/setup-uv@" in line
+        ]
+        if not setup_uv_lines:
+            continue
+
+        assert all("astral-sh/setup-uv@v8.1.0" in line for line in setup_uv_lines), (
+            workflow,
+            setup_uv_lines,
+        )
 
 
 def test_pre_commit_hooks_are_read_only_by_default() -> None:

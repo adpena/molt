@@ -6,10 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: "1"
   MOLT_BACKEND_DAEMON_CACHE_MB: "128"
 
 jobs:
@@ -23,10 +26,10 @@ jobs:
         with:
           python-version-file: ".python-version"
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8.1.0
 
       - name: Sync Python environment
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
 
       - name: Check generated status blocks
         run: uv run python3 tools/update_status_blocks.py --check
@@ -44,7 +47,6 @@ jobs:
 
   python-tooling-smoke:
     name: Python Tooling Smoke
-    needs: docs-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -53,10 +55,10 @@ jobs:
         with:
           python-version-file: ".python-version"
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8.1.0
 
       - name: Sync Python environment
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
 
       - name: Install native linker
         run: |
@@ -91,12 +93,14 @@ jobs:
 
   rust-build-unit-smoke:
     name: Rust Build And Unit Smoke
-    needs: docs-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure adaptive Rust parallelism
+        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
 
