@@ -116,7 +116,7 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
-          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build 2>&1 | tee logs/ci-cargo-build.log
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo build --profile dev-fast --workspace --features molt-backend/native-backend 2>&1 | tee logs/ci-cargo-build.log
 
       - uses: actions/setup-python@v6
         with:
@@ -134,22 +134,22 @@ jobs:
             tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok
 
       - name: Run molt-backend unit tests (native backend)
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend --features native-backend --lib
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --profile dev-fast -p molt-backend --features native-backend --lib
 
       - name: Clippy (molt-backend)
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy --profile dev-fast -p molt-backend --features native-backend -- -D warnings
 
       - name: Test molt-snapshot
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-snapshot
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --profile dev-fast -p molt-snapshot
 
       - name: Test molt-embed
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-embed
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --profile dev-fast -p molt-embed
 
       - name: Test molt-harness
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-harness
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --profile dev-fast -p molt-harness
 
       - name: Test molt-runtime-protobuf
-        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-runtime-protobuf
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --profile dev-fast -p molt-runtime-protobuf
 
       - name: Verify zero warnings
         run: |
