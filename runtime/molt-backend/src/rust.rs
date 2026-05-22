@@ -120,10 +120,14 @@ impl RustBackend {
     /// Compile and reject any preview-blocker stubs in the output.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
         let source = self.compile(ir);
-        if source.contains("/* MOLT_STUB:") {
-            Err("output contains unimplemented op stubs — use --target luau or native".to_string())
-        } else {
+        let stubs = rust_stub_markers(&source);
+        if stubs.is_empty() {
             Ok(source)
+        } else {
+            Err(format!(
+                "output contains unimplemented op stubs: {} — use --target luau or native",
+                stubs.join(", ")
+            ))
         }
     }
 
@@ -516,6 +520,7 @@ impl RustBackend {
             || used("molt_gt(")
             || used("molt_ge(")
             || used("molt_get_item(")
+            || used("molt_ord_at(")
             || used("molt_set_item(")
             || used("molt_get_attr(")
             || used("molt_get_attr_name(")
@@ -557,7 +562,7 @@ impl RustBackend {
         }
 
         // Collection helpers
-        if used("molt_get_item(") {
+        if used("molt_get_item(") || used("molt_ord_at(") {
             self.output.push_str(concat!(
                 "fn molt_get_item(obj: &MoltValue, key: &MoltValue) -> MoltValue {\n",
                 "    match obj {\n",
@@ -958,12 +963,20 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
-        if used("molt_ord(") {
+        if used("molt_ord(") || used("molt_ord_at(") {
             self.output.push_str(concat!(
                 "fn molt_ord(x: &MoltValue) -> MoltValue {\n",
                 "    if let MoltValue::Str(s) = x {\n",
                 "        MoltValue::Int(s.chars().next().map(|c| c as i64).unwrap_or(0))\n",
                 "    } else { MoltValue::Int(0) }\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_ord_at(") {
+            self.output.push_str(concat!(
+                "fn molt_ord_at(obj: &MoltValue, key: &MoltValue) -> MoltValue {\n",
+                "    let item = molt_get_item(obj, key);\n",
+                "    molt_ord(&item)\n",
                 "}\n\n",
             ));
         }
@@ -2643,6 +2656,15 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     &self.hoisted_vars.clone(),
                 ));
             }
+            "ord_at" => {
+                let o = out();
+                let (obj, key) = args2(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("molt_ord_at(&{obj}, &{key})"),
+                    &self.hoisted_vars.clone(),
+                ));
+            }
             "abs" | "builtin_abs" => {
                 let o = out();
                 let a = arg0(op);
@@ -3673,6 +3695,24 @@ fn rust_string_literal(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+fn rust_stub_markers(source: &str) -> Vec<String> {
+    let mut markers = BTreeSet::new();
+    for line in source.lines() {
+        let mut tail = line;
+        while let Some(start) = tail.find("/* MOLT_STUB:") {
+            let marker_start = start + "/* ".len();
+            let after_marker = &tail[marker_start..];
+            let marker_end = after_marker
+                .find(" */")
+                .or_else(|| after_marker.find("*/"))
+                .unwrap_or(after_marker.len());
+            markers.insert(after_marker[..marker_end].trim().to_string());
+            tail = &after_marker[marker_end..];
+        }
+    }
+    markers.into_iter().take(8).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3932,6 +3972,68 @@ mod tests {
             .expect("call_method should lower from s_value without stub markers");
         assert!(source.contains("molt_list_append(&mut items, value.clone());"));
         assert!(!source.contains("MOLT_STUB: method"));
+    }
+
+    #[test]
+    fn compile_ord_at_emits_fused_helper() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "ord_at_unicode".to_string(),
+                params: vec!["s".to_string(), "i".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "ord_at".to_string(),
+                        args: Some(vec!["s".to_string(), "i".to_string()]),
+                        out: Some("code".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("code".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: Some(vec!["str".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend
+            .compile_checked(&ir)
+            .expect("ord_at should lower without stub markers");
+        assert!(source.contains("fn molt_ord_at(obj: &MoltValue, key: &MoltValue)"));
+        assert!(source.contains("fn molt_get_item(obj: &MoltValue, key: &MoltValue)"));
+        assert!(source.contains("fn molt_ord(x: &MoltValue)"));
+        assert!(source.contains("let mut code: MoltValue = molt_ord_at(&s, &i);"));
+        assert!(!source.contains("MOLT_STUB"));
+    }
+
+    #[test]
+    fn compile_checked_reports_stub_markers() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "unsupported".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "matmul".to_string(),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let err = backend
+            .compile_checked(&ir)
+            .expect_err("unsupported ops should be rejected with marker details");
+        assert!(err.contains("MOLT_STUB: matmul"));
     }
 
     #[test]
