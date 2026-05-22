@@ -3919,8 +3919,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or(TirType::DynBox);
         let fast_math = has_attr(op, "fast_math");
         // When the `no_signed_wrap` attribute is set by a TIR analysis pass
-        // (e.g. loop_narrow for bounded loop counters), we emit nsw-flagged
-        // integer instructions.  This enables LLVM's:
+        // (for example range_devirt for bounded induction increments), we
+        // emit nsw-flagged integer instructions.  This enables LLVM's:
         //  - Strength reduction (e.g. `i * 4` → `i << 2` with guaranteed no wrap)
         //  - SCEV (Scalar Evolution) for loop trip count analysis
         //  - Loop vectorization with known induction variable ranges
