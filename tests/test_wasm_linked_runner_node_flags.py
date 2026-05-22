@@ -97,7 +97,7 @@ def test_run_wasm_linked_uses_stable_node_flags(
     assert cmd[-2:] == [str(tmp_path / "wasm" / "run_wasm.js"), str(wasm_path)]
     env = cast(dict[str, str], recorded["env"])
     assert env.get("NODE_NO_WARNINGS") == "1"
-    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "64"
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "128"
 
 
 def test_run_wasm_linked_raises_inherited_node_child_rlimit_floor(
@@ -119,7 +119,7 @@ def test_run_wasm_linked_raises_inherited_node_child_rlimit_floor(
 
     assert result.returncode == 0
     env = cast(dict[str, str], recorded["env"])
-    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "64"
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "128"
 
 
 def test_run_wasm_linked_preserves_larger_or_disabled_node_child_rlimit(
@@ -140,7 +140,7 @@ def test_run_wasm_linked_preserves_larger_or_disabled_node_child_rlimit(
     result = wasm_runner.run_wasm_linked(
         tmp_path,
         wasm_path,
-        env_overrides={"MOLT_WASM_TEST_CHILD_RLIMIT_GB": "96"},
+        env_overrides={"MOLT_WASM_TEST_CHILD_RLIMIT_GB": "192"},
     )
     assert result.returncode == 0
     result = wasm_runner.run_wasm_linked(
@@ -151,7 +151,7 @@ def test_run_wasm_linked_preserves_larger_or_disabled_node_child_rlimit(
     assert result.returncode == 0
 
     envs = cast(list[dict[str, str]], recorded["envs"])
-    assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "96"
+    assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "192"
     assert envs[1].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
 
 
