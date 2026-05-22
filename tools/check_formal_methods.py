@@ -139,6 +139,11 @@ KNOWN_BAD_MODULE = "molt_build_order_dependent"
 KNOWN_BAD_INV = "OrderDependentInv"
 KNOWN_BAD_STEPS = 10
 KNOWN_BAD_SEED = "0x4d4f4c54bad00001"
+KNOWN_BAD_VIOLATION_MARKERS = (
+    "[violation]",
+    "found an issue",
+    "invariant violated",
+)
 
 # NaN-boxing constants to cross-check between Rust and Lean.
 # name → (rust_regex, lean_regex)
@@ -406,9 +411,8 @@ def check_known_bad_model() -> CheckResult:
     if not model_path.exists():
         return CheckResult("Known-bad meta-test", False, f"{KNOWN_BAD_MODEL} not found")
 
-    qualified = f"{model_path}::{KNOWN_BAD_MODULE}"
     print(
-        f"  Running known-bad: quint run {KNOWN_BAD_MODEL}::{KNOWN_BAD_MODULE} --invariant={KNOWN_BAD_INV} ..."
+        f"  Running known-bad: quint run {KNOWN_BAD_MODEL} --main={KNOWN_BAD_MODULE} --invariant={KNOWN_BAD_INV} ..."
     )
 
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE")
@@ -417,7 +421,8 @@ def check_known_bad_model() -> CheckResult:
             [
                 quint,
                 "run",
-                qualified,
+                str(model_path),
+                f"--main={KNOWN_BAD_MODULE}",
                 f"--invariant={KNOWN_BAD_INV}",
                 f"--max-steps={KNOWN_BAD_STEPS}",
                 "--max-samples=500",
@@ -437,21 +442,35 @@ def check_known_bad_model() -> CheckResult:
             "timed out -- cannot confirm model checker detects the bug",
         )
 
-    if proc.returncode != 0:
+    output = (proc.stdout + proc.stderr).strip()
+    output_lower = output.lower()
+
+    if proc.returncode != 0 and any(
+        marker in output_lower for marker in KNOWN_BAD_VIOLATION_MARKERS
+    ):
         # Good! The buggy model was correctly caught.
         return CheckResult(
             "Known-bad meta-test",
             True,
             "PASS (model checker correctly detected the order-dependent bug)",
         )
-    else:
-        # Bad! The model checker didn't catch the known bug.
+
+    if proc.returncode != 0:
+        tail = "\n".join(output.splitlines()[-20:])
         return CheckResult(
             "Known-bad meta-test",
             False,
-            "META-FAILURE: known-bad model passed when it should have failed. "
-            "Model checker may not be working correctly.",
+            "INFRA-FAILURE: known-bad model exited nonzero but did not report "
+            f"an invariant violation (exit {proc.returncode}).\n{tail}",
         )
+
+    # Bad! The model checker didn't catch the known bug.
+    return CheckResult(
+        "Known-bad meta-test",
+        False,
+        "META-FAILURE: known-bad model passed when it should have failed. "
+        "Model checker may not be working correctly.",
+    )
 
 
 # ── Check 4: Proof-Code Correspondence ──────────────────────────────

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import tools.check_formal_methods as check_formal_methods
 
@@ -47,3 +48,58 @@ def test_quint_seed_matrix_is_deterministic_and_regression_bearing() -> None:
     assert "0x8ccc0ae2ed66b340" in seeds
     assert all(seed.startswith("0x") for seed in seeds)
     assert check_formal_methods.KNOWN_BAD_SEED.startswith("0x")
+
+
+def test_known_bad_quint_uses_main_module_and_requires_violation(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(
+            returncode=1,
+            stdout="[violation] Found an issue\nerror: Invariant violated\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(check_formal_methods.shutil, "which", lambda _name: "quint")
+    monkeypatch.setattr(
+        check_formal_methods.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    result = check_formal_methods.check_known_bad_model()
+
+    assert result.passed
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert (
+        str(check_formal_methods.QUINT_DIR / check_formal_methods.KNOWN_BAD_MODEL)
+        in cmd
+    )
+    assert f"--main={check_formal_methods.KNOWN_BAD_MODULE}" in cmd
+    assert not any("::" in part for part in cmd)
+
+
+def test_known_bad_quint_rejects_infrastructure_failure(monkeypatch) -> None:
+    def fake_guarded_completed_process(_cmd, **_kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="TypeError: fetch failed\nNode.js v24.16.0\n",
+        )
+
+    monkeypatch.setattr(check_formal_methods.shutil, "which", lambda _name: "quint")
+    monkeypatch.setattr(
+        check_formal_methods.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    result = check_formal_methods.check_known_bad_model()
+
+    assert not result.passed
+    assert "INFRA-FAILURE" in result.detail
+    assert "did not report an invariant violation" in result.detail

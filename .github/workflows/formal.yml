@@ -20,6 +20,10 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"
+  MOLT_QUINT_RUST_EVALUATOR_VERSION: "v0.6.0"
+  MOLT_QUINT_RUST_EVALUATOR_ASSET: "quint_evaluator-x86_64-unknown-linux-gnu.tar.gz"
+  MOLT_QUINT_RUST_EVALUATOR_SHA256: "61755a09d5052d93a4e75e840059edfd0d3674aeda164b9d2464be3d6e21b1c2"
 
 jobs:
   formal-lean:
@@ -77,7 +81,21 @@ jobs:
           check-latest: true
 
       - name: Install Quint
-        run: npm install -g @informalsystems/quint
+        run: npm install -g "$MOLT_QUINT_NPM_PACKAGE"
+
+      - name: Install Quint Rust evaluator
+        run: |
+          set -euo pipefail
+          evaluator_dir="$HOME/.quint/rust-evaluator-${MOLT_QUINT_RUST_EVALUATOR_VERSION}"
+          asset_path="$RUNNER_TEMP/${MOLT_QUINT_RUST_EVALUATOR_ASSET}"
+          mkdir -p "$evaluator_dir"
+          curl --fail --location --show-error --silent --retry 5 --retry-delay 2 \
+            "https://github.com/informalsystems/quint/releases/download/evaluator/${MOLT_QUINT_RUST_EVALUATOR_VERSION}/${MOLT_QUINT_RUST_EVALUATOR_ASSET}" \
+            --output "$asset_path"
+          echo "${MOLT_QUINT_RUST_EVALUATOR_SHA256}  ${asset_path}" | sha256sum --check
+          tar -xzf "$asset_path" -C "$evaluator_dir"
+          chmod +x "$evaluator_dir/quint_evaluator"
+          "$evaluator_dir/quint_evaluator" --help >/dev/null
 
       - name: Verify all models
         run: python3 tools/check_formal_methods.py --quint-only
