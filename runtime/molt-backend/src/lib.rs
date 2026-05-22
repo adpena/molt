@@ -5883,7 +5883,7 @@ mod tests {
             profile: None,
         };
 
-        let bytes = SimpleBackend::new().compile(ir);
+        let bytes = SimpleBackend::new().compile(ir).bytes;
         let output = tmp_dir.join("out.o");
         std::fs::write(&output, &bytes).expect("write llvm object");
         let nm = std::process::Command::new("nm")
