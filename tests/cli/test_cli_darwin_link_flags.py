@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import molt.cli as cli
+from tests.cli.process_guard import run_cli_test_process
 
 
 def test_append_darwin_runtime_frameworks_for_host_darwin(
@@ -239,9 +240,10 @@ def test_detect_macos_deployment_target_arm64_uses_sdk_version(
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
     try:
-        expected = subprocess.check_output(
-            ["xcrun", "--show-sdk-version"], text=True, timeout=5
-        ).strip()
+        result = run_cli_test_process(
+            ["xcrun", "--show-sdk-version"], text=True, timeout=5, check=True
+        )
+        expected = (result.stdout or "").strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         import platform
 

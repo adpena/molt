@@ -124,6 +124,10 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
 
     assert any("--fallback-intrinsic-backed-only" in args for args in stdlib_calls)
     assert any("--critical-allowlist" in args for args in stdlib_calls)
+    assert any(
+        len(args) > 1 and args[1] == "tools/check_subprocess_guard_coverage.py"
+        for args in calls
+    )
     assert calls[0][1:4] == ["-m", "ruff", "check"]
     assert calls[1][1:5] == ["-m", "ruff", "format", "--check"]
 

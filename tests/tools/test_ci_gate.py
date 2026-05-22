@@ -3,10 +3,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
+from tests.process_guard_common import run_guarded_test_process
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_GATE = REPO_ROOT / "tools" / "ci_gate.py"
@@ -348,8 +348,9 @@ def test_ci_gate_script_runs_directly_without_pythonpath() -> None:
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
 
-    result = subprocess.run(
+    result = run_guarded_test_process(
         ["python3", "tools/ci_gate.py", "--tier", "1", "--dry-run", "--json"],
+        prefix="MOLT_TEST_SUITE",
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -366,8 +367,9 @@ def test_ci_gate_help_reports_memory_guard_hard_cap() -> None:
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
 
-    result = subprocess.run(
+    result = run_guarded_test_process(
         ["python3", "tools/ci_gate.py", "--help"],
+        prefix="MOLT_TEST_SUITE",
         cwd=REPO_ROOT,
         env=env,
         text=True,

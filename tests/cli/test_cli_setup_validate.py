@@ -158,6 +158,7 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     names = {entry["name"] for entry in steps}
     assert "cli-run-json" in names
     assert "cli-command-json" in names
+    assert "subprocess-guard-audit" in names
     assert "native-parity" in names
     assert "wasm-parity" in names
     assert "conformance-smoke" in names
@@ -173,6 +174,11 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert bench_step["memory_guard_prefix"] == "MOLT_BENCH"
     assert "--warmup" in bench_step["cmd"]
     assert bench_step["cmd"][bench_step["cmd"].index("--warmup") + 1] == "1"
+    guard_audit_step = next(
+        entry for entry in steps if entry["name"] == "subprocess-guard-audit"
+    )
+    assert guard_audit_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
+    assert guard_audit_step["category"] == "command"
 
 
 def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> None:

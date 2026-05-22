@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+from tests.cli.process_guard import run_cli_test_process
 
 
 def test_is_valid_wasm_binary_accepts_wasm_magic(tmp_path: Path) -> None:
@@ -60,11 +61,13 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
         project_root=project_root,
     )
 
-    exports = subprocess.check_output(
+    result = run_cli_test_process(
         [wasm_objdump, "-x", str(runtime_reloc)],
         text=True,
         cwd=project_root,
+        check=True,
     )
+    exports = result.stdout or ""
     assert "D <_CLOCK_PROCESS_CPUTIME_ID> [ undefined" not in exports
     assert "D <_CLOCK_THREAD_CPUTIME_ID> [ undefined" not in exports
     assert "D <_CLOCK_PROCESS_CPUTIME_ID>" in exports
