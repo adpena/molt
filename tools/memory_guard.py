@@ -5,6 +5,7 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -564,8 +565,10 @@ def peak_rss(
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
 ) -> RssViolation | None:
-    observed = watched if watched is not None else watched_pids(
-        samples, root_pid, tracker=tracker
+    observed = (
+        watched
+        if watched is not None
+        else watched_pids(samples, root_pid, tracker=tracker)
     )
     candidates = [sample for pid, sample in samples.items() if pid in observed]
     if not candidates:
@@ -585,8 +588,10 @@ def total_rss(
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
 ) -> RssViolation | None:
-    observed = watched if watched is not None else watched_pids(
-        samples, root_pid, tracker=tracker
+    observed = (
+        watched
+        if watched is not None
+        else watched_pids(samples, root_pid, tracker=tracker)
     )
     candidates = [sample for pid, sample in samples.items() if pid in observed]
     if not candidates:
@@ -608,8 +613,10 @@ def find_rss_violation(
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
 ) -> RssViolation | None:
-    observed = watched if watched is not None else watched_pids(
-        samples, root_pid, tracker=tracker
+    observed = (
+        watched
+        if watched is not None
+        else watched_pids(samples, root_pid, tracker=tracker)
     )
     candidates = [
         sample
@@ -1390,6 +1397,70 @@ def exit_signal_payload(returncode: int) -> dict[str, object] | None:
 _exit_signal_payload = exit_signal_payload
 
 
+def _utc_timestamp() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace(
+            "+00:00",
+            "Z",
+        )
+    )
+
+
+def _elapsed_text(elapsed_s: float | None) -> str:
+    return "unknown" if elapsed_s is None else f"{elapsed_s:.2f}s"
+
+
+def _limit_text(limit_gb: float | None) -> str:
+    return "unknown" if limit_gb is None else f"{limit_gb:.2f}GB"
+
+
+def _incident_payload(result: GuardResult) -> dict[str, object] | None:
+    if result.violation is not None:
+        cleanup = (
+            "classified command as failed from child exit resource usage"
+            if result.violation.scope == "process_rusage"
+            else "terminated tracked process tree"
+        )
+        return {
+            "reason": "rss_limit_exceeded",
+            "cleanup": cleanup,
+            "recorded_at": _utc_timestamp(),
+            "elapsed_s": result.elapsed_s,
+            "next_action": (
+                "Inspect child logs and allocations, lower parallelism/input size, "
+                "or raise the relevant memory guard RSS limit if the workload is "
+                "expected."
+            ),
+        }
+    if result.timed_out:
+        return {
+            "reason": "timeout",
+            "cleanup": "terminated tracked process tree",
+            "recorded_at": _utc_timestamp(),
+            "elapsed_s": result.elapsed_s,
+            "next_action": (
+                "Inspect child logs for a hang or oversized workload; raise the "
+                "guard timeout only for intentional long-running work."
+            ),
+        }
+    exit_signal = _exit_signal_payload(result.returncode)
+    if exit_signal is not None:
+        return {
+            "reason": "signal_exit",
+            "cleanup": "none_by_guard",
+            "recorded_at": _utc_timestamp(),
+            "elapsed_s": result.elapsed_s,
+            "signal": exit_signal,
+            "next_action": (
+                "Inspect child stderr/logs or the host signal source; the memory "
+                "guard did not classify this as an RSS limit trip."
+            ),
+        }
+    return None
+
+
 def _write_summary_json(
     path: str,
     *,
@@ -1430,6 +1501,7 @@ def _write_summary_json(
             if result.violation is not None or result.timed_out
             else _exit_signal_payload(result.returncode)
         ),
+        "incident": _incident_payload(result),
     }
     summary_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -1677,18 +1749,45 @@ def main(
                 else max_rss_gb
             )
         )
+        incident_at = _utc_timestamp()
+        cleanup = (
+            "classified command as failed from child exit resource usage"
+            if result.violation.scope == "process_rusage"
+            else "terminated tracked process tree to prevent orphaned Molt subprocesses"
+        )
+        time_label = (
+            "observed_at" if result.violation.scope == "process_rusage" else "killed_at"
+        )
         print(
-            "memory_guard: RSS limit exceeded: "
+            "memory_guard: RSS limit exceeded; "
+            f"{cleanup}: {time_label}={incident_at} "
+            f"elapsed={_elapsed_text(result.elapsed_s)} "
             f"pid={result.violation.pid} "
             f"rss={result.violation.rss_gb:.2f}GB "
-            f"limit={0.0 if limit_gb is None else limit_gb:.2f}GB "
+            f"limit={_limit_text(limit_gb)} "
             f"scope={result.violation.scope} "
             f"command={result.violation.command}",
             file=sys.stderr,
         )
-    if result.timed_out:
         print(
-            f"memory_guard: timeout after {args.timeout:.2f}s",
+            "memory_guard: next action: inspect child logs and allocations for "
+            "runaway work; lower parallelism/input size, or if expected raise the "
+            "relevant *_MAX_PROCESS_RSS_GB/*_MAX_TOTAL_RSS_GB limit.",
+            file=sys.stderr,
+        )
+    if result.timed_out:
+        incident_at = _utc_timestamp()
+        print(
+            "memory_guard: timeout after "
+            f"{0.0 if args.timeout is None else args.timeout:.2f}s; "
+            "terminated tracked process tree to prevent orphaned Molt "
+            f"subprocesses: killed_at={incident_at} "
+            f"elapsed={_elapsed_text(result.elapsed_s)}",
+            file=sys.stderr,
+        )
+        print(
+            "memory_guard: next action: inspect child logs for a hang or oversized "
+            "workload; raise --timeout only for intentional long-running work.",
             file=sys.stderr,
         )
     exit_signal = _exit_signal_payload(result.returncode)
@@ -1696,7 +1795,14 @@ def main(
         signame = exit_signal["name"] or f"signal {exit_signal['signal']}"
         print(
             "memory_guard: command exited with "
-            f"{signame} status ({result.returncode}); no RSS violation observed",
+            f"{signame} status ({result.returncode}); no RSS violation observed: "
+            f"observed_at={_utc_timestamp()} "
+            f"elapsed={_elapsed_text(result.elapsed_s)}",
+            file=sys.stderr,
+        )
+        print(
+            "memory_guard: next action: inspect child stderr/logs or host signal "
+            "source; the guard did not classify this as an RSS limit trip.",
             file=sys.stderr,
         )
     return result.returncode

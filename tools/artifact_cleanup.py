@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    import harness_memory_guard  # type: ignore
 
 DEFAULT_PATHS: tuple[str, ...] = (
     ".hypothesis/",
@@ -117,6 +121,21 @@ def build_git_clean_command(*, apply: bool, pathspecs: Sequence[str]) -> list[st
     return ["git", "clean", mode, "--", *pathspecs]
 
 
+def _guarded_dev_cleanup_process(
+    repo_root: Path,
+    cmd: Sequence[str],
+) -> harness_memory_guard.GuardedCompletedProcess:
+    env = harness_memory_guard.canonical_harness_env(None, repo_root=repo_root)
+    return harness_memory_guard.guarded_completed_process(
+        list(cmd),
+        prefix="MOLT_DEV_CLEANUP",
+        cwd=repo_root,
+        env=env,
+        capture_output=False,
+        text=True,
+    )
+
+
 def run_process_sentinel(repo_root: Path) -> int:
     cmd = [
         sys.executable,
@@ -124,7 +143,7 @@ def run_process_sentinel(repo_root: Path) -> int:
         "--once",
         "--kill-all",
     ]
-    result = subprocess.run(cmd, cwd=repo_root, text=True)
+    result = _guarded_dev_cleanup_process(repo_root, cmd)
     if result.returncode not in {0, 1}:
         return result.returncode
     return 0
@@ -132,7 +151,7 @@ def run_process_sentinel(repo_root: Path) -> int:
 
 def run_git_clean(repo_root: Path, *, apply: bool, pathspecs: Sequence[str]) -> int:
     cmd = build_git_clean_command(apply=apply, pathspecs=pathspecs)
-    result = subprocess.run(cmd, cwd=repo_root, text=True)
+    result = _guarded_dev_cleanup_process(repo_root, cmd)
     return result.returncode
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 import tomllib
 from pathlib import Path
 from typing import Mapping, cast
@@ -47,28 +46,6 @@ class DxProject:
             return self.project_env_dir() / "Scripts" / "python.exe"
         return self.project_env_dir() / "bin" / "python3"
 
-    def project_env_matches_python(self, requested: str | None) -> bool:
-        project_python = self.project_python()
-        if not project_python.exists():
-            return False
-        if not requested:
-            return True
-        try:
-            proc = subprocess.run(
-                [
-                    str(project_python),
-                    "-c",
-                    "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
-                ],
-                cwd=self.root,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            return False
-        return proc.stdout.strip() == requested
-
     def normalized_uv_run_env(
         self,
         env: Mapping[str, str],
@@ -84,7 +61,10 @@ class DxProject:
         if run_env.get("UV_NO_SYNC") == "1":
             env_matches = project_env_matches_python
             if env_matches is None:
-                env_matches = self.project_env_matches_python(python)
+                raise DxConfigError(
+                    "UV_NO_SYNC normalization requires a guarded project "
+                    "Python version probe result"
+                )
             if not env_matches:
                 run_env.pop("UV_NO_SYNC", None)
         return run_env

@@ -388,3 +388,10 @@ def test_dev_py_uv_no_sync_normalization_uses_guarded_probe(monkeypatch) -> None
         ("3.12", {"UV_NO_SYNC": "1"}),
         ("3.13", {"UV_NO_SYNC": "1"}),
     ]
+
+
+def test_dx_normalized_uv_no_sync_requires_guarded_probe() -> None:
+    module = _load_dev_py()
+
+    with pytest.raises(RuntimeError, match="guarded project Python version probe"):
+        module.DX.normalized_uv_run_env({"UV_NO_SYNC": "1"}, python="3.12")

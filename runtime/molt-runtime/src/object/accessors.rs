@@ -1,21 +1,21 @@
 use molt_obj_model::MoltObject;
 use std::sync::OnceLock;
 
-use super::inline_cache::{global_ic_table, IC_TABLE_CAPACITY};
+use super::inline_cache::{IC_TABLE_CAPACITY, global_ic_table};
 use crate::{
-    attr_name_bits_from_bytes, builtin_classes_if_initialized, class_dict_bits, class_field_offset,
-    class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place,
-    exception_pending, global_type_version, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
-    intern_static_name, is_missing_bits, obj_from_bits, object_class_bits,
-    object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size, object_type_id,
-    profile_hit, raise_exception, runtime_state, to_i64, usize_from_bits, PyToken,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT, GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
-    GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL,
+    GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
     STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    attr_name_bits_from_bytes, builtin_classes_if_initialized, class_dict_bits, class_field_offset,
+    class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place,
+    exception_pending, global_type_version, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
+    intern_static_name, is_missing_bits, obj_from_bits, object_class_bits,
+    object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size, object_type_id,
+    profile_hit, raise_exception, runtime_state, to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -784,8 +784,8 @@ pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -
 mod tests {
     use super::guard_layout_match;
     use crate::{
-        alloc_dict_with_pairs, builtin_classes, class_layout_version_bits, dec_ref_bits,
-        obj_from_bits, MoltObject,
+        MoltObject, alloc_dict_with_pairs, builtin_classes, class_layout_version_bits,
+        dec_ref_bits, obj_from_bits,
     };
 
     #[test]

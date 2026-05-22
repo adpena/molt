@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 from dataclasses import dataclass, field
 import json
 import os
@@ -222,6 +223,7 @@ def canonical_harness_env(
     merged.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
     merged.setdefault("UV_CACHE_DIR", str(ext_root / ".uv-cache"))
     merged.setdefault("TMPDIR", str(ext_root / "tmp"))
+    merged.setdefault("MOLT_SESSION_ID", f"guard-{os.getpid()}")
     return merged
 
 
@@ -454,10 +456,48 @@ def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
+def _utc_timestamp() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace(
+            "+00:00",
+            "Z",
+        )
+    )
+
+
+def _elapsed_text(elapsed_s: float | None) -> str:
+    return "unknown" if elapsed_s is None else f"{elapsed_s:.2f}s"
+
+
+def _limit_text(limit_gb: float | None) -> str:
+    return "unknown" if limit_gb is None else f"{limit_gb:.2f}GB"
+
+
+def _rss_limit_hint(prefix: str) -> str:
+    normalized = _normalize_prefix(prefix) or "MOLT"
+    if normalized == "MOLT":
+        return "MOLT_MAX_PROCESS_RSS_GB/MOLT_MAX_TOTAL_RSS_GB"
+    return (
+        f"{normalized}_MAX_PROCESS_RSS_GB/{normalized}_MAX_TOTAL_RSS_GB "
+        "or the parent MOLT_MAX_* RSS limits"
+    )
+
+
+def _timeout_hint(prefix: str) -> str:
+    normalized = _normalize_prefix(prefix) or "MOLT"
+    return f"{normalized}_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC"
+
+
 def _guard_stderr_message(
     violation: memory_guard.RssViolation | None,
     limits: HarnessMemoryLimits,
     effective_limits: memory_guard.ResolvedMemoryLimits | None = None,
+    *,
+    prefix: str,
+    elapsed_s: float | None,
+    killed_at: str,
 ) -> str:
     if violation is None:
         return ""
@@ -474,22 +514,60 @@ def _guard_stderr_message(
             else limits.max_process_rss_gb
         )
     )
+    cleanup = (
+        "classified the command as failed from child exit resource usage"
+        if violation.scope == "process_rusage"
+        else "terminated the tracked process tree to prevent orphaned Molt subprocesses"
+    )
+    time_label = "observed_at" if violation.scope == "process_rusage" else "killed_at"
     return (
-        "memory_guard: RSS limit exceeded: "
+        "memory_guard: RSS limit exceeded; "
+        f"{cleanup}: {time_label}={killed_at} elapsed={_elapsed_text(elapsed_s)} "
         f"pid={violation.pid} rss={violation.rss_gb:.2f}GB "
-        f"limit={limit_gb:.2f}GB scope={violation.scope} "
+        f"limit={_limit_text(limit_gb)} scope={violation.scope} "
         f"command={violation.command}\n"
+        "memory_guard: next action: inspect child logs and allocations for runaway "
+        "work; lower parallelism/input size, or if this workload is expected raise "
+        f"{_rss_limit_hint(prefix)} within repo policy.\n"
     )
 
 
-def _guard_exit_signal_message(returncode: int) -> str:
+def _guard_timeout_message(
+    *,
+    prefix: str,
+    timeout: float | None,
+    elapsed_s: float | None,
+    killed_at: str,
+) -> str:
+    timeout_text = "unknown" if timeout is None else f"{timeout:.2f}s"
+    return (
+        "memory_guard: timeout; terminated the tracked process tree to prevent "
+        "orphaned Molt subprocesses: "
+        f"killed_at={killed_at} elapsed={_elapsed_text(elapsed_s)} "
+        f"timeout={timeout_text}\n"
+        "memory_guard: next action: inspect child logs for a hang or oversized "
+        f"workload; if intentional raise {_timeout_hint(prefix)} for this guard "
+        "family.\n"
+    )
+
+
+def _guard_exit_signal_message(
+    returncode: int,
+    *,
+    elapsed_s: float | None,
+    observed_at: str,
+) -> str:
     payload = memory_guard.exit_signal_payload(returncode)
     if payload is None:
         return ""
     signame = payload["name"] or f"signal {payload['signal']}"
     return (
         "memory_guard: command exited with "
-        f"{signame} status ({returncode}); no RSS violation observed\n"
+        f"{signame} status ({returncode}); no RSS violation observed: "
+        f"observed_at={observed_at} elapsed={_elapsed_text(elapsed_s)}\n"
+        "memory_guard: next action: inspect child stderr/logs or host signal "
+        "source; if host memory pressure was involved, rerun with guard samples "
+        "and lower parallelism.\n"
     )
 
 
@@ -581,14 +659,29 @@ def guarded_completed_process(
             dynamic_total_rss=resolved_limits.dynamic_total_rss,
         )
     stderr = guarded.stderr or ""
+    incident_at = _utc_timestamp()
     if guarded.violation is not None:
         stderr += _guard_stderr_message(
             guarded.violation,
             resolved_limits,
             guarded.limit_at_violation,
+            prefix=prefix,
+            elapsed_s=guarded.elapsed_s,
+            killed_at=incident_at,
         )
-    elif not guarded.timed_out:
-        stderr += _guard_exit_signal_message(guarded.returncode)
+    elif guarded.timed_out:
+        stderr += _guard_timeout_message(
+            prefix=prefix,
+            timeout=timeout,
+            elapsed_s=guarded.elapsed_s,
+            killed_at=incident_at,
+        )
+    else:
+        stderr += _guard_exit_signal_message(
+            guarded.returncode,
+            elapsed_s=guarded.elapsed_s,
+            observed_at=incident_at,
+        )
     return GuardedCompletedProcess(
         list(command),
         guarded.returncode,
@@ -601,17 +694,25 @@ def guarded_completed_process(
 def _guard_violation_bytes_message(
     violation: memory_guard.RssViolation,
     limit_gb: float | None,
+    *,
+    elapsed_s: float | None,
 ) -> bytes:
     rss_gb = violation.rss_kb / (1024 * 1024)
     scope = getattr(violation, "scope", "process")
     limit = "unknown" if limit_gb is None else f"{limit_gb:.2f}GB"
     command = str(getattr(violation, "command", "")).strip()
+    killed_at = _utc_timestamp()
     message = (
         "\n"
-        f"molt memory guard: RSS limit exceeded scope={scope} "
-        f"pid={violation.pid} rss={rss_gb:.2f}GB limit={limit}"
+        "molt memory guard: RSS limit exceeded; terminated the tracked process "
+        "tree to prevent orphaned Molt subprocesses: "
+        f"killed_at={killed_at} elapsed={_elapsed_text(elapsed_s)} "
+        f"scope={scope} pid={violation.pid} rss={rss_gb:.2f}GB limit={limit}"
         + (f" command={command}" if command else "")
         + "\n"
+        "molt memory guard: next action: inspect child logs and allocations; "
+        "lower parallelism/input size, or raise the relevant *_MAX_* RSS limit "
+        "if the workload is expected.\n"
     )
     return message.encode("utf-8", errors="replace")
 
@@ -768,7 +869,11 @@ def guarded_completed_process_to_tempfiles(
                                 else current_limits.max_process_rss_gb
                             )
                             stderr_file.write(
-                                _guard_violation_bytes_message(violation, limit_gb)
+                                _guard_violation_bytes_message(
+                                    violation,
+                                    limit_gb,
+                                    elapsed_s=now - started,
+                                )
                             )
                             stderr_file.flush()
                             _terminate_guarded_bytes_process(
@@ -953,10 +1058,7 @@ class RepoProcessMemorySentinel:
 
     def _current_group_pgids(self) -> set[int]:
         try:
-            return {
-                group.pgid
-                for group in self._current_groups(update_observed=False)
-            }
+            return {group.pgid for group in self._current_groups(update_observed=False)}
         except Exception as exc:  # noqa: BLE001
             self._record(
                 {
@@ -986,17 +1088,27 @@ class RepoProcessMemorySentinel:
                 return
             self.tripped = True
             for violation in violations:
+                claimed = False
+                if violation.pgid not in self._terminated_pgids:
+                    claimed = _claim_terminated_pgid(violation.pgid)
+                action = (
+                    "terminated process group to prevent orphaned Molt subprocesses; "
+                    "inspect this JSONL event, child logs, and guard limits before "
+                    "rerun"
+                    if claimed
+                    else "process group was already claimed by another guard; inspect "
+                    "the first matching guard event for kill details"
+                )
                 self._record(
                     {
                         "event": "repo_process_guard_tripped",
                         "violation": process_sentinel.violation_payload(violation),
                         "limits": memory_guard.memory_limits_payload(current_limits),
+                        "killed_at": _utc_timestamp(),
+                        "action": action,
                     }
                 )
-                if (
-                    violation.pgid in self._terminated_pgids
-                    or not _claim_terminated_pgid(violation.pgid)
-                ):
+                if not claimed:
                     continue
                 process_sentinel.terminate_group(violation.pgid, grace=0.25)
                 self._terminated_pgids.add(violation.pgid)
@@ -1053,6 +1165,12 @@ class RepoProcessMemorySentinel:
                         {
                             "event": "repo_process_guard_drained",
                             "violation": process_sentinel.violation_payload(violation),
+                            "killed_at": _utc_timestamp(),
+                            "action": (
+                                "terminated process group left behind by the guarded "
+                                "scope to prevent orphaned Molt subprocesses; inspect "
+                                "child logs before rerun"
+                            ),
                         }
                     )
                     process_sentinel.terminate_group(
