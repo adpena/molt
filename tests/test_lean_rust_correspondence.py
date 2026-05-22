@@ -15,15 +15,18 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.process_guard_common import run_guarded_test_process
 
 
 def _find_repo_root() -> Path:
     try:
-        out = subprocess.check_output(
+        proc = run_guarded_test_process(
             ["git", "rev-parse", "--show-toplevel"],
-            stderr=subprocess.DEVNULL,
+            prefix="MOLT_FORMAL",
             text=True,
-        ).strip()
+            check=True,
+        )
+        out = (proc.stdout or "").strip()
         return Path(out)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return Path(__file__).resolve().parents[1]

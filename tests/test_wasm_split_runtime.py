@@ -515,11 +515,13 @@ def _sha256(path: Path) -> str:
 
 
 def _collect_module_imports(path: Path, module_name: str) -> list[str]:
-    text = subprocess.check_output(
+    result = _run_wasm_test_process(
         ["wasm-tools", "print", str(path)],
-        cwd=str(ROOT),
+        cwd=ROOT,
         text=True,
+        check=True,
     )
+    text = result.stdout or ""
     imports: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -533,11 +535,13 @@ def _collect_module_imports(path: Path, module_name: str) -> list[str]:
 
 
 def _collect_export_names(path: Path) -> list[str]:
-    text = subprocess.check_output(
+    result = _run_wasm_test_process(
         ["wasm-tools", "print", str(path)],
-        cwd=str(ROOT),
+        cwd=ROOT,
         text=True,
+        check=True,
     )
+    text = result.stdout or ""
     exports: list[str] = []
     prefix = '(export "'
     for line in text.splitlines():
