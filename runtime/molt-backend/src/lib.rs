@@ -3467,7 +3467,8 @@ impl SimpleBackend {
                 )
             });
 
-            llvm.optimize(MoltOptLevel::Aggressive);
+            llvm.optimize(MoltOptLevel::Aggressive)
+                .unwrap_or_else(|err| panic!("{err}"));
             llvm.module.verify().unwrap_or_else(|msg| {
                 panic!(
                     "LLVM module verification failed after optimization:\n{}",

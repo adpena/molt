@@ -140,15 +140,28 @@ impl<'ctx> LlvmBackend<'ctx> {
     /// polyhedral loop optimizations (tiling, interchange, strip-mine
     /// vectorization) are applied automatically after the standard O2/O3
     /// pipeline, giving additional gains on loop-heavy numeric code.
-    pub fn optimize(&self, opt_level: MoltOptLevel) {
-        use inkwell::module::Linkage;
-        use inkwell::passes::PassBuilderOptions;
-
+    pub fn optimize(&self, opt_level: MoltOptLevel) -> Result<(), String> {
         // Activate Polly polyhedral optimizer (no-op if already initialized).
         #[cfg(feature = "polly")]
         Self::init_polly_once();
 
-        let target_machine = self.create_target_machine(&opt_level);
+        let passes = match opt_level {
+            MoltOptLevel::None => "default<O0>",
+            MoltOptLevel::Speed => "default<O2>",
+            MoltOptLevel::Aggressive => "default<O3>",
+        };
+        self.run_optimization_passes(&opt_level, passes)
+    }
+
+    fn run_optimization_passes(
+        &self,
+        opt_level: &MoltOptLevel,
+        passes: &str,
+    ) -> Result<(), String> {
+        use inkwell::module::Linkage;
+        use inkwell::passes::PassBuilderOptions;
+
+        let target_machine = self.create_target_machine(opt_level);
 
         // Mark all externally-visible functions as dllexport so the
         // Internalize pass treats them as API and doesn't remove them.
@@ -163,25 +176,16 @@ impl<'ctx> LlvmBackend<'ctx> {
             func = f.get_next_function();
         }
 
-        // With Polly enabled, the standard pipeline picks up polyhedral
-        // passes automatically via the command-line flags set in
-        // `init_polly_once`. Polly hooks into LLVM's pass manager
-        // infrastructure — no explicit pass names needed in the string.
-        let passes = match opt_level {
-            MoltOptLevel::None => "default<O0>",
-            MoltOptLevel::Speed => "default<O2>",
-            MoltOptLevel::Aggressive => "default<O3>",
-        };
-
         let options = PassBuilderOptions::create();
         options.set_loop_vectorization(true);
         options.set_loop_slp_vectorization(true);
         options.set_loop_unrolling(true);
         options.set_loop_interleaving(true);
         options.set_merge_functions(true);
-        if let Err(e) = self.module.run_passes(passes, &target_machine, options) {
-            eprintln!("WARNING: LLVM optimization pipeline failed: {e}; continuing unoptimized");
-        }
+        let result = self
+            .module
+            .run_passes(passes, &target_machine, options)
+            .map_err(|e| format!("LLVM optimization pipeline `{passes}` failed: {e}"));
 
         // Restore original linkage after optimization.
         for (name, linkage) in &preserved {
@@ -189,6 +193,8 @@ impl<'ctx> LlvmBackend<'ctx> {
                 f.set_linkage(*linkage);
             }
         }
+
+        result
     }
 
     /// Create a native target machine for the host CPU at the given opt level.
@@ -290,7 +296,40 @@ mod tests {
         let ctx = Context::create();
         let backend = LlvmBackend::new(&ctx, "opt_smoke");
         // Running passes on an empty module must not panic or error.
-        backend.optimize(MoltOptLevel::Speed);
+        backend
+            .optimize(MoltOptLevel::Speed)
+            .expect("empty-module optimization should succeed");
+    }
+
+    #[test]
+    fn test_optimize_invalid_pipeline_fails_closed_and_restores_linkage() {
+        let ctx = Context::create();
+        let backend = LlvmBackend::new(&ctx, "opt_fail_closed");
+        let i64_ty = ctx.i64_type();
+        let func = backend.module.add_function(
+            "visible_entry",
+            i64_ty.fn_type(&[], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let entry = ctx.append_basic_block(func, "entry");
+        backend.builder.position_at_end(entry);
+        backend
+            .builder
+            .build_return(Some(&i64_ty.const_zero()))
+            .unwrap();
+
+        let err = backend
+            .run_optimization_passes(&MoltOptLevel::Speed, "not-a-real-pass")
+            .expect_err("invalid LLVM pass pipeline must fail closed");
+        assert!(
+            err.contains("not-a-real-pass"),
+            "error should identify the rejected pass pipeline: {err}"
+        );
+        assert_eq!(
+            func.get_linkage(),
+            inkwell::module::Linkage::External,
+            "temporary dllexport linkage must be restored after optimizer failure"
+        );
     }
 
     #[test]
