@@ -30199,6 +30199,18 @@ def _planned_validate_steps(
             "smoke",
         ),
         _ValidationStep(
+            "memory-guard-wiring-audit",
+            [
+                python,
+                "tools/check_memory_guard_wiring.py",
+            ],
+            root,
+            "command",
+            ("native", "llvm", "wasm"),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
             "native-parity",
             [
                 python,
