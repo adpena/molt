@@ -76,14 +76,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "sudo apt-get install -y lld" in ci_text
     assert "ld.lld --version" in ci_text
     assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in ci_text
-    assert (
-        "cargo build --profile dev-fast --workspace --features molt-backend/native-backend"
-        in ci_text
-    )
-    assert (
-        "cargo test --profile dev-fast -p molt-backend --features native-backend --lib"
-        in ci_text
-    )
+    assert ci_text.count("Run bench CLI native smoke tests") == 1
 
 
 def test_github_workflows_opt_into_node24_action_runtime() -> None:
@@ -182,13 +175,13 @@ def test_ci_clippy_failures_are_not_swallowed() -> None:
     clippy_lines = [
         line.strip()
         for line in ci_text.splitlines()
-        if "cargo clippy --profile dev-fast -p molt-backend --features native-backend -- -D warnings"
+        if "cargo clippy -p molt-backend --features native-backend -- -D warnings"
         in line
     ]
 
     assert clippy_lines == [
         "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo clippy --profile dev-fast -p molt-backend --features native-backend -- -D warnings"
+        "cargo clippy -p molt-backend --features native-backend -- -D warnings"
     ]
 
 
@@ -218,11 +211,11 @@ def test_ci_memory_intensive_steps_use_memory_guard() -> None:
         in ci_text
     )
     assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test --profile dev-fast -p molt-backend"
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-backend"
         in ci_text
     )
     assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy --profile dev-fast"
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy"
         in ci_text
     )
 
