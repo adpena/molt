@@ -794,6 +794,11 @@ def guarded_completed_process(
         env=env,
         limits=resolved_limits,
     ):
+        keepalive_interval = (
+            _subprocess_keepalive_interval_secs(env, prefix=prefix)
+            if not capture_output
+            else None
+        )
         guarded = memory_guard.run_guarded(
             list(command),
             max_rss_kb=resolved_limits.max_process_rss_kb,
@@ -816,6 +821,12 @@ def guarded_completed_process(
             dynamic_process_rss=resolved_limits.dynamic_process_rss,
             dynamic_total_rss=resolved_limits.dynamic_total_rss,
             cleanup_orphans=cleanup_tracked_orphans,
+            progress_label=(
+                f"memory_guard: {_normalize_prefix(prefix)} guarded command"
+                if keepalive_interval is not None
+                else None
+            ),
+            keepalive_interval=keepalive_interval,
         )
     stderr = guarded.stderr or ""
     incident_at = _utc_timestamp()
@@ -882,9 +893,31 @@ def _guard_violation_bytes_message(
     return message.encode("utf-8", errors="replace")
 
 
-def _subprocess_keepalive_interval_secs() -> float | None:
-    raw = os.environ.get("MOLT_SUBPROCESS_KEEPALIVE_SECS", "20").strip()
-    if raw in {"", "0", "off", "false"}:
+def _subprocess_keepalive_interval_secs(
+    env: Mapping[str, str] | None = None,
+    *,
+    prefix: str | None = None,
+) -> float | None:
+    source = _effective_env(env)
+    normalized = _normalize_prefix(prefix or "")
+    names: list[str] = []
+    if normalized:
+        names.extend(
+            [
+                f"{normalized}_KEEPALIVE_SEC",
+                f"{normalized}_KEEPALIVE_SECS",
+            ]
+        )
+    names.append("MOLT_SUBPROCESS_KEEPALIVE_SECS")
+    raw = ""
+    for name in names:
+        value = source.get(name)
+        if value is not None:
+            raw = value.strip()
+            break
+    if not raw:
+        raw = "20"
+    if raw.lower() in {"0", "off", "false", "no"}:
         return None
     try:
         value = float(raw)
@@ -910,6 +943,17 @@ def _terminate_guarded_bytes_process(
         watched=watched,
         grace=grace,
     )
+
+
+def _read_tempfile_bytes(handle: object) -> bytes:
+    if not hasattr(handle, "seek") or not hasattr(handle, "read"):
+        return b""
+    try:
+        handle.seek(0)  # type: ignore[attr-defined]
+        data = handle.read()  # type: ignore[attr-defined]
+    except (OSError, ValueError):
+        return b""
+    return data if isinstance(data, bytes) else bytes(str(data), "utf-8")
 
 
 def guarded_completed_process_to_tempfiles(
@@ -964,7 +1008,7 @@ def guarded_completed_process_to_tempfiles(
                 finally:
                     proc.stdin.close()
             keepalive_interval = (
-                _subprocess_keepalive_interval_secs()
+                _subprocess_keepalive_interval_secs(env)
                 if progress_label is not None
                 else None
             )
@@ -982,9 +1026,30 @@ def guarded_completed_process_to_tempfiles(
                 remaining = None if timeout is None else timeout - (now - started)
                 if remaining is not None and remaining <= 0:
                     _terminate_guarded_bytes_process(proc, tracker, grace=0.0)
-                    proc.wait()
                     assert timeout is not None
-                    raise subprocess.TimeoutExpired(list(command), timeout)
+                    wait_s = memory_guard.termination_wait_seconds(env)
+                    try:
+                        proc.wait(timeout=wait_s)
+                    except subprocess.TimeoutExpired as exc:
+                        stderr_file.write(
+                            (
+                                "\n"
+                                "molt memory guard: termination wait expired; "
+                                "tracked tempfile command did not fully exit "
+                                "after SIGTERM/SIGKILL: "
+                                f"killed_at={_utc_timestamp()} "
+                                f"elapsed={_elapsed_text(now - started)} "
+                                f"pid={proc.pid} wait={wait_s:.2f}s\n"
+                            ).encode("utf-8", errors="replace")
+                        )
+                        stderr_file.flush()
+                        exc.stderr = _read_tempfile_bytes(stderr_file)
+                        exc.stdout = _read_tempfile_bytes(stdout_file)
+                        raise exc
+                    exc = subprocess.TimeoutExpired(list(command), timeout)
+                    exc.stderr = _read_tempfile_bytes(stderr_file)
+                    exc.stdout = _read_tempfile_bytes(stdout_file)
+                    raise exc
                 wait_timeout = remaining
                 if next_keepalive is not None:
                     keepalive_wait = max(0.0, next_keepalive - now)
@@ -1066,8 +1131,29 @@ def guarded_completed_process_to_tempfiles(
                         continue
                     if timeout is not None and now - started >= timeout:
                         _terminate_guarded_bytes_process(proc, tracker, grace=0.0)
-                        proc.wait()
-                        raise subprocess.TimeoutExpired(list(command), timeout)
+                        wait_s = memory_guard.termination_wait_seconds(env)
+                        try:
+                            proc.wait(timeout=wait_s)
+                        except subprocess.TimeoutExpired as exc:
+                            stderr_file.write(
+                                (
+                                    "\n"
+                                    "molt memory guard: termination wait expired; "
+                                    "tracked tempfile command did not fully exit "
+                                    "after SIGTERM/SIGKILL: "
+                                    f"killed_at={_utc_timestamp()} "
+                                    f"elapsed={_elapsed_text(now - started)} "
+                                    f"pid={proc.pid} wait={wait_s:.2f}s\n"
+                                ).encode("utf-8", errors="replace")
+                            )
+                            stderr_file.flush()
+                            exc.stderr = _read_tempfile_bytes(stderr_file)
+                            exc.stdout = _read_tempfile_bytes(stdout_file)
+                            raise exc
+                        exc = subprocess.TimeoutExpired(list(command), timeout)
+                        exc.stderr = _read_tempfile_bytes(stderr_file)
+                        exc.stdout = _read_tempfile_bytes(stdout_file)
+                        raise exc
             stdout_file.seek(0)
             stderr_file.seek(0)
             stdout = stdout_file.read()
