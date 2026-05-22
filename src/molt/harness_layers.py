@@ -48,14 +48,14 @@ def _merged_env(env: dict[str, str] | None = None) -> dict[str, str]:
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
-    run_env.setdefault("MOLT_EXT_ROOT", str(_REPO_ROOT))
-    run_env.setdefault("CARGO_TARGET_DIR", str(_REPO_ROOT / "target"))
-    run_env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", run_env["CARGO_TARGET_DIR"])
-    run_env.setdefault("MOLT_CACHE", str(_REPO_ROOT / ".molt_cache"))
-    run_env.setdefault("MOLT_DIFF_ROOT", str(_REPO_ROOT / "tmp" / "diff"))
-    run_env.setdefault("MOLT_DIFF_TMPDIR", str(_REPO_ROOT / "tmp"))
-    run_env.setdefault("UV_CACHE_DIR", str(_REPO_ROOT / ".uv-cache"))
-    run_env.setdefault("TMPDIR", str(_REPO_ROOT / "tmp"))
+    run_env["MOLT_EXT_ROOT"] = str(_REPO_ROOT)
+    run_env["CARGO_TARGET_DIR"] = str(_REPO_ROOT / "target")
+    run_env["MOLT_DIFF_CARGO_TARGET_DIR"] = run_env["CARGO_TARGET_DIR"]
+    run_env["MOLT_CACHE"] = str(_REPO_ROOT / ".molt_cache")
+    run_env["MOLT_DIFF_ROOT"] = str(_REPO_ROOT / "tmp" / "diff")
+    run_env["MOLT_DIFF_TMPDIR"] = str(_REPO_ROOT / "tmp")
+    run_env["UV_CACHE_DIR"] = str(_REPO_ROOT / ".uv-cache")
+    run_env["TMPDIR"] = str(_REPO_ROOT / "tmp")
     return run_env
 
 
