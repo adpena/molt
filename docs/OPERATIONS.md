@@ -14,7 +14,7 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
 - **WASM linker availability**: `wasm-ld` and `wasm-tools` are required for linked builds; use `--require-linked` to fail fast.
 - **Node PATH drift (macOS shells)**: some shells resolve `/usr/local/bin/node` (for example Node 14) before modern Homebrew/fnm nodes. Set `MOLT_NODE_BIN=/opt/homebrew/bin/node` (or another Node >= 18 path) for deterministic wasm lanes.
-- **Node wasm instability/noise**: use deterministic Node wasm flags (`--no-warnings --no-wasm-tier-up --no-wasm-dynamic-tiering --wasm-num-compilation-tasks=1`) to avoid warning-noise diffs and post-run Zone OOM incidents on large linked modules.
+- **Node wasm instability/noise**: use deterministic Node wasm flags (`--no-warnings --no-wasm-tier-up --no-wasm-dynamic-tiering --wasm-num-compilation-tasks=1`) to avoid warning-noise diffs and post-run Zone OOM incidents on large linked modules. Linked Node parity runners floor `MOLT_WASM_TEST_CHILD_RLIMIT_GB` to 64 GB because V8 reserves large virtual address ranges; recursive RSS/tree/global guard limits remain authoritative for real memory pressure.
 
 ## Differential Suite (Operational Controls)
 - **Memory profiling**: per-test RSS metrics are collected by default. Set `MOLT_DIFF_MEASURE_RSS=0` only for a deliberately lighter local investigation.

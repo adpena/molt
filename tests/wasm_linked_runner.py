@@ -12,6 +12,7 @@ import pytest
 from tools import harness_memory_guard
 
 _MIN_NODE_MAJOR = 18
+_NODE_WASM_CHILD_RLIMIT_FLOOR_GB = 64.0
 _NODE_BIN_CACHE: str | None = None
 
 
@@ -157,6 +158,29 @@ def _node_major_for_binary(path: str) -> int | None:
     if res.returncode != 0:
         return None
     return _parse_node_major(res.stdout)
+
+
+def _format_child_rlimit_gb(value: float) -> str:
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:g}"
+
+
+def _install_node_wasm_child_rlimit_floor(env: dict[str, str]) -> None:
+    raw = env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB", "").strip()
+    if raw:
+        try:
+            current_gb = float(raw)
+        except ValueError:
+            current_gb = None
+        if current_gb is not None:
+            if current_gb <= 0:
+                return
+            if current_gb >= _NODE_WASM_CHILD_RLIMIT_FLOOR_GB:
+                return
+    env["MOLT_WASM_TEST_CHILD_RLIMIT_GB"] = _format_child_rlimit_gb(
+        _NODE_WASM_CHILD_RLIMIT_FLOOR_GB
+    )
 
 
 def _select_node_binary() -> str | None:
@@ -320,10 +344,12 @@ def run_wasm_linked(
         env.pop(key, None)
     env.setdefault("NODE_NO_WARNINGS", "1")
     # Node/V8 reserves large WebAssembly virtual-memory ranges during
-    # instantiation; RSS remains bounded by the shared harness guard.
-    env.setdefault("MOLT_WASM_TEST_CHILD_RLIMIT_GB", "16")
+    # instantiation; RSS remains bounded by the shared harness guard. Keep
+    # this as an address-space floor so narrower inherited CI/user defaults do
+    # not turn V8 reservations into host SIGSEGVs before RSS evidence exists.
     if env_overrides:
         env.update(env_overrides)
+    _install_node_wasm_child_rlimit_floor(env)
     node_bin = _select_node_binary()
     if node_bin is None:
         raise AssertionError("Node >= 18 is required for wasm execution.")
