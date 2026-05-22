@@ -6,6 +6,9 @@ on:
     - cron: '0 4 * * 1'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   molt-conformance-full:
     name: Molt Conformance Full
