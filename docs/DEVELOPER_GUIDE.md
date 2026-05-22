@@ -112,8 +112,11 @@ Interpretation:
 - `tools/dev.py gates` executes the pyproject-owned CI-adjacent local gate
   sequence: backend Clippy with `-D warnings`, `cargo deny check`, release-fast
   workspace build, native backend lib tests, compliance tests, then an explicit
-  working-tree status check. Use `--allow-dirty` only while preserving known
-  partner WIP; commits should still be made from a reviewed staged set.
+  working-tree status check. It writes `logs/dev-gates-summary.json` with the
+  guard limits, commands, return codes, timings, git status, and any failure
+  reason; use `--summary-out` for an explicit custody path. Use `--allow-dirty`
+  only while preserving known partner WIP; commits should still be made from a
+  reviewed staged set.
 
 ## Canonical Debug Surface
 

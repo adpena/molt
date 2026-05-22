@@ -746,6 +746,10 @@ This section standardizes parallel agent work on Molt.
   `logs/validate-<suite>-<backend>-<profile>.json` by default. Pass
   `--summary-out` for an explicit custody path; check-only plans only write when
   that option is supplied.
+- `tools/dev.py gates` persists the pyproject-owned local gate sequence under
+  `logs/dev-gates-summary.json` by default. Pass `--summary-out` when a batch
+  needs a named custody artifact; failed gates still write the partial command
+  list, timings, guard limits, and failure reason before returning nonzero.
 - `tools/dev.py test --random-order --random-seed <seed>` is an opt-in DX lane
   for flushing out order dependence. Keep the canonical proof/CI sweeps
   deterministic.
