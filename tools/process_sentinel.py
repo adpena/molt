@@ -423,6 +423,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-total-rss-gb",
+        "--max-tree-rss-gb",
+        "--max-group-rss-gb",
+        dest="max_total_rss_gb",
         type=float,
         default=None,
         help=(
@@ -510,6 +513,16 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_explicit_memory_limit(
+    value: float | None,
+    *,
+    label: str,
+    hard_limit_gb: float,
+) -> None:
+    if value is not None and value >= hard_limit_gb:
+        raise ValueError(f"{label} RSS must stay below {hard_limit_gb:g} GB")
+
+
 def _resolved_limits_from_args(
     args: argparse.Namespace,
     *,
@@ -553,6 +566,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        _validate_explicit_memory_limit(
+            args.max_process_rss_gb,
+            label="max process",
+            hard_limit_gb=memory_guard.DEFAULT_HARD_MAX_RSS_GB,
+        )
+        _validate_explicit_memory_limit(
+            args.max_total_rss_gb,
+            label="max group",
+            hard_limit_gb=memory_guard.DEFAULT_HARD_MAX_RSS_GB,
+        )
+        _validate_explicit_memory_limit(
+            args.max_global_rss_gb,
+            label="max global",
+            hard_limit_gb=memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB,
+        )
         _resolved_limits_from_args(args, accounted_rss_kb=0)
         if args.poll_interval <= 0:
             raise ValueError("poll interval must be greater than 0")
