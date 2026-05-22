@@ -299,11 +299,79 @@ def test_nightly_contains_correctness_jobs() -> None:
     assert "mkdir -p /tmp/repro_sweep" not in nightly_text
     assert "MOLT_CACHE=/tmp/repro_sweep" not in nightly_text
     assert "~/.molt/build/" not in nightly_text
-    assert "cargo build -p molt-runtime --profile dev-fast" in nightly_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "cargo build -p molt-runtime --profile dev-fast"
+    ) in nightly_text
     assert "cargo build -p molt-runtime --release" not in nightly_text
     assert "A/B Molt caches and build-state roots are intentionally cold" in (
         nightly_text
     )
+
+
+def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
+    nightly_text = _read(".github/workflows/nightly.yml")
+    formal_text = _read(".github/workflows/formal.yml")
+    security_text = _read(".github/workflows/security_hardening.yml")
+    release_text = _read(".github/workflows/release.yml")
+
+    guarded_runtime_build = (
+        "run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "cargo build -p molt-runtime --profile dev-fast"
+    )
+    assert nightly_text.count(guarded_runtime_build) == 3
+    assert "run: cargo build -p molt-runtime --profile dev-fast" not in nightly_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "uv run python3 tools/ci_gate.py --tier 3 --verbose --json"
+    ) in nightly_text
+    assert (
+        "run: uv run python3 tools/ci_gate.py --tier 3 --verbose --json"
+        not in nightly_text
+    )
+
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd formal/lean -- "
+        "lake build"
+    ) in formal_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "python3 tools/check_formal_methods.py --quint-only"
+    ) in formal_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "python3 tools/check_formal_methods.py --check-correspondence"
+    ) in formal_text
+    assert "run: lake build" not in formal_text
+    assert "run: python3 tools/check_formal_methods.py --quint-only" not in formal_text
+    assert (
+        "run: python3 tools/check_formal_methods.py --check-correspondence"
+        not in formal_text
+    )
+
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "uv run pip-audit --ignore-vuln CVE-2025-69872"
+    ) in security_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo deny check"
+        in security_text
+    )
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo audit"
+        in security_text
+    )
+    assert "run: uv run pip-audit --ignore-vuln CVE-2025-69872" not in security_text
+    assert "run: cargo deny check" not in security_text
+
+    assert (
+        '"$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- '
+        "cargo build -p molt-worker --release"
+    ) in release_text
+    assert '"$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \\' in (
+        release_text
+    )
+    assert "run: cargo build -p molt-worker --release" not in release_text
 
 
 def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:

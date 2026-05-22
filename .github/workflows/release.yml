@@ -125,13 +125,15 @@ jobs:
       - name: Build wheel
         shell: bash
         run: |
-          uv pip install --system --python "$PYTHON_BIN" build
-          "$PYTHON_BIN" -m build --wheel --outdir dist
+          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            uv pip install --system --python "$PYTHON_BIN" build
+          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            "$PYTHON_BIN" -m build --wheel --outdir dist
 
       - name: Build molt-worker
         shell: bash
         run: |
-          cargo build -p molt-worker --release
+          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- cargo build -p molt-worker --release
 
       - name: Build bundles
         shell: bash
@@ -156,7 +158,8 @@ jobs:
             exit 1
           fi
 
-          "$PYTHON_BIN" tools/release/build_bundle.py \
+          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            "$PYTHON_BIN" tools/release/build_bundle.py \
             --version "$VERSION" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
@@ -164,7 +167,8 @@ jobs:
             --worker "$WORKER" \
             --output "dist/molt-$VERSION-${{ matrix.platform }}-${{ matrix.arch }}.$EXT"
 
-          "$PYTHON_BIN" tools/release/build_bundle.py \
+          "$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            "$PYTHON_BIN" tools/release/build_bundle.py \
             --version "$VERSION" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
