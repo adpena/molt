@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
       - name: pip-audit
-        run: uv run pip-audit --ignore-vuln CVE-2025-69872
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- uv run pip-audit --ignore-vuln CVE-2025-69872
 
   rust-security:
     runs-on: ubuntu-latest
@@ -44,8 +44,8 @@ jobs:
           cargo install cargo-deny --locked
           cargo install cargo-audit --locked
       - name: cargo deny check
-        run: cargo deny check
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo deny check
       - name: cargo audit
         run: |
           rm -rf "${CARGO_HOME:-$HOME/.cargo}/advisory-db"
-          cargo audit
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo audit

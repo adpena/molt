@@ -49,8 +49,7 @@ jobs:
             lean-${{ runner.os }}-
 
       - name: Build proofs
-        working-directory: formal/lean
-        run: lake build
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd formal/lean -- lake build
         timeout-minutes: 15
 
       - name: Check sorry count
@@ -98,7 +97,7 @@ jobs:
           "$evaluator_dir/quint_evaluator" --help >/dev/null
 
       - name: Verify all models
-        run: python3 tools/check_formal_methods.py --quint-only
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- python3 tools/check_formal_methods.py --quint-only
 
   formal-correspondence:
     name: Proof-Code Correspondence
@@ -112,4 +111,4 @@ jobs:
           python-version-file: ".python-version"
 
       - name: Check NaN-box and Luau builtin correspondence
-        run: python3 tools/check_formal_methods.py --check-correspondence
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- python3 tools/check_formal_methods.py --check-correspondence
