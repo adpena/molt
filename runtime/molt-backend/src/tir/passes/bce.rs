@@ -613,7 +613,7 @@ fn prove_guard_bound(
 }
 
 /// Collect all blocks that belong to a loop body rooted at `header`.
-/// Uses the same logic as `loop_narrow::collect_loop_body`.
+/// Uses deterministic block ordering and preserved loop metadata.
 fn collect_loop_body(func: &TirFunction, header: BlockId) -> Vec<BlockId> {
     let mut ordered_blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
     ordered_blocks.sort_by_key(|bid| bid.0);
