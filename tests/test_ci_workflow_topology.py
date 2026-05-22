@@ -50,8 +50,11 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "runs-on: ubuntu-latest" in ci_text
     assert "runs-on: macos-14" not in ci_text
     assert "Swatinem/rust-cache@v2" in ci_text
-    assert "Configure adaptive Rust parallelism" in ci_text
-    assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in ci_text
+    assert ci_text.count("Configure adaptive Rust parallelism") == 2
+    assert (
+        ci_text.count('python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"')
+        == 2
+    )
     assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
     assert "uv sync --frozen --group dev" in ci_text
     assert "tests/test_bench_harness.py" in ci_text

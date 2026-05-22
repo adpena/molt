@@ -34,7 +34,7 @@ def _budget(module, *, physical_gb: float, available_gb: float, reserve_gb: floa
     )
 
 
-def test_plan_uses_two_cargo_jobs_on_default_hosted_runner_shape() -> None:
+def test_plan_uses_one_cargo_job_on_default_hosted_runner_shape() -> None:
     module = _load_ci_resource_env()
 
     plan = module.plan_ci_resources(
@@ -43,7 +43,7 @@ def test_plan_uses_two_cargo_jobs_on_default_hosted_runner_shape() -> None:
         budget=_budget(module, physical_gb=16.0, available_gb=14.0, reserve_gb=1.0),
     )
 
-    assert plan.cargo_build_jobs == 2
+    assert plan.cargo_build_jobs == 1
     assert "cpu=4" in plan.reason
     assert "available:14.00GB" in plan.reason
 
@@ -87,6 +87,6 @@ def test_write_github_env_emits_cargo_jobs_and_resource_reason(tmp_path: Path) -
     module.write_github_env(env_path, plan)
 
     text = env_path.read_text(encoding="utf-8")
-    assert "CARGO_BUILD_JOBS=2\n" in text
+    assert "CARGO_BUILD_JOBS=1\n" in text
     assert "MOLT_CI_RESOURCE_CPU_COUNT=4\n" in text
     assert "MOLT_CI_RESOURCE_REASON=cpu=4" in text

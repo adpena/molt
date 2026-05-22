@@ -197,14 +197,14 @@ def _base_env() -> dict[str, str]:
         if existing_pythonpath
         else src_root
     )
-    env.setdefault("MOLT_EXT_ROOT", str(REPO_ROOT))
-    env.setdefault("CARGO_TARGET_DIR", str(REPO_ROOT / "target"))
-    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-    env.setdefault("MOLT_CACHE", str(REPO_ROOT / ".molt_cache"))
-    env.setdefault("MOLT_DIFF_ROOT", str(REPO_ROOT / "tmp" / "diff"))
-    env.setdefault("MOLT_DIFF_TMPDIR", str(REPO_ROOT / "tmp"))
-    env.setdefault("UV_CACHE_DIR", str(REPO_ROOT / ".uv-cache"))
-    env.setdefault("TMPDIR", str(REPO_ROOT / "tmp"))
+    env["MOLT_EXT_ROOT"] = str(REPO_ROOT)
+    env["CARGO_TARGET_DIR"] = str(REPO_ROOT / "target")
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
+    env["MOLT_CACHE"] = str(REPO_ROOT / ".molt_cache")
+    env["MOLT_DIFF_ROOT"] = str(REPO_ROOT / "tmp" / "diff")
+    env["MOLT_DIFF_TMPDIR"] = str(REPO_ROOT / "tmp")
+    env["UV_CACHE_DIR"] = str(REPO_ROOT / ".uv-cache")
+    env["TMPDIR"] = str(REPO_ROOT / "tmp")
     return env
 
 
