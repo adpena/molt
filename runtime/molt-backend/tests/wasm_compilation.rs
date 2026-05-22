@@ -36,6 +36,29 @@ fn compile_single_function(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
     })
 }
 
+fn compile_single_function_with_param_types(
+    ops: Vec<OpIR>,
+    params: &[&str],
+    param_types: &[&str],
+) -> Vec<u8> {
+    assert_eq!(
+        params.len(),
+        param_types.len(),
+        "test helper requires one param type per parameter"
+    );
+    compile_ir(SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_func".to_string(),
+            params: params.iter().map(|p| (*p).to_string()).collect(),
+            ops,
+            param_types: Some(param_types.iter().map(|ty| (*ty).to_string()).collect()),
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    })
+}
+
 fn compile_ir_with_env(ir: SimpleIR, env: &[(&str, Option<&str>)]) -> Vec<u8> {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let _guard = ENV_LOCK
@@ -425,16 +448,36 @@ fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
         "unknown len operands should use generic len"
     );
 
-    let mut container_len = op("len");
-    container_len.args = Some(vec!["p0".to_string()]);
-    container_len.out = Some("v0".to_string());
-    container_len.container_type = Some("str".to_string());
+    let mut transport_len = op("len");
+    transport_len.args = Some(vec!["p0".to_string()]);
+    transport_len.out = Some("v0".to_string());
+    transport_len.container_type = Some("str".to_string());
 
-    let wasm = compile_single_function(vec![container_len, ret_value("v0")], &["p0"]);
+    let wasm = compile_single_function(vec![transport_len, ret_value("v0")], &["p0"]);
+    let calls = import_call_counts(&wasm);
+    assert_eq!(
+        count_import(&calls, "len_str"),
+        0,
+        "transport-only container_type=str must not select WASM len_str"
+    );
+    assert!(
+        count_import(&calls, "len") > 0,
+        "transport-only container_type=str should use generic len"
+    );
+
+    let mut structured_len = op("len");
+    structured_len.args = Some(vec!["p0".to_string()]);
+    structured_len.out = Some("v0".to_string());
+
+    let wasm = compile_single_function_with_param_types(
+        vec![structured_len, ret_value("v0")],
+        &["p0"],
+        &["str"],
+    );
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "len_str") > 0,
-        "explicit container_type=str should still select WASM len_str"
+        "structured param type str should select WASM len_str"
     );
 }
 
@@ -1112,7 +1155,7 @@ fn missing_singleton_compiles() {
     let mut m = op("missing");
     m.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![m, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![m, ret_value("v0")], &[]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "missing") > 0,
@@ -1125,7 +1168,7 @@ fn not_implemented_singleton_compiles() {
     let mut m = op("const_not_implemented");
     m.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![m, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![m, ret_value("v0")], &[]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "not_implemented") > 0,
@@ -1138,7 +1181,7 @@ fn ellipsis_singleton_compiles() {
     let mut m = op("const_ellipsis");
     m.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![m, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![m, ret_value("v0")], &[]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "ellipsis") > 0,
