@@ -1636,6 +1636,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-rss-gb",
+        "--max-process-rss-gb",
+        dest="max_rss_gb",
         type=float,
         default=None,
         help=(
@@ -1646,6 +1648,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-total-rss-gb",
+        "--max-tree-rss-gb",
+        "--max-group-rss-gb",
+        dest="max_total_rss_gb",
         type=float,
         default=None,
         help=(

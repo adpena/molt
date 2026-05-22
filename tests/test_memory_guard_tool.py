@@ -719,6 +719,35 @@ def test_main_rejects_unsafe_total_threshold(
     assert "below 112" in capsys.readouterr().err
 
 
+def test_parser_accepts_process_and_tree_rss_aliases() -> None:
+    args = memory_guard._parser().parse_args(
+        [
+            "--max-process-rss-gb",
+            "1.5",
+            "--max-tree-rss-gb",
+            "2.5",
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ]
+    )
+    group_args = memory_guard._parser().parse_args(
+        [
+            "--max-group-rss-gb",
+            "3.5",
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ]
+    )
+
+    assert args.max_rss_gb == 1.5
+    assert args.max_total_rss_gb == 2.5
+    assert group_args.max_total_rss_gb == 3.5
+
+
 def test_main_reexec_hides_guarded_command_from_guard_argv() -> None:
     marker = "molt-backend-marker"
     captured: dict[str, object] = {}

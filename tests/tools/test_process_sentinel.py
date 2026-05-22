@@ -521,6 +521,20 @@ def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
     }
 
 
+def test_parser_accepts_group_and_tree_rss_aliases() -> None:
+    module = _load_process_sentinel()
+
+    group_args = module._parser().parse_args(
+        ["--once", "--max-group-rss-gb", "2.5"]
+    )
+    tree_args = module._parser().parse_args(
+        ["--once", "--max-tree-rss-gb", "3.5"]
+    )
+
+    assert group_args.max_total_rss_gb == 2.5
+    assert tree_args.max_total_rss_gb == 3.5
+
+
 def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> None:
     module = _load_process_sentinel()
     terminated: list[int] = []
@@ -649,10 +663,28 @@ def test_main_rejects_once_with_until_clean(capsys) -> None:
     assert "mutually exclusive" in capsys.readouterr().err
 
 
+def test_main_rejects_implausible_process_cap_with_scope(capsys) -> None:
+    module = _load_process_sentinel()
+
+    rc = module.main(["--once", "--max-process-rss-gb", "112"])
+
+    assert rc == 2
+    assert "max process RSS must stay below 112 GB" in capsys.readouterr().err
+
+
+def test_main_rejects_implausible_group_cap_with_scope(capsys) -> None:
+    module = _load_process_sentinel()
+
+    rc = module.main(["--once", "--max-group-rss-gb", "112"])
+
+    assert rc == 2
+    assert "max group RSS must stay below 112 GB" in capsys.readouterr().err
+
+
 def test_main_rejects_implausible_global_cap_without_margin(capsys) -> None:
     module = _load_process_sentinel()
 
     rc = module.main(["--once", "--max-global-rss-gb", "4096"])
 
     assert rc == 2
-    assert "below 4096" in capsys.readouterr().err
+    assert "max global RSS must stay below 4096 GB" in capsys.readouterr().err
