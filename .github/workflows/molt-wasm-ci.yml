@@ -96,6 +96,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Set up WASM JS runner Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Pin WASM JS runner Node
+        run: |
+          echo "MOLT_NODE_BIN=$(command -v node)" >> "$GITHUB_ENV"
+          node --version
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

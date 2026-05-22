@@ -375,6 +375,9 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "concurrency:" in wasm_text
     assert "cancel-in-progress: true" in wasm_text
     assert "MOLT_CI_PYTHON: ${{ github.workspace }}/.venv/bin/python3" in wasm_text
+    assert "actions/setup-node@v6" in wasm_text
+    assert 'node-version: "22"' in wasm_text
+    assert 'echo "MOLT_NODE_BIN=$(command -v node)" >> "$GITHUB_ENV"' in wasm_text
     assert (
         "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
     )
