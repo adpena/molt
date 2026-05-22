@@ -110,6 +110,7 @@ jobs:
         uses: swatinem/rust-cache@v2
 
       - name: Build Molt backend and WASM host
+        timeout-minutes: 20
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend
@@ -118,6 +119,7 @@ jobs:
 
       # ── WASM target: hello.py (class + arithmetic) ──
       - name: Compile hello.py to WASM
+        timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
@@ -135,10 +137,12 @@ jobs:
           fi
 
       - name: Run hello.wasm with molt-wasm-host
+        timeout-minutes: 16
         run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_hello.wasm
 
       # ── WASM target: comprehension_fail.py (list comprehension regression gate) ──
       - name: Compile comprehension_fail.py to WASM
+        timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
@@ -156,10 +160,12 @@ jobs:
           fi
 
       - name: Run comprehension.wasm with molt-wasm-host
+        timeout-minutes: 16
         run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_comprehension.wasm
 
       # ── Luau target: hello.py ──
       - name: Compile hello.py to Luau
+        timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
@@ -178,6 +184,7 @@ jobs:
 
       # ── Luau target: comprehension_fail.py (comprehension regression gate) ──
       - name: Compile comprehension_fail.py to Luau
+        timeout-minutes: 16
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- \
             uv run python3 -m molt.cli build \
@@ -196,6 +203,7 @@ jobs:
 
       # ── WASM target: sieve benchmark (arithmetic + loops + list ops) ──
       - name: Compile sieve_bench.py to WASM
+        timeout-minutes: 16
         run: |
           cat > /tmp/sieve_bench.py << 'PYEOF'
           def sieve(n):
@@ -219,10 +227,12 @@ jobs:
           RUSTC_WRAPPER: ""
 
       - name: Run sieve.wasm with molt-wasm-host
+        timeout-minutes: 16
         run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- $CARGO_TARGET_DIR/dev-fast/molt-wasm-host /tmp/test_sieve.wasm
 
       # ── WASM parity tests (pytest) ──
       - name: Run WASM control flow parity tests
+        timeout-minutes: 16
         run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- uv run python3 -m pytest tests/test_wasm_control_flow.py -q
 
       # ── Summary ──
