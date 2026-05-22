@@ -12,7 +12,10 @@ import pytest
 from tools import harness_memory_guard
 
 _MIN_NODE_MAJOR = 18
-_NODE_WASM_CHILD_RLIMIT_FLOOR_GB = 64.0
+# V8 reserves a large virtual address range while instantiating linked WASM.
+# Keep RSS policing in the memory guard, but give Node enough address space so
+# the guard does not become the crash source before any RSS evidence exists.
+_NODE_WASM_CHILD_RLIMIT_FLOOR_GB = 128.0
 _NODE_BIN_CACHE: str | None = None
 
 
