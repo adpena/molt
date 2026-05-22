@@ -30187,6 +30187,18 @@ def _planned_validate_steps(
             "smoke",
         ),
         _ValidationStep(
+            "subprocess-guard-audit",
+            [
+                python,
+                "tools/check_subprocess_guard_coverage.py",
+            ],
+            root,
+            "command",
+            ("native", "llvm", "wasm"),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
             "native-parity",
             [
                 python,
