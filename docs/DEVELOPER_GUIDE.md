@@ -109,6 +109,11 @@ Interpretation:
   the smallest convincing proof matrix.
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
+- `tools/dev.py bench` runs the pyproject-owned benchmark smoke lane by default
+  and writes `bench/results/dev-bench-smoke.json`; pass explicit `molt bench`
+  arguments when a custom native/WASM benchmark slice is needed. The outer
+  command still uses the shared test-suite guard, while `molt bench` applies the
+  benchmark-family memory guard to benchmark child processes.
 - `tools/dev.py gates` executes the pyproject-owned CI-adjacent local gate
   sequence: backend Clippy with `-D warnings`, `cargo deny check`, release-fast
   workspace build, native backend lib tests, compliance tests, then an explicit

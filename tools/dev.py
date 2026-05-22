@@ -505,6 +505,17 @@ def main() -> None:
         _run_dx_command("backend", _canonical_env(), tty=use_tty)
     elif cmd[0] == "gates":
         _run_dx_gates(cmd[1:], tty=use_tty)
+    elif cmd[0] == "bench":
+        env = _canonical_env()
+        project_python = _require_project_python()
+        if cmd[1:]:
+            _run_repo_cmd(
+                [str(project_python), "-m", "molt.cli", "bench", *cmd[1:]],
+                env,
+                tty=use_tty,
+            )
+        else:
+            _run_dx_command("bench-smoke", env, tty=use_tty)
     elif cmd[0] == "lint":
         env = _canonical_env()
         _require_project_python()
@@ -570,7 +581,7 @@ def main() -> None:
     else:
         print(
             "Usage: tools/dev.py "
-            "[env|install|clippy|security|compliance|backend|gates|lint|test|setup|doctor|update|validate|clean-artifacts]"
+            "[env|install|clippy|security|compliance|backend|gates|bench|lint|test|setup|doctor|update|validate|clean-artifacts]"
         )
 
 

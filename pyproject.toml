@@ -105,6 +105,7 @@ build = "cargo build --profile release-fast --workspace"
 backend = "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
 compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider --tb=line -q"
 clean-artifacts = "{project_python} tools/artifact_cleanup.py"
+bench-smoke = "{project_python} -m molt.cli bench -- --smoke --warmup 1 --json-out bench/results/dev-bench-smoke.json"
 lint = [
     "{project_python} -m ruff check .",
     "{project_python} -m ruff format --check .",

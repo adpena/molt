@@ -128,6 +128,92 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
     assert calls[1][1:5] == ["-m", "ruff", "format", "--check"]
 
 
+def test_dev_py_bench_defaults_to_guarded_smoke_command(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_canonical_env",
+        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_require_project_python",
+        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_repo_cmd",
+        lambda cmd, _env, *, tty: calls.append(list(cmd)),
+        raising=True,
+    )
+    monkeypatch.setattr(module.sys, "argv", ["tools/dev.py", "bench"], raising=True)
+
+    module.main()
+
+    assert calls == [
+        [
+            str(module.DX.project_python()),
+            "-m",
+            "molt.cli",
+            "bench",
+            "--",
+            "--smoke",
+            "--warmup",
+            "1",
+            "--json-out",
+            "bench/results/dev-bench-smoke.json",
+        ]
+    ]
+
+
+def test_dev_py_bench_forwards_explicit_molt_bench_args(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_canonical_env",
+        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_require_project_python",
+        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_repo_cmd",
+        lambda cmd, _env, *, tty: calls.append(list(cmd)),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["tools/dev.py", "bench", "--wasm", "--", "--smoke"],
+        raising=True,
+    )
+
+    module.main()
+
+    assert calls == [
+        [
+            str(module.ROOT / ".venv" / "bin" / "python3"),
+            "-m",
+            "molt.cli",
+            "bench",
+            "--wasm",
+            "--",
+            "--smoke",
+        ]
+    ]
+
+
 def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> None:
     module = _load_dev_py()
     calls: list[list[str]] = []
