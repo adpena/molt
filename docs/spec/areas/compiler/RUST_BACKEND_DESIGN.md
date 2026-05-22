@@ -8,7 +8,7 @@
 
 ## 0. Context and Existing State
 
-Molt already has a working Rust transpilation backend at `runtime/molt-backend/src/rust.rs` (3042 lines). This backend transpiles `SimpleIR` into standalone Rust source files using a dynamically-typed `MoltValue` enum that mirrors Python's runtime type system. Every variable is `MoltValue`, every use clones, and all operations dispatch through match arms at runtime.
+Molt already has a working Rust transpilation backend at `runtime/molt-backend/src/rust.rs`. This backend transpiles `SimpleIR` into standalone Rust source files using a dynamically-typed `MoltValue` enum that mirrors Python's runtime type system. Every variable is `MoltValue`, every use clones, and all operations dispatch through match arms at runtime.
 
 This document defines the path from the current **correct-first dynamic** backend to a **performance-optimized, type-specialized** Rust backend that produces idiomatic Rust leveraging Molt's type inference, escape analysis, and specialization infrastructure.
 
@@ -19,7 +19,9 @@ This document defines the path from the current **correct-first dynamic** backen
 - Op coverage: constants, arithmetic, comparisons, control flow (if/else/loop/for), calls, list/dict/tuple ops, string methods, closures, classes (dict-based), target-version `sys` bootstrap, and module-cache get/set/delete for emitted import bootstrap IR
 - Wired into the CLI `--target rust` source-emission path and `molt-backend` behind the `rust-backend` feature
 - CLI source emission is checked: any generated `MOLT_STUB` marker is a backend validation error rather than an accepted Rust artifact
-- Exceptions remain fail-fast/structural where full Python exception propagation is outside the current source-backend surface
+- Source-emission tree shaking is shared with Luau and prunes unreachable runtime/bootstrap helpers before textual validation; reachable unsupported ops still fail validation
+- Runtime metadata ops used by emitted bootstrap IR lower into generated Rust state: code slots, frame/trace stack entries, exception last/context slots, and exception stack baseline/depth are explicit thread-local structures rather than no-op markers
+- Full Python exception propagation remains a v1 target; exception construction and handler semantics outside the generated metadata surface still fail fast instead of silently degrading
 - No type specialization -- all variables are `MoltValue`, all uses clone
 
 ### Landscape of prior art
@@ -601,7 +603,8 @@ The following table maps SimpleIR op families to their Rust backend implementati
 | Tuple ops (tuple_new, tuple_get) | Implemented | Emit native tuple |
 | String ops (format, join, split, strip, replace, startswith, endswith, find, upper, lower) | Implemented | Emit String methods |
 | Class ops (class_new, attr_get, attr_set, isinstance, method_call) | Partial (dict-based) | Emit struct + impl |
-| Exception ops (raise, try_start, try_end, except, check_exception) | Stub | Emit Result<T, E> |
+| Exception metadata ops (exception_last, exception_clear, exception_stack_*) | Implemented as generated thread-local state | Fold into Result<T, E> runtime model |
+| Exception control ops (raise, try_start, try_end, except, check_exception) | Fail-fast/structural | Emit Result<T, E> |
 | Async ops (async_call, await, task_new, chan_new, chan_send, chan_recv) | Not implemented | Emit tokio async |
 | Generator ops (yield, yield_from, gen_close) | Not implemented | Emit Iterator impl |
 | Print/IO (print, print_to) | Implemented | No change needed |
