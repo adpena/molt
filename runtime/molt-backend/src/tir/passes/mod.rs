@@ -46,10 +46,9 @@ pub const PIPELINE_PASS_CAPACITY_HINT: usize = 32;
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// Passes are unconditional unless individually skipped via
-/// `MOLT_TIR_SKIP=name1,name2,…`. The body of this function is the
-/// canonical source of truth for pass identity and ordering — refer to
-/// the inline phase headers below rather than any hand-counted summary.
+/// Passes are unconditional. The body of this function is the canonical source
+/// of truth for pass identity and ordering — refer to the inline phase headers
+/// below rather than any hand-counted summary.
 ///
 /// Phase ordering rationale:
 ///
@@ -76,11 +75,6 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     let snapshot = func.clone();
 
     let mut stats = Vec::with_capacity(PIPELINE_PASS_CAPACITY_HINT);
-
-    // Each pass can be individually disabled for debugging:
-    //   MOLT_TIR_SKIP=unboxing,sccp,dce (comma-separated pass names)
-    let skip = std::env::var("MOLT_TIR_SKIP").unwrap_or_default();
-    let skip_set: std::collections::HashSet<&str> = skip.split(',').collect();
 
     // Dump pre-optimization TIR for functions that contain loops.
     // This captures the exact IR that triggers the pass interaction bug.
@@ -151,9 +145,9 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
 
     macro_rules! run_pass {
         ($name:expr, $pass:expr) => {
-            if !skip_set.contains($name) {
-                stats.push($pass);
-            }
+            let mut stat = $pass;
+            stat.name = $name;
+            stats.push(stat);
         };
     }
 
@@ -331,4 +325,84 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     }
 
     stats
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+    use crate::tir::function::TirFunction;
+    use crate::tir::types::TirType;
+
+    use super::run_pipeline;
+
+    fn minimal_function() -> TirFunction {
+        let entry = BlockId(0);
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            TirBlock {
+                id: entry,
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: Terminator::Return { values: Vec::new() },
+            },
+        );
+        TirFunction {
+            name: "pipeline_shape".into(),
+            param_names: Vec::new(),
+            param_types: Vec::new(),
+            return_type: TirType::None,
+            blocks,
+            entry_block: entry,
+            next_value: 0,
+            next_block: 1,
+            attrs: HashMap::new(),
+            value_types: HashMap::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn pipeline_records_every_pass_unconditionally() {
+        let mut func = minimal_function();
+        let stats = run_pipeline(&mut func);
+        let names: Vec<_> = stats.iter().map(|stat| stat.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "range_devirt",
+                "iter_devirt",
+                "tuple_scalarize",
+                "loop_unroll",
+                "canonicalize",
+                "unboxing",
+                "block_versioning",
+                "canonicalize_post",
+                "gvn",
+                "licm",
+                "escape_analysis",
+                "refcount_elim",
+                "reuse_analysis",
+                "dead_store_elim",
+                "type_guard_hoist",
+                "sccp",
+                "strength_reduction",
+                "fast_math",
+                "branchless_count",
+                "bce",
+                "vectorize",
+                "polyhedral",
+                "check_exception_elim",
+                "copy_prop",
+                "dce",
+            ],
+        );
+    }
 }
