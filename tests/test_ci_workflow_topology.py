@@ -372,6 +372,9 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "MOLT_DIFF_ROOT: /tmp/molt-ext/diff" in wasm_text
     assert "MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp" in wasm_text
     assert "MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm" in wasm_text
+    assert "concurrency:" in wasm_text
+    assert "cancel-in-progress: true" in wasm_text
+    assert "MOLT_CI_PYTHON: ${{ github.workspace }}/.venv/bin/python3" in wasm_text
     assert (
         "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target" in wasm_text
     )
@@ -394,7 +397,11 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "cargo build --release -p molt-wasm-host" not in wasm_text
     assert "cargo build --profile release-fast -p molt-wasm-host" not in wasm_text
     assert "python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST" in wasm_text
-    assert "-- uv run python3 -m pytest tests/test_wasm_control_flow.py -q" in wasm_text
+    assert (
+        '-- "$MOLT_CI_PYTHON" -m pytest tests/test_wasm_control_flow.py -q'
+        in wasm_text
+    )
+    assert "uv run python3 -m molt.cli build" not in wasm_text
     assert (
         wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
     )
