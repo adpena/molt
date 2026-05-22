@@ -107,6 +107,7 @@ compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider -
 clean-artifacts = "{project_python} tools/artifact_cleanup.py"
 bench-smoke = "{project_python} -m molt.cli bench -- --smoke --warmup 1 --json-out bench/results/dev-bench-smoke.json"
 subprocess-guard-audit = "{project_python} tools/check_subprocess_guard_coverage.py"
+memory-guard-wiring-audit = "{project_python} tools/check_memory_guard_wiring.py"
 lint = [
     "{project_python} -m ruff check .",
     "{project_python} -m ruff format --check .",
@@ -116,6 +117,7 @@ lint = [
     "{project_python} tools/check_stdlib_intrinsics.py --critical-allowlist",
     "{project_python} tools/check_dynamic_policy.py",
     "@subprocess-guard-audit",
+    "@memory-guard-wiring-audit",
     "{project_python} tools/update_status_blocks.py --check",
     "{project_python} tools/check_docs_architecture.py",
     "{project_python} tools/check_core_lane_lowering.py --manifest tests/differential/basic/CORE_TESTS.txt",
