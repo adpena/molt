@@ -210,7 +210,7 @@ impl RustBackend {
             "// Molt → Rust transpiled output\n",
             "// Auto-generated — do not edit\n",
             "#![allow(\n",
-            "    unused_mut, unused_variables, dead_code, non_snake_case,\n",
+            "    unused_assignments, unused_mut, unused_variables, dead_code, non_snake_case,\n",
             "    clippy::needless_pass_by_value, clippy::clone_on_copy,\n",
             "    clippy::useless_vec,\n",
             ")]\n\n",
@@ -756,6 +756,160 @@ impl RustBackend {
                 "        }\n",
                 "        _ => false,\n",
                 "    }\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_code_new(") || used("molt_code_slot_set(") || used("molt_code_slots_init(") {
+            self.output.push_str(concat!(
+                "thread_local! {\n",
+                "    static MOLT_CODE_SLOTS: std::cell::RefCell<Vec<Option<MoltValue>>> = const { std::cell::RefCell::new(Vec::new()) };\n",
+                "}\n\n",
+                "fn molt_expect_code_str(value: &MoltValue, field: &str) -> String {\n",
+                "    if let MoltValue::Str(s) = value { s.clone() } else { panic!(\"TypeError: code {field} must be str\") }\n",
+                "}\n\n",
+                "fn molt_expect_code_count(value: &MoltValue, field: &str) -> i64 {\n",
+                "    let n = molt_int(value);\n",
+                "    if n < 0 { panic!(\"ValueError: code {field} must be >= 0\") }\n",
+                "    n\n",
+                "}\n\n",
+                "fn molt_code_is_code(value: &MoltValue) -> bool {\n",
+                "    if let MoltValue::Dict(fields) = value {\n",
+                "        fields.iter().any(|(key, value)| matches!((key, value), (MoltValue::Str(k), MoltValue::Str(v)) if k == \"__molt_type__\" && v == \"code\"))\n",
+                "    } else { false }\n",
+                "}\n\n",
+                "fn molt_code_new(filename: &MoltValue, name: &MoltValue, firstlineno: &MoltValue, linetable: &MoltValue, varnames: &MoltValue, argcount: &MoltValue, posonlyargcount: &MoltValue, kwonlyargcount: &MoltValue) -> MoltValue {\n",
+                "    let filename = molt_expect_code_str(filename, \"filename\");\n",
+                "    let name = molt_expect_code_str(name, \"name\");\n",
+                "    let firstlineno = molt_int(firstlineno);\n",
+                "    let argcount = molt_expect_code_count(argcount, \"argcount\");\n",
+                "    let posonlyargcount = molt_expect_code_count(posonlyargcount, \"posonlyargcount\");\n",
+                "    let kwonlyargcount = molt_expect_code_count(kwonlyargcount, \"kwonlyargcount\");\n",
+                "    MoltValue::Dict(vec![\n",
+                "        (MoltValue::Str(\"__molt_type__\".to_string()), MoltValue::Str(\"code\".to_string())),\n",
+                "        (MoltValue::Str(\"co_filename\".to_string()), MoltValue::Str(filename)),\n",
+                "        (MoltValue::Str(\"co_name\".to_string()), MoltValue::Str(name)),\n",
+                "        (MoltValue::Str(\"co_firstlineno\".to_string()), MoltValue::Int(firstlineno)),\n",
+                "        (MoltValue::Str(\"co_linetable\".to_string()), linetable.clone()),\n",
+                "        (MoltValue::Str(\"co_varnames\".to_string()), varnames.clone()),\n",
+                "        (MoltValue::Str(\"co_argcount\".to_string()), MoltValue::Int(argcount)),\n",
+                "        (MoltValue::Str(\"co_posonlyargcount\".to_string()), MoltValue::Int(posonlyargcount)),\n",
+                "        (MoltValue::Str(\"co_kwonlyargcount\".to_string()), MoltValue::Int(kwonlyargcount)),\n",
+                "    ])\n",
+                "}\n\n",
+                "fn molt_code_slots_init(count: i64) -> MoltValue {\n",
+                "    if count < 0 { panic!(\"MemoryError: code slot count too large\") }\n",
+                "    MOLT_CODE_SLOTS.with(|slots| {\n",
+                "        let mut slots = slots.borrow_mut();\n",
+                "        if slots.is_empty() {\n",
+                "            slots.resize(count as usize, None);\n",
+                "        }\n",
+                "    });\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_code_slot_set(code_id: i64, code: &MoltValue) -> MoltValue {\n",
+                "    if !molt_code_is_code(code) { panic!(\"TypeError: code slot expects code object\") }\n",
+                "    let Some(idx) = usize::try_from(code_id).ok() else { panic!(\"IndexError: code slot out of range\") };\n",
+                "    MOLT_CODE_SLOTS.with(|slots| {\n",
+                "        let mut slots = slots.borrow_mut();\n",
+                "        if idx >= slots.len() { panic!(\"IndexError: code slot out of range\") }\n",
+                "        slots[idx] = Some(code.clone());\n",
+                "    });\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_trace_enter_slot(")
+            || used("molt_trace_exit(")
+            || used("molt_frame_locals_set(")
+        {
+            self.output.push_str(concat!(
+                "#[derive(Clone)]\n",
+                "struct MoltFrame {\n",
+                "    code_id: i64,\n",
+                "    locals: Option<MoltValue>,\n",
+                "}\n\n",
+                "thread_local! {\n",
+                "    static MOLT_FRAME_STACK: std::cell::RefCell<Vec<MoltFrame>> = const { std::cell::RefCell::new(Vec::new()) };\n",
+                "}\n\n",
+                "fn molt_trace_enter_slot(code_id: i64) -> MoltValue {\n",
+                "    MOLT_FRAME_STACK.with(|stack| stack.borrow_mut().push(MoltFrame { code_id, locals: None }));\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_trace_exit() -> MoltValue {\n",
+                "    MOLT_FRAME_STACK.with(|stack| { stack.borrow_mut().pop(); });\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_frame_locals_set(locals: &MoltValue) -> MoltValue {\n",
+                "    MOLT_FRAME_STACK.with(|stack| {\n",
+                "        if let Some(frame) = stack.borrow_mut().last_mut() {\n",
+                "            frame.locals = Some(locals.clone());\n",
+                "        }\n",
+                "    });\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+            ));
+        }
+        if used("molt_exception_") {
+            self.output.push_str(concat!(
+                "thread_local! {\n",
+                "    static MOLT_EXCEPTION_LAST: std::cell::RefCell<Option<MoltValue>> = const { std::cell::RefCell::new(None) };\n",
+                "    static MOLT_EXCEPTION_CONTEXT: std::cell::RefCell<Option<MoltValue>> = const { std::cell::RefCell::new(None) };\n",
+                "    static MOLT_EXCEPTION_STACK_DEPTH: std::cell::RefCell<usize> = const { std::cell::RefCell::new(0) };\n",
+                "    static MOLT_EXCEPTION_STACK_BASELINE: std::cell::RefCell<usize> = const { std::cell::RefCell::new(0) };\n",
+                "}\n\n",
+                "fn molt_exception_is_exception(value: &MoltValue) -> bool {\n",
+                "    if let MoltValue::Dict(fields) = value {\n",
+                "        fields.iter().any(|(key, value)| matches!((key, value), (MoltValue::Str(k), MoltValue::Str(v)) if k == \"__molt_type__\" && v == \"exception\"))\n",
+                "    } else { false }\n",
+                "}\n\n",
+                "fn molt_exception_last() -> MoltValue {\n",
+                "    if let Some(exc) = MOLT_EXCEPTION_LAST.with(|slot| slot.borrow().clone()) {\n",
+                "        return exc;\n",
+                "    }\n",
+                "    MOLT_EXCEPTION_CONTEXT.with(|slot| slot.borrow().clone().unwrap_or(MoltValue::None))\n",
+                "}\n\n",
+                "fn molt_exception_last_pending() -> MoltValue {\n",
+                "    MOLT_EXCEPTION_LAST.with(|slot| slot.borrow().clone().unwrap_or(MoltValue::None))\n",
+                "}\n\n",
+                "fn molt_exception_active() -> MoltValue {\n",
+                "    MOLT_EXCEPTION_CONTEXT.with(|slot| slot.borrow().clone().unwrap_or(MoltValue::None))\n",
+                "}\n\n",
+                "fn molt_exception_clear() -> MoltValue {\n",
+                "    MOLT_EXCEPTION_LAST.with(|slot| *slot.borrow_mut() = None);\n",
+                "    MOLT_EXCEPTION_CONTEXT.with(|slot| *slot.borrow_mut() = None);\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_exception_set_last(exc: &MoltValue) -> MoltValue {\n",
+                "    if matches!(exc, MoltValue::None) || !molt_exception_is_exception(exc) {\n",
+                "        return molt_exception_clear();\n",
+                "    }\n",
+                "    MOLT_EXCEPTION_LAST.with(|slot| *slot.borrow_mut() = Some(exc.clone()));\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_exception_stack_enter() -> MoltValue {\n",
+                "    let prev = MOLT_EXCEPTION_STACK_BASELINE.with(|baseline| *baseline.borrow());\n",
+                "    let depth = MOLT_EXCEPTION_STACK_DEPTH.with(|depth| *depth.borrow());\n",
+                "    MOLT_EXCEPTION_STACK_BASELINE.with(|baseline| *baseline.borrow_mut() = depth);\n",
+                "    MoltValue::Int(prev as i64)\n",
+                "}\n\n",
+                "fn molt_exception_stack_depth() -> MoltValue {\n",
+                "    let depth = MOLT_EXCEPTION_STACK_DEPTH.with(|depth| *depth.borrow());\n",
+                "    MoltValue::Int(depth as i64)\n",
+                "}\n\n",
+                "fn molt_exception_stack_exit(prev: &MoltValue) -> MoltValue {\n",
+                "    let prev = molt_int(prev);\n",
+                "    MOLT_EXCEPTION_STACK_BASELINE.with(|baseline| *baseline.borrow_mut() = if prev >= 0 { prev as usize } else { 0 });\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_exception_stack_set_depth(depth: &MoltValue) -> MoltValue {\n",
+                "    let depth = molt_int(depth);\n",
+                "    MOLT_EXCEPTION_STACK_DEPTH.with(|slot| *slot.borrow_mut() = if depth >= 0 { depth as usize } else { 0 });\n",
+                "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_exception_stack_clear() -> MoltValue {\n",
+                "    MOLT_EXCEPTION_STACK_DEPTH.with(|depth| *depth.borrow_mut() = 0);\n",
+                "    MOLT_EXCEPTION_STACK_BASELINE.with(|baseline| *baseline.borrow_mut() = 0);\n",
+                "    MoltValue::None\n",
                 "}\n\n",
             ));
         }
@@ -2099,6 +2253,19 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     &self.hoisted_vars.clone(),
                 ));
             }
+            "contains" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let container = rust_ident(&args[0]);
+                    let value = rust_ident(&args[1]);
+                    self.emit_line(&declare(
+                        &o,
+                        &format!("MoltValue::Bool(molt_in(&{value}, &{container}))"),
+                        &self.hoisted_vars.clone(),
+                    ));
+                }
+            }
 
             // ── Boolean logic ──────────────────────────────────────────────────
             "and" | "_m_and" => {
@@ -2531,6 +2698,125 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     "MoltValue::None".to_string()
                 };
                 self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+            }
+            "code_new" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 8 {
+                    let filename = rust_ident(&args[0]);
+                    let name = rust_ident(&args[1]);
+                    let firstlineno = rust_ident(&args[2]);
+                    let linetable = rust_ident(&args[3]);
+                    let varnames = rust_ident(&args[4]);
+                    let argcount = rust_ident(&args[5]);
+                    let posonlyargcount = rust_ident(&args[6]);
+                    let kwonlyargcount = rust_ident(&args[7]);
+                    self.emit_line(&declare(
+                        &o,
+                        &format!(
+                            "molt_code_new(&{filename}, &{name}, &{firstlineno}, &{linetable}, &{varnames}, &{argcount}, &{posonlyargcount}, &{kwonlyargcount})"
+                        ),
+                        &self.hoisted_vars.clone(),
+                    ));
+                }
+            }
+            "code_slots_init" => {
+                let count = op.value.unwrap_or(0);
+                self.emit_line(&format!("molt_code_slots_init({count});"));
+            }
+            "code_slot_set" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(code) = args.first() {
+                    let code = rust_ident(code);
+                    let code_id = op.value.unwrap_or(0);
+                    self.emit_line(&format!("molt_code_slot_set({code_id}, &{code});"));
+                }
+            }
+            "exception_last" | "exception_last_pending" => {
+                let o = out();
+                if o != "_" && o != "none" && !o.is_empty() {
+                    let helper = if op.kind == "exception_last_pending" {
+                        "molt_exception_last_pending()"
+                    } else {
+                        "molt_exception_last()"
+                    };
+                    self.emit_line(&declare(&o, helper, &self.hoisted_vars.clone()));
+                }
+            }
+            "exception_stack_depth" | "exception_stack_enter" => {
+                let o = out();
+                if o != "_" && o != "none" && !o.is_empty() {
+                    let helper = if op.kind == "exception_stack_enter" {
+                        "molt_exception_stack_enter()"
+                    } else {
+                        "molt_exception_stack_depth()"
+                    };
+                    self.emit_line(&declare(&o, helper, &self.hoisted_vars.clone()));
+                }
+            }
+            "exception_clear" => {
+                let o = out();
+                if o != "_" && o != "none" && !o.is_empty() {
+                    self.emit_line(&declare(
+                        &o,
+                        "molt_exception_clear()",
+                        &self.hoisted_vars.clone(),
+                    ));
+                } else {
+                    self.emit_line("molt_exception_clear();");
+                }
+            }
+            "exception_stack_exit" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let prev = args
+                    .first()
+                    .map(|arg| rust_ident(arg))
+                    .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                self.emit_line(&format!("molt_exception_stack_exit(&{prev});"));
+            }
+            "exception_stack_set_depth" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let depth = args
+                    .first()
+                    .map(|arg| rust_ident(arg))
+                    .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                self.emit_line(&format!("molt_exception_stack_set_depth(&{depth});"));
+            }
+            "exception_stack_clear" => {
+                self.emit_line("molt_exception_stack_clear();");
+            }
+            "exception_set_last" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let exc = args
+                    .first()
+                    .map(|arg| rust_ident(arg))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                self.emit_line(&format!("molt_exception_set_last(&{exc});"));
+            }
+            "exception_active" => {
+                let o = out();
+                if o != "_" && o != "none" && !o.is_empty() {
+                    self.emit_line(&declare(
+                        &o,
+                        "molt_exception_active()",
+                        &self.hoisted_vars.clone(),
+                    ));
+                }
+            }
+            "trace_enter_slot" => {
+                let code_id = op.value.unwrap_or(0);
+                self.emit_line(&format!("molt_trace_enter_slot({code_id});"));
+            }
+            "trace_exit" => {
+                self.emit_line("molt_trace_exit();");
+            }
+            "frame_locals_set" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let locals = args
+                    .first()
+                    .map(|arg| rust_ident(arg))
+                    .unwrap_or_else(|| "MoltValue::None".to_string());
+                self.emit_line(&format!("molt_frame_locals_set(&{locals});"));
             }
             "builtin_func" => {
                 let o = out();
@@ -3198,6 +3484,19 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     ));
                 }
             }
+            "inc_ref" | "borrow" => {
+                let o = out();
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if o != "_"
+                    && o != "none"
+                    && !o.is_empty()
+                    && let Some(src) = args.first()
+                {
+                    let src = rust_clone(src);
+                    self.emit_line(&declare(&o, &src, &self.hoisted_vars.clone()));
+                }
+            }
+            "dec_ref" | "release" => {}
 
             // ── Class / instance stubs ─────────────────────────────────────────
             "alloc_instance" | "init_instance" | "instance_set_field" | "instance_get_field"
@@ -4008,6 +4307,155 @@ mod tests {
         assert!(source.contains("fn molt_get_item(obj: &MoltValue, key: &MoltValue)"));
         assert!(source.contains("fn molt_ord(x: &MoltValue)"));
         assert!(source.contains("let mut code: MoltValue = molt_ord_at(&s, &i);"));
+        assert!(!source.contains("MOLT_STUB"));
+    }
+
+    #[test]
+    fn compile_code_slots_contains_and_ref_markers_without_stubs() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![
+                    "filename".to_string(),
+                    "name".to_string(),
+                    "firstlineno".to_string(),
+                    "linetable".to_string(),
+                    "varnames".to_string(),
+                    "argcount".to_string(),
+                    "posonlyargcount".to_string(),
+                    "kwonlyargcount".to_string(),
+                    "container".to_string(),
+                    "needle".to_string(),
+                ],
+                ops: vec![
+                    OpIR {
+                        kind: "code_slots_init".to_string(),
+                        value: Some(4),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "code_new".to_string(),
+                        args: Some(vec![
+                            "filename".to_string(),
+                            "name".to_string(),
+                            "firstlineno".to_string(),
+                            "linetable".to_string(),
+                            "varnames".to_string(),
+                            "argcount".to_string(),
+                            "posonlyargcount".to_string(),
+                            "kwonlyargcount".to_string(),
+                        ]),
+                        out: Some("code".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "inc_ref".to_string(),
+                        args: Some(vec!["code".to_string()]),
+                        out: Some("owned_code".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "code_slot_set".to_string(),
+                        value: Some(2),
+                        args: Some(vec!["owned_code".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_enter_slot".to_string(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "frame_locals_set".to_string(),
+                        args: Some(vec!["container".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_enter".to_string(),
+                        out: Some("exc_base".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_depth".to_string(),
+                        out: Some("exc_depth".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_set_depth".to_string(),
+                        args: Some(vec!["exc_depth".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_exit".to_string(),
+                        args: Some(vec!["exc_base".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_last".to_string(),
+                        out: Some("last_exc".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_last_pending".to_string(),
+                        out: Some("pending_exc".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_clear".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_exit".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dec_ref".to_string(),
+                        args: Some(vec!["owned_code".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "contains".to_string(),
+                        args: Some(vec!["container".to_string(), "needle".to_string()]),
+                        out: Some("present".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("present".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend
+            .compile_checked(&ir)
+            .expect("Rust source should lower code metadata, contains, and ref markers");
+        assert!(source.contains("fn molt_code_new("));
+        assert!(source.contains("fn molt_code_slots_init("));
+        assert!(source.contains("fn molt_code_slot_set("));
+        assert!(source.contains("molt_code_slots_init(4);"));
+        assert!(source.contains(
+            "let mut code: MoltValue = molt_code_new(&filename, &name, &firstlineno, &linetable, &varnames, &argcount, &posonlyargcount, &kwonlyargcount);"
+        ));
+        assert!(source.contains("let mut owned_code: MoltValue = code.clone();"));
+        assert!(source.contains("molt_code_slot_set(2, &owned_code);"));
+        assert!(source.contains("fn molt_exception_stack_enter() -> MoltValue"));
+        assert!(source.contains("fn molt_trace_enter_slot(code_id: i64) -> MoltValue"));
+        assert!(source.contains("let mut exc_base: MoltValue = molt_exception_stack_enter();"));
+        assert!(source.contains("let mut exc_depth: MoltValue = molt_exception_stack_depth();"));
+        assert!(source.contains("molt_exception_stack_set_depth(&exc_depth);"));
+        assert!(source.contains("molt_exception_stack_exit(&exc_base);"));
+        assert!(source.contains("let mut last_exc: MoltValue = molt_exception_last();"));
+        assert!(source.contains("let mut pending_exc: MoltValue = molt_exception_last_pending();"));
+        assert!(source.contains(
+            "let mut present: MoltValue = MoltValue::Bool(molt_in(&needle, &container));"
+        ));
         assert!(!source.contains("MOLT_STUB"));
     }
 

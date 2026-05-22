@@ -165,8 +165,10 @@ fn resolve_backend_output_path(output_path: Option<&str>, kind: BackendOutputKin
 
 #[cfg(feature = "rust-backend")]
 fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
+    let mut ir = ir.clone();
+    ir.tree_shake_source_emission();
     let mut backend = RustBackend::new();
-    backend.compile_checked(ir).map_err(|err| {
+    backend.compile_checked(&ir).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Rust validation failed: {err}"),
@@ -2139,7 +2141,8 @@ fn main() -> io::Result<()> {
 
     rewrite_annotate_stubs(&mut ir);
 
-    // Tree-shake for Luau: remove unreachable stdlib functions.
+    // Source emitters do not link against native/WASM runtime objects, so they
+    // prune unreachable runtime/bootstrap support before textual codegen.
     if is_luau {
         ir.tree_shake_luau();
     }
@@ -2822,6 +2825,44 @@ mod tests {
             err.to_string().contains("unimplemented op stubs"),
             "unexpected error: {err}"
         );
+    }
+
+    #[cfg(feature = "rust-backend")]
+    #[test]
+    fn rust_source_for_ir_prunes_unreachable_stub_markers() {
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "dead_stdlib_helper".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "unsupported_for_rust_target_test".to_string(),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        let source = rust_source_for_ir(&ir).expect("dead stubs must be pruned before Rust emit");
+        assert!(source.contains("fn molt_main("));
+        assert!(!source.contains("dead_stdlib_helper"));
+        assert!(!source.contains("MOLT_STUB"));
     }
 
     #[test]
