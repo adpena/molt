@@ -8593,6 +8593,7 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_email",
     "stdlib_decimal",
     "stdlib_logging",
+    "stdlib_logging_ext",
     "stdlib_concurrent",
     "stdlib_dbm",
     "stdlib_importlib_extra",
@@ -8655,6 +8656,8 @@ _WASM_RUNTIME_FULL_FEATURES: tuple[str, ...] = (
     "stdlib_serialization",
     "stdlib_archive",
     "stdlib_fs_extra",
+    "stdlib_logging",
+    "stdlib_logging_ext",
     "builtin_set",
     "builtin_complex",
     "builtin_memoryview",
@@ -9142,6 +9145,20 @@ def _is_reusable_wasm_artifact(path: Path) -> bool:
 
 def _is_valid_runtime_wasm_artifact(path: Path) -> bool:
     return _is_reusable_wasm_artifact(path) and _wasm_has_nonempty_code_section(path)
+
+
+def _runtime_wasm_has_shared_import_abi(path: Path) -> bool:
+    try:
+        memory_min, table_min = _wasm_import_minima(path)
+    except (OSError, ValueError):
+        return False
+    return memory_min is not None and table_min is not None
+
+
+def _is_valid_shared_runtime_wasm_artifact(path: Path) -> bool:
+    return _is_valid_runtime_wasm_artifact(
+        path
+    ) and _runtime_wasm_has_shared_import_abi(path)
 
 
 def _inspect_wasm_binary(path: Path) -> Literal["missing", "invalid", "valid"]:
@@ -25173,7 +25190,12 @@ def _ensure_runtime_wasm(
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if runtime_wasm.exists():
-            return _is_valid_runtime_wasm_artifact(runtime_wasm) and (
+            runtime_valid = (
+                _is_valid_runtime_wasm_artifact(runtime_wasm)
+                if reloc
+                else _is_valid_shared_runtime_wasm_artifact(runtime_wasm)
+            )
+            return runtime_valid and (
                 not validate_exports
                 or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
             )
@@ -25263,6 +25285,9 @@ def _ensure_runtime_wasm(
                 extension="fingerprint",
             )
         )
+        target_runtime_wasm_stored_fingerprint = _read_runtime_fingerprint(
+            target_runtime_wasm_fingerprint_path
+        )
         if (
             not reloc
             and fingerprint is not None
@@ -25270,8 +25295,13 @@ def _ensure_runtime_wasm(
                 target_runtime_wasm,
                 _runtime_source_paths(root),
             )
+            and not _artifact_needs_rebuild(
+                target_runtime_wasm,
+                fingerprint,
+                target_runtime_wasm_stored_fingerprint,
+            )
             and _inspect_wasm_binary(target_runtime_wasm) == "valid"
-            and _is_valid_runtime_wasm_artifact(target_runtime_wasm)
+            and _is_valid_shared_runtime_wasm_artifact(target_runtime_wasm)
             and (
                 not validate_exports
                 or _runtime_wasm_exports_satisfy(
@@ -25323,7 +25353,14 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            if validate_exports and not _runtime_wasm_exports_satisfy(
+            if not _is_valid_shared_runtime_wasm_artifact(runtime_wasm):
+                if not json_output:
+                    print(
+                        "Hydrated runtime wasm artifact missing shared "
+                        "memory/table import ABI; forcing rebuild.",
+                        file=sys.stderr,
+                    )
+            elif validate_exports and not _runtime_wasm_exports_satisfy(
                 runtime_wasm, required_exports
             ):
                 if not json_output:
@@ -25332,16 +25369,17 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            try:
-                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
-            except OSError:
-                if not json_output:
-                    print(
-                        "Failed to update runtime wasm integrity sidecar.",
-                        file=sys.stderr,
-                    )
-                return False
-            return True
+            else:
+                try:
+                    _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                except OSError:
+                    if not json_output:
+                        print(
+                            "Failed to update runtime wasm integrity sidecar.",
+                            file=sys.stderr,
+                        )
+                    return False
+                return True
         target_runtime_staticlib = _wasm_runtime_staticlib_path(
             target_root,
             profile_dir,
@@ -25429,7 +25467,11 @@ def _ensure_runtime_wasm(
         )
         if (
             not needs_rebuild
-            and _is_valid_runtime_wasm_artifact(runtime_wasm)
+            and (
+                _is_valid_runtime_wasm_artifact(runtime_wasm)
+                if reloc
+                else _is_valid_shared_runtime_wasm_artifact(runtime_wasm)
+            )
             and (
                 not validate_exports
                 or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
@@ -25442,6 +25484,7 @@ def _ensure_runtime_wasm(
                 if (
                     current_src != runtime_wasm
                     and _inspect_wasm_binary(current_src) == "valid"
+                    and _is_valid_shared_runtime_wasm_artifact(current_src)
                     and _runtime_wasm_exports_satisfy(current_src, required_exports)
                 ):
                     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -25726,6 +25769,14 @@ def _ensure_runtime_wasm(
                 print(
                     "Runtime wasm build produced artifact missing required exports: "
                     + ", ".join(sorted(missing_exports)),
+                    file=sys.stderr,
+                )
+            return False
+        if not _is_valid_shared_runtime_wasm_artifact(src):
+            if not json_output:
+                print(
+                    "Runtime wasm build produced artifact missing shared "
+                    "memory/table import ABI.",
                     file=sys.stderr,
                 )
             return False

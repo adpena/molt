@@ -83,6 +83,7 @@ def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
     assert "stdlib_net" not in features
     assert "stdlib_ast" not in features
     assert "stdlib_unicode_names" not in features
+    assert "stdlib_logging_ext" in features
     assert "stdlib_serial" in features
 
 

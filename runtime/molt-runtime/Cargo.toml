@@ -33,18 +33,24 @@ stdlib_unicode_names = ["dep:unicode_names2", "molt-runtime-text?/stdlib_unicode
 # Strict superset chain: micro -> edge -> standard -> server -> full.
 # Each tier includes ALL features of the tier below it plus its own additions.
 
-# Micro — core plus non-network async scheduling, collections intrinsics, and
-# filesystem/tempfile intrinsics required by core stdlib imports exercised by
+# Micro — core plus non-network async scheduling, logging, collections intrinsics,
+# and filesystem/tempfile intrinsics required by core stdlib imports exercised by
 # the default compiler profile; no crypto/compression/network/ast/tk/email/etc.
 # Suitable for edge deployment where binary size matters most.
-stdlib_micro = ["stdlib_asyncio", "stdlib_collections", "stdlib_fs_extra"]
+stdlib_micro = [
+    "stdlib_asyncio",
+    "stdlib_collections",
+    "stdlib_fs_extra",
+    "stdlib_logging",
+    "stdlib_logging_ext",
+]
 
 # Edge — micro plus minimal stdlib for Cloudflare Workers / Lambda / serverless.
 # Targets <3MB WASM binary with essential stdlib support.
 stdlib_edge = [
     "stdlib_micro",
     "stdlib_math", "stdlib_regex", "stdlib_collections", "stdlib_itertools",
-    "stdlib_csv", "stdlib_logging",
+    "stdlib_csv",
     "builtin_set",
 ]
 

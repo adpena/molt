@@ -1945,7 +1945,8 @@ def main(
         )
         print(
             "memory_guard: next action: inspect child stderr/logs or host signal "
-            "source; the guard did not classify this as an RSS limit trip.",
+            "source, including direct-child resource limits such as RLIMIT_AS; "
+            "the guard did not classify this as an RSS limit trip.",
             file=sys.stderr,
         )
     return result.returncode

@@ -555,7 +555,7 @@ molt build app.py --target wasm --precompile  # Precompiled .cwasm
 
 **Size optimization:**
 - `--split-runtime` splits into `app.wasm` + `molt_runtime.wasm`; both artifacts are tree-shaken and post-optimized independently.
-- `--stdlib-profile micro` includes only core modules.
+- `--stdlib-profile micro` includes the core import surface, non-network scheduling, logging, collections, and tempfile/filesystem intrinsics.
 - `--wasm-opt-level Oz` (default) optimizes for size; `O3` optimizes for speed.
 
 ### Luau
