@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import sys
+from collections.abc import Mapping
+from pathlib import Path
 
 try:
     from tools import harness_memory_guard
@@ -15,10 +16,10 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _timeout_from_env(name: str | None) -> float | None:
+def _timeout_from_env(name: str | None, env: Mapping[str, str]) -> float | None:
     if not name:
         return None
-    raw = os.environ.get(name, "").strip()
+    raw = env.get(name, "").strip()
     if not raw:
         return None
     try:
@@ -50,9 +51,12 @@ def main(argv: list[str] | None = None) -> int:
         env,
         repo_root=ROOT,
     )
-    timeout = args.timeout
-    if timeout is None:
-        timeout = _timeout_from_env(args.timeout_env)
+    timeout = harness_memory_guard.timeout_from_env(
+        args.prefix,
+        env,
+        explicit=args.timeout,
+        default=_timeout_from_env(args.timeout_env, env),
+    )
     result = context.run(
         command,
         cwd=args.cwd,
