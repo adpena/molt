@@ -118,6 +118,61 @@ def test_bench_individual_can_opt_into_cold_daemon_isolation(
     assert cleanups == 1
 
 
+def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bench = _load_bench_individual()
+    target = tmp_path / "target"
+    daemon_root = target / ".molt_state" / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+    owned_socket = tmp_path / "owned.sock"
+    foreign_socket = tmp_path / "foreign.sock"
+    owned_socket.write_text("", encoding="utf-8")
+    foreign_socket.write_text("", encoding="utf-8")
+    (daemon_root / "molt-backend.dev-fast.alpha-session.aaaa.pid").write_text(
+        "101\n",
+        encoding="utf-8",
+    )
+    (daemon_root / "molt-backend.dev-fast.beta-session.bbbb.pid").write_text(
+        "202\n",
+        encoding="utf-8",
+    )
+    killed: list[int] = []
+
+    def fake_ps(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        assert cmd == ["ps", "-axo", "pid=,etimes=,command="]
+        stdout = "\n".join(
+            [
+                f" 101 120 /repo/target/molt-backend --daemon --socket {owned_socket}",
+                f" 202 240 /repo/target/molt-backend --daemon --socket {foreign_socket}",
+                " 303 300 /repo/target/molt-backend --not-daemon",
+            ]
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "bench-tmp")
+    monkeypatch.setattr(bench, "_guarded_bench_process", fake_ps)
+    monkeypatch.setattr(bench, "_terminate_pid", lambda pid: killed.append(pid))
+
+    report = bench._cleanup_current_session_backend_daemons()
+
+    assert killed == [101]
+    assert report.killed_count == 1
+    assert report.killed[0].pid == 101
+    assert report.killed[0].reason == "session_isolation"
+    assert report.skipped_foreign == 1
+    assert report.session_id == "alpha-session"
+    assert report.killed_at is not None
+    assert report.artifact is not None
+    payload = json.loads(Path(report.artifact).read_text(encoding="utf-8"))
+    assert payload["event"] == "bench_individual_backend_daemon_cleanup"
+    assert payload["killed"][0]["pid"] == 101
+    assert payload["skipped_foreign"] == 1
+
+
 def test_bench_individual_rejects_partial_sample_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -322,6 +377,7 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
+    monkeypatch.setenv("MOLT_SESSION_ID", "caller-session")
 
     built_binary, build_s, build_err = bench.molt_build(
         str(script),
@@ -344,6 +400,11 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
     ]
     assert [call["limits"] for call in calls] == [limits, limits, limits]
     assert calls[0]["timeout"] == 3.0
+    assert calls[0]["cwd"] == bench.REPO_ROOT
+    assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(bench.REPO_ROOT)
+    assert calls[0]["env"]["CARGO_TARGET_DIR"] == str(bench.REPO_ROOT / "target")
+    assert calls[0]["env"]["MOLT_SESSION_ID"] == "caller-session"
+    assert calls[0]["env"]["PYTHONPATH"] == str(bench.REPO_ROOT / "src")
     assert calls[1]["timeout"] == 4.0
     assert calls[2]["timeout"] == 5.0
     assert calls[2]["cmd"] == [sys.executable, str(script)]
@@ -398,9 +459,7 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
         "repo_process_sentinel",
         fake_repo_process_sentinel,
     )
-    monkeypatch.setattr(
-        bench, "BENCHMARKS", ["tests/benchmarks/bench_bytes_find.py"]
-    )
+    monkeypatch.setattr(bench, "BENCHMARKS", ["tests/benchmarks/bench_bytes_find.py"])
     monkeypatch.setattr(bench, "bench_one", fake_bench_one)
     monkeypatch.setattr(bench, "print_summary", lambda results: None)
     monkeypatch.setattr(
