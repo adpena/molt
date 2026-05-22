@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -595,6 +596,45 @@ def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
     assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
     assert result.timed_out is True
     assert "timeout after" in result.stderr
+
+
+def test_run_command_timeout_teardown_uses_bounded_wait(monkeypatch) -> None:
+    waits: list[float | None] = []
+
+    class FakeProc:
+        pid = 987654
+        returncode: int | None = None
+        stdin = None
+
+        def __init__(self, command, **_kwargs):  # type: ignore[no-untyped-def]
+            self.command = list(command)
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            waits.append(timeout)
+            if timeout is None:
+                raise AssertionError("memory guard attempted an unbounded wait")
+            raise subprocess.TimeoutExpired(self.command, timeout)
+
+        def poll(self):  # type: ignore[no-untyped-def]
+            return self.returncode
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", FakeProc)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.001,
+        timeout=0.001,
+        env={"MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC": "0.001"},
+        sampler=lambda: {},
+    )
+
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+    assert result.timed_out is True
+    assert "termination wait expired" in result.stderr
+    assert waits
+    assert None not in waits
 
 
 def test_exit_signal_payload_classifies_direct_signal_status() -> None:

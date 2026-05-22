@@ -453,8 +453,10 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
         in wasm_text
     )
-    assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "128"' in wasm_text
-    assert 'MOLT_WASM_TEST_TIMEOUT_SEC: "900"' in wasm_text
+    assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in wasm_text
+    assert 'MOLT_WASM_TEST_TIMEOUT_SEC: "600"' in wasm_text
+    assert 'MOLT_WASM_TEST_KEEPALIVE_SEC: "20"' in wasm_text
+    assert 'MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"' in wasm_text
     assert wasm_text.count('MOLT_BACKEND_DAEMON: "0"') == 5
     assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in wasm_text
     assert "MOLT_BACKEND_DAEMON_CACHE_MB" not in wasm_text
@@ -484,9 +486,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "uv run python3 -m pytest tests/test_wasm_control_flow.py -q" not in (
         wasm_text
     )
-    assert (
-        "python3 tools/venv_exec.py python3 -m molt.cli build" in wasm_text
-    )
+    assert "python3 tools/venv_exec.py python3 -m molt.cli build" in wasm_text
     assert (
         wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
     )

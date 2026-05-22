@@ -28,6 +28,7 @@ DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
 DEFAULT_FAST_START_DURATION_SEC = 2.0
 DEFAULT_SAMPLES_MAX_MB = 2.0
+DEFAULT_TERMINATION_WAIT_SEC = 2.0
 DEFAULT_MEMORY_RESERVE_FRACTION = 0.06
 DEFAULT_MEMORY_RESERVE_MIN_GB = 1.0
 DEFAULT_MEMORY_RESERVE_MAX_GB = 12.0
@@ -51,6 +52,35 @@ _INTERNAL_ENV_KEYS = (
     INTERNAL_CHILD_RLIMIT_KB_ENV,
     INTERNAL_CHILD_STARTED_FD_ENV,
 )
+
+
+def _utc_timestamp() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def termination_wait_seconds(env: Mapping[str, str] | None = None) -> float:
+    source = os.environ if env is None else env
+    for name in (
+        "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC",
+        "MOLT_MEMORY_GUARD_TERMINATE_WAIT_SEC",
+    ):
+        raw = source.get(name, "").strip()
+        if not raw:
+            continue
+        lowered = raw.lower()
+        if lowered in {"0", "false", "off", "no"}:
+            return 0.0
+        try:
+            parsed = float(raw)
+        except ValueError:
+            continue
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_TERMINATION_WAIT_SEC
 
 
 @dataclass(frozen=True, slots=True)
@@ -1191,6 +1221,8 @@ def run_guarded(
     dynamic_process_rss: bool = False,
     dynamic_total_rss: bool = False,
     cleanup_orphans: bool = True,
+    progress_label: str | None = None,
+    keepalive_interval: float | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -1198,6 +1230,8 @@ def run_guarded(
         raise ValueError("poll interval must be greater than 0")
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout must be greater than 0")
+    if keepalive_interval is not None and keepalive_interval <= 0:
+        keepalive_interval = None
     start = time.monotonic()
     launch = _guarded_launch(
         command,
@@ -1267,8 +1301,16 @@ def run_guarded(
     tracker = ProcessTreeTracker(proc.pid)
     child_exit_usage: ChildExitResourceUsage | None = None
     last_limits: ResolvedMemoryLimits | None = None
+    termination_wait_expired = False
+    termination_wait_s = termination_wait_seconds(env)
+    next_keepalive = (
+        start + keepalive_interval
+        if progress_label is not None and keepalive_interval is not None
+        else None
+    )
     while True:
-        if timeout is not None and time.monotonic() - start >= timeout:
+        now = time.monotonic()
+        if timeout is not None and now - start >= timeout:
             timed_out = True
             samples = sampler()
             watched = tracker.update(samples)
@@ -1279,6 +1321,16 @@ def run_guarded(
                 grace=0.25,
             )
             break
+        if next_keepalive is not None and now >= next_keepalive:
+            timeout_text = "unbounded" if timeout is None else f"{timeout:.2f}s"
+            print(
+                f"{progress_label}: still running "
+                f"elapsed={now - start:.0f}s timeout={timeout_text} pid={proc.pid}",
+                file=sys.stderr,
+                flush=True,
+            )
+            assert keepalive_interval is not None
+            next_keepalive = now + keepalive_interval
         samples = sampler()
         watched = tracker.update(samples)
         observed_peak = peak_rss(samples, root_pid=proc.pid, watched=watched)
@@ -1398,9 +1450,12 @@ def run_guarded(
                     proc.pid,
                     samples=samples,
                     watched=watched,
-                    grace=0.25,
+                    grace=0.0,
                 )
-                proc.wait()
+                try:
+                    proc.wait(timeout=termination_wait_s)
+                except subprocess.TimeoutExpired:
+                    termination_wait_expired = True
         if cleanup_orphans:
             orphaned_process_groups = cleanup_tracked_orphans(
                 proc.pid,
@@ -1431,8 +1486,21 @@ def run_guarded(
         returncode = TIMEOUT_RETURN_CODE
         timeout_msg = f"memory_guard: timeout after {timeout:.2f}s\n"
         stderr = f"{stderr or ''}{timeout_msg}"
+    if termination_wait_expired:
+        if returncode is None:
+            returncode = TIMEOUT_RETURN_CODE if timed_out else GUARD_RETURN_CODE
+        stderr = (
+            f"{stderr or ''}"
+            "memory_guard: termination wait expired; tracked process tree did "
+            "not fully exit after SIGTERM/SIGKILL: "
+            f"observed_at={_utc_timestamp()} "
+            f"elapsed={elapsed_s:.2f}s pid={proc.pid} wait={termination_wait_s:.2f}s\n"
+            "memory_guard: next action: inspect host process state and child "
+            "logs for uninterruptible work; the guard returned without waiting "
+            "forever so CI can surface the failure instead of hanging.\n"
+        )
     return GuardResult(
-        returncode=returncode,
+        returncode=GUARD_RETURN_CODE if returncode is None else returncode,
         violation=violation,
         peak=peak,
         peak_total=peak_total,
