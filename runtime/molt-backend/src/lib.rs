@@ -3446,7 +3446,8 @@ impl SimpleBackend {
                         crate::tir::printer::print_function(tir_func)
                     );
                 }
-                crate::llvm_backend::lowering::lower_tir_to_llvm(tir_func, &llvm);
+                crate::llvm_backend::lowering::try_lower_tir_to_llvm(tir_func, &llvm)
+                    .unwrap_or_else(|err| panic!("{err}"));
             }
 
             // Dump LLVM IR under the repo-local debug artifact root when
