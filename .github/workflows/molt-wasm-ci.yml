@@ -246,6 +246,8 @@ jobs:
       - name: Run WASM control flow parity tests
         timeout-minutes: 16
         run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- python3 tools/venv_exec.py python3 -m pytest tests/test_wasm_control_flow.py -q
+        env:
+          MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"
 
       # ── Summary ──
       - name: Build summary

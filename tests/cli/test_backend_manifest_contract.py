@@ -193,6 +193,8 @@ def test_runtime_micro_profile_includes_core_non_network_intrinsics() -> None:
         "stdlib_asyncio",
         "stdlib_collections",
         "stdlib_fs_extra",
+        "stdlib_logging",
+        "stdlib_logging_ext",
     ]
     assert "stdlib_net" not in micro_features
 

@@ -97,10 +97,16 @@ def test_run_wasm_linked_uses_stable_node_flags(
     assert cmd[-2:] == [str(tmp_path / "wasm" / "run_wasm.js"), str(wasm_path)]
     env = cast(dict[str, str], recorded["env"])
     assert env.get("NODE_NO_WARNINGS") == "1"
-    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "128"
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
+    limits = wasm_runner.harness_memory_guard.limits_from_env("MOLT_WASM_TEST", env)
+    assert limits.enabled is True
+    assert limits.max_process_rss_gb > 0
+    assert limits.max_total_rss_gb > 0
+    assert limits.max_global_rss_gb > 0
+    assert limits.child_rlimit_gb == 0
 
 
-def test_run_wasm_linked_raises_inherited_node_child_rlimit_floor(
+def test_run_wasm_linked_disables_inherited_node_child_rlimit_by_default(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -119,10 +125,10 @@ def test_run_wasm_linked_raises_inherited_node_child_rlimit_floor(
 
     assert result.returncode == 0
     env = cast(dict[str, str], recorded["env"])
-    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "128"
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
 
 
-def test_run_wasm_linked_preserves_larger_or_disabled_node_child_rlimit(
+def test_run_wasm_linked_preserves_explicit_node_child_rlimit_overrides(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -153,6 +159,33 @@ def test_run_wasm_linked_preserves_larger_or_disabled_node_child_rlimit(
     envs = cast(list[dict[str, str]], recorded["envs"])
     assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "192"
     assert envs[1].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
+
+
+def test_run_wasm_linked_preserves_explicit_global_child_rlimit_override(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    wasm_path = tmp_path / "output_linked.wasm"
+    wasm_path.write_bytes(b"\x00asm")
+    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    recorded: dict[str, Any] = {}
+
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        recorded["env"] = dict(kwargs["env"])
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
+
+    result = wasm_runner.run_wasm_linked(
+        tmp_path,
+        wasm_path,
+        env_overrides={"MOLT_CHILD_RLIMIT_GB": "64"},
+    )
+
+    assert result.returncode == 0
+    env = cast(dict[str, str], recorded["env"])
+    assert env.get("MOLT_CHILD_RLIMIT_GB") == "64"
+    assert "MOLT_WASM_TEST_CHILD_RLIMIT_GB" not in env
 
 
 def test_run_wasm_linked_env_overrides_can_opt_out_of_node_warning_suppression(
@@ -333,7 +366,6 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_WASM_LINKED"] = "0"
     build = wasm_runner._run_wasm_test_process(
         [
             sys.executable,
@@ -347,6 +379,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
             "browser",
             "--target",
             "wasm",
+            "--split-runtime",
             "--out-dir",
             str(tmp_path),
         ],
@@ -364,7 +397,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
     run_env["MOLT_WASM_PREFER_LINKED"] = "0"
     run_env["MOLT_RUNTIME_WASM"] = str(tmp_path / "molt_runtime.wasm")
     result = wasm_runner._run_wasm_test_process(
-        ["node", "wasm/run_wasm.js", str(tmp_path / "output.wasm")],
+        ["node", "wasm/run_wasm.js", str(tmp_path / "app.wasm")],
         cwd=root,
         env=run_env,
         capture_output=True,

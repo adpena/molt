@@ -464,6 +464,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         if block.startswith("      - name: Run WASM control flow parity tests")
     )
     assert "MOLT_BACKEND_DAEMON" not in parity_step
+    assert 'MOLT_WASM_TEST_CHILD_RLIMIT_GB: "0"' in parity_step
     assert (
         "cargo build --profile dev-fast -p molt-backend --no-default-features --features wasm-backend"
         in wasm_text

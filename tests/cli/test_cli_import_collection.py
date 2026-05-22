@@ -971,7 +971,6 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
 
     monkeypatch.setattr(cli, "_link_fingerprint", fake_link_fingerprint)
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
 
     prepared, error = cli._prepare_native_link(
@@ -7558,6 +7557,9 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
         ),
     )
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(
+        cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
+    )
     monkeypatch.setattr(cli, "_runtime_wasm_exports_satisfy", lambda path, req: True)
 
     assert cli._ensure_runtime_wasm(
@@ -7722,6 +7724,9 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
     )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(
+        cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
+    )
     monkeypatch.setattr(
         cli, "_runtime_wasm_exports_satisfy", lambda path, required: True
     )
@@ -8293,6 +8298,9 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
     )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(
+        cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
+    )
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(
         cli, "_resolve_built_runtime_wasm_artifact", lambda *args: current_src
@@ -8350,8 +8358,20 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
     )
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(
+        cli,
+        "_read_runtime_fingerprint",
+        lambda path: fingerprint if "runtime_fingerprints" in os.fspath(path) else None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_artifact_needs_rebuild",
+        lambda artifact, current, stored: current != stored,
+    )
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(
+        cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
+    )
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
     monkeypatch.setattr(
         cli, "_runtime_wasm_exports_satisfy", lambda path, required: True

@@ -92,7 +92,7 @@ def _run_external_tool(
 # any runtime whose hash does not match.  Update this dict when cutting a
 # release or after rebuilding the runtime (run: shasum -a 256 molt_runtime.wasm).
 RUNTIME_EXPECTED_HASHES: dict[str, str] = {
-    "molt_runtime.wasm": "9879da79c4bc7f84f47e274f45603370ab274144a454a24d19dfaaa01d545295",
+    "molt_runtime.wasm": "e410e7ca631478696d95302d3d7634ffea5d0633b0a6fb74b891e80bfeb5992b",
 }
 _OUTPUT_RUNTIME_EXPORT_ALIASES = (
     "molt_isolate_bootstrap",
