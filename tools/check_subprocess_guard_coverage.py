@@ -17,6 +17,8 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "tools",
     REPO_ROOT / "tests",
     REPO_ROOT / "src" / "molt" / "cli.py",
+    REPO_ROOT / "src" / "molt" / "process_guard.py",
+    REPO_ROOT / "src" / "molt" / "repl.py",
 )
 EXCLUDED_PREFIXES = (
     "tests/differential/",
@@ -300,6 +302,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_run_completed_command",
         "run",
         "CLI subprocess helper's explicit unguarded branch for opt-out call sites",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/process_guard.py",
+        "run_completed_command",
+        "run",
+        "shared subprocess guard helper's explicit unguarded branch for opt-out call sites",
     ),
     AllowedRawSubprocessUse(
         "src/molt/cli.py",

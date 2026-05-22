@@ -889,6 +889,33 @@ def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> N
     ]
 
 
+def test_cli_repl_command_delegates_to_guarded_repl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import cli
+    from molt import repl
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_repl(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setattr(repl, "run_repl", fake_run_repl, raising=True)
+    monkeypatch.setattr(sys, "argv", ["molt", "repl", "--io-mode", "virtual"])
+
+    assert cli.main() == 0
+    assert calls == [
+        {
+            "capabilities": None,
+            "io_mode": "virtual",
+            "molt_cmd": [sys.executable, "-m", "molt.cli"],
+            "timeout_sec": None,
+        }
+    ]
+
+
 def test_cli_install_uses_memory_guard_for_venv_and_uv(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
