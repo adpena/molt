@@ -68,6 +68,27 @@ def test_github_workflows_opt_into_node24_action_runtime() -> None:
         assert "ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION" not in text, workflow
 
 
+def test_github_workflows_do_not_reintroduce_node20_action_pins() -> None:
+    node20_action_pins = {
+        "actions/checkout@v4",
+        "actions/setup-python@v5",
+        "actions/setup-node@v4",
+        "actions/cache@v4",
+        "actions/upload-artifact@v4",
+        "actions/download-artifact@v4",
+        "actions/github-script@v7",
+        "actions/attest-build-provenance@v2",
+        "astral-sh/setup-uv@v3",
+        "astral-sh/setup-uv@v4",
+        "softprops/action-gh-release@v2",
+    }
+
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        for action_pin in sorted(node20_action_pins):
+            assert action_pin not in text, (workflow, action_pin)
+
+
 def test_pre_commit_hooks_are_read_only_by_default() -> None:
     default_python = _default_python_version()
     pre_commit_text = _read(".pre-commit-config.yaml")

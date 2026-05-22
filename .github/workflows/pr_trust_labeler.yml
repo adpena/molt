@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Apply trusted/untrusted labels from author chain policy
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           TRUSTED_LOGINS: ${{ vars.MOLT_TRUSTED_PR_AUTHORS }}
           TRUSTED_LABEL: ${{ vars.MOLT_TRUSTED_PR_LABEL }}
