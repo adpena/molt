@@ -30418,6 +30418,55 @@ def _format_validate_guard_summary(prefix: str, limits: Mapping[str, Any]) -> st
     )
 
 
+def _default_validate_summary_path(
+    root: Path,
+    *,
+    suite: str,
+    backend: str,
+    profile: str,
+) -> Path:
+    return root / "logs" / f"validate-{suite}-{backend}-{profile}.json"
+
+
+def _resolve_validate_summary_path(root: Path, summary_out: str | None) -> Path:
+    if summary_out is None:
+        raise ValueError("summary_out must not be None")
+    path = Path(summary_out).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path
+
+
+def _write_json_sidecar(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def _persist_validate_summary(
+    payload: dict[str, Any],
+    *,
+    summary_path: Path | None,
+) -> str | None:
+    if summary_path is None:
+        return None
+    payload["data"]["summary_path"] = str(summary_path)
+    try:
+        _write_json_sidecar(summary_path, payload)
+    except OSError as exc:
+        return f"Failed to write validate summary {summary_path}: {exc}"
+    return None
+
+
 def validate(
     *,
     suite: Literal["full", "smoke", "commands", "conformance", "bench"] = "full",
@@ -30426,6 +30475,7 @@ def validate(
     json_output: bool = False,
     verbose: bool = False,
     check_only: bool = False,
+    summary_out: str | None = None,
 ) -> int:
     root = _find_molt_root(Path.cwd())
     root_error = _require_molt_root(root, json_output, "validate")
@@ -30461,12 +30511,31 @@ def validate(
         env.setdefault(key, value)
     env.setdefault("MOLT_SESSION_ID", "validate")
     guard_summary = _validation_guard_summary(root, env, steps)
+    summary_path = (
+        _resolve_validate_summary_path(root, summary_out)
+        if summary_out is not None
+        else (
+            None
+            if check_only
+            else _default_validate_summary_path(
+                root,
+                suite=suite,
+                backend=backend,
+                profile=profile,
+            )
+        )
+    )
+    started_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    validate_started = time.perf_counter()
     if check_only:
         payload = _json_payload(
             "validate",
             "ok",
             data={
                 "check_only": True,
+                "started_at": started_at,
+                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "elapsed_s": round(time.perf_counter() - validate_started, 6),
                 "suite": suite,
                 "backend": backend,
                 "profile": profile,
@@ -30474,6 +30543,10 @@ def validate(
                 "memory_guard": guard_summary,
             },
         )
+        summary_error = _persist_validate_summary(payload, summary_path=summary_path)
+        if summary_error is not None:
+            payload["status"] = "error"
+            payload["errors"].append(summary_error)
         if json_output:
             _emit_json(payload, json_output=True)
         else:
@@ -30483,7 +30556,9 @@ def validate(
             print("Memory guard:")
             for prefix, limits in guard_summary.items():
                 print(_format_validate_guard_summary(prefix, limits))
-        return 0
+            if summary_path is not None:
+                print(f"Summary: {summary_path}")
+        return 1 if summary_error is not None else 0
 
     results: list[dict[str, Any]] = []
     for step in steps:
@@ -30522,11 +30597,15 @@ def validate(
                 file=sys.stderr,
             )
         if proc.returncode != 0:
+            finished_at = dt.datetime.now(dt.timezone.utc).isoformat()
             payload = _json_payload(
                 "validate",
                 "error",
                 data={
                     "check_only": False,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "elapsed_s": round(time.perf_counter() - validate_started, 6),
                     "suite": suite,
                     "backend": backend,
                     "profile": profile,
@@ -30536,6 +30615,12 @@ def validate(
                 },
                 errors=[f"{step.name} failed with exit code {proc.returncode}"],
             )
+            summary_error = _persist_validate_summary(
+                payload,
+                summary_path=summary_path,
+            )
+            if summary_error is not None:
+                payload["errors"].append(summary_error)
             if json_output:
                 _emit_json(payload, json_output=True)
             else:
@@ -30545,13 +30630,19 @@ def validate(
                 )
                 if proc.stderr:
                     print(proc.stderr, file=sys.stderr, end="")
+                if summary_path is not None:
+                    print(f"Summary: {summary_path}", file=sys.stderr)
             return proc.returncode or 1
 
+    finished_at = dt.datetime.now(dt.timezone.utc).isoformat()
     payload = _json_payload(
         "validate",
         "ok",
         data={
             "check_only": False,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "elapsed_s": round(time.perf_counter() - validate_started, 6),
             "suite": suite,
             "backend": backend,
             "profile": profile,
@@ -30560,6 +30651,10 @@ def validate(
             "memory_guard": guard_summary,
         },
     )
+    summary_error = _persist_validate_summary(payload, summary_path=summary_path)
+    if summary_error is not None:
+        payload["status"] = "error"
+        payload["errors"].append(summary_error)
     if json_output:
         _emit_json(payload, json_output=True)
     else:
@@ -30572,7 +30667,9 @@ def validate(
         print("Memory guard:")
         for prefix, limits in guard_summary.items():
             print(_format_validate_guard_summary(prefix, limits))
-    return 0
+        if summary_path is not None:
+            print(f"Summary: {summary_path}")
+    return 1 if summary_error is not None else 0
 
 
 def _strip_c_like_comments_and_literals(text: str) -> str:
@@ -36492,6 +36589,14 @@ def main() -> int:
         help="Print the validation plan without executing it.",
     )
     validate_parser.add_argument(
+        "--summary-out",
+        help=(
+            "Write the validation JSON summary to this path. Executed runs default "
+            "to logs/validate-<suite>-<backend>-<profile>.json; check-only runs "
+            "write only when this option is provided."
+        ),
+    )
+    validate_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     validate_parser.add_argument(
@@ -37692,6 +37797,7 @@ def main() -> int:
             json_output=args.json,
             verbose=args.verbose,
             check_only=args.check,
+            summary_out=args.summary_out,
         )
     if args.command == "package":
         deterministic = args.deterministic
