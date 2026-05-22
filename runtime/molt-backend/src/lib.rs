@@ -2339,10 +2339,6 @@ pub(crate) struct TrampolineSpec {
 pub struct CompileOutput {
     /// The compiled object file bytes.
     pub bytes: Vec<u8>,
-    /// Functions that Cranelift could not compile, replaced with trap stubs.
-    /// Each entry is the mangled function name.  If non-empty, the binary
-    /// will abort at runtime when any of these functions are called.
-    pub trap_stub_names: Vec<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -2354,7 +2350,7 @@ pub struct SimpleBackend {
     import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     pub skip_ir_passes: bool,
     pub skip_shared_stdlib_partition: bool,
-    /// Function names that exist in other batches — use Linkage::Import, not trap stubs.
+    /// Function names that exist in other batches — use Linkage::Import.
     pub external_function_names: std::collections::BTreeSet<String>,
     module_context: Option<NativeBackendModuleContext>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
@@ -2365,20 +2361,14 @@ pub struct SimpleBackend {
     // different number of actual arguments, e.g. kwargs expansion) can
     // construct a matching Cranelift signature for `declare_function`.
     declared_func_arities: BTreeMap<String, usize>,
-    /// Track which functions have been given a body (defined), so we can
-    /// emit trap stubs for declared-but-undefined `__ov` variants after
-    /// all functions are compiled.
+    /// Track which functions have been given a body (defined), so we can fail
+    /// closed if any exported declaration is left without codegen.
     defined_func_names: std::collections::BTreeSet<String>,
     /// Deferred Cranelift function definitions for parallel compilation.
     /// Instead of compiling each function immediately in `define_function`,
     /// we collect the finalized IR here and compile them all in parallel
     /// via `flush_deferred_defines()`.
     deferred_defines: Vec<DeferredDefine>,
-    /// Functions that were replaced with trap stubs due to Cranelift
-    /// compilation failures.  Tracked so the CLI can report them as
-    /// warnings at build time instead of leaving the user to discover
-    /// a bare SIGILL at runtime.
-    pub trap_stub_names: Vec<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -2828,7 +2818,6 @@ impl SimpleBackend {
             declared_func_arities: BTreeMap::new(),
             defined_func_names: std::collections::BTreeSet::new(),
             deferred_defines: Vec::new(),
-            trap_stub_names: Vec::new(),
         }
     }
 
@@ -2840,46 +2829,10 @@ impl SimpleBackend {
         self.module_context = Some(context);
     }
 
-    /// Retry compiling a function at `opt_level=none` after the optimizing
-    /// pipeline panicked.  Builds a throwaway ISA that matches the module's
-    /// target but disables all optimization passes (which avoids the
-    /// `remove_constant_phis` assertion and similar upstream Cranelift bugs).
-    /// The compiled bytes are installed via `define_function_bytes` so the
-    /// module's own ISA is never consulted for code generation.
-    fn retry_define_at_opt_none(
-        module: &mut ObjectModule,
-        func_id: cranelift_module::FuncId,
-        func: cranelift_codegen::ir::Function,
-        func_name: &str,
-    ) -> Result<(), String> {
-        use cranelift_codegen::control::ControlPlane;
-
-        let fallback_isa = Self::rebuild_owned_isa(module.isa(), Some("none"))?;
-
-        let mut retry_ctx = Context::for_function(func);
-        let mut ctrl = ControlPlane::default();
-        retry_ctx
-            .compile(&*fallback_isa, &mut ctrl)
-            .map_err(|e| format!("compile at O0: {e:?}"))?;
-        let compiled = retry_ctx.compiled_code().unwrap();
-        let alignment = compiled.buffer.alignment as u64;
-        let code = compiled.buffer.data().to_vec();
-        let relocs: Vec<cranelift_module::ModuleReloc> = compiled
-            .buffer
-            .relocs()
-            .iter()
-            .map(|r| cranelift_module::ModuleReloc::from_mach_reloc(r, &retry_ctx.func, func_id))
-            .collect();
-        module
-            .define_function_bytes(func_id, alignment, &code, &relocs)
-            .map_err(|e| format!("define_function_bytes for {func_name}: {e}"))?;
-        Ok(())
-    }
-
     /// Compile all deferred function definitions in parallel using rayon,
     /// then define the resulting bytes sequentially via `define_function_bytes`.
-    /// Functions that panic during optimized compilation are retried at
-    /// `opt_level=none`; if that also fails, a trap stub is emitted.
+    /// Any Cranelift compile failure aborts codegen instead of producing a
+    /// partial object file with runtime-aborting placeholders.
     fn flush_deferred_defines(&mut self) {
         use cranelift_codegen::control::ControlPlane;
         use rayon::prelude::*;
@@ -2898,21 +2851,11 @@ impl SimpleBackend {
             code: Vec<u8>,
             relocs: Vec<cranelift_module::ModuleReloc>,
         }
-        enum CompileResult {
-            Ok(CompiledFunc),
-            /// Optimizing compilation panicked or errored -- carry the function
-            /// IR for a sequential retry at opt_level=none.
-            NeedsRetry {
-                func_id: cranelift_module::FuncId,
-                func: Box<cranelift_codegen::ir::Function>,
-                name: String,
-            },
-        }
 
         let compile_isa = Self::rebuild_owned_isa(self.module.isa(), None)
             .unwrap_or_else(|err| panic!("failed to rebuild TargetIsa for deferred flush: {err}"));
 
-        let results: Vec<CompileResult> = {
+        let results: Vec<CompiledFunc> = {
             // Arc<dyn TargetIsa> contains a raw pointer that isn't marked
             // Send/Sync, but the target ISA is immutable after construction and
             // safe to share across parallel Cranelift compilation workers.
@@ -2922,241 +2865,64 @@ impl SimpleBackend {
             unsafe impl Sync for SendIsa {}
 
             let compile_isa = SendIsa(compile_isa);
-            let mut indexed: Vec<(usize, CompileResult)> = deferred
+            let mut indexed: Vec<(usize, CompiledFunc)> = deferred
                 .into_par_iter()
                 .enumerate()
                 .map(|(idx, item)| {
+                    let DeferredDefine {
+                        func_id,
+                        func,
+                        name,
+                    } = item;
                     let isa = compile_isa.clone().0;
-                    let mut ctx = Context::for_function(item.func);
+                    let mut ctx = Context::for_function(func);
                     let mut ctrl = ControlPlane::default();
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        ctx.compile(&*isa, &mut ctrl)
-                            .map(|_| ())
-                            .map_err(|e| format!("{e:?}"))
-                    }));
-                    let compile_result = match result {
-                        Ok(Ok(())) => {
-                            let compiled = ctx.compiled_code().unwrap();
-                            let alignment = compiled.buffer.alignment as u64;
-                            let code = compiled.buffer.data().to_vec();
-                            let relocs: Vec<cranelift_module::ModuleReloc> = compiled
-                                .buffer
-                                .relocs()
-                                .iter()
-                                .map(|r| {
-                                    cranelift_module::ModuleReloc::from_mach_reloc(
-                                        r,
-                                        &ctx.func,
-                                        item.func_id,
-                                    )
-                                })
-                                .collect();
-                            CompileResult::Ok(CompiledFunc {
-                                func_id: item.func_id,
-                                name: item.name,
-                                alignment,
-                                code,
-                                relocs,
-                            })
-                        }
-                        Ok(Err(err)) => {
-                            eprintln!(
-                                "WARNING: Cranelift compilation error in `{}`; will retry: {err}",
-                                item.name
-                            );
-                            let _ = crate::debug_artifacts::append_debug_artifact(
-                                "native/cranelift_errors.txt",
-                                format!("FIRST ERROR {}: {}\n", item.name, err),
-                            );
-                            CompileResult::NeedsRetry {
-                                func_id: item.func_id,
-                                func: Box::new(ctx.func),
-                                name: item.name,
-                            }
-                        }
-                        Err(_panic) => {
-                            let panic_msg = if let Some(s) = _panic.downcast_ref::<String>() {
-                                s.clone()
-                            } else if let Some(s) = _panic.downcast_ref::<&str>() {
-                                s.to_string()
-                            } else {
-                                "unknown panic type".to_string()
-                            };
-                            eprintln!(
-                                "WARNING: Cranelift optimizer panic in `{}`: {}; will retry at opt_level=none",
-                                item.name, panic_msg
-                            );
-                            // Write panic message directly to avoid debug_artifact cwd issues
-                            if let Ok(dir) = std::env::var("MOLT_DEBUG_ARTIFACT_DIR") {
-                                let _ = std::fs::create_dir_all(format!("{dir}/native"));
-                                let _ = std::fs::OpenOptions::new()
-                                    .create(true)
-                                    .append(true)
-                                    .open(format!("{dir}/native/cranelift_errors.txt"))
-                                    .and_then(|mut f| {
-                                        use std::io::Write;
-                                        writeln!(f, "FIRST PANIC {}: {}", item.name, panic_msg)
-                                    });
-                            }
-                            CompileResult::NeedsRetry {
-                                func_id: item.func_id,
-                                func: Box::new(ctx.func),
-                                name: item.name,
-                            }
-                        }
-                    };
-                    (idx, compile_result)
+                    if let Err(err) = ctx.compile(&*isa, &mut ctrl) {
+                        let message = format!("Cranelift compilation failed for `{name}`: {err:?}");
+                        let _ = crate::debug_artifacts::append_debug_artifact(
+                            "native/cranelift_errors.txt",
+                            format!("{message}\n"),
+                        );
+                        panic!("{message}");
+                    }
+                    let compiled = ctx.compiled_code().unwrap_or_else(|| {
+                        panic!("Cranelift produced no compiled code for `{name}`")
+                    });
+                    let alignment = compiled.buffer.alignment as u64;
+                    let code = compiled.buffer.data().to_vec();
+                    let relocs: Vec<cranelift_module::ModuleReloc> = compiled
+                        .buffer
+                        .relocs()
+                        .iter()
+                        .map(|r| {
+                            cranelift_module::ModuleReloc::from_mach_reloc(r, &ctx.func, func_id)
+                        })
+                        .collect();
+                    (
+                        idx,
+                        CompiledFunc {
+                            func_id,
+                            name,
+                            alignment,
+                            code,
+                            relocs,
+                        },
+                    )
                 })
                 .collect();
             indexed.sort_by_key(|(idx, _)| *idx);
             indexed.into_iter().map(|(_, result)| result).collect()
         };
 
-        // Sequential phase: define compiled functions and handle retries.
-        for result in results {
-            match result {
-                CompileResult::Ok(cf) => {
-                    if let Err(e) = self.module.define_function_bytes(
-                        cf.func_id,
-                        cf.alignment,
-                        &cf.code,
-                        &cf.relocs,
-                    ) {
-                        eprintln!("ERROR: define_function_bytes failed for {}: {e}", cf.name);
-                    } else {
-                        self.defined_func_names.insert(cf.name);
-                    }
-                }
-                CompileResult::NeedsRetry {
-                    func_id,
-                    func,
-                    name,
-                } => {
-                    // Wrap retry in catch_unwind: Cranelift can panic
-                    // even at opt_level=none (e.g. blockorder or
-                    // alias_analysis on functions with orphaned blocks).
-                    let retry_result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name)
-                        }));
-                    match retry_result {
-                        Ok(Ok(())) => {
-                            self.defined_func_names.insert(name.clone());
-                            eprintln!("  -> {} compiled successfully at opt_level=none", name);
-                        }
-                        Ok(Err(retry_err)) => {
-                            eprintln!("  -> retry also failed for {}: {}", name, retry_err);
-                            let sig = self
-                                .module
-                                .declarations()
-                                .get_function_decl(func_id)
-                                .signature
-                                .clone();
-                            eprintln!("  -> emitting trap stub for {} (Cranelift error)", name);
-                            match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
-                                Ok(()) => {
-                                    self.trap_stub_names.push(name.clone());
-                                    self.defined_func_names.insert(name);
-                                }
-                                Err(stub_err) => {
-                                    eprintln!(
-                                        "  -> trap stub also failed for {}: {}",
-                                        name, stub_err
-                                    );
-                                }
-                            }
-                        }
-                        Err(_panic) => {
-                            let panic_msg = if let Some(s) = _panic.downcast_ref::<String>() {
-                                s.clone()
-                            } else if let Some(s) = _panic.downcast_ref::<&str>() {
-                                s.to_string()
-                            } else {
-                                format!("{:?}", std::any::type_name_of_val(&_panic))
-                            };
-                            let msg = format!("  -> retry panicked for {} : {}", name, panic_msg);
-                            eprintln!("{msg}");
-                            let _ = crate::debug_artifacts::append_debug_artifact(
-                                "native/cranelift_errors.txt",
-                                format!("{msg}\n"),
-                            );
-                            let sig = self
-                                .module
-                                .declarations()
-                                .get_function_decl(func_id)
-                                .signature
-                                .clone();
-                            eprintln!("  -> emitting trap stub for {} (Cranelift panic)", name);
-                            let _ = crate::debug_artifacts::append_debug_artifact(
-                                "native/cranelift_errors.txt",
-                                format!("  -> emitting trap stub for {} (Cranelift panic)\n", name),
-                            );
-                            match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
-                                Ok(()) => {
-                                    self.trap_stub_names.push(name.clone());
-                                    self.defined_func_names.insert(name);
-                                }
-                                Err(stub_err) => {
-                                    eprintln!(
-                                        "  -> trap stub also failed for {}: {}",
-                                        name, stub_err
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // Sequential phase: define compiled functions in original order.
+        for cf in results {
+            self.module
+                .define_function_bytes(cf.func_id, cf.alignment, &cf.code, &cf.relocs)
+                .unwrap_or_else(|err| {
+                    panic!("define_function_bytes failed for `{}`: {err}", cf.name)
+                });
+            self.defined_func_names.insert(cf.name);
         }
-    }
-
-    /// Emit a minimal function body that immediately traps.  Used as a
-    /// fallback when a function is too large for Cranelift to compile
-    /// (even at opt_level=none).  The stub lets the rest of the object
-    /// file link successfully; if the function is called at runtime,
-    /// it will abort.
-    fn emit_trap_stub(
-        module: &mut ObjectModule,
-        func_id: cranelift_module::FuncId,
-        sig: &cranelift_codegen::ir::Signature,
-        func_name: &str,
-    ) -> Result<(), String> {
-        use cranelift_codegen::control::ControlPlane;
-        use cranelift_codegen::ir::{Function, TrapCode};
-        use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-
-        let mut func = Function::with_name_signature(
-            cranelift_codegen::ir::UserFuncName::default(),
-            sig.clone(),
-        );
-        let mut fbc = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut func, &mut fbc);
-        let entry = builder.create_block();
-        builder.append_block_params_for_function_params(entry);
-        builder.switch_to_block(entry);
-        builder.seal_all_blocks();
-        builder.ins().trap(TrapCode::user(1).unwrap());
-        builder.finalize();
-
-        let fallback_isa = Self::rebuild_owned_isa(module.isa(), Some("none"))?;
-
-        let mut ctx = Context::for_function(func);
-        let mut ctrl = ControlPlane::default();
-        ctx.compile(&*fallback_isa, &mut ctrl)
-            .map_err(|e| format!("compile trap stub: {e:?}"))?;
-        let compiled = ctx.compiled_code().unwrap();
-        let alignment = compiled.buffer.alignment as u64;
-        let code = compiled.buffer.data().to_vec();
-        let relocs: Vec<cranelift_module::ModuleReloc> = compiled
-            .buffer
-            .relocs()
-            .iter()
-            .map(|r| cranelift_module::ModuleReloc::from_mach_reloc(r, &ctx.func, func_id))
-            .collect();
-        module
-            .define_function_bytes(func_id, alignment, &code, &relocs)
-            .map_err(|e| format!("define_function_bytes trap stub for {func_name}: {e}"))?;
-        Ok(())
     }
 
     fn intern_data_segment(
@@ -3745,10 +3511,7 @@ impl SimpleBackend {
                 );
             }
 
-            return CompileOutput {
-                bytes,
-                trap_stub_names: Vec::new(),
-            };
+            return CompileOutput { bytes };
         }
         // Re-analyze after dead function elimination and megafunction
         // splitting so defined_functions/closure_functions reflect only the
@@ -3777,12 +3540,9 @@ impl SimpleBackend {
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
-        // Compile functions. For large modules (>128 functions), use the
-        // Cranelift catch_unwind resilience path that retries failing
-        // functions at opt_level=none.  The single-module approach is
-        // retained (no batching) because Cranelift 0.130's ObjectModule
-        // handles large function counts efficiently when individual
-        // function compilations are bounded.
+        // Compile functions into one module. Backend codegen failures are hard
+        // failures: the compiler must not produce partial objects with
+        // runtime-aborting placeholders for functions it could not compile.
         // Register extern functions (bodies in stdlib_shared.o) so the
         // backend declares them as Import linkage, resolved by the linker.
         for func in &ir.functions {
@@ -3884,9 +3644,7 @@ impl SimpleBackend {
                 eprintln!("MOLT_BACKEND_TIMING: slowest function: `{name}` ({dur:.2?})");
             }
         }
-        if failed > 0 {
-            eprintln!("MOLT_BACKEND: {failed} functions failed, {compiled} succeeded");
-        }
+        debug_assert_eq!(failed, 0, "native backend no longer soft-fails functions");
         // ── Parallel Cranelift compilation ────────────────────────
         // All functions were IR-built sequentially above (declarations
         // and Cranelift IR construction are not thread-safe), but actual
@@ -3905,89 +3663,48 @@ impl SimpleBackend {
                 }
             }
         }
-        // ── Post-compilation: define trap stubs for declared-but-undefined
-        // functions.  This covers `__ov{N}` variants created when a function
-        // is referenced with different arities, and functions that were skipped
-        // due to signature mismatches or compilation failures.
-        let mut stubs_emitted = 0u32;
-        let declared: Vec<(
-            cranelift_module::FuncId,
-            String,
-            cranelift_codegen::ir::Signature,
-        )> = self
+        // ── Post-compilation: fail closed on declared-but-undefined exports.
+        // These are always backend contract violations: either a call site
+        // declared an impossible overload, a function was skipped, or codegen
+        // failed to define a body.
+        let mut undefined_exports = Vec::new();
+        let declared: Vec<(String, cranelift_codegen::ir::Signature)> = self
             .module
             .declarations()
             .get_functions()
-            .filter_map(|(fid, decl)| {
+            .filter_map(|(_fid, decl)| {
                 let name = decl.name.clone()?;
                 if decl.linkage == cranelift_module::Linkage::Export
                     && !self.defined_func_names.contains(&name)
                 {
-                    Some((fid, name, decl.signature.clone()))
+                    Some((name, decl.signature.clone()))
                 } else {
                     None
                 }
             })
             .collect();
-        for (fid, name, sig) in declared {
-            // In batched compilation, skip trap stubs for functions that
-            // exist in other batches — ld -r will resolve them at merge
-            // time.  But functions that don't exist in ANY batch (like
-            // __ov variants or internally-generated names) still need
-            // stubs to avoid Cranelift "Export must be defined" panics.
+        for (name, sig) in declared {
+            // In batched compilation, functions that exist in another batch
+            // are valid imports for the linker to resolve at merge time.
             if !self.external_function_names.is_empty()
                 && self.external_function_names.contains(&name)
             {
-                // Function exists in another batch — ld -r will provide
-                // the real definition.  Downgrade from Export to Import
-                // so Cranelift's ObjectModule doesn't require a body.
-                let _ =
-                    self.module
-                        .declare_function(&name, cranelift_module::Linkage::Import, &sig);
+                self.module
+                    .declare_function(&name, cranelift_module::Linkage::Import, &sig)
+                    .unwrap_or_else(|err| {
+                        panic!("failed to mark cross-batch function `{name}` as import: {err}")
+                    });
                 continue;
             }
-            if let Err(e) = Self::emit_trap_stub(&mut self.module, fid, &sig, &name) {
-                eprintln!("WARNING: failed to emit trap stub for `{}`: {}", name, e);
-                // Trap stub failed (function may already be defined with a
-                // different body, or another edge case).  As a last resort,
-                // try to downgrade the linkage to Import so `finish()` does
-                // not panic with "Export must be defined."
-                let _ =
-                    self.module
-                        .declare_function(&name, cranelift_module::Linkage::Import, &sig);
-            } else {
-                stubs_emitted += 1;
-            }
+            undefined_exports.push(name);
         }
-        if stubs_emitted > 0 {
-            eprintln!(
-                "WARNING: emitted {} trap stub(s) for declared-but-undefined functions",
-                stubs_emitted
+        if !undefined_exports.is_empty() {
+            undefined_exports.sort();
+            panic!(
+                "native backend left {} exported function declaration(s) undefined: {}",
+                undefined_exports.len(),
+                undefined_exports.join(", ")
             );
-        }
-
-        // Report trap stubs as visible warnings — these are functions that
-        // will SIGILL at runtime, so the user MUST know about them at build time.
-        if !self.trap_stub_names.is_empty() {
-            eprintln!();
-            eprintln!("╔══════════════════════════════════════════════════════════════╗");
-            eprintln!(
-                "║  WARNING: {} function(s) failed to compile                  ║",
-                self.trap_stub_names.len()
-            );
-            eprintln!("║  These functions will abort if called at runtime.           ║");
-            eprintln!("╠══════════════════════════════════════════════════════════════╣");
-            for name in &self.trap_stub_names {
-                // Demangle: molt_init_builtins__molt_module_chunk_5 → builtins (chunk 5)
-                let display_name = demangle_stub_name(name);
-                eprintln!("║  • {:<56} ║", display_name);
-            }
-            eprintln!("╠══════════════════════════════════════════════════════════════╣");
-            eprintln!("║  Cause: Cranelift compilation limit (function too large or  ║");
-            eprintln!("║  unsupported target feature). Try: --rebuild or splitting   ║");
-            eprintln!("║  large modules into smaller files.                          ║");
-            eprintln!("╚══════════════════════════════════════════════════════════════╝");
-            eprintln!();
         }
 
         let emit_start = std::time::Instant::now();
@@ -4020,32 +3737,8 @@ impl SimpleBackend {
                 bytes.len()
             );
         }
-        CompileOutput {
-            bytes,
-            trap_stub_names: self.trap_stub_names,
-        }
+        CompileOutput { bytes }
     }
-}
-
-/// Demangle internal function names for user-facing diagnostics.
-///
-/// Converts: `molt_init_builtins__molt_module_chunk_5` → `builtins (chunk 5)`
-///           `builtins__molt_module_chunk_5`            → `builtins (chunk 5)`
-///           `sieve`                                     → `sieve`
-#[cfg(feature = "native-backend")]
-fn demangle_stub_name(name: &str) -> String {
-    let stripped = name
-        .strip_prefix("molt_init_")
-        .or_else(|| name.strip_prefix("molt_"))
-        .unwrap_or(name);
-
-    if let Some(idx) = stripped.find("__molt_module_chunk_") {
-        let module = &stripped[..idx];
-        let chunk = stripped[idx + "__molt_module_chunk_".len()..].to_string();
-        return format!("{module} (chunk {chunk})");
-    }
-
-    stripped.to_string()
 }
 
 #[cfg(feature = "native-backend")]
