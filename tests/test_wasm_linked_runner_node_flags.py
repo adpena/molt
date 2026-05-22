@@ -97,7 +97,62 @@ def test_run_wasm_linked_uses_stable_node_flags(
     assert cmd[-2:] == [str(tmp_path / "wasm" / "run_wasm.js"), str(wasm_path)]
     env = cast(dict[str, str], recorded["env"])
     assert env.get("NODE_NO_WARNINGS") == "1"
-    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "16"
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "64"
+
+
+def test_run_wasm_linked_raises_inherited_node_child_rlimit_floor(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    wasm_path = tmp_path / "output_linked.wasm"
+    wasm_path.write_bytes(b"\x00asm")
+    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    monkeypatch.setenv("MOLT_WASM_TEST_CHILD_RLIMIT_GB", "16")
+    recorded: dict[str, Any] = {}
+
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        recorded["env"] = dict(kwargs["env"])
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
+    result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
+
+    assert result.returncode == 0
+    env = cast(dict[str, str], recorded["env"])
+    assert env.get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "64"
+
+
+def test_run_wasm_linked_preserves_larger_or_disabled_node_child_rlimit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    wasm_path = tmp_path / "output_linked.wasm"
+    wasm_path.write_bytes(b"\x00asm")
+    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    recorded: dict[str, Any] = {}
+
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        recorded.setdefault("envs", []).append(dict(kwargs["env"]))
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
+
+    result = wasm_runner.run_wasm_linked(
+        tmp_path,
+        wasm_path,
+        env_overrides={"MOLT_WASM_TEST_CHILD_RLIMIT_GB": "96"},
+    )
+    assert result.returncode == 0
+    result = wasm_runner.run_wasm_linked(
+        tmp_path,
+        wasm_path,
+        env_overrides={"MOLT_WASM_TEST_CHILD_RLIMIT_GB": "0"},
+    )
+    assert result.returncode == 0
+
+    envs = cast(list[dict[str, str]], recorded["envs"])
+    assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "96"
+    assert envs[1].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
 
 
 def test_run_wasm_linked_env_overrides_can_opt_out_of_node_warning_suppression(
