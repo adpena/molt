@@ -58,6 +58,16 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in ci_text
 
 
+def test_github_workflows_opt_into_node24_action_runtime() -> None:
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        if "uses:" not in text:
+            continue
+
+        assert 'FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"' in text, workflow
+        assert "ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION" not in text, workflow
+
+
 def test_pre_commit_hooks_are_read_only_by_default() -> None:
     default_python = _default_python_version()
     pre_commit_text = _read(".pre-commit-config.yaml")
