@@ -8829,7 +8829,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_preserved_len_calls_runtime() {
+    fn lower_preserved_len_ignores_transport_container_type() {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let mut func = TirFunction::new("len_preserved".into(), vec![], TirType::DynBox);
@@ -8855,7 +8855,41 @@ mod tests {
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
-        assert!(ir.contains("molt_len_tuple"), "{ir}");
+        assert!(ir.contains("call i64 @molt_len("), "{ir}");
+        assert!(!ir.contains("call i64 @molt_len_tuple("), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_len_uses_tir_tuple_fact() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "len_typed_tuple".into(),
+            vec![TirType::Tuple(vec![TirType::DynBox, TirType::DynBox])],
+            TirType::DynBox,
+        );
+        let obj = ValueId(0);
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![obj],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("len".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("call i64 @molt_len_tuple("), "{ir}");
     }
 
     #[test]
