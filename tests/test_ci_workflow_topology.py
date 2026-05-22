@@ -222,11 +222,22 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     assert "actions/setup-node@v6" in formal_workflow
     assert "node-version: '24.16.0'" in formal_workflow
     assert "check-latest: true" in formal_workflow
+    assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
+        formal_workflow
+    )
+    assert 'MOLT_QUINT_RUST_EVALUATOR_VERSION: "v0.6.0"' in formal_workflow
+    assert "Install Quint Rust evaluator" in formal_workflow
+    assert "sha256sum --check" in formal_workflow
 
-    assert nightly_workflow.count("npm install -g @informalsystems/quint") == 2
+    assert nightly_workflow.count('npm install -g "$MOLT_QUINT_NPM_PACKAGE"') == 2
     assert nightly_workflow.count("actions/setup-node@v6") >= 2
     assert nightly_workflow.count("node-version: '24.16.0'") >= 2
     assert nightly_workflow.count("check-latest: true") >= 2
+    assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
+        nightly_workflow
+    )
+    assert nightly_workflow.count("Install Quint Rust evaluator") >= 1
+    assert nightly_workflow.count("sha256sum --check") >= 1
 
 
 def test_nightly_contains_correctness_jobs() -> None:
