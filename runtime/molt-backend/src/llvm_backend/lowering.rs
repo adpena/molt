@@ -6,7 +6,7 @@
 //! (DynBox), we emit calls to the Molt runtime.
 
 #[cfg(feature = "llvm")]
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 #[cfg(feature = "llvm")]
 use inkwell::basic_block::BasicBlock;
@@ -34,6 +34,41 @@ use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 #[cfg(feature = "llvm")]
 use crate::tir::values::ValueId;
+
+#[cfg(feature = "llvm")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlvmLoweringError {
+    diagnostics: Vec<String>,
+}
+
+#[cfg(feature = "llvm")]
+impl LlvmLoweringError {
+    fn new(diagnostics: Vec<String>) -> Self {
+        Self { diagnostics }
+    }
+
+    pub fn diagnostics(&self) -> &[String] {
+        &self.diagnostics
+    }
+}
+
+#[cfg(feature = "llvm")]
+impl std::fmt::Display for LlvmLoweringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "LLVM TIR lowering failed with {} diagnostic(s):",
+            self.diagnostics.len()
+        )?;
+        for diagnostic in &self.diagnostics {
+            writeln!(f, "- {diagnostic}")?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "llvm")]
+impl std::error::Error for LlvmLoweringError {}
 
 #[cfg(feature = "llvm")]
 fn ensure_i64_with_builder<'ctx>(
@@ -213,7 +248,7 @@ struct FunctionLowering<'ctx, 'func> {
     all_llvm_blocks: Vec<BasicBlock<'ctx>>,
     /// Maps each LLVM basic block to its set of LLVM predecessor blocks.
     /// Built during lowering as branches are emitted, used by
-    /// `patch_incomplete_phis` to add undef entries for missing predecessors.
+    /// `patch_incomplete_phis` to detect missing phi predecessors.
     llvm_pred_map: HashMap<BasicBlock<'ctx>, Vec<BasicBlock<'ctx>>>,
     /// Structured exception-region stack baselines for preserved TryStart/TryEnd.
     /// Stored in entry-block allocas so later TryEnd sites do not violate LLVM
@@ -221,6 +256,9 @@ struct FunctionLowering<'ctx, 'func> {
     try_stack_baselines: Vec<inkwell::values::PointerValue<'ctx>>,
     /// Deterministic per-function call-site numbering for IC lanes.
     call_site_counter: usize,
+    /// Fatal lowering diagnostics collected before exposing the LLVM function to
+    /// verification, optimization, or emission.
+    diagnostics: RefCell<Vec<String>>,
 }
 
 /// Lower a TIR function to LLVM IR.
@@ -236,7 +274,16 @@ pub fn lower_tir_to_llvm<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
 ) -> FunctionValue<'ctx> {
-    lower_tir_to_llvm_with_pgo(func, backend, None)
+    try_lower_tir_to_llvm(func, backend).unwrap_or_else(|err| panic!("{err}"))
+}
+
+/// Checked lowering entry point used by production compile paths.
+#[cfg(feature = "llvm")]
+pub fn try_lower_tir_to_llvm<'ctx>(
+    func: &TirFunction,
+    backend: &LlvmBackend<'ctx>,
+) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
+    try_lower_tir_to_llvm_with_pgo(func, backend, None)
 }
 
 /// Like [`lower_tir_to_llvm`] but accepts optional PGO branch weights.
@@ -246,6 +293,24 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
     backend: &LlvmBackend<'ctx>,
     pgo_branch_weights: Option<Vec<u64>>,
 ) -> FunctionValue<'ctx> {
+    try_lower_tir_to_llvm_with_pgo(func, backend, pgo_branch_weights)
+        .unwrap_or_else(|err| panic!("{err}"))
+}
+
+/// Like [`try_lower_tir_to_llvm`] but accepts optional PGO branch weights.
+#[cfg(feature = "llvm")]
+pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
+    func: &TirFunction,
+    backend: &LlvmBackend<'ctx>,
+    pgo_branch_weights: Option<Vec<u64>>,
+) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
+    if !func.blocks.contains_key(&func.entry_block) {
+        return Err(LlvmLoweringError::new(vec![format!(
+            "{}: entry block {:?} is missing from TIR block map",
+            func.name, func.entry_block
+        )]));
+    }
+
     // 1. Build or reuse the LLVM function signature.
     let llvm_fn = declare_tir_function(func, backend);
     let mut lowering = FunctionLowering {
@@ -268,6 +333,7 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
         llvm_pred_map: HashMap::new(),
         try_stack_baselines: Vec::new(),
         call_site_counter: 0,
+        diagnostics: RefCell::new(Vec::new()),
     };
 
     // 2. Create LLVM basic blocks for each TIR block.
@@ -373,6 +439,11 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
     // 6. Wire up phi incoming values.
     lowering.finalize_phis();
 
+    let diagnostics = lowering.diagnostics.borrow().clone();
+    if !diagnostics.is_empty() {
+        return Err(LlvmLoweringError::new(diagnostics));
+    }
+
     // 7. If any op in this function carries `fast_math = true`, annotate the
     //    function with `"unsafe-fp-math"="true"`.  This is the function-level
     //    fallback for LLVM passes that inspect function attributes rather than
@@ -388,7 +459,7 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
         llvm_fn.add_attribute(AttributeLoc::Function, attr);
     }
 
-    llvm_fn
+    Ok(llvm_fn)
 }
 
 #[cfg(feature = "llvm")]
@@ -559,6 +630,12 @@ pub fn compute_function_rpo(func: &TirFunction) -> Vec<BlockId> {
 
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    fn record_fatal(&self, message: impl Into<String>) {
+        self.diagnostics
+            .borrow_mut()
+            .push(format!("{}: {}", self.func.name, message.into()));
+    }
+
     /// Record that `from_bb` branches to `to_bb` at the LLVM level.
     /// Used by `patch_incomplete_phis` to find missing phi predecessors.
     fn record_llvm_edge(&mut self, from_bb: BasicBlock<'ctx>, to_bb: BasicBlock<'ctx>) {
@@ -582,20 +659,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // Entry block: map block args to function parameters.
         if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
             for (i, arg) in block.args.iter().enumerate() {
-                let value =
-                    self.llvm_fn.get_nth_param(i as u32).unwrap_or_else(|| {
-                        match lower_type(self.backend.context, &arg.ty) {
-                            inkwell::types::BasicTypeEnum::IntType(ty) => ty.get_undef().into(),
-                            inkwell::types::BasicTypeEnum::FloatType(ty) => ty.get_undef().into(),
-                            inkwell::types::BasicTypeEnum::PointerType(ty) => ty.get_undef().into(),
-                            inkwell::types::BasicTypeEnum::ArrayType(ty) => ty.get_undef().into(),
-                            inkwell::types::BasicTypeEnum::StructType(ty) => ty.get_undef().into(),
-                            inkwell::types::BasicTypeEnum::VectorType(ty) => ty.get_undef().into(),
-                            inkwell::types::BasicTypeEnum::ScalableVectorType(ty) => {
-                                ty.get_undef().into()
-                            }
-                        }
-                    });
+                let value = self.llvm_fn.get_nth_param(i as u32).unwrap_or_else(|| {
+                    self.record_fatal(format!(
+                        "entry block argument %{} at index {} has no corresponding function parameter",
+                        arg.id.0, i
+                    ));
+                    self.get_undef_for_type(lower_type(self.backend.context, &arg.ty))
+                });
                 self.values.insert(arg.id, value);
                 self.value_types.insert(arg.id, arg.ty.clone());
             }
@@ -3291,17 +3361,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .iter()
                     .find_map(|(bid, label)| (*label == target_label).then_some(BlockId(*bid)))
                 else {
-                    eprintln!(
-                        "LLVM lowering warning: unknown check_exception target {} in {}",
-                        target_label, self.func.name
-                    );
+                    self.record_fatal(format!(
+                        "check_exception target label {} is not present in label map",
+                        target_label
+                    ));
                     return;
                 };
                 let Some(&target_bb) = self.block_map.get(&target_block_id) else {
-                    eprintln!(
-                        "LLVM lowering warning: check_exception target block {:?} not in block_map in {}",
-                        target_block_id, self.func.name
-                    );
+                    self.record_fatal(format!(
+                        "check_exception target block {:?} is not present in LLVM block map",
+                        target_block_id
+                    ));
                     return;
                 };
                 let continue_bb = self.backend.context.append_basic_block(
@@ -4917,7 +4987,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// This method also handles:
     /// - Mid-block branches from CheckException (not visible in TIR terminators)
     /// - Missing predecessors: if a phi node doesn't have an incoming value for
-    ///   some predecessor, an `undef` entry is added so LLVM verification passes
+    ///   some predecessor, record a fatal lowering diagnostic. The compile path
+    ///   must not turn malformed control/data flow into verified-but-wrong IR.
     fn finalize_phis(&mut self) {
         // Collect phi info first to avoid borrow conflicts.
         let phi_info: Vec<_> = self
@@ -4939,39 +5010,89 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // 1. Wire up predecessors from TIR terminators.
             for (pred_id, pred_block) in &self.func.blocks {
-                let branch_args = self.get_branch_args_to(&pred_block.terminator, *block_id);
-                if let Some(args) = branch_args
-                    && *arg_index < args.len()
-                {
-                    let val_id = args[*arg_index];
-                    if let Some(val) = self.values.get(&val_id) {
-                        let pred_bb = self
-                            .exit_block_map
-                            .get(pred_id)
-                            .copied()
-                            .unwrap_or(self.block_map[pred_id]);
-                        let source_tir_ty = self
-                            .value_types
-                            .get(&val_id)
-                            .cloned()
-                            .unwrap_or(TirType::DynBox);
-                        let coerced =
-                            self.coerce_to_tir_type(*val, &source_tir_ty, &phi_tir_ty, pred_bb);
-                        let coerced = self.coerce_to_type(coerced, *phi_ty, pred_bb);
-                        phi.add_incoming(&[(&coerced, pred_bb)]);
+                let mut incoming_edges: Vec<(&'static str, &Vec<ValueId>)> = Vec::new();
+                match &pred_block.terminator {
+                    Terminator::Branch { target, args } if *target == *block_id => {
+                        incoming_edges.push(("branch", args));
                     }
+                    Terminator::CondBranch {
+                        then_block,
+                        then_args,
+                        else_block,
+                        else_args,
+                        ..
+                    } => {
+                        if *then_block == *block_id {
+                            incoming_edges.push(("then-edge", then_args));
+                        }
+                        if *else_block == *block_id {
+                            incoming_edges.push(("else-edge", else_args));
+                        }
+                    }
+                    Terminator::Switch {
+                        cases,
+                        default,
+                        default_args,
+                        ..
+                    } => {
+                        for (_, case_target, case_args) in cases {
+                            if *case_target == *block_id {
+                                incoming_edges.push(("switch-case", case_args));
+                            }
+                        }
+                        if *default == *block_id {
+                            incoming_edges.push(("switch-default", default_args));
+                        }
+                    }
+                    _ => {}
+                }
+
+                for (edge_name, args) in incoming_edges {
+                    if *arg_index >= args.len() {
+                        self.record_fatal(format!(
+                            "predecessor block {:?} {} branches to {:?} with {} argument(s), but phi argument index {} is required",
+                            pred_id,
+                            edge_name,
+                            block_id,
+                            args.len(),
+                            arg_index
+                        ));
+                        continue;
+                    }
+                    let val_id = args[*arg_index];
+                    let Some(val) = self.values.get(&val_id).copied() else {
+                        self.record_fatal(format!(
+                            "predecessor block {:?} passes undefined ValueId %{} to phi argument {} in block {:?}",
+                            pred_id, val_id.0, arg_index, block_id
+                        ));
+                        continue;
+                    };
+                    let pred_bb = self
+                        .exit_block_map
+                        .get(pred_id)
+                        .copied()
+                        .unwrap_or(self.block_map[pred_id]);
+                    let source_tir_ty = self
+                        .value_types
+                        .get(&val_id)
+                        .cloned()
+                        .unwrap_or(TirType::DynBox);
+                    let coerced =
+                        self.coerce_to_tir_type(val, &source_tir_ty, &phi_tir_ty, pred_bb);
+                    let coerced = self.coerce_to_type(coerced, *phi_ty, pred_bb);
+                    phi.add_incoming(&[(&coerced, pred_bb)]);
                 }
             }
 
             // 2. Wire up mid-block branches (CheckException -> handler block).
             //    These branches target `block_id` but aren't recorded in any
             //    TIR terminator, so the loop above misses them.
-            for (src_bb, target_bid) in &mid_block_branches {
+            for (_src_bb, target_bid) in &mid_block_branches {
                 if *target_bid == *block_id {
-                    // The handler block's phi expects a value from this predecessor.
-                    // We don't have specific args for mid-block branches, so use undef.
-                    let undef = self.get_undef_for_type(*phi_ty);
-                    phi.add_incoming(&[(&undef, *src_bb)]);
+                    self.record_fatal(format!(
+                        "mid-block branch into {:?} cannot supply phi argument {}",
+                        block_id, arg_index
+                    ));
                 }
             }
 
@@ -5010,8 +5131,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     /// For each phi node in the function, check that every LLVM predecessor
-    /// of the phi's parent block has an incoming entry.  Add `undef` entries
-    /// for any that are missing.
+    /// of the phi's parent block has an incoming entry. Missing entries are
+    /// fatal lowering diagnostics.
     ///
     /// Uses the `llvm_pred_map` built during lowering to determine predecessors
     /// (no need to scan LLVM IR or use llvm-sys directly).
@@ -5039,11 +5160,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             covered.insert(incoming_bb);
                         }
                     }
-                    let phi_ty = phi.as_basic_value().get_type();
                     for pred_bb in preds {
                         if !covered.contains(pred_bb) {
-                            let undef = self.get_undef_for_type(phi_ty);
-                            phi.add_incoming(&[(&undef, *pred_bb)]);
+                            self.record_fatal(format!(
+                                "phi in LLVM block {:?} is missing incoming value from predecessor {:?}",
+                                current_bb, pred_bb
+                            ));
                         }
                     }
                     inst = i.get_next_instruction();
@@ -5152,10 +5274,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .build_pointer_cast(pv, target_ptr, "phi_p2p")
                 .unwrap()
                 .into(),
-            _ => panic!(
-                "unsupported LLVM phi coercion from {:?} to {:?} in block {:?}",
-                val_ty, target_ty, in_block
-            ),
+            _ => {
+                self.record_fatal(format!(
+                    "unsupported LLVM phi coercion from {:?} to {:?} in block {:?}",
+                    val_ty, target_ty, in_block
+                ));
+                self.get_undef_for_type(target_ty)
+            }
         };
         // Restore builder position.
         if let Some(bb) = saved_block {
@@ -5273,69 +5398,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         result
     }
 
-    /// If `term` branches to `target`, return the args it passes; otherwise None.
-    fn get_branch_args_to<'a>(
-        &self,
-        term: &'a Terminator,
-        target: BlockId,
-    ) -> Option<&'a Vec<ValueId>> {
-        match term {
-            Terminator::Branch {
-                target: t, args, ..
-            } if *t == target => Some(args),
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                if *then_block == target {
-                    Some(then_args)
-                } else if *else_block == target {
-                    Some(else_args)
-                } else {
-                    None
-                }
-            }
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                for (_, bid, args) in cases {
-                    if *bid == target {
-                        return Some(args);
-                    }
-                }
-                if *default == target {
-                    Some(default_args)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
     // ── Helpers ──
 
     /// Resolve a ValueId to its LLVM value.
     ///
-    /// If the value was never defined (e.g. the defining block was unreachable,
-    /// or a mid-block split made a value invisible), return an `undef i64`
-    /// sentinel instead of panicking.  The resulting IR may be semantically
-    /// wrong, but it will pass LLVM verification — which is the goal for
-    /// graceful degradation on complex programs.
+    /// If the value was never defined, record a fatal diagnostic. The fallback
+    /// value only keeps diagnostic collection moving; checked lowering refuses
+    /// to expose the resulting function.
     fn resolve(&self, id: ValueId) -> BasicValueEnum<'ctx> {
         if let Some(val) = self.values.get(&id) {
             *val
         } else {
-            eprintln!(
-                "LLVM lowering warning: ValueId %{} not found — inserting undef i64",
+            self.record_fatal(format!(
+                "ValueId %{} was used before being defined during LLVM lowering",
                 id.0
-            );
+            ));
             self.backend.context.i64_type().get_undef().into()
         }
     }
@@ -8393,7 +8470,7 @@ mod tests {
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use crate::tir::values::ValueId;
+    use crate::tir::values::{TirValue, ValueId};
     use inkwell::context::Context;
     use inkwell::values::AnyValue;
 
@@ -8401,6 +8478,25 @@ mod tests {
         let backend = LlvmBackend::new(ctx, "test");
         declare_runtime_functions(ctx, &backend.module);
         backend
+    }
+
+    fn assert_lowering_error_contains(err: &LlvmLoweringError, needle: &str) {
+        let joined = err.diagnostics().join("\n");
+        assert!(
+            joined.contains(needle),
+            "expected lowering diagnostic containing {needle:?}, got:\n{joined}"
+        );
+    }
+
+    fn const_none_def(result: ValueId) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstNone,
+            operands: vec![],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
     }
 
     fn make_dummy_lowering<'ctx, 'func>(
@@ -8428,6 +8524,7 @@ mod tests {
             state_resume_blocks: HashMap::new(),
             try_stack_baselines: Vec::new(),
             call_site_counter: 0,
+            diagnostics: RefCell::new(Vec::new()),
         }
     }
 
@@ -8460,6 +8557,59 @@ mod tests {
         assert!(ir.contains("const_ret"), "function name missing from IR");
         assert!(ir.contains("42"), "constant 42 missing from IR");
         assert!(ir.contains("ret "), "return instruction missing from IR");
+    }
+
+    #[test]
+    fn missing_value_id_is_fatal_lowering_error() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+
+        let mut func = TirFunction::new("missing_value".into(), vec![], TirType::I64);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(99)],
+        };
+
+        let err = match try_lower_tir_to_llvm(&func, &backend) {
+            Ok(_) => panic!("malformed TIR unexpectedly lowered successfully"),
+            Err(err) => err,
+        };
+        assert_lowering_error_contains(&err, "ValueId %99 was used before being defined");
+    }
+
+    #[test]
+    fn missing_phi_argument_is_fatal_lowering_error() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+
+        let mut func = TirFunction::new("missing_phi_arg".into(), vec![], TirType::I64);
+        let join_id = func.fresh_block();
+        let join_arg = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: join_id,
+            args: vec![],
+        };
+        func.blocks.insert(
+            join_id,
+            TirBlock {
+                id: join_id,
+                args: vec![TirValue {
+                    id: join_arg,
+                    ty: TirType::I64,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![join_arg],
+                },
+            },
+        );
+
+        let err = match try_lower_tir_to_llvm(&func, &backend) {
+            Ok(_) => panic!("malformed phi unexpectedly lowered successfully"),
+            Err(err) => err,
+        };
+        assert_lowering_error_contains(&err, "phi argument index 0 is required");
     }
 
     #[test]
@@ -8742,6 +8892,9 @@ mod tests {
         let arg0 = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(callable), const_none_def(arg0)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
@@ -8804,6 +8957,9 @@ mod tests {
         let other_bits = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(dict_bits), const_none_def(other_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -8836,6 +8992,7 @@ mod tests {
         let obj = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(obj));
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -8900,6 +9057,9 @@ mod tests {
         let list_bits = func.fresh_value();
         let item_bits = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(list_bits), const_none_def(item_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -8931,6 +9091,7 @@ mod tests {
         let list_bits = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(list_bits));
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -8963,6 +9124,9 @@ mod tests {
         let set_bits = func.fresh_value();
         let item_bits = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(set_bits), const_none_def(item_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -8990,6 +9154,9 @@ mod tests {
         let list_bits = func.fresh_value();
         let other_bits = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(list_bits), const_none_def(other_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -9020,6 +9187,7 @@ mod tests {
         let obj_bits = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(obj_bits));
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -9050,6 +9218,9 @@ mod tests {
         let send_bits = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(gen_bits), const_none_def(send_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -9080,6 +9251,9 @@ mod tests {
         let exc_bits = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(ctx_bits), const_none_def(exc_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -9113,6 +9287,9 @@ mod tests {
         let obj_bits = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(type_bits), const_none_def(obj_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -9251,6 +9428,9 @@ mod tests {
         let name_bits = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(obj_bits), const_none_def(name_bits)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
@@ -9284,6 +9464,9 @@ mod tests {
         let arg0 = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(callable), const_none_def(arg0)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::CallMethod,
@@ -9311,6 +9494,9 @@ mod tests {
         let builder = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_none_def(callable), const_none_def(builder)]);
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
