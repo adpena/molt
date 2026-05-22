@@ -96,16 +96,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
-      - name: Set up WASM JS runner Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-
-      - name: Pin WASM JS runner Node
-        run: |
-          echo "MOLT_NODE_BIN=$(command -v node)" >> "$GITHUB_ENV"
-          node --version
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -251,7 +241,7 @@ jobs:
       # ── WASM parity tests (pytest) ──
       - name: Run WASM control flow parity tests
         timeout-minutes: 16
-        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- "$MOLT_CI_PYTHON" -m pytest tests/test_wasm_control_flow.py -q
+        run: python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST -- uv run python3 -m pytest tests/test_wasm_control_flow.py -q
 
       # ── Summary ──
       - name: Build summary
