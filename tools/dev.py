@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import importlib.util
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -304,24 +305,144 @@ def _print_canonical_env(env: dict[str, str]) -> None:
         print(f"export {key}={shlex.quote(env[key])}")
 
 
-def _run_dx_gates(args: list[str], *, tty: bool) -> None:
-    allow_dirty = "--allow-dirty" in args
-    unknown = [arg for arg in args if arg != "--allow-dirty"]
+def _default_gates_summary_path() -> Path:
+    return ROOT / "logs" / "dev-gates-summary.json"
+
+
+def _resolve_gates_summary_path(raw_path: str | None) -> Path:
+    if raw_path is None:
+        return _default_gates_summary_path()
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def _write_json_sidecar(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _parse_gates_args(args: list[str]) -> tuple[bool, Path]:
+    allow_dirty = False
+    summary_out: str | None = None
+    unknown: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--allow-dirty":
+            allow_dirty = True
+            i += 1
+            continue
+        if arg == "--summary-out":
+            if i + 1 >= len(args):
+                raise RuntimeError("--summary-out requires a path")
+            summary_out = args[i + 1]
+            i += 2
+            continue
+        unknown.append(arg)
+        i += 1
     if unknown:
         raise RuntimeError(
             "Unrecognized tools/dev.py gates arguments: " + " ".join(unknown)
         )
+    return allow_dirty, _resolve_gates_summary_path(summary_out)
+
+
+def _run_dx_gates(args: list[str], *, tty: bool) -> None:
+    allow_dirty, summary_path = _parse_gates_args(args)
     env = _canonical_env()
     _require_project_python()
     commands = _dx_commands()
     gates = commands.get("gates")
     if gates is None:
-        for name in ("build", "backend", "compliance"):
-            _run_dx_command(name, env, tty=tty)
+        gate_commands = [
+            _split_command(commands.get(name), name)
+            for name in ("build", "backend", "compliance")
+        ]
     else:
-        for gate_cmd in _split_command_sequence(gates, "gates"):
-            _run_repo_cmd(gate_cmd, env, tty=tty)
+        gate_commands = _split_command_sequence(gates, "gates")
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
+    memory_guard = {
+        "MOLT_TEST_SUITE": harness_memory_guard.limits_summary(limits),
+    }
+    started_at = datetime.now().astimezone().isoformat()
+    started = time.monotonic()
+    steps: list[dict[str, object]] = []
+    errors: list[str] = []
+    git_status_payload: dict[str, object] | None = None
+
+    def write_summary(status: str, *, raise_on_error: bool) -> None:
+        finished_at = datetime.now().astimezone().isoformat()
+        payload: dict[str, object] = {
+            "schema_version": "1.0",
+            "command": "tools/dev.py gates",
+            "status": status,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "elapsed_s": round(time.monotonic() - started, 6),
+            "summary_path": str(summary_path),
+            "allow_dirty": allow_dirty,
+            "memory_guard": memory_guard,
+            "steps": steps,
+            "git_status": git_status_payload,
+            "errors": errors,
+        }
+        try:
+            _write_json_sidecar(summary_path, payload)
+        except OSError as exc:
+            message = f"failed to write dev gates summary {summary_path}: {exc}"
+            if raise_on_error:
+                raise RuntimeError(message) from exc
+            print(message, file=sys.stderr)
+            return
+        _log(f"gate summary: {summary_path}")
+
+    for index, gate_cmd in enumerate(gate_commands, start=1):
+        step_start = time.monotonic()
+        entry: dict[str, object] = {
+            "index": index,
+            "cmd": gate_cmd,
+        }
+        try:
+            _run_repo_cmd(gate_cmd, env, tty=tty)
+        except subprocess.CalledProcessError as exc:
+            entry["returncode"] = exc.returncode
+            entry["duration_s"] = round(time.monotonic() - step_start, 6)
+            steps.append(entry)
+            errors.append(
+                "gate command failed "
+                f"(index={index}, returncode={exc.returncode}): "
+                + " ".join(shlex.quote(part) for part in gate_cmd)
+            )
+            write_summary("error", raise_on_error=False)
+            raise
+        except Exception as exc:
+            entry["returncode"] = None
+            entry["duration_s"] = round(time.monotonic() - step_start, 6)
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            steps.append(entry)
+            errors.append(
+                f"gate command raised (index={index}): {type(exc).__name__}: {exc}"
+            )
+            write_summary("error", raise_on_error=False)
+            raise
+        entry["returncode"] = 0
+        entry["duration_s"] = round(time.monotonic() - step_start, 6)
+        steps.append(entry)
+
     status_result = harness_memory_guard.guarded_completed_process(
         ["git", "status", "--short"],
         prefix="MOLT_TEST_SUITE",
@@ -331,7 +452,15 @@ def _run_dx_gates(args: list[str], *, tty: bool) -> None:
         text=True,
         limits=limits,
     )
+    git_status_payload = {
+        "cmd": ["git", "status", "--short"],
+        "returncode": status_result.returncode,
+        "stdout": status_result.stdout,
+        "stderr": status_result.stderr,
+    }
     if status_result.returncode != 0:
+        errors.append(f"git status failed with exit code {status_result.returncode}")
+        write_summary("error", raise_on_error=False)
         raise subprocess.CalledProcessError(
             status_result.returncode,
             ["git", "status", "--short"],
@@ -342,11 +471,16 @@ def _run_dx_gates(args: list[str], *, tty: bool) -> None:
     if status:
         print(status, end="")
         if not allow_dirty:
+            errors.append(
+                "working tree is dirty; rerun with --allow-dirty while developing"
+            )
+            write_summary("error", raise_on_error=False)
             raise RuntimeError(
                 "working tree is dirty; rerun with --allow-dirty while developing"
             )
     else:
         _log("git status clean")
+    write_summary("ok", raise_on_error=True)
 
 
 def main() -> None:
