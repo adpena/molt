@@ -41,7 +41,13 @@
 - `tools/bench.py` writes JSON results under `bench/results/` and supports baseline comparisons via `bench/baseline.json`.
 - `tools/bench.py --script <path>` (or `molt bench --script <path>`) benchmarks a custom script outside the curated suite.
 - `tools/bench.py` runs warmup iterations (default 1, or 0 for `--smoke`) and records Molt compile time in `molt_build_s` separate from `molt_time_s` run time.
-- `tools/bench_individual.py` follows the same warm-throughput default (`--warmup 1`) for focused local slices and records discarded warmup samples separately from measured samples. Use `--warmup 0` only when deliberately labeling a cold-first-run measurement.
+- `tools/bench_individual.py` follows the same warm-throughput default
+  (`--warmup 1`) for focused local slices and records discarded warmup samples
+  separately from measured samples. Use `--warmup 0` only when deliberately
+  labeling a cold-first-run measurement. `--isolate-daemon` is
+  current-session/explicit-socket scoped, preserves foreign-session backend
+  daemons, and records daemon custody events under
+  `tmp/bench/daemon_custody.jsonl`.
 - `tools/bench_wasm.py` uses the same warmup defaults and records wasm compile time in `molt_wasm_build_s`.
 - `tools/bench_report.py` combines native and WASM benchmark JSON into the detailed report at `docs/benchmarks/bench_summary.md` and can also refresh the concise generated benchmark summary block in `docs/spec/STATUS.md`.
 - Install optional benchmark deps with `uv sync --group bench --python 3.12`.
