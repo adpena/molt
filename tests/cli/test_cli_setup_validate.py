@@ -106,6 +106,25 @@ def _fake_cli_harness(
     class FakeMemoryGuard:
         HarnessExecutionContext = FakeContext
 
+        @staticmethod
+        def limits_from_env(prefix: str, env: dict[str, str] | None = None):
+            return {
+                "prefix": prefix,
+                "env_has_session": bool(env and env.get("MOLT_SESSION_ID")),
+            }
+
+        @staticmethod
+        def limits_summary(limits):
+            return {
+                "enabled": True,
+                "max_process_rss_gb": 1.0,
+                "max_total_rss_gb": 2.0,
+                "max_global_rss_gb": 3.0,
+                "child_rlimit_gb": 4.0,
+                "prefix": limits["prefix"],
+                "env_has_session": limits["env_has_session"],
+            }
+
     return FakeMemoryGuard
 
 
@@ -131,6 +150,9 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert payload["status"] == "ok"
     data = payload["data"]
     assert data["check_only"] is True
+    assert data["memory_guard"]["MOLT_BENCH"]["enabled"] is True
+    assert data["memory_guard"]["MOLT_CONFORMANCE"]["enabled"] is True
+    assert data["memory_guard"]["MOLT_TEST_SUITE"]["enabled"] is True
     steps = data["steps"]
     assert isinstance(steps, list)
     names = {entry["name"] for entry in steps}
@@ -148,6 +170,7 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "test_cli_compare_json" in cli_command_expr
     assert "test_cli_run_exec_eval_raise_runtime_error" in cli_command_expr
     bench_step = next(entry for entry in steps if entry["name"] == "bench-smoke")
+    assert bench_step["memory_guard_prefix"] == "MOLT_BENCH"
     assert "--warmup" in bench_step["cmd"]
     assert bench_step["cmd"][bench_step["cmd"].index("--warmup") + 1] == "1"
 
@@ -399,9 +422,11 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     monkeypatch.setattr(
         cli.shutil,
         "which",
-        lambda name: f"/usr/bin/{name}"
-        if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
-        else None,
+        lambda name: (
+            f"/usr/bin/{name}"
+            if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
+            else None
+        ),
         raising=True,
     )
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
@@ -592,6 +617,7 @@ def test_cli_bench_outer_process_uses_bench_memory_guard(
 
 def test_cli_validate_uses_family_memory_guard_prefixes(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from molt import cli
 
@@ -644,6 +670,36 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
     )
 
     assert cli.validate(suite="smoke", json_output=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["memory_guard"] == {
+        "MOLT_BENCH": {
+            "enabled": True,
+            "max_process_rss_gb": 1.0,
+            "max_total_rss_gb": 2.0,
+            "max_global_rss_gb": 3.0,
+            "child_rlimit_gb": 4.0,
+            "prefix": "MOLT_BENCH",
+            "env_has_session": True,
+        },
+        "MOLT_CONFORMANCE": {
+            "enabled": True,
+            "max_process_rss_gb": 1.0,
+            "max_total_rss_gb": 2.0,
+            "max_global_rss_gb": 3.0,
+            "child_rlimit_gb": 4.0,
+            "prefix": "MOLT_CONFORMANCE",
+            "env_has_session": True,
+        },
+        "MOLT_TEST_SUITE": {
+            "enabled": True,
+            "max_process_rss_gb": 1.0,
+            "max_total_rss_gb": 2.0,
+            "max_global_rss_gb": 3.0,
+            "child_rlimit_gb": 4.0,
+            "prefix": "MOLT_TEST_SUITE",
+            "env_has_session": True,
+        },
+    }
     prefixes = [call["prefix"] for call in calls if call["method"] == "run"]
     assert prefixes == ["MOLT_CONFORMANCE", "MOLT_BENCH", "MOLT_TEST_SUITE"]
 
