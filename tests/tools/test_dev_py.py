@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -127,9 +128,10 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
     assert calls[1][1:5] == ["-m", "ruff", "format", "--check"]
 
 
-def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch) -> None:
+def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> None:
     module = _load_dev_py()
     calls: list[list[str]] = []
+    summary_path = tmp_path / "dev-gates-summary.json"
 
     monkeypatch.setattr(
         module,
@@ -157,6 +159,12 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch) -> None:
         lambda prefix, env: fake_limits,
         raising=True,
     )
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "limits_summary",
+        lambda limits: {"enabled": True, "marker": limits is fake_limits},
+        raising=True,
+    )
 
     def fake_status_run(cmd, **kwargs):
         assert cmd == ["git", "status", "--short"]
@@ -171,7 +179,10 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch) -> None:
         raising=True,
     )
 
-    module._run_dx_gates(["--allow-dirty"], tty=False)
+    module._run_dx_gates(
+        ["--allow-dirty", "--summary-out", str(summary_path)],
+        tty=False,
+    )
 
     assert calls[:2] == [
         [
@@ -197,6 +208,76 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch) -> None:
         "molt-backend",
     ]
     assert calls[4][1:4] == ["-m", "pytest", "tests/compliance/"]
+    payload = json.loads(summary_path.read_text())
+    assert payload["status"] == "ok"
+    assert payload["summary_path"] == str(summary_path)
+    assert payload["allow_dirty"] is True
+    assert payload["memory_guard"]["MOLT_TEST_SUITE"] == {
+        "enabled": True,
+        "marker": True,
+    }
+    assert [step["returncode"] for step in payload["steps"]] == [0, 0, 0, 0, 0]
+    assert payload["git_status"]["stdout"] == ""
+    assert payload["errors"] == []
+
+
+def test_dev_py_gates_writes_error_summary_on_failed_gate(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_dev_py()
+    calls: list[list[str]] = []
+    summary_path = tmp_path / "failed-gates.json"
+
+    monkeypatch.setattr(
+        module,
+        "_canonical_env",
+        lambda: {"PATH": "", "PYTHONPATH": str(module.ROOT / "src")},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "_require_project_python",
+        lambda: module.ROOT / ".venv" / "bin" / "python3",
+        raising=True,
+    )
+
+    def fake_run_repo_cmd(cmd, _env, *, tty):
+        calls.append(list(cmd))
+        if len(calls) == 2:
+            raise module.subprocess.CalledProcessError(17, cmd)
+
+    monkeypatch.setattr(module, "_run_repo_cmd", fake_run_repo_cmd, raising=True)
+
+    fake_limits = object()
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "limits_from_env",
+        lambda prefix, env: fake_limits,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "limits_summary",
+        lambda limits: {"enabled": True},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("git status should not run after a failed gate")
+        ),
+        raising=True,
+    )
+
+    with pytest.raises(module.subprocess.CalledProcessError):
+        module._run_dx_gates(["--summary-out", str(summary_path)], tty=False)
+
+    payload = json.loads(summary_path.read_text())
+    assert payload["status"] == "error"
+    assert payload["git_status"] is None
+    assert [step["returncode"] for step in payload["steps"]] == [0, 17]
+    assert "gate command failed" in payload["errors"][0]
 
 
 def test_dev_py_command_refs_fail_loudly_on_bad_config() -> None:
