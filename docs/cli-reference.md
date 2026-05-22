@@ -507,6 +507,16 @@ molt_c_api_version = "0.1"
 | `MOLT_BACKEND_TIMEOUT` | Backend compilation timeout. |
 | `MOLT_LINK_TIMEOUT` | Linker timeout. |
 
+### Memory Guard
+
+| Variable | Description |
+|----------|-------------|
+| `MOLT_MEMORY_GUARD` | Set to `0` to disable the shared harness guard for a deliberate investigation. |
+| `*_TIMEOUT_SEC` / `MOLT_TEST_PROCESS_TIMEOUT_SEC` | Guarded command wall-clock timeout. |
+| `*_KEEPALIVE_SEC` / `MOLT_SUBPROCESS_KEEPALIVE_SECS` | Interval for streamed guarded-command progress lines. |
+| `MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC` | Bounded wait after guard termination before reporting an un-settled process tree. |
+| `*_CHILD_RLIMIT_GB` / `MOLT_CHILD_RLIMIT_GB` | Direct-child virtual-address-space clamp; use `0` only when RSS/tree/global guard telemetry is the authoritative signal. |
+
 ### Registry / Publishing
 
 | Variable | Description |

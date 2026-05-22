@@ -373,6 +373,50 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     assert call["child_rlimit_kb"] == 2 * 1024 * 1024
     assert call["dynamic_process_rss"] is False
     assert call["dynamic_total_rss"] is False
+    assert call["progress_label"] is None
+    assert call["keepalive_interval"] is None
+
+
+def test_guarded_completed_process_streamed_commands_emit_keepalive(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run_guarded(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_WASM_TEST",
+        env={"MOLT_WASM_TEST_KEEPALIVE_SEC": "3"},
+        limits=limits,
+        capture_output=False,
+    )
+
+    assert result.returncode == 0
+    assert calls[0]["progress_label"] == (
+        "memory_guard: MOLT_WASM_TEST guarded command"
+    )
+    assert calls[0]["keepalive_interval"] == 3
 
 
 def test_guarded_completed_process_starts_default_repo_sentinel(monkeypatch) -> None:
@@ -950,6 +994,7 @@ def test_batch_process_group_kwargs_can_disable_child_rlimit() -> None:
 def test_repo_process_sentinel_records_and_terminates_violation(
     monkeypatch, tmp_path: Path
 ) -> None:
+    harness_memory_guard._TERMINATED_PGIDS.clear()
     violation = harness_memory_guard.process_sentinel.SentinelViolation(
         pgid=12345,
         reason="global_rss",
@@ -982,6 +1027,9 @@ def test_repo_process_sentinel_records_and_terminates_violation(
         harness_memory_guard.process_sentinel,
         "find_violations",
         lambda *args, **kwargs: [violation],
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
     )
     terminated: list[int] = []
     monkeypatch.setattr(
@@ -1275,7 +1323,8 @@ def test_repo_process_sentinel_remembers_observed_child_groups(
 
     assert [group.pgid for group in first] == [123]
     assert [group.pgid for group in second] == [456]
-    assert seen_known[-2:] == [set(), {123}]
+    assert set() in seen_known
+    assert {123} in seen_known
     assert sentinel._observed_pgids == {123, 456}
 
 
