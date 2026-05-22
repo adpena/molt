@@ -259,6 +259,12 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     )
     monkeypatch.setattr(
         cli,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda *args, **kwargs: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
@@ -306,6 +312,91 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00rebuilt"
 
 
+def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    target_root = tmp_path / "target"
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    cargo_runtime = (
+        target_root / "wasm32-wasip1" / "dev-fast" / "molt_runtime.wasm"
+    )
+    cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
+    cargo_runtime.write_bytes(b"\x00asm\x01\x00\x00\x00owned-memory")
+    runtime_source = project_root / "runtime" / "molt-runtime" / "src" / "lib.rs"
+    runtime_source.parent.mkdir(parents=True, exist_ok=True)
+    runtime_source.write_text("// runtime source\n", encoding="utf-8")
+    built_src = (
+        target_root / "wasm32-wasip1" / "dev-fast" / "deps" / "molt_runtime-new.wasm"
+    )
+    built_src.parent.mkdir(parents=True, exist_ok=True)
+    built_src.write_bytes(b"\x00asm\x01\x00\x00\x00shared-imports")
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [runtime_source])
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
+    )
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(
+        cli,
+        "_artifact_newer_than_sources",
+        lambda artifact, sources: Path(artifact) == cargo_runtime,
+    )
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
+    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda path: Path(path) == built_src,
+    )
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_exports_satisfy", lambda path, required: True
+    )
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_missing_exports", lambda path, required: set()
+    )
+    build_calls: list[list[str]] = []
+
+    def fake_run_runtime_wasm_cargo_build(
+        *,
+        cmd: list[str],
+        root: Path,
+        env: dict[str, str],
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del root, env, cargo_timeout, profile_dir, target_root_override
+        del json_output, artifact_kind
+        build_calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0), built_src
+
+    monkeypatch.setattr(
+        cli, "_run_runtime_wasm_cargo_build", fake_run_runtime_wasm_cargo_build
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_exports={"molt_fast_list_append"},
+    )
+
+    assert build_calls, "prebuilt runtime without shared ABI must be rebuilt"
+    assert runtime_wasm.read_bytes() == built_src.read_bytes()
+
+
 def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -351,6 +442,12 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         cli,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda *args, **kwargs: True,
         raising=True,
     )
 
@@ -402,6 +499,7 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         "molt_gpu_primitives",
         "stdlib_crypto",
         "stdlib_compression",
+        "stdlib_logging_ext",
         "builtin_contextvars",
     } <= cmd_features
     assert "stdlib_micro" not in cmd_features
@@ -426,6 +524,12 @@ def test_ensure_runtime_wasm_skip_rebuild_still_requires_requested_exports(
     monkeypatch.setattr(
         cli,
         "_is_valid_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_shared_runtime_wasm_artifact",
         lambda path: True,
         raising=True,
     )

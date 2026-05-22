@@ -152,6 +152,9 @@ def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
     )
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda _path: "valid")
     monkeypatch.setattr(
+        cli, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
+    )
+    monkeypatch.setattr(
         cli,
         "_runtime_wasm_exports_satisfy",
         lambda *_args, **_kwargs: True,
