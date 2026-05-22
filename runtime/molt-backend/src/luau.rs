@@ -26,8 +26,8 @@ pub struct LuauBackend {
     /// these is returned we emit `return table.unpack(v)` so the caller
     /// receives multiple values instead of a single table.
     tuple_vars: BTreeSet<String>,
-    /// Container and user-facing shape facts propagated through operations.
-    /// Scalar representation decisions come from `scalar_plan`.
+    /// Legacy Luau-local annotation/copied-shape hints.
+    /// Scalar and container specialization decisions come from `scalar_plan`.
     var_type_hints: BTreeMap<String, String>,
     /// Backend-neutral scalar representation facts for the function currently
     /// being emitted.
@@ -810,9 +810,8 @@ impl LuauBackend {
             .count();
         self.needs_local_spill = local_producing_ops > 190;
 
-        // Seed var_type_hints from param_types so that parameters annotated
-        // as list/dict/str carry their type hints into codegen.  Without this,
-        // calling .append() on a list parameter emits a broken method call.
+        // Seed legacy hints from param_types for Luau annotations and copied
+        // shape metadata. Dispatch authority stays in `scalar_plan`.
         if let Some(ref pts) = func.param_types {
             for (i, py_type) in pts.iter().enumerate() {
                 if let Some(param_name) = func.params.get(i) {
@@ -2082,10 +2081,7 @@ impl LuauBackend {
                     // When the receiver is a known list, emit direct table
                     // operations instead of method calls (Luau tables don't
                     // have Python list methods).
-                    let obj_is_list = self
-                        .var_type_hints
-                        .get(&args[0])
-                        .is_some_and(|t| t == "list");
+                    let obj_is_list = self.plan_knows_list(&args[0]);
                     if obj_is_list {
                         match method_name {
                             "append" => {
@@ -2882,11 +2878,9 @@ impl LuauBackend {
                 let raw_attr = op.s_value.as_deref().unwrap_or("unknown");
                 let attr = sanitize_ident(raw_attr);
                 if let Some(obj) = args.first() {
-                    let obj = sanitize_ident(obj);
-                    let obj_is_str = self
-                        .var_type_hints
-                        .get(args[0].as_str())
-                        .is_some_and(|hint| hint == "str" || hint == "string");
+                    let raw_obj = obj.as_str();
+                    let obj = sanitize_ident(raw_obj);
+                    let obj_is_str = self.plan_knows_string(raw_obj);
                     // For dunder attrs that might be on functions (stored
                     // in the side-table), look there first.
                     let use_side_table =
@@ -4653,6 +4647,15 @@ impl LuauBackend {
         } else {
             ident
         }
+    }
+
+    fn plan_knows_string(&self, raw_name: &str) -> bool {
+        self.scalar_plan.name_scalar_kind(raw_name) == Some(ScalarKind::Str)
+            || self.scalar_plan.name_container_kind(raw_name) == Some(ContainerKind::Str)
+    }
+
+    fn plan_knows_list(&self, raw_name: &str) -> bool {
+        self.scalar_plan.name_container_kind(raw_name) == Some(ContainerKind::List)
     }
 
     fn emit_index_bounds_guard(&mut self, idx: &str, container: &str, message: &str) {
@@ -10057,9 +10060,9 @@ mod tests {
     }
 
     #[test]
-    fn test_param_type_hint_list_propagation() {
-        // Bug 2 fix: list type hint on function parameters must propagate
-        // so that .append() emits table.insert() instead of a method call.
+    fn test_luau_repr_authority_typed_list_call_method_dispatch() {
+        // Structured TIR facts, not legacy transport hints, authorize direct
+        // list-method lowering for Luau tables.
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 name: "append_to".to_string(),
@@ -10092,6 +10095,31 @@ mod tests {
         assert!(
             !output.contains("xs:append"),
             "Must NOT emit method call for list.append(), got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_luau_repr_authority_legacy_list_hint_does_not_authorize_list_method_dispatch() {
+        let mut backend = LuauBackend::new();
+        backend
+            .var_type_hints
+            .insert("xs".to_string(), "list".to_string());
+
+        backend.emit_op(&OpIR {
+            kind: "call_method".to_string(),
+            s_value: Some("append".to_string()),
+            args: Some(vec!["xs".to_string(), "v".to_string()]),
+            ..OpIR::default()
+        });
+        let output = backend.output;
+
+        assert!(
+            output.contains("xs:append(v)"),
+            "legacy list hints must leave unknown receivers on generic method dispatch, got:\n{output}"
+        );
+        assert!(
+            !output.contains("xs[#xs + 1] = v"),
+            "legacy list hints must not authorize table-specialized append, got:\n{output}"
         );
     }
 
@@ -11532,6 +11560,68 @@ mod tests {
                 && !output.contains("s.removeprefix")
                 && !output.contains("s.removesuffix"),
             "string remove-prefix/suffix method attrs must lower to callable closures, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_luau_repr_authority_typed_string_get_attr_dispatch() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "typed_string_remove_prefix_attr".to_string(),
+                params: vec!["s".to_string()],
+                param_types: Some(vec!["str".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "get_attr_generic_obj".to_string(),
+                        args: Some(vec!["s".to_string()]),
+                        s_value: Some("removeprefix".to_string()),
+                        out: Some("method".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("function(__args)")
+                && output.contains("string.sub(s, 1, #__prefix)")
+                && !output.contains("s.removeprefix"),
+            "typed str facts should authorize string removeprefix closure lowering, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_luau_repr_authority_legacy_string_hint_does_not_authorize_string_attr_dispatch() {
+        let mut backend = LuauBackend::new();
+        backend
+            .var_type_hints
+            .insert("s".to_string(), "str".to_string());
+
+        backend.emit_op(&OpIR {
+            kind: "get_attr_generic_obj".to_string(),
+            args: Some(vec!["s".to_string()]),
+            s_value: Some("removeprefix".to_string()),
+            out: Some("method".to_string()),
+            ..OpIR::default()
+        });
+        let output = backend.output;
+
+        assert!(
+            output.contains("local method = s.removeprefix"),
+            "legacy string hints must leave unknown receivers on generic attr dispatch, got:\n{output}"
+        );
+        assert!(
+            !output.contains("function(__args)") && !output.contains("string.sub(s"),
+            "legacy string hints must not authorize string-method closures, got:\n{output}"
         );
     }
 
