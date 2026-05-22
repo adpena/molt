@@ -113,6 +113,12 @@ Interpretation:
   the canonical Molt artifact/cache/temp roots and a session id before entering
   the shared memory guard, while preserving explicit caller-provided root
   overrides for deliberate external artifact placement.
+- Shared guarded subprocesses also run the default stale-orphan preflight before
+  launch: orphaned Molt process groups older than one hour and orphaned
+  pytest-style groups older than fifteen minutes are drained with process age,
+  kill time, reason, pids, command, and next-action custody. Tune with
+  `MOLT_STALE_ORPHAN_SEC`, `MOLT_STALE_PYTEST_SEC`, or disable deliberately with
+  `MOLT_STALE_ORPHAN_CLEANUP=0`.
 - `tools/dev.py bench` runs the pyproject-owned benchmark smoke lane by default
   and writes `bench/results/dev-bench-smoke.json`; pass explicit `molt bench`
   arguments when a custom native/WASM benchmark slice is needed. The outer

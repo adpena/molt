@@ -44,6 +44,27 @@ def test_parse_process_table_reads_process_group_ids() -> None:
     assert samples[11].pgid == 10
 
 
+def test_parse_process_table_reads_process_elapsed_age() -> None:
+    samples = memory_guard.parse_process_table(
+        """
+          10     1    10  2048  901 python worker.py --flag value
+          11    10    10  4096  01:02:03 /bin/sh -c echo hi
+          12    10    10  4096  2-03:04:05 python slow.py
+        """
+    )
+
+    assert samples[10] == memory_guard.ProcessSample(
+        pid=10,
+        ppid=1,
+        rss_kb=2048,
+        command="python worker.py --flag value",
+        pgid=10,
+        elapsed_sec=901,
+    )
+    assert samples[11].elapsed_sec == 3723
+    assert samples[12].elapsed_sec == 183845
+
+
 def test_descendant_pids_includes_grandchildren() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root"),

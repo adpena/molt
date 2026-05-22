@@ -60,6 +60,7 @@ class ProcessSample:
     rss_kb: int
     command: str
     pgid: int | None = None
+    elapsed_sec: int | None = None
 
 
 @dataclass(slots=True)
@@ -465,6 +466,35 @@ def resolve_memory_limits(
     )
 
 
+def _elapsed_seconds_from_ps(value: str) -> int | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    days = 0
+    time_part = raw
+    if "-" in raw:
+        day_part, time_part = raw.split("-", 1)
+        if not day_part.isdigit():
+            return None
+        days = int(day_part)
+    fields = time_part.split(":")
+    if not 1 <= len(fields) <= 3 or any(not field.isdigit() for field in fields):
+        return None
+    values = [int(field) for field in fields]
+    if len(values) == 3:
+        hours, minutes, seconds = values
+    elif len(values) == 2:
+        hours = 0
+        minutes, seconds = values
+    else:
+        hours = 0
+        minutes = 0
+        seconds = values[0]
+    return (((days * 24) + hours) * 60 + minutes) * 60 + seconds
+
+
 def parse_process_table(text: str) -> dict[int, ProcessSample]:
     samples: dict[int, ProcessSample] = {}
     for raw_line in text.splitlines():
@@ -476,8 +506,42 @@ def parse_process_table(text: str) -> dict[int, ProcessSample]:
         rss_kb: int
         command: str
         pgid: int | None
-        parts = line.split(None, 4)
-        if len(parts) >= 5:
+        elapsed_sec: int | None = None
+        parts = line.split(None, 5)
+        if len(parts) >= 6:
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+                pgid = int(parts[2])
+                rss_kb = int(parts[3])
+                elapsed_sec = _elapsed_seconds_from_ps(parts[4])
+                if elapsed_sec is None:
+                    raise ValueError("elapsed process age is not parseable")
+                command = parts[5]
+            except ValueError:
+                legacy_parts = line.split(None, 4)
+                if len(legacy_parts) < 5:
+                    continue
+                try:
+                    pid = int(legacy_parts[0])
+                    ppid = int(legacy_parts[1])
+                    pgid = int(legacy_parts[2])
+                    rss_kb = int(legacy_parts[3])
+                except ValueError:
+                    fallback_parts = line.split(None, 3)
+                    if len(fallback_parts) < 4:
+                        continue
+                    try:
+                        pid = int(fallback_parts[0])
+                        ppid = int(fallback_parts[1])
+                        rss_kb = int(fallback_parts[2])
+                    except ValueError:
+                        continue
+                    command = fallback_parts[3]
+                    pgid = None
+                else:
+                    command = legacy_parts[4]
+        elif len(parts) >= 5:
             try:
                 pid = int(parts[0])
                 ppid = int(parts[1])
@@ -514,13 +578,14 @@ def parse_process_table(text: str) -> dict[int, ProcessSample]:
             rss_kb=rss_kb,
             command=command,
             pgid=pgid,
+            elapsed_sec=elapsed_sec,
         )
     return samples
 
 
 def sample_processes() -> dict[int, ProcessSample]:
     result = subprocess.run(
-        ["ps", "-axo", "pid=,ppid=,pgid=,rss=,command="],
+        ["ps", "-axo", "pid=,ppid=,pgid=,rss=,etime=,command="],
         capture_output=True,
         text=True,
         check=False,

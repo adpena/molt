@@ -331,6 +331,85 @@ def test_find_violations_can_kill_all_or_threshold() -> None:
     assert group_rss[0].reason == "group_rss"
 
 
+def test_find_violations_marks_only_stale_orphaned_groups() -> None:
+    module = _load_process_sentinel()
+    stale_orphan = module.ProcessGroup(
+        pgid=10,
+        matched=True,
+        samples=(
+            module.memory_guard.ProcessSample(
+                pid=10,
+                ppid=1,
+                pgid=10,
+                rss_kb=100,
+                command="molt-backend --daemon",
+                elapsed_sec=4000,
+            ),
+        ),
+    )
+    attached_old = module.ProcessGroup(
+        pgid=20,
+        matched=True,
+        samples=(
+            module.memory_guard.ProcessSample(
+                pid=20,
+                ppid=999,
+                pgid=20,
+                rss_kb=100,
+                command="cargo test -p molt-backend",
+                elapsed_sec=4000,
+            ),
+        ),
+    )
+
+    violations = module.find_violations(
+        [stale_orphan, attached_old],
+        max_process_kb=10_000,
+        max_group_kb=10_000,
+        max_global_kb=10_000,
+        stale_orphan_sec=3600,
+    )
+
+    assert len(violations) == 1
+    assert violations[0].reason == "stale_orphan"
+    assert violations[0].pgid == 10
+    assert violations[0].oldest_elapsed_sec == 4000
+    assert violations[0].stale_sec == 3600
+    assert violations[0].orphaned is True
+    assert module.violation_payload(violations[0])["oldest_elapsed_sec"] == 4000
+
+
+def test_find_violations_uses_shorter_pytest_stale_threshold() -> None:
+    module = _load_process_sentinel()
+    group = module.ProcessGroup(
+        pgid=10,
+        matched=True,
+        samples=(
+            module.memory_guard.ProcessSample(
+                pid=10,
+                ppid=1,
+                pgid=10,
+                rss_kb=100,
+                command="/repo/molt/.venv/bin/python3 -m pytest tests/compliance",
+                elapsed_sec=1200,
+            ),
+        ),
+    )
+
+    violations = module.find_violations(
+        [group],
+        max_process_kb=10_000,
+        max_group_kb=10_000,
+        max_global_kb=10_000,
+        stale_orphan_sec=3600,
+        stale_pytest_sec=900,
+    )
+
+    assert len(violations) == 1
+    assert violations[0].reason == "stale_pytest_orphan"
+    assert violations[0].stale_sec == 900
+
+
 def test_find_violations_catches_aggregate_global_rss() -> None:
     module = _load_process_sentinel()
     groups = [
@@ -411,8 +490,16 @@ def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
         )
 
     def fake_find_violations(
-        groups, *, max_process_kb, max_group_kb, max_global_kb, kill_all=False
+        groups,
+        *,
+        max_process_kb,
+        max_group_kb,
+        max_global_kb,
+        kill_all=False,
+        stale_orphan_sec=None,
+        stale_pytest_sec=None,
     ):
+        del stale_orphan_sec, stale_pytest_sec
         captured["max_process_kb"] = max_process_kb
         captured["max_group_kb"] = max_group_kb
         captured["max_global_kb"] = max_global_kb

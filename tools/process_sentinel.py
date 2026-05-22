@@ -26,6 +26,8 @@ DEFAULT_MAX_GLOBAL_RSS_GB = memory_guard.DEFAULT_MAX_GLOBAL_RSS_GB
 DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_GRACE_SEC = 0.5
 DEFAULT_MAX_RUNTIME_SEC = 120.0
+DEFAULT_STALE_ORPHAN_SEC = 60.0 * 60.0
+DEFAULT_STALE_PYTEST_SEC = 15.0 * 60.0
 
 GUARDED_ENTRYPOINT_TOKENS = guarded_entrypoints.guarded_entrypoint_tokens(_REPO_ROOT)
 
@@ -60,6 +62,7 @@ REPO_SCOPED_PROCESS_TOKENS = tuple(
     dict.fromkeys(
         (
             "/.molt_cache/home/bin/",
+            "/.venv/bin/python",
             "/target/debug/",
             "/target/dev-fast/",
             "/target/release-fast/",
@@ -69,9 +72,17 @@ REPO_SCOPED_PROCESS_TOKENS = tuple(
             "/wasm/",
             "/bench/results/",
             "/tests/molt_diff.py",
+            "/tests/",
             *GUARDED_ENTRYPOINT_TOKENS,
         )
     )
+)
+
+PYTEST_PROCESS_TOKENS = (
+    " pytest",
+    "/pytest",
+    "python -m pytest",
+    "python3 -m pytest",
 )
 
 INSPECTION_COMMAND_TOKENS = (
@@ -122,6 +133,46 @@ class ProcessGroup:
     def pids(self) -> list[int]:
         return sorted(sample.pid for sample in self.samples)
 
+    @property
+    def oldest_elapsed_sec(self) -> int | None:
+        ages = [
+            sample.elapsed_sec
+            for sample in self.samples
+            if sample.elapsed_sec is not None
+        ]
+        if not ages:
+            return None
+        return max(ages)
+
+    @property
+    def external_parent_pids(self) -> list[int]:
+        pids = set(self.pids)
+        return sorted(
+            {
+                sample.ppid
+                for sample in self.samples
+                if sample.ppid > 0 and sample.ppid not in pids
+            }
+        )
+
+    @property
+    def is_orphaned(self) -> bool:
+        parents = self.external_parent_pids
+        return (
+            bool(self.samples)
+            and bool(parents)
+            and all(parent == 1 for parent in parents)
+        )
+
+    @property
+    def command_text(self) -> str:
+        return "\n".join(sample.command for sample in self.samples)
+
+    @property
+    def looks_like_pytest(self) -> bool:
+        command = self.command_text
+        return any(token in command for token in PYTEST_PROCESS_TOKENS)
+
 
 @dataclass(frozen=True, slots=True)
 class SentinelViolation:
@@ -132,6 +183,9 @@ class SentinelViolation:
     peak_rss_kb: int | None
     pids: tuple[int, ...]
     command: str
+    oldest_elapsed_sec: int | None = None
+    stale_sec: float | None = None
+    orphaned: bool = False
 
     @property
     def total_rss_gb(self) -> float:
@@ -192,9 +246,7 @@ def process_groups(
     while changed:
         changed = False
         matched_pids = {
-            sample.pid
-            for pgid in matched
-            for sample in grouped.get(pgid, ())
+            sample.pid for pgid in matched for sample in grouped.get(pgid, ())
         }
         if not matched_pids:
             break
@@ -224,12 +276,19 @@ def find_violations(
     max_group_kb: int,
     max_global_kb: int,
     kill_all: bool = False,
+    stale_orphan_sec: float | None = None,
+    stale_pytest_sec: float | None = None,
 ) -> list[SentinelViolation]:
     violations: list[SentinelViolation] = []
     global_total_kb = sum(group.total_rss_kb for group in groups)
     global_tripped = bool(groups) and global_total_kb > max_global_kb
     for group in groups:
         peak = group.peak
+        stale_reason, stale_sec = _stale_violation_reason(
+            group,
+            stale_orphan_sec=stale_orphan_sec,
+            stale_pytest_sec=stale_pytest_sec,
+        )
         if kill_all:
             reason = "kill_all"
         elif peak is not None and peak.rss_kb > max_process_kb:
@@ -238,6 +297,8 @@ def find_violations(
             reason = "group_rss"
         elif global_tripped:
             reason = "global_rss"
+        elif stale_reason is not None:
+            reason = stale_reason
         else:
             continue
         violations.append(
@@ -249,9 +310,32 @@ def find_violations(
                 peak_rss_kb=None if peak is None else peak.rss_kb,
                 pids=tuple(group.pids),
                 command="" if peak is None else peak.command,
+                oldest_elapsed_sec=group.oldest_elapsed_sec,
+                stale_sec=stale_sec,
+                orphaned=group.is_orphaned,
             )
         )
     return violations
+
+
+def _stale_violation_reason(
+    group: ProcessGroup,
+    *,
+    stale_orphan_sec: float | None,
+    stale_pytest_sec: float | None,
+) -> tuple[str | None, float | None]:
+    age = group.oldest_elapsed_sec
+    if age is None or not group.is_orphaned:
+        return None, None
+    if (
+        stale_pytest_sec is not None
+        and group.looks_like_pytest
+        and age >= stale_pytest_sec
+    ):
+        return "stale_pytest_orphan", stale_pytest_sec
+    if stale_orphan_sec is not None and age >= stale_orphan_sec:
+        return "stale_orphan", stale_orphan_sec
+    return None, None
 
 
 def _violation_payload(violation: SentinelViolation) -> dict[str, object]:
@@ -265,6 +349,9 @@ def _violation_payload(violation: SentinelViolation) -> dict[str, object]:
         "peak_rss_gb": violation.peak_rss_gb,
         "pids": list(violation.pids),
         "command": violation.command,
+        "oldest_elapsed_sec": violation.oldest_elapsed_sec,
+        "stale_sec": violation.stale_sec,
+        "orphaned": violation.orphaned,
     }
 
 
@@ -280,6 +367,8 @@ def _format_violation(violation: SentinelViolation) -> str:
         "[PROCESS-SENTINEL] "
         f"{violation.reason} pgid={violation.pgid} "
         f"total={violation.total_rss_gb:.2f}GB peak={peak} "
+        f"age={violation.oldest_elapsed_sec if violation.oldest_elapsed_sec is not None else '-'}s "
+        f"orphaned={violation.orphaned} "
         f"pids={list(violation.pids)} command={violation.command}"
     )
 
@@ -368,6 +457,24 @@ def _parser() -> argparse.ArgumentParser:
         help="Terminate every currently matched Molt process group.",
     )
     parser.add_argument(
+        "--stale-orphan-sec",
+        type=float,
+        default=None,
+        help=(
+            "Terminate orphaned repo-scoped Molt process groups older than this "
+            "many seconds. Defaults to off unless provided."
+        ),
+    )
+    parser.add_argument(
+        "--stale-pytest-sec",
+        type=float,
+        default=None,
+        help=(
+            "Terminate orphaned pytest-style Molt process groups older than this "
+            "many seconds. Defaults to off unless provided."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Report violations without terminating process groups.",
@@ -451,6 +558,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("poll interval must be greater than 0")
         if args.grace_sec < 0:
             raise ValueError("grace period must be non-negative")
+        if args.stale_orphan_sec is not None and args.stale_orphan_sec <= 0:
+            raise ValueError("stale orphan seconds must be greater than 0")
+        if args.stale_pytest_sec is not None and args.stale_pytest_sec <= 0:
+            raise ValueError("stale pytest seconds must be greater than 0")
         if args.until_clean_sec is not None and args.until_clean_sec <= 0:
             raise ValueError("until-clean seconds must be greater than 0")
         if args.max_runtime_sec is not None and args.max_runtime_sec <= 0:
@@ -489,6 +600,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if current_limits.max_global_rss_kb is not None
             else 0,
             kill_all=args.kill_all,
+            stale_orphan_sec=args.stale_orphan_sec,
+            stale_pytest_sec=args.stale_pytest_sec,
         )
         emit_violations(violations, json_mode=args.json, stream=stream)
         now = time.monotonic()

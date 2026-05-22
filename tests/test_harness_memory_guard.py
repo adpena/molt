@@ -409,6 +409,11 @@ def test_guarded_completed_process_starts_default_repo_sentinel(monkeypatch) -> 
     )
     monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
     monkeypatch.setattr(
+        harness_memory_guard,
+        "_prune_stale_repo_processes",
+        lambda **kwargs: (),
+    )
+    monkeypatch.setattr(
         harness_memory_guard.memory_guard,
         "run_guarded",
         fake_run_guarded,
@@ -1111,6 +1116,11 @@ def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> 
         lambda env: tmp_path,
     )
     monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_prune_stale_repo_processes",
+        lambda **kwargs: (),
+    )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
         max_process_rss_gb=2,
@@ -1130,6 +1140,91 @@ def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> 
     assert captured["suppress_auto_guard"] is False
 
 
+def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    group = harness_memory_guard.process_sentinel.ProcessGroup(
+        pgid=555,
+        matched=True,
+        samples=(
+            harness_memory_guard.memory_guard.ProcessSample(
+                pid=555,
+                ppid=1,
+                pgid=555,
+                rss_kb=100,
+                command="molt-backend --daemon",
+                elapsed_sec=4000,
+            ),
+        ),
+    )
+    terminated: list[int] = []
+    sentinel_calls: list[dict[str, object]] = []
+
+    @contextlib.contextmanager
+    def fake_repo_process_sentinel(**kwargs):  # type: ignore[no-untyped-def]
+        sentinel_calls.append(kwargs)
+        yield object()
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "process_groups",
+        lambda *args, **kwargs: [group],
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        fake_repo_process_sentinel,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_artifact_root_from_env",
+        lambda env: tmp_path,
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+    monkeypatch.setattr(harness_memory_guard, "_utc_timestamp", lambda: "now")
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.001,
+    )
+
+    with harness_memory_guard._auto_repo_sentinel(
+        prefix="MOLT_BUILD",
+        env={
+            "MOLT_BUILD_STALE_ORPHAN_CLEANUP": "1",
+            "MOLT_BUILD_STALE_ORPHAN_SEC": "3600",
+        },
+        limits=limits,
+    ):
+        pass
+
+    assert terminated == [555]
+    assert sentinel_calls
+    err = capsys.readouterr().err
+    assert "stale orphaned Molt process group" in err
+    assert "age=4000s" in err
+    assert "threshold=3600s" in err
+    events = (tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "repo_process_guard_stale_preflight" in events
+    assert "stale_orphan" in events
+
+
 def test_repo_process_sentinel_remembers_observed_child_groups(
     monkeypatch,
     tmp_path: Path,
@@ -1137,8 +1232,9 @@ def test_repo_process_sentinel_remembers_observed_child_groups(
     seen_known: list[set[int]] = []
 
     def fake_process_groups(*args, **kwargs):
-        seen_known.append(set(kwargs.get("known_pgids") or set()))
-        pgid = 123 if len(seen_known) == 1 else 456
+        known = set(kwargs.get("known_pgids") or set())
+        seen_known.append(known)
+        pgid = 456 if 123 in known else 123
         return [
             harness_memory_guard.process_sentinel.ProcessGroup(
                 pgid=pgid,
@@ -1179,7 +1275,7 @@ def test_repo_process_sentinel_remembers_observed_child_groups(
 
     assert [group.pgid for group in first] == [123]
     assert [group.pgid for group in second] == [456]
-    assert seen_known == [set(), {123}]
+    assert seen_known[-2:] == [set(), {123}]
     assert sentinel._observed_pgids == {123, 456}
 
 
