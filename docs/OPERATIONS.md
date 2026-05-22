@@ -746,6 +746,10 @@ This section standardizes parallel agent work on Molt.
   `logs/validate-<suite>-<backend>-<profile>.json` by default. Pass
   `--summary-out` for an explicit custody path; check-only plans only write when
   that option is supplied.
+- `tools/dev.py bench` is the canonical convenience entrypoint for a guarded
+  local benchmark smoke check. With no arguments it runs the pyproject-owned
+  smoke command and writes `bench/results/dev-bench-smoke.json`; pass explicit
+  `molt bench` arguments for custom or full benchmark slices.
 - `tools/dev.py gates` persists the pyproject-owned local gate sequence under
   `logs/dev-gates-summary.json` by default. Pass `--summary-out` when a batch
   needs a named custody artifact; failed gates still write the partial command
