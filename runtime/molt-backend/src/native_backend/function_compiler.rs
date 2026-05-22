@@ -1166,7 +1166,7 @@ fn collect_slot_backed_join_names(
     // variables, we eliminate the phi nodes entirely. Stack loads/stores
     // are slightly slower than register-to-register moves, but:
     // 1. Exception-handling and poll functions are already on the cold path
-    // 2. The alternative is a Cranelift panic and trap stub
+    // 2. The alternative is a hard backend compile failure
     // 3. regalloc2 phi resolution for many-predecessor blocks is O(n^2)
     //
     // This is the same strategy used by LLVM's mem2reg in the presence of
@@ -35877,32 +35877,10 @@ impl SimpleBackend {
                 if err_str.contains("IncompatibleSignature")
                     || err_str.contains("incompatible with previous declaration")
                 {
-                    eprintln!(
-                        "WARNING: signature mismatch for `{}`; emitting trap stub",
+                    panic!(
+                        "declare_function signature mismatch for `{}`: {e}",
                         func_ir.name
                     );
-                    if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
-                        self.module.get_name(&func_ir.name)
-                    {
-                        let existing_sig = self
-                            .module
-                            .declarations()
-                            .get_function_decl(existing_id)
-                            .signature
-                            .clone();
-                        if let Err(stub_err) = Self::emit_trap_stub(
-                            &mut self.module,
-                            existing_id,
-                            &existing_sig,
-                            &func_ir.name,
-                        ) {
-                            eprintln!("  -> trap stub failed for {}: {}", func_ir.name, stub_err);
-                        } else {
-                            self.defined_func_names.insert(func_ir.name.clone());
-                        }
-                    }
-                    self.module.clear_context(&mut self.ctx);
-                    return;
                 }
                 panic!("declare_function failed for {}: {}", func_ir.name, e);
             }

@@ -12044,7 +12044,7 @@ def _resolve_cargo_profile_name_cached(
     # release-output is the release default for the runtime staticlib: it
     # uses panic=abort (eliminating ~750KB of exception tables) and opt-level
     # "z" for minimal binary size. The backend daemon uses release-fast
-    # (panic=unwind for catch_unwind) via _resolve_backend_cargo_profile_name.
+    # via _resolve_backend_cargo_profile_name for fast optimized rebuilds.
     default_profile = "dev-fast" if build_profile == "dev" else "release-output"
     profile_name = normalized_raw or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
