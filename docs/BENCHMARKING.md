@@ -45,7 +45,10 @@ To exercise single-module linking, add `--linked` (requires `wasm-ld` and
 Use `tools/bench_individual.py` for focused native micro-benchmark slices. It
 reuses the backend daemon by default so build timings represent the normal
 warm developer path; pass `--isolate-daemon` only when explicitly measuring
-cold daemon startup or investigating daemon crash isolation.
+cold daemon startup or investigating daemon crash isolation. Isolated cleanup is
+scoped to the current `MOLT_SESSION_ID` or explicit backend socket, preserves
+foreign-session daemons, and records daemon custody events in
+`tmp/bench/daemon_custody.jsonl`.
 For performance parity work, prefer linked WASM artifacts (`tools/bench_wasm.py --linked`)
 and use the linked runner path by default.
 If you build standalone WASM artifacts for perf validation, use
