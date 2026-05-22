@@ -279,6 +279,16 @@ def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> N
     assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path / "tmp")
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
     assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["MOLT_SESSION_ID"].startswith("guard-")
+
+
+def test_canonical_harness_env_preserves_caller_session(tmp_path: Path) -> None:
+    env = harness_memory_guard.canonical_harness_env(
+        {"MOLT_SESSION_ID": "caller-session"},
+        repo_root=tmp_path,
+    )
+
+    assert env["MOLT_SESSION_ID"] == "caller-session"
 
 
 def test_execution_context_owns_env_limits_and_batch_kwargs(
@@ -513,10 +523,14 @@ def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> N
             peak_total=None,
             stdout="",
             stderr="",
+            elapsed_s=0.25,
         )
 
     monkeypatch.setattr(
         harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_utc_timestamp", lambda: "2026-05-21T12:00:00Z"
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -534,6 +548,107 @@ def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> N
 
     assert result.returncode == -9
     assert "memory_guard: command exited with SIGKILL status (-9)" in result.stderr
+    assert "observed_at=2026-05-21T12:00:00Z" in result.stderr
+    assert "elapsed=0.25s" in result.stderr
+    assert (
+        "next action: inspect child stderr/logs or host signal source" in result.stderr
+    )
+
+
+def test_guarded_completed_process_reports_actionable_violation(
+    monkeypatch,
+) -> None:
+    def fake_run_guarded(command, **kwargs):
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=harness_memory_guard.memory_guard.GUARD_RETURN_CODE,
+            violation=harness_memory_guard.memory_guard.RssViolation(
+                pid=123,
+                rss_kb=4 * 1024 * 1024,
+                command="python boom.py",
+                scope="process_tree",
+            ),
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=2.5,
+            limit_at_violation=harness_memory_guard.memory_guard.ResolvedMemoryLimits(
+                max_process_rss_kb=2 * 1024 * 1024,
+                max_total_rss_kb=3 * 1024 * 1024,
+            ),
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_utc_timestamp", lambda: "2026-05-21T12:00:00Z"
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        limits=limits,
+    )
+
+    assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
+    assert "RSS limit exceeded; terminated the tracked process tree" in result.stderr
+    assert "killed_at=2026-05-21T12:00:00Z" in result.stderr
+    assert "elapsed=2.50s" in result.stderr
+    assert "scope=process_tree" in result.stderr
+    assert "limit=3.00GB" in result.stderr
+    assert "MOLT_TEST_MAX_PROCESS_RSS_GB/MOLT_TEST_MAX_TOTAL_RSS_GB" in result.stderr
+
+
+def test_guarded_completed_process_reports_actionable_timeout(
+    monkeypatch,
+) -> None:
+    def fake_run_guarded(command, **kwargs):
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="memory_guard: timeout after 7.00s\n",
+            timed_out=True,
+            elapsed_s=7.01,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_utc_timestamp", lambda: "2026-05-21T12:00:00Z"
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        limits=limits,
+        timeout=7,
+    )
+
+    assert result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    assert "timeout; terminated the tracked process tree" in result.stderr
+    assert "killed_at=2026-05-21T12:00:00Z" in result.stderr
+    assert "elapsed=7.01s" in result.stderr
+    assert "timeout=7.00s" in result.stderr
+    assert "MOLT_TEST_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC" in result.stderr
 
 
 def test_guarded_completed_process_to_tempfiles_refreshes_dynamic_limits(
@@ -631,6 +746,8 @@ def test_guarded_completed_process_to_tempfiles_refreshes_dynamic_limits(
     assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
     assert result.stdout == b"partial\n"
     assert b"molt memory guard: RSS limit exceeded" in result.stderr
+    assert b"terminated the tracked process tree" in result.stderr
+    assert b"next action: inspect child logs" in result.stderr
     assert 6 * 1024 * 1024 in budget_calls
     assert terminated == [4242]
 
@@ -752,6 +869,8 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     events = sentinel.events_path.read_text(encoding="utf-8")
     assert "repo_process_guard_tripped" in events
     assert "limits" in events
+    assert "killed_at" in events
+    assert "terminated process group to prevent orphaned Molt subprocesses" in events
 
 
 def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
@@ -828,6 +947,8 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     events = sentinel.events_path.read_text(encoding="utf-8")
     assert "repo_process_guard_drained" in events
     assert "drain_on_exit" in events
+    assert "killed_at" in events
+    assert "terminated process group left behind by the guarded scope" in events
 
 
 def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> None:
