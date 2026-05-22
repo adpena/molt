@@ -595,6 +595,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn roundtrip_ord_at_preserves_first_class_kind() {
+        let ops = vec![
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("Aé".into()),
+                out: Some("text".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                value: Some(1),
+                out: Some("idx".into()),
+                ..OpIR::default()
+            },
+            op_out_args("ord_at", "code", &["text", "idx"]),
+            op_args("ret", &["code"]),
+        ];
+        let result = roundtrip(ops);
+
+        let ord_at = result.iter().find(|o| o.kind == "ord_at");
+        assert!(
+            ord_at.is_some(),
+            "first-class ord_at must survive TIR round-trip. Got: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            ord_at.and_then(|op| op.args.as_ref()).cloned(),
+            Some(vec!["text".to_string(), "idx".to_string()])
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // Test 18: passthrough ops preserve all fields
     // ---------------------------------------------------------------------------

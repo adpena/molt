@@ -69,11 +69,13 @@ def test_wasm_runtime_import_names_include_ssl_and_set_surface() -> None:
     names = set(wasm_runtime_import_names())
     assert "set_update" in names
     assert "frozenset_add" in names
+    assert "ord_at" in names
 
 
 def test_wasm_runtime_export_link_args_prefixes_import_registry() -> None:
     flags = wasm_runtime_export_link_args()
     assert " -C link-arg=--export-if-defined=molt_set_update" in flags
+    assert " -C link-arg=--export-if-defined=molt_ord_at" in flags
     assert " -C link-arg=--export-if-defined=molt_gpu_matmul_contiguous" in flags
 
 
