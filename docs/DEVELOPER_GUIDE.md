@@ -108,9 +108,9 @@ Interpretation:
   is provided. Use this payload as the machine-readable handoff for choosing
   the smallest convincing proof matrix.
 - The smoke validation plan includes
-  `tools/check_subprocess_guard_coverage.py`, an AST audit that fails if new
-  dev/test/bench subprocess launches bypass the shared guard without an
-  explicit structural exception.
+  `tools/check_subprocess_guard_coverage.py` and
+  `tools/check_memory_guard_wiring.py`, so raw subprocess launches and broader
+  dev/test/bench entrypoint guard drift both fail in the canonical smoke lane.
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
 - Every `tools/dev.py` command that launches through `uv run` first installs
@@ -136,9 +136,9 @@ Interpretation:
   reason; use `--summary-out` for an explicit custody path. Use `--allow-dirty`
   only while preserving known partner WIP; commits should still be made from a
   reviewed staged set.
-- `tools/dev.py lint` also runs the subprocess guard audit from the pyproject
-  command table, so command-runner drift is caught in the standard local lint
-  lane rather than left to review memory.
+- `tools/dev.py lint` also runs the subprocess and memory-guard wiring audits
+  from the pyproject command table, so command-runner drift is caught in the
+  standard local lint lane rather than left to review memory.
 
 ## Canonical Debug Surface
 

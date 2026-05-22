@@ -750,10 +750,12 @@ This section standardizes parallel agent work on Molt.
   local benchmark smoke check. With no arguments it runs the pyproject-owned
   smoke command and writes `bench/results/dev-bench-smoke.json`; pass explicit
   `molt bench` arguments for custom or full benchmark slices.
-- `tools/dev.py lint` includes the subprocess guard coverage audit; new raw
-  subprocess calls in dev/test/bench surfaces must either use
-  `tools/harness_memory_guard.py`/test process-guard helpers or document why
-  they are bounded metadata probes or interactive guarded Popen paths.
+- `tools/dev.py lint` includes the subprocess guard coverage audit and the
+  memory-guard wiring audit; new raw subprocess calls in dev/test/bench
+  surfaces must either use `tools/harness_memory_guard.py`/test process-guard
+  helpers or document why they are bounded metadata probes or interactive
+  guarded Popen paths, and new guard entrypoints must stay visible to the repo
+  process sentinel.
 - `tools/dev.py gates` persists the pyproject-owned local gate sequence under
   `logs/dev-gates-summary.json` by default. Pass `--summary-out` when a batch
   needs a named custody artifact; failed gates still write the partial command
