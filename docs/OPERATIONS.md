@@ -742,6 +742,10 @@ This section standardizes parallel agent work on Molt.
 - Use `molt validate --suite smoke` for fast local proof and `molt validate`
   for the heavier full matrix, plus any targeted `cargo` checks required by the
   touched lane.
+- Executed `molt validate` runs persist their run payload under
+  `logs/validate-<suite>-<backend>-<profile>.json` by default. Pass
+  `--summary-out` for an explicit custody path; check-only plans only write when
+  that option is supplied.
 - `tools/dev.py test --random-order --random-seed <seed>` is an opt-in DX lane
   for flushing out order dependence. Keep the canonical proof/CI sweeps
   deterministic.

@@ -175,6 +175,29 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert bench_step["cmd"][bench_step["cmd"].index("--warmup") + 1] == "1"
 
 
+def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> None:
+    summary_path = tmp_path / "validate-plan.json"
+
+    res = _run_cli(
+        [
+            "validate",
+            "--check",
+            "--json",
+            "--suite",
+            "smoke",
+            "--summary-out",
+            str(summary_path),
+        ]
+    )
+
+    assert res.returncode == 0, res.stderr
+    stdout_payload = json.loads(res.stdout)
+    file_payload = json.loads(summary_path.read_text())
+    assert file_payload == stdout_payload
+    assert stdout_payload["data"]["check_only"] is True
+    assert stdout_payload["data"]["summary_path"] == str(summary_path)
+
+
 def test_cli_run_command_uses_memory_guard_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -618,6 +641,7 @@ def test_cli_bench_outer_process_uses_bench_memory_guard(
 def test_cli_validate_uses_family_memory_guard_prefixes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     from molt import cli
 
@@ -669,8 +693,21 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
         raising=True,
     )
 
-    assert cli.validate(suite="smoke", json_output=True) == 0
+    summary_path = tmp_path / "validate-summary.json"
+
+    assert (
+        cli.validate(
+            suite="smoke",
+            json_output=True,
+            summary_out=str(summary_path),
+        )
+        == 0
+    )
     payload = json.loads(capsys.readouterr().out)
+    assert json.loads(summary_path.read_text()) == payload
+    assert payload["data"]["summary_path"] == str(summary_path)
+    assert payload["data"]["check_only"] is False
+    assert isinstance(payload["data"]["elapsed_s"], float)
     assert payload["data"]["memory_guard"] == {
         "MOLT_BENCH": {
             "enabled": True,
@@ -702,6 +739,61 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
     }
     prefixes = [call["prefix"] for call in calls if call["method"] == "run"]
     assert prefixes == ["MOLT_CONFORMANCE", "MOLT_BENCH", "MOLT_TEST_SUITE"]
+
+
+def test_cli_validate_defaults_execution_summary_to_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from molt import cli
+
+    calls: list[dict[str, object]] = []
+    steps = [
+        cli._ValidationStep(
+            "correctness-step",
+            ["python3", "-c", "pass"],
+            tmp_path,
+            "correctness",
+            ("native",),
+            ("dev",),
+            "smoke",
+        )
+    ]
+
+    monkeypatch.setattr(cli, "_find_molt_root", lambda *args: tmp_path, raising=True)
+    monkeypatch.setattr(cli, "_require_molt_root", lambda *args: None, raising=True)
+    monkeypatch.setattr(
+        cli,
+        "_planned_validate_steps",
+        lambda root, suite, backend, profile: steps,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_cli_harness_memory_guard",
+        lambda cwd: _fake_cli_harness(
+            calls,
+            result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
+        ),
+        raising=True,
+    )
+
+    assert (
+        cli.validate(
+            suite="smoke",
+            backend="native",
+            profile="dev",
+            json_output=True,
+        )
+        == 0
+    )
+
+    summary_path = tmp_path / "logs" / "validate-smoke-native-dev.json"
+    payload = json.loads(capsys.readouterr().out)
+    assert json.loads(summary_path.read_text()) == payload
+    assert payload["data"]["summary_path"] == str(summary_path)
+    assert payload["data"]["results"][0]["name"] == "correctness-step"
 
 
 def test_tools_dev_validate_delegates_to_canonical_cli() -> None:

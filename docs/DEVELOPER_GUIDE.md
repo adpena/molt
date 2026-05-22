@@ -99,10 +99,14 @@ molt validate
 Interpretation:
 - `molt validate --suite smoke` is the fast local presubmit matrix.
 - `molt validate` is the heavier full local correctness + benchmark lane.
+- Executed validation runs write a canonical JSON sidecar at
+  `logs/validate-<suite>-<backend>-<profile>.json`; use `--summary-out` to
+  choose an explicit artifact path.
 - `molt validate --check --json` emits the exact planned commands, their
   memory-guard family prefixes, and the adaptive guard budgets that will apply
-  to the run. Use this payload as the machine-readable handoff for choosing the
-  smallest convincing proof matrix.
+  to the run. Check-only mode does not write a sidecar unless `--summary-out`
+  is provided. Use this payload as the machine-readable handoff for choosing
+  the smallest convincing proof matrix.
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
 - `tools/dev.py gates` executes the pyproject-owned CI-adjacent local gate
