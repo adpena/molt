@@ -40,6 +40,24 @@ struct AttrICEntry {
     class_bits: u64,
 }
 
+impl AttrICEntry {
+    fn retain_owned_refs(&self, _py: &PyToken<'_>) {
+        for bits in [self.name_bits, self.result_bits, self.class_bits] {
+            if bits != 0 {
+                inc_ref_bits(_py, bits);
+            }
+        }
+    }
+
+    fn release_owned_refs(&self, _py: &PyToken<'_>) {
+        for bits in [self.name_bits, self.result_bits, self.class_bits] {
+            if bits != 0 {
+                dec_ref_bits(_py, bits);
+            }
+        }
+    }
+}
+
 pub(crate) struct AttributesRuntimeState {
     property_docs: Mutex<HashMap<PtrSlot, u64>>,
     property_doc_name: AtomicU64,
@@ -158,15 +176,7 @@ fn clear_attr_site_name_cache(_py: &PyToken<'_>, attributes: &AttributesRuntimeS
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     for (_site, entry) in rc.drain() {
-        if entry.name_bits != 0 {
-            dec_ref_bits(_py, entry.name_bits);
-        }
-        if entry.result_bits != 0 {
-            dec_ref_bits(_py, entry.result_bits);
-        }
-        if entry.class_bits != 0 {
-            dec_ref_bits(_py, entry.class_bits);
-        }
+        entry.release_owned_refs(_py);
     }
 }
 
@@ -5101,28 +5111,20 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                         if cacheable {
                             profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
                             let current_version = global_type_version();
-                            inc_ref_bits(_py, name_bits);
-                            inc_ref_bits(_py, out);
+                            let entry = AttrICEntry {
+                                name_bits,
+                                result_bits: out,
+                                type_version: current_version,
+                                obj_type_id: type_id,
+                                class_bits,
+                            };
+                            entry.retain_owned_refs(_py);
                             let mut cache = attr_ic_result_cache(_py)
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner());
-                            if let Some(old) = cache.insert(
-                                site_id,
-                                AttrICEntry {
-                                    name_bits,
-                                    result_bits: out,
-                                    type_version: current_version,
-                                    obj_type_id: type_id,
-                                    class_bits,
-                                },
-                            ) {
+                            if let Some(old) = cache.insert(site_id, entry) {
                                 drop(cache);
-                                if old.name_bits != 0 {
-                                    dec_ref_bits(_py, old.name_bits);
-                                }
-                                if old.result_bits != 0 {
-                                    dec_ref_bits(_py, old.result_bits);
-                                }
+                                old.release_owned_refs(_py);
                             }
                         }
                     }
@@ -5555,13 +5557,25 @@ pub extern "C" fn molt_del_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{AttrICEntry, attributes_clear_runtime_state};
-    use crate::{MoltObject, PtrSlot, PyToken, alloc_string, runtime_state};
+    use crate::{
+        MoltObject, PtrSlot, PyToken, alloc_string, dec_ref_bits, header_from_obj_ptr,
+        runtime_state,
+    };
     use std::sync::atomic::Ordering;
 
     fn string_bits(_py: &PyToken<'_>, label: &[u8]) -> u64 {
         let ptr = alloc_string(_py, label);
         assert!(!ptr.is_null());
         MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn refcount(bits: u64) -> u32 {
+        let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Acquire)
+        }
     }
 
     #[test]
@@ -5604,6 +5618,71 @@ mod tests {
             assert!(attributes.attr_ic_result_cache.lock().unwrap().is_empty());
             for slot in attributes.object_slots() {
                 assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+        });
+    }
+
+    #[test]
+    fn attr_ic_entry_owns_class_bits_through_replacement_and_clear() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            attributes_clear_runtime_state(_py, state);
+            let attributes = &state.attributes;
+
+            let first_name = string_bits(_py, b"first-name");
+            let first_result = string_bits(_py, b"first-result");
+            let first_class = string_bits(_py, b"first-class");
+            let second_name = string_bits(_py, b"second-name");
+            let second_result = string_bits(_py, b"second-result");
+            let second_class = string_bits(_py, b"second-class");
+
+            let first = AttrICEntry {
+                name_bits: first_name,
+                result_bits: first_result,
+                type_version: 1,
+                obj_type_id: 2,
+                class_bits: first_class,
+            };
+            first.retain_owned_refs(_py);
+            assert_eq!(refcount(first_class), 2);
+            attributes
+                .attr_ic_result_cache
+                .lock()
+                .unwrap()
+                .insert(42, first);
+
+            let second = AttrICEntry {
+                name_bits: second_name,
+                result_bits: second_result,
+                type_version: 2,
+                obj_type_id: 3,
+                class_bits: second_class,
+            };
+            second.retain_owned_refs(_py);
+            let old = attributes
+                .attr_ic_result_cache
+                .lock()
+                .unwrap()
+                .insert(42, second)
+                .unwrap();
+            old.release_owned_refs(_py);
+
+            assert_eq!(refcount(first_class), 1);
+            assert_eq!(refcount(second_class), 2);
+
+            attributes_clear_runtime_state(_py, state);
+            assert_eq!(refcount(second_class), 1);
+
+            for bits in [
+                first_name,
+                first_result,
+                first_class,
+                second_name,
+                second_result,
+                second_class,
+            ] {
+                dec_ref_bits(_py, bits);
             }
         });
     }
