@@ -11,6 +11,21 @@ def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def _named_step_blocks(workflow_text: str) -> list[str]:
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in workflow_text.splitlines():
+        if line.startswith("      - name: "):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    return ["\n".join(block) for block in blocks]
+
+
 def _default_python_version() -> str:
     version = _read(".python-version").strip()
     components = version.split(".")
@@ -292,3 +307,28 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     )
     assert wasm_text.count("--build-profile dev") >= 5
     assert "/home/runner/.cache/molt" not in wasm_text
+
+
+def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
+    wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
+    guarded_steps = [
+        block
+        for block in _named_step_blocks(wasm_text)
+        if "tools/guarded_exec.py --prefix MOLT_WASM_TEST" in block
+    ]
+
+    assert len(guarded_steps) >= 10
+    missing = [
+        block.splitlines()[0].removeprefix("      - name: ")
+        for block in guarded_steps
+        if "timeout-minutes:" not in block
+    ]
+    assert missing == []
+    for block in guarded_steps:
+        timeout_line = next(
+            line.strip()
+            for line in block.splitlines()
+            if line.strip().startswith("timeout-minutes:")
+        )
+        timeout_minutes = int(timeout_line.split(":", 1)[1].strip())
+        assert 1 <= timeout_minutes <= 20, block
