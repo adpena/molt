@@ -184,7 +184,11 @@ def run_uv(
                     "or remove 3.14 from the test matrix."
                 )
     cmd.extend(args)
-    run_env = _normalized_uv_run_env(env or os.environ, python=python)
+    base_env = harness_memory_guard.canonical_harness_env(
+        env or os.environ,
+        repo_root=ROOT,
+    )
+    run_env = _normalized_uv_run_env(base_env, python=python)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
     if tty and os.name == "posix" and not limits.enabled:
         _run_with_pty(cmd, run_env)
