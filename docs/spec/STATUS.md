@@ -199,6 +199,16 @@ current native path (`build_time_s=167.9641`, `molt_time_s=0.456952`, output
 The generated full-run failure list above predates this focused recheck and
 should be regenerated on the next full benchmark refresh.
 
+Focused native stale-failure recheck: the full generated failure list above now
+builds and runs on the current native path after the attribute inline-cache
+ownership fix: `bench_async_await.py`, `bench_channel_throughput.py`,
+`bench_dict_comprehension.py`, `bench_import_time.py`,
+`bench_parse_msgpack.py`, `bench_procedural_gen.py`, and
+`bench_ptr_registry.py` all passed in a 7/7 focused run. Evidence is in
+`bench/results/stale_failure_post_attr_ic_20260522T182839.json`. The generated
+full benchmark summary should be regenerated on the next full benchmark refresh
+to replace the stale failure list.
+
 Focused JSON recheck: `bench_json_roundtrip.py` moved from `0.2109x` CPython
 (`molt_time_s=0.108314`) to `3.1942x` CPython (`molt_time_s=0.007368`) after
 the intrinsic parser switched to byte-indexed scanning and direct default
