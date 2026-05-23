@@ -1,6 +1,6 @@
 {
-  "native": "bench/results/full_native_refresh_20260519.json",
-  "wasm": "bench/results/bench_wasm_20260328_102249.json",
+  "native": "bench/results/full_native_refresh_20260522_tracked_vec.json",
+  "wasm": "bench/results/bench_wasm_20260522_tracked_vec.json",
   "out": "docs/benchmarks/bench_summary.md",
   "status_doc": "docs/spec/STATUS.md"
 }

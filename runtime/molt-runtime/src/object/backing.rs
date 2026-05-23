@@ -60,6 +60,11 @@ fn vec_charge<T>(capacity: usize) -> Option<usize> {
 }
 
 #[inline]
+fn amortized_target_capacity(current_capacity: usize, required_len: usize) -> usize {
+    required_len.max(current_capacity.saturating_mul(2)).max(4)
+}
+
+#[inline]
 fn vec_field_offset<T>() -> usize {
     let uninit = std::mem::MaybeUninit::<TrackedVecBox<T>>::uninit();
     let base = uninit.as_ptr();
@@ -207,10 +212,11 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_l
         return true;
     }
     let old_capacity = vec.capacity();
+    let target_capacity = amortized_target_capacity(old_capacity, required_len);
     let Some(old_bytes) = vec_buffer_bytes::<T>(old_capacity) else {
         return false;
     };
-    let Some(target_bytes) = vec_buffer_bytes::<T>(required_len) else {
+    let Some(target_bytes) = vec_buffer_bytes::<T>(target_capacity) else {
         return false;
     };
     if !charge_grow(target_bytes) {
@@ -218,7 +224,7 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_l
     }
 
     let mut replacement = Vec::new();
-    if replacement.try_reserve_exact(required_len).is_err() {
+    if replacement.try_reserve_exact(target_capacity).is_err() {
         release_grow(target_bytes);
         return false;
     }
@@ -341,6 +347,27 @@ mod tests {
             assert_eq!((*ptr).capacity(), 4);
             assert_eq!((*ptr).as_ptr(), original_data);
             assert_eq!((*ptr).as_slice(), &[1, 2, 3, 4]);
+            drop(tracked_vec_box_from_raw(ptr));
+        }
+    }
+
+    #[test]
+    fn tracked_vec_growth_is_amortized() {
+        set_tracker(Box::new(UnlimitedTracker));
+        let _reset = TrackerReset;
+        let ptr = tracked_vec_box_with_capacity::<u64>(4).expect("tracked vec");
+        unsafe {
+            (*ptr).extend_from_slice(&[1, 2, 3, 4]);
+            let original_data = (*ptr).as_ptr();
+            assert!(tracked_vec_reserve_for_len(ptr, 5));
+            assert_eq!((*ptr).capacity(), 8);
+            assert_eq!((*ptr).as_slice(), &[1, 2, 3, 4]);
+
+            let grown_data = (*ptr).as_ptr();
+            assert_ne!(grown_data, original_data);
+            assert!(tracked_vec_reserve_for_len(ptr, 6));
+            assert_eq!((*ptr).capacity(), 8);
+            assert_eq!((*ptr).as_ptr(), grown_data);
             drop(tracked_vec_box_from_raw(ptr));
         }
     }

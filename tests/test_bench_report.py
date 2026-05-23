@@ -134,6 +134,7 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
     assert "Molt build/run failures: `bench_broken.py`." in updated_status
     assert "Comparator baseline coverage:" in updated_status
     assert "WASM run: 2026-04-03" in updated_status
+    assert "ok 1/1, failures: none." in updated_status
     assert (
         module.main(
             [
@@ -145,6 +146,71 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
         )
         == 0
     )
+
+
+def test_bench_report_uses_docs_manifest_by_default_when_available(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    module.ROOT = tmp_path
+    module.DEFAULT_MANIFEST_PATH = tmp_path / "bench/results/docs_manifest.json"
+    native_path = tmp_path / "bench/results/native.json"
+    wasm_path = tmp_path / "bench/results/wasm.json"
+    out_path = tmp_path / "docs/benchmarks/bench_summary.md"
+    status_doc = tmp_path / "docs/spec/STATUS.md"
+    status_doc.parent.mkdir(parents=True, exist_ok=True)
+    status_doc.write_text(
+        "\n".join(
+            [
+                "# STATUS",
+                "",
+                "<!-- GENERATED:bench-summary:start -->",
+                "stale",
+                "<!-- GENERATED:bench-summary:end -->",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _write_json(
+        native_path,
+        {
+            "created_at": "2026-04-03T12:00:00Z",
+            "system": {"platform": "macos-14", "machine": "arm64", "python": "3.12.9"},
+            "benchmarks": {
+                "bench_sum.py": {
+                    "molt_ok": True,
+                    "molt_time_s": 0.25,
+                    "cpython_time_s": 1.00,
+                    "molt_speedup": 4.0,
+                }
+            },
+        },
+    )
+    _write_json(
+        wasm_path,
+        {
+            "created_at": "2026-04-03T12:10:00Z",
+            "system": {"platform": "wasmtime", "machine": "wasm32", "python": "n/a"},
+            "benchmarks": {},
+        },
+    )
+    _write_manifest(
+        module.DEFAULT_MANIFEST_PATH,
+        {
+            "native": "bench/results/native.json",
+            "wasm": "bench/results/wasm.json",
+            "out": "docs/benchmarks/bench_summary.md",
+            "status_doc": "docs/spec/STATUS.md",
+        },
+    )
+
+    assert module.main(["--update-status-doc"]) == 0
+    assert "`bench/results/native.json`" in out_path.read_text(encoding="utf-8")
+    assert "Top speedups: `bench_sum.py` 4.00x." in status_doc.read_text(
+        encoding="utf-8"
+    )
+    assert module.main(["--check", "--update-status-doc"]) == 0
 
 
 def test_bench_report_requires_status_markers_when_updating_status_doc(
