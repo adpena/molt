@@ -1,0 +1,823 @@
+{
+  "benchmarks": {
+    "bench_async_await": {
+      "molt_wasm_build_s": 30.941045042010956,
+      "molt_wasm_failure": "Error: Unhandled Molt exception: AttributeError: 'NoneType' object has no attribute 'get'\n    at runMain (/Users/adpena/Projects/molt/wasm/run_wasm.js:5904:13)",
+      "molt_wasm_failure_class": "runner_error",
+      "molt_wasm_failure_returncode": 1,
+      "molt_wasm_function_import_count": 1436,
+      "molt_wasm_function_imports_per_kb": 0.078425,
+      "molt_wasm_import_count": 1438,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": false,
+      "molt_wasm_samples_s": [],
+      "molt_wasm_size_kb": 18310.408203125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": null
+    },
+    "bench_attr_access": {
+      "molt_wasm_build_s": 12.993919916974846,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.712187,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.42017045902321115
+      ],
+      "molt_wasm_size_kb": 1222.994140625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.42017045902321115
+    },
+    "bench_bytearray_find": {
+      "molt_wasm_build_s": 14.180441540956963,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715253,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.2635870419908315
+      ],
+      "molt_wasm_size_kb": 1217.7509765625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.2635870419908315
+    },
+    "bench_bytearray_replace": {
+      "molt_wasm_build_s": 14.16263033397263,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714959,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.3011030000052415
+      ],
+      "molt_wasm_size_kb": 1218.2509765625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.3011030000052415
+    },
+    "bench_bytes_find": {
+      "molt_wasm_build_s": 14.014846250007395,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.716141,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.12402020796434954
+      ],
+      "molt_wasm_size_kb": 1216.240234375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.12402020796434954
+    },
+    "bench_bytes_find_only": {
+      "molt_wasm_build_s": 14.10058983397903,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715357,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.20319558400660753
+      ],
+      "molt_wasm_size_kb": 1217.57421875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.20319558400660753
+    },
+    "bench_bytes_replace": {
+      "molt_wasm_build_s": 13.945248042000458,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715047,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.17236283398233354
+      ],
+      "molt_wasm_size_kb": 1218.1025390625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.17236283398233354
+    },
+    "bench_channel_throughput": {
+      "molt_wasm_build_s": 33.48664745799033,
+      "molt_wasm_failure": "Error: Unhandled Molt exception: AttributeError: 'NoneType' object has no attribute 'get'\n    at runMain (/Users/adpena/Projects/molt/wasm/run_wasm.js:5904:13)",
+      "molt_wasm_failure_class": "runner_error",
+      "molt_wasm_failure_returncode": 1,
+      "molt_wasm_function_import_count": 1587,
+      "molt_wasm_function_imports_per_kb": 0.074969,
+      "molt_wasm_import_count": 1589,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": false,
+      "molt_wasm_samples_s": [],
+      "molt_wasm_size_kb": 21168.80859375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": null
+    },
+    "bench_class_hierarchy": {
+      "molt_wasm_build_s": 14.123723749944475,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.707585,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        2.1596317079965957
+      ],
+      "molt_wasm_size_kb": 1230.947265625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 2.1596317079965957
+    },
+    "bench_counter_words": {
+      "molt_wasm_build_s": 18.095742458011955,
+      "molt_wasm_function_import_count": 1034,
+      "molt_wasm_function_imports_per_kb": 0.153702,
+      "molt_wasm_import_count": 1036,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.39094850001856685
+      ],
+      "molt_wasm_size_kb": 6727.314453125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.39094850001856685
+    },
+    "bench_csv_parse": {
+      "molt_wasm_build_s": 14.133407332992647,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.708874,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.3779282500036061
+      ],
+      "molt_wasm_size_kb": 1228.7099609375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.3779282500036061
+    },
+    "bench_csv_parse_wide": {
+      "molt_wasm_build_s": 14.4823242079583,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.70062,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.561080374987796
+      ],
+      "molt_wasm_size_kb": 1243.1845703125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.561080374987796
+    },
+    "bench_deeply_nested_loop": {
+      "molt_wasm_build_s": 13.36375441699056,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.713076,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.8011451659840532
+      ],
+      "molt_wasm_size_kb": 1221.46875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.8011451659840532
+    },
+    "bench_descriptor_property": {
+      "molt_wasm_build_s": 13.15322954102885,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.710897,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.4193074170034379
+      ],
+      "molt_wasm_size_kb": 1225.212890625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.4193074170034379
+    },
+    "bench_dict_comprehension": {
+      "molt_wasm_build_s": 14.032649333006702,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.71475,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.3963560829870403
+      ],
+      "molt_wasm_size_kb": 1218.6083984375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.3963560829870403
+    },
+    "bench_dict_ops": {
+      "molt_wasm_build_s": 13.738790083036292,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715512,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.1546132909716107
+      ],
+      "molt_wasm_size_kb": 1217.310546875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.1546132909716107
+    },
+    "bench_dict_views": {
+      "molt_wasm_build_s": 13.158134415978566,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714133,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.15580591600155458
+      ],
+      "molt_wasm_size_kb": 1219.6611328125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.15580591600155458
+    },
+    "bench_etl_orders": {
+      "molt_wasm_build_s": 17.352824833011255,
+      "molt_wasm_function_import_count": 985,
+      "molt_wasm_function_imports_per_kb": 0.171736,
+      "molt_wasm_import_count": 987,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        1.2119907919550315
+      ],
+      "molt_wasm_size_kb": 5735.55859375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 1.2119907919550315
+    },
+    "bench_exception_heavy": {
+      "molt_wasm_build_s": 13.999517749994993,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714857,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        3.195713374996558
+      ],
+      "molt_wasm_size_kb": 1218.42578125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 3.195713374996558
+    },
+    "bench_fib": {
+      "molt_wasm_build_s": 65.45654187502805,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715221,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        1.2172797500388697
+      ],
+      "molt_wasm_size_kb": 1217.8056640625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 1.2172797500388697
+    },
+    "bench_gc_pressure": {
+      "molt_wasm_build_s": 14.522823083971161,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715842,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        3.9386617919662967
+      ],
+      "molt_wasm_size_kb": 1216.7490234375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 3.9386617919662967
+    },
+    "bench_generator_iter": {
+      "molt_wasm_build_s": 16.621828874980565,
+      "molt_wasm_function_import_count": 947,
+      "molt_wasm_function_imports_per_kb": 0.189325,
+      "molt_wasm_import_count": 949,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.4047117920126766
+      ],
+      "molt_wasm_size_kb": 5001.9814453125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.4047117920126766
+    },
+    "bench_import_time": {
+      "molt_wasm_build_s": 16.491906915965956,
+      "molt_wasm_function_import_count": 926,
+      "molt_wasm_function_imports_per_kb": 0.309417,
+      "molt_wasm_import_count": 928,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.31219408300239593
+      ],
+      "molt_wasm_size_kb": 2992.7255859375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.31219408300239593
+    },
+    "bench_json_roundtrip": {
+      "molt_wasm_build_s": 64.5135197089985,
+      "molt_wasm_function_import_count": 882,
+      "molt_wasm_function_imports_per_kb": 0.643136,
+      "molt_wasm_import_count": 884,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.16979125002399087
+      ],
+      "molt_wasm_size_kb": 1371.4052734375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.16979125002399087
+    },
+    "bench_list_ops": {
+      "molt_wasm_build_s": 13.009753666992765,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715577,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.15659970801789314
+      ],
+      "molt_wasm_size_kb": 1217.2001953125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.15659970801789314
+    },
+    "bench_list_slice": {
+      "molt_wasm_build_s": 13.059705291991122,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715801,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.1604812500299886
+      ],
+      "molt_wasm_size_kb": 1216.8193359375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.1604812500299886
+    },
+    "bench_matrix_math": {
+      "molt_wasm_build_s": 14.132013165974058,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.713536,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.15916466602357104
+      ],
+      "molt_wasm_size_kb": 1220.681640625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.15916466602357104
+    },
+    "bench_max_list": {
+      "molt_wasm_build_s": 14.006708334025461,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715616,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.12865966703975573
+      ],
+      "molt_wasm_size_kb": 1217.1328125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.12865966703975573
+    },
+    "bench_memoryview_tobytes": {
+      "molt_wasm_build_s": 13.873876042023767,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.713847,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.220900124986656
+      ],
+      "molt_wasm_size_kb": 1220.1494140625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.220900124986656
+    },
+    "bench_min_list": {
+      "molt_wasm_build_s": 13.900725333951414,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715616,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.1291814160067588
+      ],
+      "molt_wasm_size_kb": 1217.1328125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.1291814160067588
+    },
+    "bench_parse_msgpack": {
+      "molt_wasm_build_s": 71.51120474998606,
+      "molt_wasm_function_import_count": 915,
+      "molt_wasm_function_imports_per_kb": 0.321535,
+      "molt_wasm_import_count": 917,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.21373020799364895
+      ],
+      "molt_wasm_size_kb": 2845.7255859375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.21373020799364895
+    },
+    "bench_procedural_gen": {
+      "molt_wasm_build_s": 14.882205708010588,
+      "molt_wasm_function_import_count": 917,
+      "molt_wasm_function_imports_per_kb": 0.663654,
+      "molt_wasm_import_count": 919,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.38496491697151214
+      ],
+      "molt_wasm_size_kb": 1381.7451171875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.38496491697151214
+    },
+    "bench_prod_list": {
+      "molt_wasm_build_s": 13.83201133296825,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715585,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.13619012502022088
+      ],
+      "molt_wasm_size_kb": 1217.1865234375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.13619012502022088
+    },
+    "bench_ptr_registry": {
+      "molt_wasm_build_s": 22.13247762498213,
+      "molt_wasm_failure": "Error: Unhandled Molt exception: AttributeError: object has no attribute\n    at runMain (/Users/adpena/Projects/molt/wasm/run_wasm.js:5904:13)",
+      "molt_wasm_failure_class": "runner_error",
+      "molt_wasm_failure_returncode": 1,
+      "molt_wasm_function_import_count": 1272,
+      "molt_wasm_function_imports_per_kb": 0.122126,
+      "molt_wasm_import_count": 1274,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": false,
+      "molt_wasm_samples_s": [],
+      "molt_wasm_size_kb": 10415.4892578125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": null
+    },
+    "bench_range_iter": {
+      "molt_wasm_build_s": 12.953293333994225,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715906,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.12584487500134856
+      ],
+      "molt_wasm_size_kb": 1216.640625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.12584487500134856
+    },
+    "bench_set_ops": {
+      "molt_wasm_build_s": 14.312921583943535,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714832,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.18918441602727398
+      ],
+      "molt_wasm_size_kb": 1218.46875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.18918441602727398
+    },
+    "bench_startup": {
+      "molt_wasm_build_s": 14.361724083020817,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.716803,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.13362870801938698
+      ],
+      "molt_wasm_size_kb": 1215.1171875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.13362870801938698
+    },
+    "bench_str_count": {
+      "molt_wasm_build_s": 14.326038124971092,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714354,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.3682697080075741
+      ],
+      "molt_wasm_size_kb": 1219.283203125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.3682697080075741
+    },
+    "bench_str_count_unicode": {
+      "molt_wasm_build_s": 14.173822042008396,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714287,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.2945454159635119
+      ],
+      "molt_wasm_size_kb": 1219.3974609375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.2945454159635119
+    },
+    "bench_str_count_unicode_warm": {
+      "molt_wasm_build_s": 14.02019566600211,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.713448,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.32491370796924457
+      ],
+      "molt_wasm_size_kb": 1220.83203125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.32491370796924457
+    },
+    "bench_str_endswith": {
+      "molt_wasm_build_s": 13.914561374986079,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714268,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.339258374995552
+      ],
+      "molt_wasm_size_kb": 1219.4306640625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.339258374995552
+    },
+    "bench_str_find": {
+      "molt_wasm_build_s": 13.898535916989204,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714126,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.364311083976645
+      ],
+      "molt_wasm_size_kb": 1219.671875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.364311083976645
+    },
+    "bench_str_find_unicode": {
+      "molt_wasm_build_s": 14.053028667054605,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.71403,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.22815899999113753
+      ],
+      "molt_wasm_size_kb": 1219.8359375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.22815899999113753
+    },
+    "bench_str_find_unicode_warm": {
+      "molt_wasm_build_s": 13.876020708004944,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.713452,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.2424647500156425
+      ],
+      "molt_wasm_size_kb": 1220.8251953125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.2424647500156425
+    },
+    "bench_str_join": {
+      "molt_wasm_build_s": 13.89247974997852,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.716518,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.1638020829996094
+      ],
+      "molt_wasm_size_kb": 1215.6015625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.1638020829996094
+    },
+    "bench_str_replace": {
+      "molt_wasm_build_s": 14.331900291959755,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714214,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.29360791703220457
+      ],
+      "molt_wasm_size_kb": 1219.5224609375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.29360791703220457
+    },
+    "bench_str_split": {
+      "molt_wasm_build_s": 13.693428583035711,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714296,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.16818741598399356
+      ],
+      "molt_wasm_size_kb": 1219.3828125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.16818741598399356
+    },
+    "bench_str_startswith": {
+      "molt_wasm_build_s": 13.932034125027712,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.71426,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.3688507500337437
+      ],
+      "molt_wasm_size_kb": 1219.4443359375,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.3688507500337437
+    },
+    "bench_struct": {
+      "molt_wasm_build_s": 13.86713695799699,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.712165,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        37.599707082961686
+      ],
+      "molt_wasm_size_kb": 1223.03125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 37.599707082961686
+    },
+    "bench_sum": {
+      "molt_wasm_build_s": 13.987774582987186,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715936,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.12621595803648233
+      ],
+      "molt_wasm_size_kb": 1216.5888671875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.12621595803648233
+    },
+    "bench_sum_list": {
+      "molt_wasm_build_s": 13.807909458002541,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.7156,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.13176637497963384
+      ],
+      "molt_wasm_size_kb": 1217.16015625,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.13176637497963384
+    },
+    "bench_sum_list_hints": {
+      "molt_wasm_build_s": 14.034362417005468,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.717951,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.15589520800858736
+      ],
+      "molt_wasm_size_kb": 1213.1748046875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.15589520800858736
+    },
+    "bench_try_except": {
+      "molt_wasm_build_s": 13.221889875014313,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715511,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.24109216703800485
+      ],
+      "molt_wasm_size_kb": 1217.3125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.24109216703800485
+    },
+    "bench_tuple_index": {
+      "molt_wasm_build_s": 12.932744625024498,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.714955,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.549994874978438
+      ],
+      "molt_wasm_size_kb": 1218.2578125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.549994874978438
+    },
+    "bench_tuple_pack": {
+      "molt_wasm_build_s": 13.15196779096732,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715352,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.617845207976643
+      ],
+      "molt_wasm_size_kb": 1217.5830078125,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.617845207976643
+    },
+    "bench_tuple_slice": {
+      "molt_wasm_build_s": 13.093100040976424,
+      "molt_wasm_function_import_count": 871,
+      "molt_wasm_function_imports_per_kb": 0.715284,
+      "molt_wasm_import_count": 873,
+      "molt_wasm_linked": false,
+      "molt_wasm_ok": true,
+      "molt_wasm_samples_s": [
+        0.16308687499258667
+      ],
+      "molt_wasm_size_kb": 1217.6982421875,
+      "molt_wasm_table_import_count": 1,
+      "molt_wasm_time_s": 0.16308687499258667
+    }
+  },
+  "control_runner": null,
+  "created_at": "2026-05-23T00:46:16.865341+00:00",
+  "git_rev": "8cb430a3feedce2023c0c857371b5b73525dc98f",
+  "memory_guard": {
+    "child_rlimit_gb": 30.738246770874024,
+    "dynamic_child_rlimit": true,
+    "dynamic_global_rss": true,
+    "dynamic_process_rss": true,
+    "dynamic_total_rss": true,
+    "enabled": true,
+    "max_global_rss_gb": 56.92267920532226,
+    "max_process_rss_gb": 30.738246770874024,
+    "max_total_rss_gb": 34.15360752319336,
+    "poll_interval": 0.1
+  },
+  "node_max_old_space_mb": null,
+  "runner": "node",
+  "samples": 1,
+  "schema_version": 1,
+  "super_run": false,
+  "system": {
+    "cpu_count": 18,
+    "load_avg": [
+      11.31298828125,
+      11.22021484375,
+      9.830078125
+    ],
+    "machine": "arm64",
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "python": "3.12.13"
+  },
+  "warmup": 0
+}

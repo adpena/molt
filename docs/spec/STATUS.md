@@ -183,13 +183,13 @@ It is current-state only. For forward-looking priorities, use
 ## Performance Summary
 
 <!-- GENERATED:bench-summary:start -->
-Latest run: 2026-05-19 (macOS arm64, CPython 3.12.13).
-Top speedups: `bench_sum.py` 22.72x, `bench_bytes_find.py` 20.20x, `bench_struct.py` 9.37x, `bench_bytes_find_only.py` 7.01x, `bench_matrix_math.py` 6.03x.
-Regressions: `bench_exception_heavy.py` 0.06x, `bench_json_roundtrip.py` 0.15x, `bench_counter_words.py` 0.31x, `bench_etl_orders.py` 0.46x, `bench_csv_parse_wide.py` 0.61x, `bench_csv_parse.py` 0.74x, `bench_generator_iter.py` 0.83x, `bench_tuple_pack.py` 0.94x.
-Slowest: `bench_exception_heavy.py` 0.06x, `bench_json_roundtrip.py` 0.15x, `bench_counter_words.py` 0.31x.
-Molt build/run failures: `bench_async_await.py`, `bench_channel_throughput.py`, `bench_dict_comprehension.py`, `bench_import_time.py`, `bench_parse_msgpack.py`, `bench_procedural_gen.py`, `bench_ptr_registry.py`.
+Latest run: 2026-05-23 (macOS arm64, CPython 3.12.13).
+Top speedups: `bench_class_hierarchy.py` 6.94x, `bench_bytes_find_only.py` 6.27x, `bench_sum.py` 5.30x, `bench_bytes_find.py` 5.00x, `bench_gc_pressure.py` 1.32x.
+Regressions: `bench_struct.py` 0.04x, `bench_exception_heavy.py` 0.55x, `bench_csv_parse_wide.py` 0.56x, `bench_etl_orders.py` 0.64x, `bench_parse_msgpack.py` 0.86x, `bench_csv_parse.py` 0.88x, `bench_tuple_slice.py` 0.93x, `bench_str_find.py` 0.95x, `bench_set_ops.py` 0.96x, `bench_try_except.py` 0.96x, `bench_descriptor_property.py` 0.98x, `bench_str_split.py` 0.98x, `bench_str_count_unicode.py` 0.98x, `bench_async_await.py` 0.99x, `bench_startup.py` 0.99x, `bench_bytearray_replace.py` 0.99x, `bench_str_startswith.py` 1.00x, `bench_bytes_replace.py` 1.00x.
+Slowest: `bench_struct.py` 0.04x, `bench_exception_heavy.py` 0.55x, `bench_csv_parse_wide.py` 0.56x.
+Molt build/run failures: none.
 Comparator baseline coverage: PyPy baseline unavailable; Codon baseline unavailable; Nuitka baseline unavailable; Pyodide baseline unavailable.
-WASM run: 2026-03-28 (macOS arm64, CPython 3.12.13). Slowest: none; largest sizes: `bench_sum.py` 7182.5 KB; WASM vs CPython slowest ratios: none.
+WASM run: 2026-05-23 (macOS arm64, CPython 3.12.13); ok 53/56, failures: `bench_async_await.py`, `bench_channel_throughput.py`, `bench_ptr_registry.py`. Slowest: `bench_struct.py` 37.60s, `bench_gc_pressure.py` 3.94s, `bench_exception_heavy.py` 3.20s; largest sizes: `bench_channel_throughput.py` 21168.8 KB, `bench_async_await.py` 18310.4 KB, `bench_ptr_registry.py` 10415.5 KB; WASM vs CPython slowest ratios: `bench_struct.py` 376.52x, `bench_exception_heavy.py` 25.46x, `bench_deeply_nested_loop.py` 22.66x.
 <!-- GENERATED:bench-summary:end -->
 
 Focused post-summary recheck: `bench_ptr_registry.py` now builds and runs on the
