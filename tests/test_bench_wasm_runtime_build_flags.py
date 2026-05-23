@@ -57,6 +57,11 @@ def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
     assert output.read_bytes().startswith(b"\x00asm")
     cmd, env = captured[0]
     assert cmd[:3] == ["cargo", "build", "--release"]
+    assert "--no-default-features" in cmd
+    features = set(cmd[cmd.index("--features") + 1].split(","))
+    assert {"molt_gpu_primitives", "stdlib_micro"} <= features
+    assert "stdlib_full" not in features
+    assert "sqlite" not in features
     # Non-relocatable builds use standard import/export link flags
     rustflags = env.get("RUSTFLAGS", "")
     assert "--import-memory" in rustflags
@@ -99,9 +104,57 @@ def test_build_runtime_wasm_honors_baseline_mode_and_legacy_shared_link_flags(
     )
     cmd, env = captured[0]
     assert cmd[:3] == ["cargo", "build", "--release"]
+    assert "--no-default-features" in cmd
     rustflags = env.get("RUSTFLAGS", "")
     assert "--import-memory" in rustflags
     assert "--growable-table" in rustflags
+
+
+def test_build_runtime_wasm_full_profile_uses_wasm_safe_full_feature_set(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    target_root = tmp_path / "target"
+    monkeypatch.setattr(bench_wasm, "_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(bench_wasm, "_repo_root", lambda: tmp_path)
+    monkeypatch.setenv("MOLT_STDLIB_PROFILE", "full")
+
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def _fake_run_cmd(  # type: ignore[no-untyped-def]
+        cmd: list[str],
+        *,
+        env: dict[str, str],
+        capture: bool,
+        tty: bool,
+        log,
+        timeout_s: float | None = None,
+        limits=None,
+    ):
+        del capture, tty, log, timeout_s, limits
+        captured.append((list(cmd), dict(env)))
+        _fake_runtime_build(cmd, env)
+        return bench_wasm._RunResult(returncode=0)
+
+    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
+    assert bench_wasm.build_runtime_wasm(
+        reloc=False,
+        output=tmp_path / "runtime_full.wasm",
+        tty=False,
+        log=None,
+    )
+    cmd, _env = captured[0]
+    assert "--no-default-features" in cmd
+    features = set(cmd[cmd.index("--features") + 1].split(","))
+    assert {
+        "molt_gpu_primitives",
+        "stdlib_crypto",
+        "stdlib_compression",
+        "stdlib_logging_ext",
+        "builtin_contextvars",
+    } <= features
+    assert "stdlib_full" not in features
+    assert "sqlite" not in features
 
 
 def test_failed_wasm_run_has_null_time_and_samples(monkeypatch, tmp_path: Path) -> None:

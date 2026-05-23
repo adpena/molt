@@ -13,6 +13,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = Path(__file__).resolve().parent
+DEFAULT_MANIFEST_PATH = ROOT / "bench" / "results" / "docs_manifest.json"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
@@ -206,6 +207,17 @@ def _molt_failure_summary(native_bench: dict[str, Any]) -> str:
     return _format_name_list(failed, limit=8)
 
 
+def _wasm_failure_summary(wasm_bench: dict[str, Any]) -> str:
+    failed = sorted(
+        _display_name(name)
+        for name, entry in wasm_bench.items()
+        if entry.get("molt_wasm_ok") is False
+    )
+    if not failed:
+        return "none"
+    return _format_name_list(failed, limit=8)
+
+
 def _status_summary(
     native: dict[str, Any],
     wasm: dict[str, Any],
@@ -256,6 +268,7 @@ def _status_summary(
 
     native_system = _summarize_system(native.get("system"))
     wasm_system = _summarize_system(wasm.get("system"))
+    wasm_ok = sum(1 for entry in wasm_bench.values() if entry.get("molt_wasm_ok"))
 
     summary_lines = [
         f"Latest run: {native_date} ({native_system}).",
@@ -265,7 +278,8 @@ def _status_summary(
         f"Molt build/run failures: {_molt_failure_summary(native_bench)}.",
         f"Comparator baseline coverage: {_baseline_summary(native_bench)}.",
         (
-            f"WASM run: {wasm_date} ({wasm_system}). "
+            f"WASM run: {wasm_date} ({wasm_system}); "
+            f"ok {wasm_ok}/{len(wasm_bench)}, failures: {_wasm_failure_summary(wasm_bench)}. "
             f"Slowest: {_format_time_list(wasm_times, 3)}; "
             f"largest sizes: {_format_size_list(wasm_sizes, 3)}; "
             f"WASM vs CPython slowest ratios: {_format_ratio_list(wasm_ratios, 3)}."
@@ -547,6 +561,12 @@ def _load_manifest(path: Path) -> dict[str, Path]:
     return resolved
 
 
+def _default_manifest() -> dict[str, Path]:
+    if DEFAULT_MANIFEST_PATH.exists():
+        return _load_manifest(DEFAULT_MANIFEST_PATH)
+    return {}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate a combined native+WASM benchmark report."
@@ -592,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    manifest = _load_manifest(args.manifest) if args.manifest else {}
+    manifest = _load_manifest(args.manifest) if args.manifest else _default_manifest()
     native_path = (
         args.native or manifest.get("native") or Path("bench/results/bench.json")
     )

@@ -8,8 +8,10 @@ description = "HTTP client/server, urllib, socketserver, cookies, ctypes, and lo
 
 [features]
 default = ["tls"]
-# `tls` adds rustls + webpki-roots so urlopen / HTTPSConnection can negotiate TLS.
-# Disabling this feature drops all rustls code; HTTPS requests then raise OSError.
+# `tls` adds rustls + webpki-roots on native targets so urlopen /
+# HTTPSConnection can negotiate TLS. WASM builds compile the HTTP surface but
+# raise a clear unsupported-transport error for HTTPS instead of linking a
+# native socket TLS stack.
 tls = ["dep:rustls", "dep:webpki-roots"]
 
 [dependencies]

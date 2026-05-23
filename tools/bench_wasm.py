@@ -158,6 +158,20 @@ _LAST_BUILD_FAILURE_DETAIL: str | None = None
 _NODE_BIN_CACHE: str | None = None
 _MIN_NODE_MAJOR = 18
 _RUNTIME_SOURCE_MTIME: float | None = None
+_WASM_RUNTIME_FULL_FEATURES: tuple[str, ...] = (
+    "stdlib_crypto",
+    "stdlib_compression",
+    "stdlib_serialization",
+    "stdlib_archive",
+    "stdlib_fs_extra",
+    "stdlib_logging",
+    "stdlib_logging_ext",
+    "builtin_set",
+    "builtin_complex",
+    "builtin_memoryview",
+    "builtin_contextvars",
+    "builtin_fcntl",
+)
 
 
 @dataclass(frozen=True)
@@ -734,6 +748,31 @@ def _append_rustflags(env: dict[str, str], flags: str) -> None:
     env["RUSTFLAGS"] = joined
 
 
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _runtime_wasm_feature_args() -> list[str]:
+    profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro").strip() or "micro"
+    base_features = ["molt_gpu_primitives"]
+    if profile == "micro":
+        features = _dedupe_preserve_order(base_features + ["stdlib_micro"])
+    elif profile == "full":
+        features = _dedupe_preserve_order(
+            base_features + list(_WASM_RUNTIME_FULL_FEATURES)
+        )
+    else:
+        raise RuntimeError("MOLT_STDLIB_PROFILE must be 'micro' or 'full'")
+    return ["--no-default-features", "--features", ",".join(features)]
+
+
 def build_runtime_wasm(
     *,
     reloc: bool,
@@ -771,6 +810,7 @@ def build_runtime_wasm(
         "molt-runtime",
         "--target",
         "wasm32-wasip1",
+        *_runtime_wasm_feature_args(),
     ]
     res = _run_cmd(
         build_cmd,

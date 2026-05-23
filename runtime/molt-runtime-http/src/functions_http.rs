@@ -3575,16 +3575,16 @@ fn urllib_http_send_request(
             stream.set_write_timeout(Some(timeout))?;
         }
         if let Some(server_name) = req.tls_server_name.as_deref() {
-            #[cfg(feature = "tls")]
+            #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
             {
                 urllib_https_send_over_tls(stream, server_name, &request, &mut raw)?;
             }
-            #[cfg(not(feature = "tls"))]
+            #[cfg(not(all(feature = "tls", not(target_arch = "wasm32"))))]
             {
                 let _ = (stream, server_name);
                 return Err(std::io::Error::new(
                     ErrorKind::Unsupported,
-                    "https requires the molt-runtime-http `tls` feature (rustls)",
+                    "https requires native rustls TLS support; this target has no TLS transport",
                 ));
             }
         } else {
@@ -3610,7 +3610,7 @@ fn urllib_http_send_request(
 ///
 /// Uses `webpki-roots` for trust anchors and the supplied `server_name` for SNI
 /// and certificate hostname verification (default-secure rustls config).
-#[cfg(feature = "tls")]
+#[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
 fn urllib_https_send_over_tls(
     tcp: TcpStream,
     server_name: &str,
