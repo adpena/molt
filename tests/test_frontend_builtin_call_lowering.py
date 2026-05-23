@@ -908,10 +908,36 @@ def test_dotted_import_alias_uses_runtime_module_import_when_parent_allowlisted(
     assert "os.path" in targets
 
 
-def test_local_user_class_ctor_lowers_via_call_bind() -> None:
-    ir = compile_to_tir("class A:\n    pass\n\nA()\n")
+def test_stable_user_class_ctor_lowers_to_structural_allocation() -> None:
+    ir = compile_to_tir(
+        "class Point:\n"
+        "    x: int\n"
+        "    y: int\n"
+        "    def __init__(self, x: int = 0, y: int = 0) -> None:\n"
+        "        self.x = x\n"
+        "        self.y = y\n"
+        "\n"
+        "def make(i: int) -> int:\n"
+        "    p = Point(0, 0)\n"
+        "    p.x = i\n"
+        "    p.y = i + 1\n"
+        "    return i\n"
+    )
+    make_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____make"
+    )
+
+    assert any(op.get("kind") == "object_new_bound" for op in make_ops)
+    assert any(op.get("kind") == "store_init" for op in make_ops)
+    assert any(op.get("kind") == "store" for op in make_ops)
+    assert all(op.get("kind") != "call_bind" for op in make_ops)
+    assert all(op.get("kind") != "callargs_new" for op in make_ops)
+
+
+def test_unstable_globals_user_class_ctor_lowers_via_call_bind() -> None:
+    ir = compile_to_tir("globals()\nclass A:\n    pass\n\ndef make():\n    return A()\n")
     main_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____make"
     )
     const_str = {
         op["out"]: op["s_value"]
@@ -931,12 +957,13 @@ def test_local_user_class_ctor_lowers_via_call_bind() -> None:
         and len(op.get("args") or []) >= 1
         and op["args"][0] in class_vars
         for op in main_ops
-    ), "expected local class constructor to lower via call_bind on the class object"
+    ), "expected globals-escaped class constructor to lower via call_bind on the class object"
     assert all(
         op.get("kind")
         not in {"alloc_class", "alloc_class_static", "alloc_class_trusted"}
         for op in main_ops
-    ), "local class constructor should not lower via synthetic object allocation"
+    ), "globals-escaped class constructor should not lower via synthetic object allocation"
+    assert all(op.get("kind") != "object_new_bound" for op in main_ops)
 
 
 def test_function_param_types_cover_kwonly_and_varkw_slots() -> None:

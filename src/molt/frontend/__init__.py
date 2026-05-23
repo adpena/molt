@@ -1219,6 +1219,7 @@ class ClassInfo(TypedDict, total=False):
     needs_classcell: bool
     custom_metaclass: bool
     class_value_name: str
+    constructor_fold_safe: bool
     decorated: bool
 
 
@@ -4459,6 +4460,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if class_name in self.mutated_classes:
             return False
         return True
+
+    def _class_constructor_fold_safe(
+        self, class_name: str, class_info: ClassInfo
+    ) -> bool:
+        if class_info.get("module") != self.module_name:
+            return False
+        if class_name not in self.stable_module_classes:
+            return False
+        if self.module_globals_dict_escaped:
+            return False
+        if class_name in self.module_global_mutations:
+            return False
+        if (
+            class_info.get("dynamic")
+            or class_info.get("dataclass")
+            or class_info.get("custom_metaclass")
+            or class_info.get("decorated")
+        ):
+            return False
+        return self._class_layout_stable(class_name)
 
     def _builtin_min_layout(self, mro_names: list[str]) -> int:
         min_size = 0
@@ -17528,8 +17549,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         ):
             class_info["class_value_name"] = class_val.name
+            if self._class_constructor_fold_safe(node.name, class_info):
+                class_info["constructor_fold_safe"] = True
+            else:
+                class_info.pop("constructor_fold_safe", None)
         else:
             class_info.pop("class_value_name", None)
+            class_info.pop("constructor_fold_safe", None)
 
         self.class_annotation_items = prev_class_annotations
         self.class_annotation_exec_map = prev_class_exec_map
@@ -21622,7 +21648,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and not new_returns_any
                     and not class_info.get("dynamic")
                     and not class_info.get("dataclass")
-                    and not class_info.get("metaclass")
+                    and not class_info.get("custom_metaclass")
                     and not node.keywords
                     and all(not isinstance(a, ast.Starred) for a in node.args)
                 ):
