@@ -328,7 +328,7 @@ gate bundle (no exceptions):
     `tools/throughput_matrix.py`
 - correctness evidence:
   - differential parity run with `MOLT_DIFF_MEASURE_RSS=1`
-  - memory cap enforcement (`MOLT_DIFF_RLIMIT_GB=10` unless explicitly tuned)
+  - default adaptive process/tree/global RSS guard plus adaptive child rlimit
 - lowering evidence:
   - `python3 tools/check_stdlib_intrinsics.py`
   - `python3 tools/check_core_lane_lowering.py`
@@ -435,7 +435,9 @@ uv run --python 3.12 python3 tools/throughput_matrix.py \
   counts, violations, pass/fail).
 - Use `--fail-on-gate` to return exit code `2` when `gate_status.passed=false`.
 - Default output root uses `MOLT_EXT_ROOT` when set, otherwise canonical repo-local roots.
-- Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and enforce `MOLT_DIFF_RLIMIT_GB=10`.
+- Diff matrix runs always set `MOLT_DIFF_MEASURE_RSS=1` and inherit the adaptive
+  child rlimit from `tests/molt_diff.py`; pass `--diff-child-rlimit-gb <n>`
+  only for a deliberate narrower-cap investigation.
 - Prefer `--shared-target-dir` on a hard-link-friendly filesystem (APFS/ext4). If Cargo reports incremental hard-link fallback, move the target dir off filesystems like exFAT.
 
 ### Compile Progress Tracker

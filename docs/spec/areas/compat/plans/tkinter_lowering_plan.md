@@ -246,7 +246,7 @@ export MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/tmp/diff
 export MOLT_DIFF_TMPDIR=$MOLT_EXT_ROOT/tmp
 export TMPDIR=$MOLT_EXT_ROOT/tmp
 export MOLT_DIFF_MEASURE_RSS=1
-export MOLT_DIFF_RLIMIT_GB=10
+# Leave MOLT_DIFF_CHILD_RLIMIT_GB unset to inherit the adaptive child rlimit.
 ```
 
 ## Phased Rollout

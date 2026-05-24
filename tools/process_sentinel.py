@@ -5,6 +5,7 @@ import argparse
 from collections.abc import Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -359,18 +360,82 @@ def violation_payload(violation: SentinelViolation) -> dict[str, object]:
     return _violation_payload(violation)
 
 
-def _format_violation(violation: SentinelViolation) -> str:
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _elapsed_text(elapsed_s: float | None) -> str:
+    return "unknown" if elapsed_s is None else f"{elapsed_s:.2f}s"
+
+
+def _next_action_for_violation(violation: SentinelViolation) -> str:
+    if violation.reason in {"process_rss", "group_rss", "global_rss"}:
+        return (
+            "inspect allocations and guard telemetry; reduce parallelism only as "
+            "containment, or raise the explicit RSS budget if the workload is "
+            "known-good and policy allows it"
+        )
+    if violation.reason in {"stale_orphan", "stale_pytest_orphan"}:
+        return (
+            "inspect the recorded command and parent lifecycle; make the owning "
+            "harness shut down children explicitly or run it inside a suite-level "
+            "repo sentinel"
+        )
+    if violation.reason == "kill_all":
+        return (
+            "rerun the interrupted build/test/bench command from a clean process "
+            "state after checking logs for the terminated group"
+        )
+    return "inspect the process command, logs, and guard budgets before rerunning"
+
+
+def _incident_payload(
+    violation: SentinelViolation,
+    *,
+    incident_at: str,
+    elapsed_s: float | None,
+    dry_run: bool,
+    grace_sec: float,
+) -> dict[str, object]:
+    timestamp_key = "observed_at" if dry_run else "killed_at"
+    return {
+        "event": "process_sentinel_violation",
+        "action": "dry_run" if dry_run else "terminate",
+        timestamp_key: incident_at,
+        "elapsed_s": elapsed_s,
+        "grace_sec": grace_sec,
+        "next_action": _next_action_for_violation(violation),
+        "violation": _violation_payload(violation),
+    }
+
+
+def _format_violation(
+    violation: SentinelViolation,
+    *,
+    incident_at: str,
+    elapsed_s: float | None,
+    dry_run: bool,
+    grace_sec: float,
+) -> str:
     peak = "-"
     if violation.peak_rss_gb is not None:
         peak = f"{violation.peak_rss_gb:.2f}GB"
-    return (
+    action = "dry_run" if dry_run else "terminate"
+    timestamp_label = "observed_at" if dry_run else "killed_at"
+    lines = [
         "[PROCESS-SENTINEL] "
+        f"action={action} "
         f"{violation.reason} pgid={violation.pgid} "
         f"total={violation.total_rss_gb:.2f}GB peak={peak} "
         f"age={violation.oldest_elapsed_sec if violation.oldest_elapsed_sec is not None else '-'}s "
         f"orphaned={violation.orphaned} "
-        f"pids={list(violation.pids)} command={violation.command}"
-    )
+        f"pids={list(violation.pids)} {timestamp_label}={incident_at} "
+        f"elapsed={_elapsed_text(elapsed_s)} grace={grace_sec:.2f}s "
+        f"command={violation.command}",
+        "[PROCESS-SENTINEL] next action: "
+        f"{_next_action_for_violation(violation)}",
+    ]
+    return "\n".join(lines)
 
 
 def emit_violations(
@@ -378,14 +443,37 @@ def emit_violations(
     *,
     json_mode: bool,
     stream,
+    incident_at: str,
+    elapsed_s: float | None,
+    dry_run: bool,
+    grace_sec: float,
 ) -> None:
     for violation in violations:
         if json_mode:
             print(
-                json.dumps(_violation_payload(violation), sort_keys=True), file=stream
+                json.dumps(
+                    _incident_payload(
+                        violation,
+                        incident_at=incident_at,
+                        elapsed_s=elapsed_s,
+                        dry_run=dry_run,
+                        grace_sec=grace_sec,
+                    ),
+                    sort_keys=True,
+                ),
+                file=stream,
             )
         else:
-            print(_format_violation(violation), file=stream)
+            print(
+                _format_violation(
+                    violation,
+                    incident_at=incident_at,
+                    elapsed_s=elapsed_s,
+                    dry_run=dry_run,
+                    grace_sec=grace_sec,
+                ),
+                file=stream,
+            )
     with contextlib.suppress(Exception):
         stream.flush()
 
@@ -631,8 +719,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             stale_orphan_sec=args.stale_orphan_sec,
             stale_pytest_sec=args.stale_pytest_sec,
         )
-        emit_violations(violations, json_mode=args.json, stream=stream)
         now = time.monotonic()
+        emit_violations(
+            violations,
+            json_mode=args.json,
+            stream=stream,
+            incident_at=_utc_timestamp(),
+            elapsed_s=now - started,
+            dry_run=args.dry_run,
+            grace_sec=args.grace_sec,
+        )
         if not args.dry_run:
             for violation in violations:
                 terminate_group(violation.pgid, grace=args.grace_sec)
