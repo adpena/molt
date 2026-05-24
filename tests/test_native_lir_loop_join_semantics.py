@@ -115,6 +115,32 @@ def test_native_loop_join_semantics_match_cpython(profile: str) -> None:
     assert _compile_and_run(source, profile) == expected
 
 
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_counted_store_load_loop_exit_carrier_matches_cpython(
+    profile: str,
+) -> None:
+    source = textwrap.dedent(
+        """
+        def f():
+            i = 0
+            while i < 32:
+                i = i + 1
+            print(i)
+
+        f()
+        """
+    )
+    expected = run_native_test_process(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile) == expected
+
+
 @pytest.mark.parametrize(
     ("profile", "source"),
     [

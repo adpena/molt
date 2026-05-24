@@ -44,6 +44,56 @@ pub(crate) struct ContainerStorageFact {
     pub(crate) elem_ty: TirType,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct I64Interval {
+    min: i64,
+    max: i64,
+}
+
+impl I64Interval {
+    fn singleton(value: i64) -> Self {
+        Self {
+            min: value,
+            max: value,
+        }
+    }
+
+    fn from_i128_bounds(min: i128, max: i128) -> Option<Self> {
+        if min > max || min < i64::MIN as i128 || max > i64::MAX as i128 {
+            return None;
+        }
+        Some(Self {
+            min: min as i64,
+            max: max as i64,
+        })
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+
+    fn checked_add(self, other: Self) -> Option<Self> {
+        Self::from_i128_bounds(
+            self.min as i128 + other.min as i128,
+            self.max as i128 + other.max as i128,
+        )
+    }
+
+    fn checked_sub(self, other: Self) -> Option<Self> {
+        Self::from_i128_bounds(
+            self.min as i128 - other.max as i128,
+            self.max as i128 - other.min as i128,
+        )
+    }
+
+    fn singleton_value(self) -> Option<i64> {
+        (self.min == self.max).then_some(self.min)
+    }
+}
+
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ScalarRepresentationFact {
@@ -780,6 +830,7 @@ impl ScalarRepresentationPlan {
         bool_like: &BTreeSet<String>,
         float_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
+        let bounded_i64_names = compute_i64_interval_facts(func_ir);
         let int_unsafe_outputs: BTreeSet<String> = func_ir
             .ops
             .iter()
@@ -808,18 +859,30 @@ impl ScalarRepresentationPlan {
                         | "identity_alias"
                         | "store_var"
                 );
-                (!is_safe_int_op && int_like.contains(out)).then(|| out.clone())
+                let range_safe_arithmetic = bounded_i64_names.contains_key(out)
+                    && matches!(
+                        op.kind.as_str(),
+                        "add" | "inplace_add" | "sub" | "inplace_sub"
+                    );
+                (!is_safe_int_op && !range_safe_arithmetic && int_like.contains(out))
+                    .then(|| out.clone())
             })
             .collect();
-        let vars_with_non_int_defs = self.vars_with_non_int_defs(func_ir, int_like, bool_like);
+        let bounded_i64_name_set: BTreeSet<String> = bounded_i64_names.keys().cloned().collect();
+        let vars_with_non_int_defs =
+            self.vars_with_non_int_defs(func_ir, int_like, bool_like, &bounded_i64_name_set);
         let passes_filter = |name: &str| {
-            int_like.contains(name)
+            (int_like.contains(name) || bounded_i64_names.contains_key(name))
                 && !param_name_set.contains(name)
                 && !int_unsafe_outputs.contains(name)
                 && !vars_with_non_int_defs.contains(name)
                 && !float_like.contains(name)
         };
-        let mut candidates = BTreeSet::new();
+        let mut candidates: BTreeSet<String> =
+            bounded_store_load_loop_seed_names(func_ir, &bounded_i64_names)
+                .into_iter()
+                .filter(|name| passes_filter(name))
+                .collect();
         let mut changed = true;
         while changed {
             changed = false;
@@ -838,7 +901,7 @@ impl ScalarRepresentationPlan {
                 if candidates.contains(out) || !passes_filter(out) {
                     continue;
                 }
-                if op_produces_raw_i64_for_int_primary(op, &candidates)
+                if op_produces_raw_i64_for_int_primary(op, &candidates, &bounded_i64_names)
                     && candidates.insert(out.clone())
                 {
                     changed = true;
@@ -853,6 +916,7 @@ impl ScalarRepresentationPlan {
         func_ir: &FunctionIR,
         int_like: &BTreeSet<String>,
         bool_like: &BTreeSet<String>,
+        extra_int_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
         let mut non_int = BTreeSet::new();
         for op in &func_ir.ops {
@@ -862,13 +926,15 @@ impl ScalarRepresentationPlan {
                 if let (Some(t), Some(s)) = (target, source)
                     && !int_like.contains(s)
                     && !bool_like.contains(s)
+                    && !extra_int_like.contains(s)
                 {
                     non_int.insert(t.clone());
                 }
             }
             if let Some(out) = op.out.as_ref() {
                 let lane = self.infer_scalar_lane(op);
-                let proven_int = matches!(lane, Some(ScalarKind::Int) | Some(ScalarKind::Bool));
+                let proven_int = matches!(lane, Some(ScalarKind::Int) | Some(ScalarKind::Bool))
+                    || extra_int_like.contains(out);
                 if !proven_int && int_like.contains(out) {
                     non_int.insert(out.clone());
                 }
@@ -1387,7 +1453,11 @@ fn tir_op_original_kind(op: &TirOp) -> Option<&str> {
     }
 }
 
-fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>) -> bool {
+fn op_produces_raw_i64_for_int_primary(
+    op: &OpIR,
+    candidates: &BTreeSet<String>,
+    bounded_i64_names: &BTreeMap<String, I64Interval>,
+) -> bool {
     let first_source = || {
         op.var.as_deref().or_else(|| {
             op.args
@@ -1406,8 +1476,647 @@ fn op_produces_raw_i64_for_int_primary(op: &OpIR, candidates: &BTreeSet<String>)
             .args
             .as_ref()
             .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
+        "add" | "inplace_add" | "sub" | "inplace_sub" => {
+            op.out
+                .as_deref()
+                .is_some_and(|out| bounded_i64_names.contains_key(out))
+                && op.args.as_ref().is_some_and(|args| {
+                    args.len() >= 2 && args.iter().all(|arg| candidates.contains(arg))
+                })
+        }
         _ => false,
     }
+}
+
+fn compute_i64_interval_facts(func_ir: &FunctionIR) -> BTreeMap<String, I64Interval> {
+    let mut intervals = BTreeMap::new();
+    let loop_backedge_updates = loop_backedge_update_names(func_ir);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for op in &func_ir.ops {
+            if let Some(out) = op.out.as_deref()
+                && let Some(interval) =
+                    interval_for_simple_op(op, &intervals, &loop_backedge_updates)
+            {
+                changed |= insert_interval(&mut intervals, out, interval);
+            }
+        }
+        changed |= propagate_store_target_intervals(func_ir, &mut intervals);
+        changed |= propagate_counted_loop_intervals(func_ir, &mut intervals);
+    }
+    intervals
+}
+
+fn insert_interval(
+    intervals: &mut BTreeMap<String, I64Interval>,
+    name: &str,
+    interval: I64Interval,
+) -> bool {
+    match intervals.get(name).copied() {
+        Some(existing) => {
+            let joined = existing.union(interval);
+            if joined == existing {
+                false
+            } else {
+                intervals.insert(name.to_string(), joined);
+                true
+            }
+        }
+        None => {
+            intervals.insert(name.to_string(), interval);
+            true
+        }
+    }
+}
+
+fn interval_for_simple_op(
+    op: &OpIR,
+    intervals: &BTreeMap<String, I64Interval>,
+    loop_backedge_updates: &BTreeSet<String>,
+) -> Option<I64Interval> {
+    if op
+        .out
+        .as_ref()
+        .is_some_and(|out| loop_backedge_updates.contains(out))
+        && matches!(
+            op.kind.as_str(),
+            "add" | "inplace_add" | "sub" | "inplace_sub"
+        )
+    {
+        return None;
+    }
+    match op.kind.as_str() {
+        "const" => op.value.map(I64Interval::singleton),
+        "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" | "loop_index_start"
+        | "loop_index_next" => interval_for_first_source(op, intervals),
+        "add" | "inplace_add" => interval_for_binary_args(op, intervals, I64Interval::checked_add),
+        "sub" | "inplace_sub" => interval_for_binary_args(op, intervals, I64Interval::checked_sub),
+        _ => None,
+    }
+}
+
+fn interval_for_first_source(
+    op: &OpIR,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<I64Interval> {
+    let source = op.var.as_deref().or_else(|| {
+        op.args
+            .as_ref()
+            .and_then(|args| args.first().map(String::as_str))
+    })?;
+    intervals.get(source).copied()
+}
+
+fn interval_for_binary_args(
+    op: &OpIR,
+    intervals: &BTreeMap<String, I64Interval>,
+    combine: fn(I64Interval, I64Interval) -> Option<I64Interval>,
+) -> Option<I64Interval> {
+    let args = op.args.as_ref()?;
+    let lhs = intervals.get(args.first()?)?;
+    let rhs = intervals.get(args.get(1)?)?;
+    combine(*lhs, *rhs)
+}
+
+fn propagate_store_target_intervals(
+    func_ir: &FunctionIR,
+    intervals: &mut BTreeMap<String, I64Interval>,
+) -> bool {
+    let mut targets: BTreeMap<String, Option<I64Interval>> = BTreeMap::new();
+    for op in &func_ir.ops {
+        let Some(target) = store_var_target_name(op) else {
+            continue;
+        };
+        let source_interval =
+            store_var_source_name(op).and_then(|source| intervals.get(source).copied());
+        targets
+            .entry(target.to_string())
+            .and_modify(|existing| {
+                *existing = match (*existing, source_interval) {
+                    (Some(lhs), Some(rhs)) => Some(lhs.union(rhs)),
+                    _ => None,
+                };
+            })
+            .or_insert(source_interval);
+    }
+
+    let mut changed = false;
+    for (target, interval) in targets {
+        if let Some(interval) = interval {
+            changed |= insert_interval(intervals, &target, interval);
+        }
+    }
+    changed
+}
+
+fn propagate_counted_loop_intervals(
+    func_ir: &FunctionIR,
+    intervals: &mut BTreeMap<String, I64Interval>,
+) -> bool {
+    let mut changed = false;
+    for (start, end) in loop_regions(&func_ir.ops) {
+        if let Some(proof) = loop_index_interval_proof(func_ir, start, end, intervals) {
+            for (name, interval) in proof.names {
+                changed |= insert_interval(intervals, &name, interval);
+            }
+        }
+        if let Some(proof) = store_load_loop_interval_proof(func_ir, start, end, intervals) {
+            for (name, interval) in proof.names {
+                changed |= insert_interval(intervals, &name, interval);
+            }
+        }
+    }
+    changed
+}
+
+struct CountedLoopIntervalProof {
+    names: Vec<(String, I64Interval)>,
+}
+
+fn loop_regions(ops: &[OpIR]) -> Vec<(usize, usize)> {
+    let mut regions = Vec::new();
+    let mut stack = Vec::new();
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" => stack.push(idx),
+            "loop_end" => {
+                if let Some(start) = stack.pop() {
+                    regions.push((start, idx));
+                }
+            }
+            _ => {}
+        }
+    }
+    regions
+}
+
+fn loop_index_interval_proof(
+    func_ir: &FunctionIR,
+    start: usize,
+    end: usize,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<CountedLoopIntervalProof> {
+    let ops = &func_ir.ops;
+    let (iv_start_idx, iv_name, init_name) = ((start + 1)..end).find_map(|idx| {
+        let op = &ops[idx];
+        (op.kind == "loop_index_start")
+            .then(|| Some((idx, op.out.clone()?, op.args.as_ref()?.first()?.clone())))?
+    })?;
+    let init = resolve_interval_before(func_ir, iv_start_idx, &init_name, intervals, 0)?
+        .singleton_value()?;
+    let predicate = counted_loop_continue_predicate(func_ir, start, end, &iv_name, intervals)?;
+    let (next_idx, next_name, step) =
+        counted_loop_update(func_ir, start, end, &iv_name, intervals)?;
+    let (iv_interval, next_interval) =
+        bounded_loop_intervals(init, predicate.bound, step, predicate.op)?;
+    if next_idx <= iv_start_idx {
+        return None;
+    }
+    Some(CountedLoopIntervalProof {
+        names: vec![(iv_name, iv_interval), (next_name, next_interval)],
+    })
+}
+
+fn store_load_loop_interval_proof(
+    func_ir: &FunctionIR,
+    start: usize,
+    end: usize,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<CountedLoopIntervalProof> {
+    let ops = &func_ir.ops;
+    for load_idx in (start + 1)..end {
+        let load = &ops[load_idx];
+        if load.kind != "load_var" {
+            continue;
+        }
+        let slot_name = load.var.as_ref()?;
+        let iv_name = load.out.as_ref()?;
+        let init = resolve_store_slot_interval_before(func_ir, start, slot_name, intervals)?
+            .singleton_value()?;
+        let predicate = counted_loop_continue_predicate(func_ir, start, end, iv_name, intervals)?;
+        let (store_idx, next_name, step) =
+            store_load_loop_update(func_ir, start, end, slot_name, iv_name, intervals)?;
+        if store_idx <= load_idx {
+            continue;
+        }
+        let (iv_interval, next_interval) =
+            bounded_loop_intervals(init, predicate.bound, step, predicate.op)?;
+        let slot_interval = iv_interval.union(next_interval);
+        let mut names = vec![
+            (slot_name.clone(), slot_interval),
+            (iv_name.clone(), iv_interval),
+            (next_name, next_interval),
+        ];
+        for op in &ops[start + 1..end] {
+            if op.kind == "load_var"
+                && op.var.as_deref() == Some(slot_name.as_str())
+                && let Some(out) = op.out.as_ref()
+            {
+                names.push((out.clone(), slot_interval));
+            }
+        }
+        return Some(CountedLoopIntervalProof { names });
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+enum LoopCompareOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+struct LoopContinuePredicate {
+    op: LoopCompareOp,
+    bound: i64,
+}
+
+fn counted_loop_continue_predicate(
+    func_ir: &FunctionIR,
+    start: usize,
+    end: usize,
+    iv_name: &str,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<LoopContinuePredicate> {
+    let ops = &func_ir.ops;
+    for break_idx in (start + 1)..end {
+        let break_op = &ops[break_idx];
+        if !matches!(
+            break_op.kind.as_str(),
+            "loop_break_if_false" | "loop_break_if_true"
+        ) {
+            continue;
+        }
+        let cond_name = break_op.args.as_ref()?.first()?;
+        let compare_idx = (start + 1..break_idx).rev().find(|idx| {
+            ops[*idx].out.as_ref() == Some(cond_name)
+                && matches!(ops[*idx].kind.as_str(), "lt" | "le" | "gt" | "ge")
+        })?;
+        let compare = &ops[compare_idx];
+        let args = compare.args.as_ref()?;
+        let lhs = args.first()?;
+        let rhs = args.get(1)?;
+        let mut op = match compare.kind.as_str() {
+            "lt" => LoopCompareOp::Lt,
+            "le" => LoopCompareOp::Le,
+            "gt" => LoopCompareOp::Gt,
+            "ge" => LoopCompareOp::Ge,
+            _ => return None,
+        };
+        let bound_name = if lhs == iv_name {
+            rhs
+        } else if rhs == iv_name {
+            op = flip_compare_op(op);
+            lhs
+        } else {
+            continue;
+        };
+        if break_op.kind == "loop_break_if_true" {
+            op = invert_compare_op(op);
+        }
+        let bound = resolve_interval_before(func_ir, compare_idx, bound_name, intervals, 0)?
+            .singleton_value()?;
+        return Some(LoopContinuePredicate { op, bound });
+    }
+    None
+}
+
+fn flip_compare_op(op: LoopCompareOp) -> LoopCompareOp {
+    match op {
+        LoopCompareOp::Lt => LoopCompareOp::Gt,
+        LoopCompareOp::Le => LoopCompareOp::Ge,
+        LoopCompareOp::Gt => LoopCompareOp::Lt,
+        LoopCompareOp::Ge => LoopCompareOp::Le,
+    }
+}
+
+fn invert_compare_op(op: LoopCompareOp) -> LoopCompareOp {
+    match op {
+        LoopCompareOp::Lt => LoopCompareOp::Ge,
+        LoopCompareOp::Le => LoopCompareOp::Gt,
+        LoopCompareOp::Gt => LoopCompareOp::Le,
+        LoopCompareOp::Ge => LoopCompareOp::Lt,
+    }
+}
+
+fn counted_loop_update(
+    func_ir: &FunctionIR,
+    start: usize,
+    end: usize,
+    iv_name: &str,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<(usize, String, i64)> {
+    let ops = &func_ir.ops;
+    for idx in (start + 1..end).rev() {
+        let op = &ops[idx];
+        if op.kind != "loop_index_next" || op.out.as_deref() != Some(iv_name) {
+            continue;
+        }
+        let next_name = op.args.as_ref()?.first()?.clone();
+        let update_idx = (start + 1..idx)
+            .rev()
+            .find(|candidate| ops[*candidate].out.as_deref() == Some(next_name.as_str()))?;
+        let step = induction_update_step(func_ir, update_idx, iv_name, intervals)?;
+        return Some((idx, next_name, step));
+    }
+    None
+}
+
+fn store_load_loop_update(
+    func_ir: &FunctionIR,
+    start: usize,
+    end: usize,
+    slot_name: &str,
+    iv_name: &str,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<(usize, String, i64)> {
+    let ops = &func_ir.ops;
+    for idx in (start + 1..end).rev() {
+        let op = &ops[idx];
+        if store_var_target_name(op) != Some(slot_name) {
+            continue;
+        }
+        let next_name = store_var_source_name(op)?.to_string();
+        let update_idx = (start + 1..idx)
+            .rev()
+            .find(|candidate| ops[*candidate].out.as_deref() == Some(next_name.as_str()))?;
+        let step = induction_update_step(func_ir, update_idx, iv_name, intervals)?;
+        return Some((idx, next_name, step));
+    }
+    None
+}
+
+fn induction_update_step(
+    func_ir: &FunctionIR,
+    update_idx: usize,
+    iv_name: &str,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<i64> {
+    let op = &func_ir.ops[update_idx];
+    let args = op.args.as_ref()?;
+    let lhs = args.first()?;
+    let rhs = args.get(1)?;
+    match op.kind.as_str() {
+        "add" | "inplace_add" => {
+            if lhs == iv_name {
+                resolve_interval_before(func_ir, update_idx, rhs, intervals, 0)?.singleton_value()
+            } else if rhs == iv_name {
+                resolve_interval_before(func_ir, update_idx, lhs, intervals, 0)?.singleton_value()
+            } else {
+                None
+            }
+        }
+        "sub" | "inplace_sub" => {
+            if lhs == iv_name {
+                let step = resolve_interval_before(func_ir, update_idx, rhs, intervals, 0)?
+                    .singleton_value()?;
+                step.checked_neg()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn bounded_loop_intervals(
+    init: i64,
+    bound: i64,
+    step: i64,
+    op: LoopCompareOp,
+) -> Option<(I64Interval, I64Interval)> {
+    if step == 0 {
+        return None;
+    }
+    let init = init as i128;
+    let bound = bound as i128;
+    let step = step as i128;
+    let body_edge = match (step > 0, op) {
+        (true, LoopCompareOp::Lt) => bound.checked_sub(1)?,
+        (true, LoopCompareOp::Le) => bound,
+        (false, LoopCompareOp::Gt) => bound.checked_add(1)?,
+        (false, LoopCompareOp::Ge) => bound,
+        _ => return None,
+    };
+    let next_edge = body_edge.checked_add(step)?;
+    let init_next = init.checked_add(step)?;
+    let iv_min = init.min(body_edge);
+    let iv_max = init.max(body_edge);
+    let next_min = init.min(init_next).min(next_edge);
+    let next_max = init.max(init_next).max(next_edge);
+    Some((
+        I64Interval::from_i128_bounds(iv_min, iv_max)?,
+        I64Interval::from_i128_bounds(next_min, next_max)?,
+    ))
+}
+
+fn resolve_interval_before(
+    func_ir: &FunctionIR,
+    before_idx: usize,
+    name: &str,
+    intervals: &BTreeMap<String, I64Interval>,
+    depth: usize,
+) -> Option<I64Interval> {
+    if depth > 8 {
+        return None;
+    }
+    if let Some(interval) = intervals.get(name).copied() {
+        return Some(interval);
+    }
+    for idx in (0..before_idx).rev() {
+        let op = &func_ir.ops[idx];
+        if store_var_target_name(op) == Some(name) {
+            let source = store_var_source_name(op)?;
+            return resolve_interval_before(func_ir, idx, source, intervals, depth + 1);
+        }
+        if op.out.as_deref() != Some(name) {
+            continue;
+        }
+        if let Some(interval) = interval_for_simple_op(op, intervals, &BTreeSet::new()) {
+            return Some(interval);
+        }
+        match op.kind.as_str() {
+            "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" => {
+                let source = op.var.as_deref().or_else(|| {
+                    op.args
+                        .as_ref()
+                        .and_then(|args| args.first().map(String::as_str))
+                })?;
+                return resolve_interval_before(func_ir, idx, source, intervals, depth + 1);
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn resolve_store_slot_interval_before(
+    func_ir: &FunctionIR,
+    before_idx: usize,
+    slot_name: &str,
+    intervals: &BTreeMap<String, I64Interval>,
+) -> Option<I64Interval> {
+    for idx in (0..before_idx).rev() {
+        let op = &func_ir.ops[idx];
+        if store_var_target_name(op) == Some(slot_name) {
+            let source = store_var_source_name(op)?;
+            return resolve_interval_before(func_ir, idx, source, intervals, 0);
+        }
+    }
+    None
+}
+
+fn loop_backedge_update_names(func_ir: &FunctionIR) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let ops = &func_ir.ops;
+    for (start, end) in loop_regions(&func_ir.ops) {
+        for idx in start + 1..end {
+            let op = &ops[idx];
+            if op.kind == "loop_index_next"
+                && let Some(source) = op.args.as_ref().and_then(|args| args.first())
+            {
+                names.insert(source.clone());
+            }
+            if op.kind != "store_var" {
+                continue;
+            }
+            let Some(slot_name) = store_var_target_name(op) else {
+                continue;
+            };
+            let Some(source) = store_var_source_name(op) else {
+                continue;
+            };
+            let Some(update_idx) = (start + 1..idx)
+                .rev()
+                .find(|candidate| ops[*candidate].out.as_deref() == Some(source))
+            else {
+                continue;
+            };
+            let update = &ops[update_idx];
+            if !matches!(
+                update.kind.as_str(),
+                "add" | "inplace_add" | "sub" | "inplace_sub"
+            ) {
+                continue;
+            }
+            let args = update.args.as_deref().unwrap_or(&[]);
+            let updates_slot_load = args.iter().any(|arg| {
+                (start + 1..update_idx).rev().any(|load_idx| {
+                    let load = &ops[load_idx];
+                    load.kind == "load_var"
+                        && load.out.as_deref() == Some(arg.as_str())
+                        && load.var.as_deref() == Some(slot_name)
+                })
+            });
+            if updates_slot_load {
+                names.insert(source.to_string());
+            }
+        }
+    }
+    names
+}
+
+fn bounded_store_load_loop_seed_names(
+    func_ir: &FunctionIR,
+    bounded_i64_names: &BTreeMap<String, I64Interval>,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for (start, end) in loop_regions(&func_ir.ops) {
+        let Some(proof) = store_load_loop_interval_proof(func_ir, start, end, bounded_i64_names)
+        else {
+            continue;
+        };
+        let Some((slot_name, _)) = proof.names.first() else {
+            continue;
+        };
+        if store_slot_initial_source_is_raw_seed(func_ir, start, slot_name, bounded_i64_names) {
+            names.insert(slot_name.clone());
+        }
+    }
+    names
+}
+
+fn store_slot_initial_source_is_raw_seed(
+    func_ir: &FunctionIR,
+    before_idx: usize,
+    slot_name: &str,
+    bounded_i64_names: &BTreeMap<String, I64Interval>,
+) -> bool {
+    for idx in (0..before_idx).rev() {
+        let op = &func_ir.ops[idx];
+        if store_var_target_name(op) == Some(slot_name) {
+            return store_var_source_name(op).is_some_and(|source| {
+                name_is_structural_raw_i64_before(func_ir, idx, source, bounded_i64_names, 0)
+            });
+        }
+    }
+    false
+}
+
+fn name_is_structural_raw_i64_before(
+    func_ir: &FunctionIR,
+    before_idx: usize,
+    name: &str,
+    bounded_i64_names: &BTreeMap<String, I64Interval>,
+    depth: usize,
+) -> bool {
+    if depth > 8 || !bounded_i64_names.contains_key(name) {
+        return false;
+    }
+    for idx in (0..before_idx).rev() {
+        let op = &func_ir.ops[idx];
+        if store_var_target_name(op) == Some(name) {
+            return store_var_source_name(op).is_some_and(|source| {
+                name_is_structural_raw_i64_before(
+                    func_ir,
+                    idx,
+                    source,
+                    bounded_i64_names,
+                    depth + 1,
+                )
+            });
+        }
+        if op.out.as_deref() != Some(name) {
+            continue;
+        }
+        return match op.kind.as_str() {
+            "const" | "loop_index_start" | "loop_index_next" | "len" | "gpu_thread_id"
+            | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => true,
+            "copy" | "copy_var" | "load_var" | "identity_alias" | "pos" => {
+                let source = op.var.as_deref().or_else(|| {
+                    op.args
+                        .as_ref()
+                        .and_then(|args| args.first().map(String::as_str))
+                });
+                source.is_some_and(|source| {
+                    name_is_structural_raw_i64_before(
+                        func_ir,
+                        idx,
+                        source,
+                        bounded_i64_names,
+                        depth + 1,
+                    )
+                })
+            }
+            "add" | "inplace_add" | "sub" | "inplace_sub" => op.args.as_ref().is_some_and(|args| {
+                args.len() >= 2
+                    && args.iter().all(|arg| {
+                        name_is_structural_raw_i64_before(
+                            func_ir,
+                            idx,
+                            arg,
+                            bounded_i64_names,
+                            depth + 1,
+                        )
+                    })
+            }),
+            _ => false,
+        };
+    }
+    false
 }
 
 fn is_cold_module_chunk_function(name: &str) -> bool {
@@ -1972,7 +2681,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_int_names_exclude_unbounded_arithmetic_without_range_proof() {
+    fn primary_int_names_admit_bounded_arithmetic_range_proof() {
         let func = function(
             "int_primary",
             &[],
@@ -1991,8 +2700,104 @@ mod tests {
         assert!(primary.int.contains("lhs"));
         assert!(primary.int.contains("rhs"));
         assert!(primary.int.contains("masked"));
-        assert!(!primary.int.contains("sum"));
+        assert!(primary.int.contains("sum"));
         assert!(!primary.int.contains("shifted"));
+    }
+
+    #[test]
+    fn primary_int_names_exclude_unbounded_param_arithmetic_without_range_proof() {
+        let func = function(
+            "int_primary_params",
+            &["lhs", "rhs"],
+            Some(vec!["int", "int"]),
+            vec![op("add", Some("sum"), None, &["lhs", "rhs"])],
+        );
+
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(!primary.int.contains("lhs"));
+        assert!(!primary.int.contains("rhs"));
+        assert!(!primary.int.contains("sum"));
+    }
+
+    #[test]
+    fn primary_int_names_exclude_arithmetic_that_can_overflow_i64() {
+        let func = function(
+            "int_primary_overflow",
+            &[],
+            None,
+            vec![
+                const_int("lhs", i64::MAX),
+                const_int("rhs", 1),
+                op("add", Some("sum"), None, &["lhs", "rhs"]),
+            ],
+        );
+
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(primary.int.contains("lhs"));
+        assert!(primary.int.contains("rhs"));
+        assert!(!primary.int.contains("sum"));
+    }
+
+    #[test]
+    fn counted_store_load_loop_proves_bounded_i64_add() {
+        let func = function(
+            "counted_store_load_loop",
+            &[],
+            None,
+            vec![
+                const_int("init", 0),
+                const_int("one", 1),
+                const_int("stop", 1_000_000),
+                op("store_var", None, Some("i"), &["init"]),
+                op("loop_start", None, None, &[]),
+                op("load_var", Some("i_cur"), Some("i"), &[]),
+                op("lt", Some("keep_going"), None, &["i_cur", "stop"]),
+                op("loop_break_if_false", None, None, &["keep_going"]),
+                op("add", Some("i_next"), None, &["i_cur", "one"]),
+                op("store_var", None, Some("i"), &["i_next"]),
+                op("loop_continue", None, None, &[]),
+                op("loop_end", None, None, &[]),
+                op("load_var", Some("i_after"), Some("i"), &[]),
+            ],
+        );
+
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(primary.int.contains("i"));
+        assert!(primary.int.contains("i_cur"));
+        assert!(primary.int.contains("i_next"));
+        assert!(primary.int.contains("i_after"));
+    }
+
+    #[test]
+    fn mismatched_counted_loop_direction_does_not_prove_update_range() {
+        let func = function(
+            "mismatched_counted_loop",
+            &[],
+            None,
+            vec![
+                const_int("init", 0),
+                const_int("one", 1),
+                const_int("stop", 1_000_000),
+                op("store_var", None, Some("i"), &["init"]),
+                op("loop_start", None, None, &[]),
+                op("load_var", Some("i_cur"), Some("i"), &[]),
+                op("gt", Some("keep_going"), None, &["i_cur", "stop"]),
+                op("loop_break_if_false", None, None, &["keep_going"]),
+                op("add", Some("i_next"), None, &["i_cur", "one"]),
+                op("store_var", None, Some("i"), &["i_next"]),
+                op("loop_continue", None, None, &[]),
+                op("loop_end", None, None, &[]),
+            ],
+        );
+
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(!primary.int.contains("i"));
+        assert!(!primary.int.contains("i_cur"));
+        assert!(!primary.int.contains("i_next"));
     }
 
     #[test]
