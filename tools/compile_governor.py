@@ -9,17 +9,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, TextIO
 
+try:
+    from tools import resource_pressure
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    import resource_pressure  # type: ignore
+
 try:  # pragma: no cover - platform-specific import.
     import fcntl
 except Exception:  # pragma: no cover - non-posix fallback.
     fcntl = None  # type: ignore[assignment]
 
 
-DEFAULT_MAX_COMPILE_SLOTS = 2
+DEFAULT_MAX_COMPILE_SLOTS = resource_pressure.DEFAULT_MAX_COMPILE_SLOTS
 DEFAULT_WAIT_SECONDS = 180.0
 DEFAULT_POLL_SECONDS = 0.5
-DEFAULT_MAX_LOAD_PER_CPU = 1.25
-DEFAULT_MAX_ACTIVE_PROCS_FACTOR = 3
+DEFAULT_MAX_LOAD_PER_CPU = resource_pressure.DEFAULT_COMPILE_LOAD_PER_CPU
+DEFAULT_MAX_ACTIVE_PROCS_FACTOR = resource_pressure.DEFAULT_COMPILE_ACTIVE_PROCS_FACTOR
 
 _COMPILE_MATCH_TOKENS = (
     "molt.cli build",
@@ -35,6 +40,7 @@ class CompileSlotLease:
     waited_seconds: float
     active_builds: int | None
     load_1m: float | None
+    resource_reason: str | None = None
     _lock_handle: TextIO | None = None
     _released: bool = False
 
@@ -148,14 +154,29 @@ def _load_1m() -> float | None:
         return None
 
 
-def _max_slots_from_env(env: Mapping[str, str]) -> int:
-    return _parse_int(
+def _resource_pressure_plan(
+    env: Mapping[str, str],
+) -> resource_pressure.ResourcePressurePlan:
+    return resource_pressure.plan_resource_pressure(
+        prefix="MOLT_COMPILE_GUARD",
+        environ=env,
+    )
+
+
+def _max_slots_from_env(
+    env: Mapping[str, str],
+    *,
+    plan: resource_pressure.ResourcePressurePlan | None = None,
+) -> int:
+    explicit = (
         env.get("MOLT_COMPILE_MAX_CONCURRENT_BUILDS")
         or env.get("MOLT_COMPILE_GUARD_MAX_SLOTS")
-        or env.get("MOLT_MAX_CONCURRENT_AGENTS"),
-        DEFAULT_MAX_COMPILE_SLOTS,
-        min_value=1,
+        or env.get("MOLT_MAX_CONCURRENT_AGENTS")
     )
+    if explicit is not None:
+        return _parse_int(explicit, DEFAULT_MAX_COMPILE_SLOTS, min_value=1)
+    resolved_plan = plan or _resource_pressure_plan(env)
+    return resolved_plan.compile_max_slots
 
 
 def _max_load_from_env(env: Mapping[str, str], *, max_slots: int) -> float:
@@ -171,13 +192,19 @@ def _max_load_from_env(env: Mapping[str, str], *, max_slots: int) -> float:
     )
 
 
-def _max_active_procs_from_env(env: Mapping[str, str], *, max_slots: int) -> int:
+def _max_active_procs_from_env(
+    env: Mapping[str, str],
+    *,
+    max_slots: int,
+    plan: resource_pressure.ResourcePressurePlan | None = None,
+) -> int:
+    explicit = env.get("MOLT_COMPILE_GUARD_MAX_ACTIVE_PROCS")
+    if explicit is not None:
+        return _parse_int(explicit, max_slots * DEFAULT_MAX_ACTIVE_PROCS_FACTOR)
+    if plan is not None and max_slots == plan.compile_max_slots:
+        return plan.compile_max_active_procs
     default_limit = max_slots * DEFAULT_MAX_ACTIVE_PROCS_FACTOR
-    return _parse_int(
-        env.get("MOLT_COMPILE_GUARD_MAX_ACTIVE_PROCS"),
-        default_limit,
-        min_value=1,
-    )
+    return _parse_int(None, default_limit, min_value=1)
 
 
 def _try_acquire_slot(
@@ -222,9 +249,14 @@ def acquire_compile_slot(
             load_1m=None,
         )
 
-    max_slots = _max_slots_from_env(env_view)
+    pressure_plan = _resource_pressure_plan(env_view)
+    max_slots = _max_slots_from_env(env_view, plan=pressure_plan)
     max_load = _max_load_from_env(env_view, max_slots=max_slots)
-    max_active_procs = _max_active_procs_from_env(env_view, max_slots=max_slots)
+    max_active_procs = _max_active_procs_from_env(
+        env_view,
+        max_slots=max_slots,
+        plan=pressure_plan,
+    )
     wait_seconds = _parse_float(
         env_view.get("MOLT_COMPILE_GUARD_WAIT_SEC"),
         DEFAULT_WAIT_SECONDS,
@@ -267,6 +299,7 @@ def acquire_compile_slot(
                     waited_seconds=max(0.0, time.monotonic() - started),
                     active_builds=active_builds,
                     load_1m=load_1m,
+                    resource_reason=pressure_plan.reason,
                     _lock_handle=handle,
                 )
 
@@ -296,7 +329,8 @@ def acquire_compile_slot(
             _emit(
                 (
                     "[compile-governor] waiting for slot "
-                    f"(label={label}, wait_sec={wait_seconds:.1f}, reason={last_reason})"
+                    f"(label={label}, wait_sec={wait_seconds:.1f}, "
+                    f"reason={last_reason}, resource_pressure={pressure_plan.reason})"
                 ),
                 log=log,
             )

@@ -284,6 +284,9 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
     assert module._memory_guard_scheduler_per_job_gb(config) == pytest.approx(7.1392)
     assert module._memory_guard_max_jobs(config) == 12
     assert module._default_jobs() == 12
+    payload = module._config_payload(config)
+    assert payload["resource_pressure"]["schema"] == "molt.resource_pressure.v1"
+    assert payload["resource_pressure"]["diff"]["max_jobs"] == 12
 
 
 def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
@@ -319,7 +322,7 @@ def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None
     assert config.max_process_gb == pytest.approx(7)
     assert config.max_tree_gb == pytest.approx(8)
     assert config.global_gb == pytest.approx(9)
-    assert config.child_rlimit_gb == pytest.approx(7)
+    assert config.child_rlimit_gb == pytest.approx(10)
 
 
 def test_diff_memory_guard_family_overrides_parent_controls(monkeypatch) -> None:
@@ -338,7 +341,7 @@ def test_diff_memory_guard_family_overrides_parent_controls(monkeypatch) -> None
     assert config.max_process_gb == pytest.approx(3)
     assert config.max_tree_gb == pytest.approx(4)
     assert config.global_gb == pytest.approx(5)
-    assert config.child_rlimit_gb == pytest.approx(3)
+    assert config.child_rlimit_gb == pytest.approx(6)
 
 
 def test_diff_memory_guard_global_disable_is_ignored(monkeypatch) -> None:

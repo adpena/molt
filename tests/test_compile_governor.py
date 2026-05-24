@@ -97,6 +97,31 @@ def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
     )
 
 
+def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:
+    monkeypatch.setattr(compile_governor.os, "cpu_count", lambda: 16)
+    env = {
+        "MOLT_COMPILE_GUARD_TOTAL_MEMORY_GB": "64",
+        "MOLT_COMPILE_GUARD_MEM_AVAILABLE_GB": "8",
+        "MOLT_COMPILE_GUARD_MEMORY_RESERVE_GB": "4",
+    }
+
+    pressure_plan = compile_governor._resource_pressure_plan(env)
+
+    assert pressure_plan.pressure_level == "high"
+    assert compile_governor._max_slots_from_env(env, plan=pressure_plan) == 1
+    assert (
+        compile_governor._max_active_procs_from_env(
+            env,
+            max_slots=1,
+            plan=pressure_plan,
+        )
+        == 3
+    )
+
+    env["MOLT_COMPILE_GUARD_MAX_SLOTS"] = "4"
+    assert compile_governor._max_slots_from_env(env, plan=pressure_plan) == 4
+
+
 @pytest.mark.skipif(
     compile_governor.fcntl is None, reason="compile governor slots require posix flock"
 )

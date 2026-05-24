@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from tools.batch_compile_client import BatchCompileServerClient
-from tools import harness_memory_guard, memory_guard
+from tools import harness_memory_guard, memory_guard, resource_pressure
 
 _ACTIVE_CHILD_PIDS: set[int] = set()
 _SIGNAL_HANDLERS_INSTALLED = False
@@ -1703,34 +1703,46 @@ def _default_jobs() -> int:
 
 
 def _memory_guard_scheduler_per_job_gb(config: _DiffMemoryGuardConfig) -> float:
-    explicit = _parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB")
-    if explicit is not None and explicit > 0:
-        return max(0.001, min(explicit, config.max_tree_gb))
-    cpu_count = max(1, os.cpu_count() or 1)
-    per_cpu_global_gb = config.global_gb / cpu_count
-    floor_gb = min(config.max_tree_gb, 1.0)
-    return max(
-        0.001,
-        min(config.max_tree_gb, max(floor_gb, min(8.0, per_cpu_global_gb))),
+    return _diff_resource_pressure_plan(config).diff_scheduler_per_job_gb
+
+
+def _diff_resource_pressure_plan(
+    config: _DiffMemoryGuardConfig,
+) -> resource_pressure.ResourcePressurePlan:
+    budget = memory_guard.AdaptiveMemoryBudget(
+        max_process_rss_gb=config.max_process_gb,
+        max_total_rss_gb=config.max_tree_gb,
+        max_global_rss_gb=config.global_gb,
+        reserve_gb=0.0,
+        physical_gb=None,
+        available_gb=config.global_gb,
+        source="guard_limits",
+    )
+    return resource_pressure.plan_resource_pressure(
+        prefix="MOLT_DIFF",
+        environ=os.environ,
+        cpu_count=max(1, os.cpu_count() or 1),
+        budget=budget,
+        diff_tree_gb=config.max_tree_gb,
+        diff_global_gb=config.global_gb,
+        diff_mem_per_job_gb=_parse_float_env("MOLT_DIFF_MEM_PER_JOB_GB"),
     )
 
 
 def _memory_guard_max_jobs(config: _DiffMemoryGuardConfig) -> int:
-    per_job_kb = max(
-        1,
-        int(_memory_guard_scheduler_per_job_gb(config) * 1024 * 1024),
-    )
-    return max(1, config.global_kb // per_job_kb)
+    return _diff_resource_pressure_plan(config).diff_max_jobs
 
 
 def _config_payload(config: _DiffMemoryGuardConfig) -> dict[str, object]:
+    pressure_plan = _diff_resource_pressure_plan(config)
     return {
         "max_process_gb": config.max_process_gb,
         "max_tree_gb": config.max_tree_gb,
         "global_gb": config.global_gb,
         "child_rlimit_gb": config.child_rlimit_gb,
         "poll_interval": config.poll_interval,
-        "scheduler_per_job_gb": _memory_guard_scheduler_per_job_gb(config),
+        "scheduler_per_job_gb": pressure_plan.diff_scheduler_per_job_gb,
+        "resource_pressure": pressure_plan.to_json_dict(),
         "dynamic_process_rss": config.dynamic_process_rss,
         "dynamic_tree_rss": config.dynamic_tree_rss,
         "dynamic_global_rss": config.dynamic_global_rss,
