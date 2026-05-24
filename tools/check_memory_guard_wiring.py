@@ -68,11 +68,12 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "tests/molt_diff.py",
         (
             "harness_memory_guard",
-            "_DiffGlobalMemoryMonitor",
             "HarnessExecutionContext",
-            "memory_guard.ProcessTreeTracker",
+            "start_repo_sentinel",
+            "repo_sentinel_active_env_key",
+            "_record_memory_guard_sentinel_violation",
         ),
-        "differential harness owns recursive memory guard custody",
+        "differential harness delegates process custody to the shared harness guard",
     ),
     TokenContract(
         "tools/bench.py",

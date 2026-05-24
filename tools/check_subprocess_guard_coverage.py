@@ -267,24 +267,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "differential harness bounded dyld preflight compile probe",
     ),
     AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_terminate_pid_tree",
-        "run",
-        "Windows taskkill fallback for guarded differential process cleanup",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_terminate_process_tree",
-        "run",
-        "Windows taskkill fallback for guarded differential process cleanup",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_run_subprocess",
-        "Popen",
-        "differential harness owns its own recursive memory guard and process tracker",
-    ),
-    AllowedRawSubprocessUse(
         "tests/test_tkinter_phase0_wrappers.py",
         "_run_probe",
         "run",

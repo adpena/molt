@@ -59,11 +59,19 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[str]):
         stderr: str | None,
         *,
         elapsed_s: float | None,
+        violation: memory_guard.RssViolation | None = None,
+        timed_out: bool = False,
+        limit_at_violation: memory_guard.ResolvedMemoryLimits | None = None,
+        orphaned_process_groups: Sequence[int] = (),
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
         )
         self.elapsed_s = elapsed_s
+        self.violation = violation
+        self.timed_out = timed_out
+        self.limit_at_violation = limit_at_violation
+        self.orphaned_process_groups = tuple(orphaned_process_groups)
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -97,6 +105,24 @@ def _note_auto_sentinel_suppressor_exited() -> None:
 def _sentinel_active() -> bool:
     with _AUTO_SENTINEL_SUPPRESSORS_LOCK:
         return _AUTO_SENTINEL_SUPPRESSORS > 0
+
+
+def repo_sentinel_active_env_key(prefix: str) -> str:
+    normalized = _normalize_prefix(prefix) or "MOLT"
+    return f"{normalized}_REPO_SENTINEL_ACTIVE"
+
+
+def _external_repo_sentinel_active(
+    prefix: str,
+    env: Mapping[str, str] | None,
+) -> bool:
+    source = _effective_env(env)
+    normalized = _normalize_prefix(prefix) or "MOLT"
+    return _env_bool(
+        source,
+        [repo_sentinel_active_env_key(normalized), "MOLT_REPO_SENTINEL_ACTIVE"],
+        default=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,7 +761,11 @@ def _auto_repo_sentinel(
     env: Mapping[str, str] | None,
     limits: HarnessMemoryLimits,
 ) -> Iterator[RepoProcessMemorySentinel | None]:
-    if not limits.enabled or _sentinel_active():
+    if (
+        not limits.enabled
+        or _sentinel_active()
+        or _external_repo_sentinel_active(prefix, env)
+    ):
         yield None
         return
     _prune_stale_repo_processes(prefix=prefix, env=env, limits=limits)
@@ -769,6 +799,8 @@ def guarded_completed_process(
     limits: HarnessMemoryLimits | None = None,
     stream: str = "",
     cleanup_orphans: bool | None = None,
+    encoding: str = "utf-8",
+    errors: str = "replace",
 ) -> GuardedCompletedProcess:
     resolved_limits = limits or limits_from_env(prefix, env)
     if not resolved_limits.enabled:
@@ -790,7 +822,10 @@ def guarded_completed_process(
             completed.stderr,
             elapsed_s=time.perf_counter() - started,
         )
-    sentinel_is_active = _sentinel_active()
+    sentinel_is_active = _sentinel_active() or _external_repo_sentinel_active(
+        prefix,
+        env,
+    )
     cleanup_tracked_orphans = (
         not sentinel_is_active if cleanup_orphans is None else cleanup_orphans
     )
@@ -832,6 +867,8 @@ def guarded_completed_process(
                 else None
             ),
             keepalive_interval=keepalive_interval,
+            encoding=encoding,
+            errors=errors,
         )
     stderr = guarded.stderr or ""
     incident_at = _utc_timestamp()
@@ -869,6 +906,10 @@ def guarded_completed_process(
         guarded.stdout,
         stderr,
         elapsed_s=guarded.elapsed_s,
+        violation=guarded.violation,
+        timed_out=guarded.timed_out,
+        limit_at_violation=guarded.limit_at_violation,
+        orphaned_process_groups=guarded.orphaned_process_groups,
     )
 
 
@@ -1172,7 +1213,12 @@ def batch_process_group_kwargs(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     resolved_limits = limits or limits_from_env("MOLT", env)
-    if not resolved_limits.enabled or os.name != "posix":
+    if not resolved_limits.enabled:
+        return {}
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": creationflags} if creationflags else {}
+    if os.name != "posix":
         return {}
     kwargs: dict[str, object] = {"start_new_session": True}
     child_rlimit_kb = resolved_limits.current_child_rlimit_kb(env)
@@ -1239,6 +1285,24 @@ class RepoProcessMemorySentinel:
         drain_until_clean_sec: float = 0.3,
         drain_max_runtime_sec: float = 5.0,
         suppress_auto_guard: bool = True,
+        on_scan: Callable[
+            [
+                Sequence[process_sentinel.ProcessGroup],
+                memory_guard.ResolvedMemoryLimits,
+                float,
+            ],
+            None,
+        ]
+        | None = None,
+        on_violation: Callable[
+            [
+                process_sentinel.SentinelViolation,
+                memory_guard.ResolvedMemoryLimits,
+                Mapping[str, object],
+            ],
+            None,
+        ]
+        | None = None,
     ) -> None:
         self._repo_root = repo_root
         self._artifact_root = artifact_root
@@ -1249,6 +1313,8 @@ class RepoProcessMemorySentinel:
         self._drain_until_clean_sec = max(0.0, drain_until_clean_sec)
         self._drain_max_runtime_sec = max(0.0, drain_max_runtime_sec)
         self._suppress_auto_guard = suppress_auto_guard
+        self._on_scan = on_scan
+        self._on_violation = on_violation
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._baseline_pgids: set[int] = set()
@@ -1303,6 +1369,43 @@ class RepoProcessMemorySentinel:
         while not self._stop.wait(self._limits.poll_interval):
             self.scan_once()
 
+    def _notify_scan(
+        self,
+        groups: Sequence[process_sentinel.ProcessGroup],
+        limits: memory_guard.ResolvedMemoryLimits,
+    ) -> None:
+        if self._on_scan is None:
+            return
+        try:
+            self._on_scan(groups, limits, self._elapsed_s())
+        except Exception as exc:  # noqa: BLE001
+            self._record(
+                {
+                    "event": "repo_process_guard_callback_error",
+                    "callback": "on_scan",
+                    "error": str(exc),
+                }
+            )
+
+    def _notify_violation(
+        self,
+        violation: process_sentinel.SentinelViolation,
+        limits: memory_guard.ResolvedMemoryLimits,
+        payload: Mapping[str, object],
+    ) -> None:
+        if self._on_violation is None:
+            return
+        try:
+            self._on_violation(violation, limits, payload)
+        except Exception as exc:  # noqa: BLE001
+            self._record(
+                {
+                    "event": "repo_process_guard_callback_error",
+                    "callback": "on_violation",
+                    "error": str(exc),
+                }
+            )
+
     def _current_groups(
         self,
         *,
@@ -1337,6 +1440,7 @@ class RepoProcessMemorySentinel:
             current_limits = self._limits.current_memory_limits(
                 accounted_rss_kb=sum(group.total_rss_kb for group in groups),
             )
+            self._notify_scan(groups, current_limits)
             violations = process_sentinel.find_violations(
                 groups,
                 max_process_kb=current_limits.max_process_rss_kb,
@@ -1350,6 +1454,8 @@ class RepoProcessMemorySentinel:
             if not violations:
                 return
             self.tripped = True
+            global_total_kb = sum(group.total_rss_kb for group in groups)
+            active_pgids = [group.pgid for group in groups]
             for violation in violations:
                 claimed = False
                 if violation.pgid not in self._terminated_pgids:
@@ -1362,17 +1468,20 @@ class RepoProcessMemorySentinel:
                     else "process group was already claimed by another guard; inspect "
                     "the first matching guard event for kill details"
                 )
-                self._record(
-                    {
-                        "event": "repo_process_guard_tripped",
-                        "violation": process_sentinel.violation_payload(violation),
-                        "limits": memory_guard.memory_limits_payload(current_limits),
-                        "guard_started_at": self._started_at,
-                        "killed_at": _utc_timestamp(),
-                        "elapsed_s": self._elapsed_s(),
-                        "action": action,
-                    }
-                )
+                payload = {
+                    "event": "repo_process_guard_tripped",
+                    "violation": process_sentinel.violation_payload(violation),
+                    "limits": memory_guard.memory_limits_payload(current_limits),
+                    "guard_started_at": self._started_at,
+                    "killed_at": _utc_timestamp(),
+                    "elapsed_s": self._elapsed_s(),
+                    "global_total_kb": global_total_kb,
+                    "global_total_gb": global_total_kb / (1024 * 1024),
+                    "active_pgids": active_pgids,
+                    "action": action,
+                }
+                self._record(payload)
+                self._notify_violation(violation, current_limits, payload)
                 if not claimed:
                     continue
                 process_sentinel.terminate_group(violation.pgid, grace=0.25)
@@ -1482,6 +1591,24 @@ def repo_process_sentinel(
     drain_until_clean_sec: float = 0.3,
     drain_max_runtime_sec: float = 5.0,
     suppress_auto_guard: bool = True,
+    on_scan: Callable[
+        [
+            Sequence[process_sentinel.ProcessGroup],
+            memory_guard.ResolvedMemoryLimits,
+            float,
+        ],
+        None,
+    ]
+    | None = None,
+    on_violation: Callable[
+        [
+            process_sentinel.SentinelViolation,
+            memory_guard.ResolvedMemoryLimits,
+            Mapping[str, object],
+        ],
+        None,
+    ]
+    | None = None,
 ) -> RepoProcessMemorySentinel:
     return RepoProcessMemorySentinel(
         repo_root=repo_root,
@@ -1493,6 +1620,8 @@ def repo_process_sentinel(
         drain_until_clean_sec=drain_until_clean_sec,
         drain_max_runtime_sec=drain_max_runtime_sec,
         suppress_auto_guard=suppress_auto_guard,
+        on_scan=on_scan,
+        on_violation=on_violation,
     )
 
 
@@ -1541,6 +1670,8 @@ class HarnessExecutionContext:
         text: bool = True,
         timeout: float | None = None,
         stream: str = "",
+        encoding: str = "utf-8",
+        errors: str = "replace",
     ) -> GuardedCompletedProcess:
         command_env = (
             self.env
@@ -1569,6 +1700,8 @@ class HarnessExecutionContext:
             timeout=timeout,
             limits=limits,
             stream=stream,
+            encoding=encoding,
+            errors=errors,
         )
 
     def process_group_kwargs(self) -> dict[str, object]:
@@ -1586,8 +1719,30 @@ class HarnessExecutionContext:
         drain_until_clean_sec: float = 0.3,
         drain_max_runtime_sec: float = 5.0,
         suppress_auto_guard: bool = True,
+        on_scan: Callable[
+            [
+                Sequence[process_sentinel.ProcessGroup],
+                memory_guard.ResolvedMemoryLimits,
+                float,
+            ],
+            None,
+        ]
+        | None = None,
+        on_violation: Callable[
+            [
+                process_sentinel.SentinelViolation,
+                memory_guard.ResolvedMemoryLimits,
+                Mapping[str, object],
+            ],
+            None,
+        ]
+        | None = None,
     ) -> RepoProcessMemorySentinel | None:
-        if not self.limits.enabled or _sentinel_active():
+        if (
+            not self.limits.enabled
+            or _sentinel_active()
+            or _external_repo_sentinel_active(self.prefix, self.env)
+        ):
             return None
         sentinel = repo_process_sentinel(
             repo_root=self.repo_root,
@@ -1599,6 +1754,8 @@ class HarnessExecutionContext:
             drain_until_clean_sec=drain_until_clean_sec,
             drain_max_runtime_sec=drain_max_runtime_sec,
             suppress_auto_guard=suppress_auto_guard,
+            on_scan=on_scan,
+            on_violation=on_violation,
         )
         sentinel.__enter__()
         return sentinel
@@ -1627,6 +1784,24 @@ def guarded_harness_scope(
     drain_grace_sec: float = 0.25,
     drain_until_clean_sec: float = 0.3,
     drain_max_runtime_sec: float = 5.0,
+    on_scan: Callable[
+        [
+            Sequence[process_sentinel.ProcessGroup],
+            memory_guard.ResolvedMemoryLimits,
+            float,
+        ],
+        None,
+    ]
+    | None = None,
+    on_violation: Callable[
+        [
+            process_sentinel.SentinelViolation,
+            memory_guard.ResolvedMemoryLimits,
+            Mapping[str, object],
+        ],
+        None,
+    ]
+    | None = None,
 ) -> Iterator[HarnessGuardScope]:
     resolved_limits = limits or limits_from_env(prefix, env)
     with repo_process_sentinel(
@@ -1638,5 +1813,7 @@ def guarded_harness_scope(
         drain_grace_sec=drain_grace_sec,
         drain_until_clean_sec=drain_until_clean_sec,
         drain_max_runtime_sec=drain_max_runtime_sec,
+        on_scan=on_scan,
+        on_violation=on_violation,
     ) as sentinel:
         yield HarnessGuardScope(limits=resolved_limits, sentinel=sentinel)

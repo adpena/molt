@@ -1223,6 +1223,8 @@ def run_guarded(
     cleanup_orphans: bool = True,
     progress_label: str | None = None,
     keepalive_interval: float | None = None,
+    encoding: str = "utf-8",
+    errors: str = "replace",
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -1243,13 +1245,13 @@ def run_guarded(
     if capture_output:
         stdout_capture = tempfile.TemporaryFile(
             mode="w+t",
-            encoding="utf-8",
-            errors="replace",
+            encoding=encoding,
+            errors=errors,
         )
         stderr_capture = tempfile.TemporaryFile(
             mode="w+t",
-            encoding="utf-8",
-            errors="replace",
+            encoding=encoding,
+            errors=errors,
         )
     popen_kwargs: dict[str, object] = {
         "cwd": cwd,
