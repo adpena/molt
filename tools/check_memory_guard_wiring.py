@@ -115,6 +115,19 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "developer command runner must guard test-suite children",
     ),
     TokenContract(
+        "tools/ci_gate.py",
+        (
+            "harness_memory_guard",
+            "guarded_completed_process",
+            "_resolve_memory_limits",
+            "compile_governor.compile_slot",
+            "MOLT_CI_GATE",
+            "guarded_exec.py",
+        ),
+        "tiered CI gate must guard child checks, clamp parallelism, and launch "
+        "background runs through guarded_exec",
+    ),
+    TokenContract(
         "tools/dev_test_runner.py",
         (
             "harness_memory_guard",
@@ -361,6 +374,17 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
             "MOLT_COMPLIANCE",
         ),
         "compliance tests must use their guarded process helper",
+    ),
+    TokenContract(
+        "tests/conftest.py",
+        (
+            "harness_memory_guard",
+            "repo_process_sentinel",
+            "limits_from_env",
+            "MOLT_PYTEST",
+            "drain_on_exit=True",
+        ),
+        "direct pytest sessions must install a suite-level repo sentinel",
     ),
     TokenContract(
         "tests/runtime_compat/test_runtime_compat.py",
