@@ -18,6 +18,8 @@ def test_throughput_env_exports_short_backend_daemon_socket_dir() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+    assert 'export MOLT_EXT_ROOT="' in result.stdout
+    assert 'export MOLT_SESSION_ID="' in result.stdout
     assert 'export MOLT_BACKEND_DAEMON_SOCKET_DIR="' in result.stdout
     line = next(
         line

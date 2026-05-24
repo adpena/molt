@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
 try:
     from tools import memory_guard, process_sentinel
@@ -31,6 +31,19 @@ HARD_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_RSS_GB - 0.001
 HARD_GLOBAL_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB - 0.001
 HARD_CHILD_RLIMIT_GB = memory_guard.DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC_ROOT = _REPO_ROOT / "src"
+if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+from molt.dx import (  # noqa: E402
+    CANONICAL_ROOT_ENV_KEYS as _CANONICAL_ROOT_ENV_KEYS,
+    CANONICAL_RUN_ENV_KEYS as _CANONICAL_RUN_ENV_KEYS,
+    RunContext,
+)
+
+CANONICAL_ROOT_ENV_KEYS = _CANONICAL_ROOT_ENV_KEYS
+CANONICAL_RUN_ENV_KEYS = _CANONICAL_RUN_ENV_KEYS
+
 _TERMINATED_PGIDS: dict[int, float] = {}
 _TERMINATED_PGIDS_LOCK = threading.Lock()
 _AUTO_SENTINEL_SUPPRESSORS = 0
@@ -208,25 +221,17 @@ def canonical_harness_env(
     env: Mapping[str, str] | None = None,
     *,
     repo_root: Path | None = None,
+    force_default_keys: Collection[str] = (),
 ) -> dict[str, str]:
     """Return a subprocess env with repo-local artifact/cache defaults installed."""
 
     root = (repo_root or _REPO_ROOT).resolve()
     merged = dict(os.environ) if env is None else dict(env)
-    ext_root = Path(merged.get("MOLT_EXT_ROOT", str(root))).expanduser()
-    if not ext_root.is_absolute():
-        ext_root = root / ext_root
-    ext_root = ext_root.resolve()
-    merged.setdefault("MOLT_EXT_ROOT", str(ext_root))
-    merged.setdefault("CARGO_TARGET_DIR", str(ext_root / "target"))
-    merged.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", merged["CARGO_TARGET_DIR"])
-    merged.setdefault("MOLT_CACHE", str(ext_root / ".molt_cache"))
-    merged.setdefault("MOLT_DIFF_ROOT", str(ext_root / "tmp" / "diff"))
-    merged.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))
-    merged.setdefault("UV_CACHE_DIR", str(ext_root / ".uv-cache"))
-    merged.setdefault("TMPDIR", str(ext_root / "tmp"))
-    merged.setdefault("MOLT_SESSION_ID", f"guard-{os.getpid()}")
-    return merged
+    return RunContext(root, session_prefix="guard").canonical_env(
+        merged,
+        create_dirs=False,
+        force_default_keys=force_default_keys,
+    )
 
 
 def _artifact_root_from_env(env: Mapping[str, str] | None) -> Path:
