@@ -301,19 +301,6 @@ def test_diff_memory_guard_kills_active_child_tree_limit(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_diff_module()
-    config = module._DiffMemoryGuardConfig(
-        max_process_kb=30_000,
-        max_tree_kb=20_000,
-        global_kb=100_000,
-        poll_interval=0.01,
-    )
-    active_dir = tmp_path / "active"
-    active_dir.mkdir()
-    (active_dir / "worker-200.json").write_text(
-        '{"pid": 200, "worker_pid": 100, "command": ["build"]}\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_ACTIVE_DIR_ENV, str(active_dir))
     monkeypatch.setenv(
         module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(tmp_path / "tripped.json")
     )
@@ -324,23 +311,50 @@ def test_diff_memory_guard_kills_active_child_tree_limit(
         module._DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV,
         str(tmp_path / "samples.jsonl"),
     )
-    samples = {
-        os.getpid(): module.memory_guard.ProcessSample(os.getpid(), 1, 1_000, "root"),
-        200: module.memory_guard.ProcessSample(200, os.getpid(), 9_000, "build"),
-        201: module.memory_guard.ProcessSample(201, 200, 12_000, "rustc"),
-    }
+    limits = module.harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=30_000 / (1024 * 1024),
+        max_total_rss_gb=20_000 / (1024 * 1024),
+        max_global_rss_gb=100_000 / (1024 * 1024),
+        poll_interval=0.01,
+    )
+    groups = [
+        module.process_sentinel.ProcessGroup(
+            pgid=200,
+            matched=True,
+            samples=(
+                module.memory_guard.ProcessSample(200, os.getpid(), 9_000, "build"),
+                module.memory_guard.ProcessSample(201, 200, 12_000, "rustc"),
+            ),
+        )
+    ]
     killed: list[int] = []
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    module.harness_memory_guard._TERMINATED_PGIDS.clear()
     monkeypatch.setattr(
-        module, "_terminate_pid_tree", lambda pid, grace=1.0: killed.append(pid)
+        module.harness_memory_guard.process_sentinel,
+        "process_groups",
+        lambda *args, **kwargs: groups,
+    )
+    monkeypatch.setattr(
+        module.harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: killed.append(pgid),
+    )
+    sentinel = module.harness_memory_guard.repo_process_sentinel(
+        repo_root=Path(module._repo_root()),
+        artifact_root=tmp_path,
+        label="unit-diff-tree",
+        limits=limits,
+        on_scan=module._record_memory_guard_sentinel_sample,
+        on_violation=module._record_memory_guard_sentinel_violation,
     )
 
-    module._DiffGlobalMemoryMonitor(config)._sample_once()
+    sentinel.scan_once()
 
     assert killed == [200]
     trip = (tmp_path / "tripped.json").read_text(encoding="utf-8")
     assert "per-tree memory guard tripped" in trip
-    assert "process tree aggregate" in trip
+    assert "scope=process_tree" in trip
 
 
 def test_stderr_traceback_mode_tolerates_frame_path_differences() -> None:

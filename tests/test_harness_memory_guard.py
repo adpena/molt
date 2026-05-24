@@ -526,6 +526,84 @@ def test_guarded_completed_process_reuses_active_repo_sentinel(monkeypatch) -> N
     assert sentinel_calls == []
 
 
+def test_guarded_completed_process_honors_external_repo_sentinel_env(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_guarded(command, **kwargs):
+        captured.update(kwargs)
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+        )
+
+    def fail_sentinel(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("external suite sentinel should suppress auto sentinel")
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        fail_sentinel,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "run_guarded",
+        fake_run_guarded,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+    env = {harness_memory_guard.repo_sentinel_active_env_key("MOLT_TEST"): "1"}
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        env=env,
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert captured["cleanup_orphans"] is False
+
+
+def test_execution_context_start_repo_sentinel_honors_external_marker(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fail_sentinel(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("external suite sentinel should suppress nested sentinel")
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        fail_sentinel,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_TEST",
+        {harness_memory_guard.repo_sentinel_active_env_key("MOLT_TEST"): "1"},
+        repo_root=tmp_path,
+        limits=limits,
+    )
+
+    assert context.start_repo_sentinel(label="unit") is None
+
+
 def test_guarded_completed_process_refreshes_dynamic_child_rlimit(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
@@ -1044,17 +1122,29 @@ def test_repo_process_sentinel_records_and_terminates_violation(
         max_global_rss_gb=4,
         poll_interval=0.01,
     )
+    scans: list[tuple[int, float]] = []
+    violations: list[dict[str, object]] = []
 
     sentinel = harness_memory_guard.repo_process_sentinel(
         repo_root=tmp_path,
         artifact_root=tmp_path,
         label="unit",
         limits=limits,
+        on_scan=lambda groups, resolved, elapsed: scans.append(
+            (len(groups), resolved.max_global_rss_gb or 0)
+        ),
+        on_violation=lambda _violation, _resolved, payload: violations.append(
+            dict(payload)
+        ),
     )
     sentinel.scan_once()
 
     assert sentinel.tripped is True
     assert terminated == [12345]
+    assert scans == [(1, 4)]
+    assert violations
+    assert violations[0]["global_total_kb"] == 3 * 1024 * 1024
+    assert violations[0]["active_pgids"] == [12345]
     events = sentinel.events_path.read_text(encoding="utf-8")
     assert "repo_process_guard_tripped" in events
     assert "limits" in events
