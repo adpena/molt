@@ -162,6 +162,12 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "memory-guard-wiring-audit" in names
     assert "native-parity" in names
     assert "wasm-parity" in names
+    assert "luau-support-matrix" in names
+    assert "luau-compile-smoke" in names
+    assert "luau-runner-available" in names
+    assert "luau-ord-at-parity" in names
+    assert "luau-rust-regressions" in names
+    assert "luau-lowering-regressions" in names
     assert "conformance-smoke" in names
     assert "bench-smoke" in names
     cli_command_step = next(
@@ -180,11 +186,70 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     )
     assert guard_audit_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
     assert guard_audit_step["category"] == "command"
+    assert "luau" in guard_audit_step["backends"]
     memory_guard_audit_step = next(
         entry for entry in steps if entry["name"] == "memory-guard-wiring-audit"
     )
     assert memory_guard_audit_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
     assert memory_guard_audit_step["category"] == "command"
+    assert "luau" in memory_guard_audit_step["backends"]
+    luau_compile_step = next(
+        entry for entry in steps if entry["name"] == "luau-compile-smoke"
+    )
+    assert luau_compile_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
+    assert "--target" in luau_compile_step["cmd"]
+    assert luau_compile_step["cmd"][luau_compile_step["cmd"].index("--target") + 1] == (
+        "luau"
+    )
+    assert "--profile" in luau_compile_step["cmd"]
+    assert luau_compile_step["cmd"][luau_compile_step["cmd"].index("--profile") + 1] == (
+        "release"
+    )
+    assert "tmp/validate/luau-smoke/hello.luau" in luau_compile_step["cmd"][-1]
+    luau_runner_step = next(
+        entry for entry in steps if entry["name"] == "luau-runner-available"
+    )
+    assert luau_runner_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
+    assert "shutil.which('luau')" in luau_runner_step["cmd"][-1]
+    luau_rust_step = next(
+        entry for entry in steps if entry["name"] == "luau-rust-regressions"
+    )
+    assert luau_rust_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
+    assert "luau-backend" in luau_rust_step["cmd"]
+    assert "--lib" in luau_rust_step["cmd"]
+    assert "luau::tests::" in luau_rust_step["cmd"]
+    luau_lowering_step = next(
+        entry for entry in steps if entry["name"] == "luau-lowering-regressions"
+    )
+    assert luau_lowering_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
+    assert "luau-backend" in luau_lowering_step["cmd"]
+    assert "--lib" in luau_lowering_step["cmd"]
+    assert "luau_lower::tests::" in luau_lowering_step["cmd"]
+
+
+def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
+    res = _run_cli(
+        ["validate", "--check", "--json", "--suite", "smoke", "--backend", "luau"]
+    )
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    data = payload["data"]
+    assert data["backend"] == "luau"
+    assert data["memory_guard"]["MOLT_TEST_SUITE"]["enabled"] is True
+    steps = data["steps"]
+    names = {entry["name"] for entry in steps}
+    assert names == {
+        "subprocess-guard-audit",
+        "memory-guard-wiring-audit",
+        "luau-support-matrix",
+        "luau-compile-smoke",
+        "luau-runner-available",
+        "luau-ord-at-parity",
+        "luau-rust-regressions",
+        "luau-lowering-regressions",
+    }
+    assert all(entry["memory_guard_prefix"] == "MOLT_TEST_SUITE" for entry in steps)
+    assert all("luau" in entry["backends"] for entry in steps)
 
 
 def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> None:

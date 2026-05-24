@@ -29,9 +29,10 @@ Molt expects production-grade changes, not opportunistic patches.
   explicitly before staging so commit hooks cannot rewrite files mid-commit.
 - Prefer the canonical CLI DX surface for repo-wide proof:
   - `molt setup`
-  - `molt doctor`
-  - `molt validate --suite smoke`
-  - `molt validate`
+	  - `molt doctor`
+	  - `molt validate --suite smoke`
+	  - `molt validate --suite smoke --backend luau`
+	  - `molt validate`
 - For repo-structure changes, verify:
   - moved paths are updated everywhere relevant
   - canonical docs link to live files

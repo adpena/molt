@@ -115,6 +115,10 @@ Interpretation:
   `tools/check_subprocess_guard_coverage.py` and
   `tools/check_memory_guard_wiring.py`, so raw subprocess launches and broader
   dev/test/bench entrypoint guard drift both fail in the canonical smoke lane.
+- Use `molt validate --suite smoke --backend luau` for the first-class Luau lane;
+  it checks generated support-matrix freshness, Luau backend/lowering Rust tests,
+  checked Luau emission, Luau runner availability, and the targeted
+  CPython-vs-Luau `ord_at` smoke under the shared memory guard.
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
 - Every `tools/dev.py` command that launches through `uv run` first installs
