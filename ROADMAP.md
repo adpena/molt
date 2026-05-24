@@ -111,9 +111,11 @@ This file is forward-looking only.
   the all-sources rule. The native raw-bool shadow lane is retired as well:
   `bool_primary_vars` is the only raw-bool authority, and non-primary bools
   stay boxed in their main I64 variables. Native int-primary now means exact
-  i64 representation, not semantic Python `int`; unbounded arithmetic and
-  shifts stay boxed/runtime-backed until shared range and shift-count proofs
-  make raw lowering sound.
+  i64 representation, not semantic Python `int`; bounded add/sub and
+  raw-closed counted store/load loop carriers may enter raw-primary only after
+  shared interval proof, while unbounded arithmetic and shifts stay
+  boxed/runtime-backed until range and shift-count proofs make raw lowering
+  sound.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 

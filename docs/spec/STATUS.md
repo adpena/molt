@@ -102,9 +102,12 @@ It is current-state only. For forward-looking priorities, use
 - Native int-lane lowering now reads raw i64 values from the static
   `int_primary_vars` contract instead of a separate raw-int shadow transport.
   `int_primary_vars` is an exact-i64 representation contract, not a semantic
-  `int` claim: unbounded arithmetic and shifts stay boxed/runtime-backed until
-  a range/shift-count proof can show that the operation cannot overflow i64,
-  promote to BigInt, or raise for Python shift semantics.
+  `int` claim: bounded add/sub and raw-closed counted store/load loop carriers
+  may enter raw-primary only after shared interval proof shows that the
+  operation cannot overflow i64 or promote to BigInt. Unbounded arithmetic and
+  shifts stay boxed/runtime-backed until a range/shift-count proof can show
+  that the operation cannot overflow i64, promote to BigInt, or raise for
+  Python shift semantics.
   Runtime integer shifts preserve the same contract directly: shift operands
   are strict integer/bool/BigInt values rather than exact-float or arbitrary
   `__index__` coercions, BigInt shift counts are not narrowed through fixed
