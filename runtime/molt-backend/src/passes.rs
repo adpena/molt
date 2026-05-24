@@ -1,4 +1,5 @@
 use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
+use crate::tir::passes::effects::simple_ir_has_static_module_class_binding_effect_proof;
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -437,6 +438,7 @@ pub fn inline_functions(ir: &mut SimpleIR) {
                             end_col_offset: None,
                             bce_safe: None,
                             arena_eligible: None,
+                            effect_proof: None,
                         });
                     }
                     continue;
@@ -2240,6 +2242,10 @@ pub(crate) fn simple_ir_op_is_provably_nonthrowing_with_facts(
 ) -> bool {
     let kind = op.kind.as_str();
 
+    if simple_ir_op_has_static_module_class_binding_effect_proof(op) {
+        return true;
+    }
+
     if matches!(
         kind,
         "const"
@@ -2477,6 +2483,8 @@ fn simple_ir_unused_result_is_removable(
             | "ne"
             | "is"
             | "is_not"
+            | "module_cache_get"
+            | "module_get_attr"
             | "box"
             | "unbox"
             | "cast"
@@ -2489,6 +2497,10 @@ fn simple_ir_unused_result_is_removable(
             | "build_slice"
             | "type_guard"
     )
+}
+
+fn simple_ir_op_has_static_module_class_binding_effect_proof(op: &OpIR) -> bool {
+    simple_ir_has_static_module_class_binding_effect_proof(&op.kind, op.effect_proof.as_deref())
 }
 
 fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
@@ -3862,6 +3874,7 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tir::passes::effects::EffectProof;
 
     fn make_op(kind: &str) -> OpIR {
         OpIR {
@@ -4127,6 +4140,62 @@ mod tests {
         assert!(
             ops.iter().any(|op| op.kind == "index"),
             "dead-op elimination must preserve unused index ops because __getitem__/__missing__ exceptions are observable: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn dead_op_elim_removes_effect_proven_static_module_class_lookup_chain() {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "dead_static_class_guard".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("__main__".to_string()),
+                        out: Some("module_name".to_string()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "module_cache_get".to_string(),
+                        args: Some(vec!["module_name".to_string()]),
+                        out: Some("module".to_string()),
+                        effect_proof: Some(
+                            EffectProof::StaticModuleClassBinding.name().to_string(),
+                        ),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("Point".to_string()),
+                        out: Some("attr_name".to_string()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "module_get_attr".to_string(),
+                        args: Some(vec!["module".to_string(), "attr_name".to_string()]),
+                        out: Some("class_ref".to_string()),
+                        effect_proof: Some(
+                            EffectProof::StaticModuleClassBinding.name().to_string(),
+                        ),
+                        ..Default::default()
+                    },
+                    make_op("ret_void"),
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op.kind.as_str(), "module_cache_get" | "module_get_attr")),
+            "effect-proven dead static class guard should be removed: {ops:?}"
         );
     }
 

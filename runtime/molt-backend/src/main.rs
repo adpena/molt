@@ -2177,6 +2177,7 @@ fn main() -> io::Result<()> {
         }
         let tir_elapsed = tir_start.elapsed();
         eprintln!("[molt-luau] TIR optimization: {tir_count} functions in {tir_elapsed:.2?}");
+        molt_backend::eliminate_dead_ops(&mut ir);
     }
 
     let output_kind = if is_luau {

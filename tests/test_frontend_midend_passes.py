@@ -1538,7 +1538,9 @@ value = Point(3)
     ir = gen.to_json()
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
-    assert _module_attr_reads_named(ops, "Point")
+    reads = _module_attr_reads_named(ops, "Point")
+    assert reads
+    assert all(op.get("effect_proof") is None for op in reads)
 
 
 def test_function_loop_static_class_call_uses_eager_loop_preheader_cache() -> None:
@@ -1573,6 +1575,13 @@ def main():
     )
     module_attr_reads = _module_attr_reads_named(func_ops, "Point")
     assert len(module_attr_reads) == 1
+    assert module_attr_reads[0].get("effect_proof") == "static_module_class_binding"
+    cache_gets = [
+        op for op in func_ops if op.get("kind") == "module_cache_get"
+    ]
+    assert any(
+        op.get("effect_proof") == "static_module_class_binding" for op in cache_gets
+    )
     module_attr_idx = next(
         i for i, op in enumerate(func_ops) if op is module_attr_reads[0]
     )
