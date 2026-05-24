@@ -263,3 +263,5 @@ jobs:
               echo "  $(basename "$f"): MISSING"
             fi
           done
+          echo "=== Guarded Command Hotspots ==="
+          python3 tools/profile_hotspots.py --limit 20

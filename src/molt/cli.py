@@ -12147,9 +12147,9 @@ def _resolve_wasm_cargo_profile_cached(
 def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
     """Map cargo profile for WASM targets.
 
-    Uses ``wasm-release`` (thin LTO, 4 codegen-units) instead of ``release``
-    (full LTO, 1 codegen-unit) for dramatically faster WASM compilation with
-    comparable runtime performance.  Override with ``MOLT_WASM_CARGO_PROFILE``.
+    Uses the explicit ``wasm-release`` profile instead of generic ``release``
+    so WASM artifact size/perf policy can move independently from native
+    staticlib policy. Override with ``MOLT_WASM_CARGO_PROFILE``.
     """
     return _resolve_wasm_cargo_profile_cached(
         cargo_profile,

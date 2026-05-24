@@ -60,11 +60,15 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert '-m "not slow"' in ci_text
     assert "Run bench CLI native smoke tests" in ci_text
     assert (
-        "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" in ci_text
-    )
-    assert (
-        "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok"
+        "tests/test_bench_tool.py::"
+        "test_bench_cli_native_smoke_contract_batch_reuses_compiler"
         in ci_text
+    )
+    assert "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" not in (
+        ci_text
+    )
+    assert "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok" not in (
+        ci_text
     )
     assert "tests/test_bench_harness.py" in ci_text
     assert "tests/test_bench_tool.py" in ci_text
@@ -77,6 +81,8 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "ld.lld --version" in ci_text
     assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in ci_text
     assert ci_text.count("Run bench CLI native smoke tests") == 1
+    assert ci_text.count("Summarize guarded command hotspots") == 3
+    assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 3
 
 
 def test_github_workflows_opt_into_node24_action_runtime() -> None:
@@ -218,6 +224,7 @@ def test_ci_memory_intensive_steps_use_memory_guard() -> None:
         "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy"
         in ci_text
     )
+    assert "python3 tools/profile_hotspots.py --limit 20" in ci_text
 
 
 def test_kani_intrinsic_contracts_avoid_symbolic_std_sort() -> None:
@@ -490,6 +497,8 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert (
         wasm_text.count("python3 tools/guarded_exec.py --prefix MOLT_WASM_TEST") >= 10
     )
+    assert "=== Guarded Command Hotspots ===" in wasm_text
+    assert "python3 tools/profile_hotspots.py --limit 20" in wasm_text
     assert wasm_text.count("--build-profile dev") >= 5
     assert "/home/runner/.cache/molt" not in wasm_text
 

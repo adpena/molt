@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -22,10 +23,14 @@ bench_tool = importlib.util.module_from_spec(BENCH_TOOL_SPEC)
 BENCH_TOOL_SPEC.loader.exec_module(bench_tool)
 
 
-def _run_bench(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_bench(
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return run_native_test_process(
         ["python3", "tools/bench.py", *args],
         cwd=REPO_ROOT,
+        env=env,
         text=True,
         capture_output=True,
         check=False,
@@ -125,6 +130,85 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
     assert entry["molt_samples_s"] == []
     assert entry["molt_output_parity"]["ok"] is None
     assert entry["molt_output_parity"]["reason"] == "reference_unavailable"
+
+
+@pytest.mark.slow
+def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
+    tmp_path: Path,
+) -> None:
+    fast_script = tmp_path / "fast_script.py"
+    fast_script.write_text("print(1)\n", encoding="utf-8")
+    slow_script = tmp_path / "slow_script.py"
+    slow_script.write_text(
+        textwrap.dedent(
+            """
+            import time
+
+            time.sleep(2.0)
+            print("done")
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    out_json = tmp_path / "bench_combined.json"
+    profile_log = tmp_path / "guarded_commands.jsonl"
+    env = dict(os.environ, MOLT_GUARD_PROFILE_LOG=str(profile_log))
+
+    res = _run_bench(
+        "--no-cpython",
+        "--no-pypy",
+        "--no-codon",
+        "--no-nuitka",
+        "--no-pyodide",
+        "--samples",
+        "1",
+        "--warmup",
+        "0",
+        "--molt-profile",
+        "dev",
+        "--reuse-molt-build-cache",
+        "--runtime-timeout-sec",
+        "1.0",
+        "--json-out",
+        str(out_json),
+        "--script",
+        str(fast_script),
+        "--script",
+        str(slow_script),
+        env=env,
+    )
+    assert res.returncode == 0, res.stderr
+
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    fast_entry = payload["benchmarks"][fast_script.name]
+    assert fast_entry["cpython_time_s"] is None
+    assert fast_entry["cpython_samples_s"] is None
+    assert fast_entry["molt_ok"] is True, res.stderr
+    assert len(fast_entry["molt_samples_s"]) == 1
+    assert fast_entry["molt_speedup"] is None
+    assert fast_entry["molt_output_parity"]["reason"] == "reference_unavailable"
+
+    slow_entry = payload["benchmarks"][slow_script.name]
+    assert slow_entry["molt_ok"] is False
+    assert slow_entry["molt_time_s"] is None
+    assert slow_entry["molt_samples_s"] == []
+    assert slow_entry["molt_output_parity"]["ok"] is None
+    assert slow_entry["molt_output_parity"]["reason"] == "reference_unavailable"
+
+    events = [
+        json.loads(line)
+        for line in profile_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    bench_events = [
+        event
+        for event in events
+        if event.get("event") == "guarded_command_profile"
+        and event.get("prefix") == "MOLT_BENCH"
+    ]
+    assert len(bench_events) >= 2
+    assert any(event["status"] == "timeout" for event in bench_events)
 
 
 def test_molt_build_cmd_supports_explicit_profile() -> None:
