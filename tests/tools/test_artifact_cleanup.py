@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,34 @@ def test_default_pathspecs_avoid_recursive_globs() -> None:
     module = _load_artifact_cleanup()
 
     assert all("**" not in pathspec for pathspec in module.default_pathspecs())
+
+
+def test_default_pathspecs_avoid_broad_leading_wildcards() -> None:
+    module = _load_artifact_cleanup()
+
+    assert all(
+        not pathspec.lstrip(":").startswith("*")
+        for pathspec in module.default_pathspecs()
+    )
+
+
+def test_default_pathspecs_cover_canonical_local_artifact_roots() -> None:
+    module = _load_artifact_cleanup()
+
+    assert {
+        "target/",
+        "target-*",
+        "tmp/",
+        ".molt_cache/",
+        ".molt_cache-*/",
+        ".uv-cache/",
+        ".uv-cache-*/",
+        "bin/",
+        "logs/",
+        "bench/results/",
+        "wasm/molt_runtime.wasm",
+        "wasm/molt_runtime_reloc.wasm",
+    }.issubset(set(module.default_pathspecs()))
 
 
 def test_extra_pathspecs_reject_stateful_roots() -> None:
@@ -119,6 +148,35 @@ def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> Non
     assert calls[0]["cwd"] == module.REPO_ROOT
     assert calls[0]["capture_output"] is False
     assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
+
+
+def test_main_json_reports_git_clean_entries(monkeypatch, capsys) -> None:
+    module = _load_artifact_cleanup()
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="Would remove target/\nWould remove tmp/cache/\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    rc = module.main(["--json"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "artifact_cleanup"
+    assert payload["status"] == "ok"
+    assert payload["data"]["mode"] == "dry-run"
+    assert payload["data"]["entries"] == [
+        {"action": "would_remove", "path": "target/"},
+        {"action": "would_remove", "path": "tmp/cache/"},
+    ]
 
 
 def test_main_rejects_stateful_extra_before_git_clean(monkeypatch) -> None:
