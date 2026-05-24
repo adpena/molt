@@ -13,6 +13,7 @@ import datetime as dt
 import functools
 import hashlib
 import http.client
+import importlib.util
 import io
 import ipaddress
 import tempfile
@@ -33464,165 +33465,63 @@ def vendor(
     return 0
 
 
+def _load_artifact_cleanup_module(root: Path) -> Any:
+    tool_path = root / "tools" / "artifact_cleanup.py"
+    if not tool_path.is_file():
+        raise FileNotFoundError(f"missing canonical cleanup tool: {tool_path}")
+    spec = importlib.util.spec_from_file_location(
+        "_molt_repo_artifact_cleanup",
+        tool_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load canonical cleanup tool: {tool_path}")
+    module = importlib.util.module_from_spec(spec)
+    root_text = str(root)
+    inserted_root = False
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+        inserted_root = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if inserted_root:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(root_text)
+    return module
+
+
 def clean(
     json_output: bool = False,
     verbose: bool = False,
-    cache: bool = True,
-    artifacts: bool = True,
-    bins: bool = False,
-    repo_artifacts: bool = False,
-    cargo_target: bool = False,
-    clean_all: bool = False,
-    include_venvs: bool = False,
-    scratch: bool = True,
+    apply: bool = False,
+    kill_processes: bool = False,
+    extra_paths: Sequence[str] | None = None,
+    list_paths: bool = False,
 ) -> int:
     root = _find_molt_root(Path.cwd())
     root_error = _require_molt_root(root, json_output, "clean")
     if root_error is not None:
         return root_error
-    removed: list[str] = []
-    missing: list[str] = []
-    failures: list[str] = []
-    attempted: set[str] = set()
+    assert root is not None
+    try:
+        artifact_cleanup = _load_artifact_cleanup_module(root)
+    except Exception as exc:
+        return _fail(str(exc), json_output, command="clean")
 
-    if clean_all:
-        cache = True
-        artifacts = True
-        bins = True
-        repo_artifacts = True
-        cargo_target = True
-        include_venvs = True
-        scratch = True
-
-    def _remove_path(path: Path) -> None:
-        normalized = str(path.expanduser().absolute())
-        if normalized in attempted:
-            return
-        attempted.add(normalized)
-        try:
-            if path.is_symlink():
-                path.unlink()
-                removed.append(str(path))
-                return
-            if path.exists():
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-                removed.append(str(path))
-            else:
-                missing.append(str(path))
-        except OSError as exc:
-            failures.append(f"{path}: {exc}")
-
-    def _is_virtualenv_path(path: Path) -> bool:
-        for part in path.parts:
-            if part in {"venv", ".env", "env", MOLT_VENV_DIR}:
-                return True
-            if part.startswith(".venv"):
-                return True
-        return False
-
-    def _iter_pycache_dirs(root_dir: Path) -> list[Path]:
-        pycache_dirs: list[Path] = []
-        for dirpath, dirnames, _filenames in os.walk(root_dir, followlinks=False):
-            current = Path(dirpath)
-            if not include_venvs and _is_virtualenv_path(current):
-                dirnames[:] = []
-                continue
-            pruned: list[str] = []
-            for name in dirnames:
-                candidate = Path(dirpath, name)
-                if candidate.is_symlink():
-                    continue
-                pruned.append(name)
-            dirnames[:] = pruned
-            if current.name == "__pycache__":
-                pycache_dirs.append(current)
-                dirnames[:] = []
-        return pycache_dirs
-
-    def _repo_scratch_dirs() -> list[Path]:
-        repo_dirs = [
-            root / "tmp",
-            root / ".uv-cache",
-            root / ".molt_cache",
-            root / ".pytest_cache",
-            root / ".ruff_cache",
-            root / ".mypy_cache",
-            root / "__pycache__",
-        ]
-        repo_dirs.extend(sorted(root.glob(".molt_cache-*")))
-        repo_dirs.extend(sorted(root.glob(".uv-cache-*")))
-        return repo_dirs
-
-    if cache:
-        cache_root = _default_molt_cache()
-        _remove_path(cache_root)
-    if artifacts:
-        build_root = _default_molt_home() / "build"
-        _remove_path(build_root)
-    if bins:
-        bin_root = _default_molt_bin()
-        _remove_path(bin_root)
-    if scratch:
-        for path in _repo_scratch_dirs():
-            _remove_path(path)
-        for path in _iter_pycache_dirs(root):
-            _remove_path(path)
-    if repo_artifacts:
-        repo_dirs = [
-            root / "logs",
-            root / "dist",
-            root / "build",
-        ]
-        repo_dirs.extend(_repo_scratch_dirs())
-        for path in repo_dirs:
-            _remove_path(path)
-        for path in _iter_pycache_dirs(root):
-            _remove_path(path)
-        repo_files = [
-            root / "output.wasm",
-            root / "output_linked.wasm",
-            root / "output.o",
-            root / "main_stub.c",
-        ]
-        for path in repo_files:
-            _remove_path(path)
-    if cargo_target:
-        cargo_paths = [
-            root / "target",
-            *sorted(root.glob("target-*")),
-            *sorted(root.glob("*/target")),
-        ]
-        for path in cargo_paths:
-            _remove_path(path)
+    argv = ["--repo-root", str(root)]
+    if apply:
+        argv.append("--apply")
+    if kill_processes:
+        argv.append("--kill-processes")
+    if list_paths:
+        argv.append("--list-paths")
     if json_output:
-        data: dict[str, Any] = {"removed": removed}
-        if verbose:
-            data["missing"] = missing
-        status = "error" if failures else "ok"
-        payload = _json_payload(
-            "clean",
-            status,
-            data=data,
-            errors=failures if failures else None,
-        )
-        _emit_json(payload, json_output=True)
-    else:
-        if removed:
-            print("Removed:")
-            for path in removed:
-                print(f"- {path}")
-        if failures:
-            print("Failed:")
-            for entry in failures:
-                print(f"- {entry}")
-        if verbose and missing:
-            print("Missing:")
-            for path in missing:
-                print(f"- {path}")
-    return 1 if failures else 0
+        argv.append("--json")
+    if verbose:
+        argv.append("--verbose")
+    for pathspec in extra_paths or ():
+        argv.extend(["--extra-path", pathspec])
+    return int(artifact_cleanup.main(argv))
 
 
 def show_config(
@@ -33973,18 +33872,10 @@ def _completion_script(shell: str) -> str:
             "--verbose",
         ],
         "clean": [
-            "--all",
-            "--cache",
-            "--no-cache",
-            "--artifacts",
-            "--no-artifacts",
-            "--bins",
-            "--no-bins",
-            "--repo-artifacts",
-            "--no-repo-artifacts",
-            "--include-venvs",
-            "--cargo-target",
-            "--no-cargo-target",
+            "--apply",
+            "--kill-processes",
+            "--extra-path",
+            "--list-paths",
             "--json",
             "--verbose",
         ],
@@ -37003,53 +36894,29 @@ def main() -> int:
     )
 
     clean_parser = subparsers.add_parser(
-        "clean", help="Remove build artifacts and caches"
+        "clean",
+        help="Dry-run or apply canonical ignored artifact/cache cleanup",
     )
     clean_parser.add_argument(
-        "--all",
+        "--apply",
         action="store_true",
-        help="Remove all caches, build artifacts, repo outputs, and cargo targets.",
+        help="Delete ignored artifacts. Default is a dry run.",
     )
     clean_parser.add_argument(
-        "--cache",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Remove build caches under MOLT_CACHE.",
-    )
-    clean_parser.add_argument(
-        "--artifacts",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Remove build artifacts under MOLT_HOME/build.",
-    )
-    clean_parser.add_argument(
-        "--scratch",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Remove repo-local scratch/cache roots (tmp/, .uv-cache*, .molt_cache*, Python caches).",
-    )
-    clean_parser.add_argument(
-        "--bins",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Remove Molt binaries under MOLT_BIN.",
-    )
-    clean_parser.add_argument(
-        "--repo-artifacts",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Remove repo-local generated artifacts (logs/, dist/, build/, caches, output*.wasm).",
-    )
-    clean_parser.add_argument(
-        "--include-venvs",
+        "--kill-processes",
         action="store_true",
-        help="Also clean virtualenv caches when removing repo artifacts.",
+        help="Run the repo process sentinel before cleanup.",
     )
     clean_parser.add_argument(
-        "--cargo-target",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Remove Cargo target/ artifacts in the repo root, legacy target-* dirs, and top-level nested workspace targets.",
+        "--extra-path",
+        action="append",
+        default=[],
+        help="Additional repo-relative git-clean pathspec. Still removes ignored files only.",
+    )
+    clean_parser.add_argument(
+        "--list-paths",
+        action="store_true",
+        help="Print canonical cleanup pathspecs and exit.",
     )
     clean_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -38059,14 +37926,10 @@ def main() -> int:
         return clean(
             args.json,
             args.verbose,
-            args.cache,
-            args.artifacts,
-            args.bins,
-            args.repo_artifacts,
-            args.cargo_target,
-            args.all,
-            args.include_venvs,
-            scratch=args.scratch,
+            apply=args.apply,
+            kill_processes=args.kill_processes,
+            extra_paths=args.extra_path,
+            list_paths=args.list_paths,
         )
     if args.command == "config":
         return show_config(config_root, config, args.json, args.verbose)

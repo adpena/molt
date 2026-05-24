@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -16,10 +17,14 @@ except ModuleNotFoundError:  # pragma: no cover - direct script import from tool
 DEFAULT_PATHS: tuple[str, ...] = (
     ".hypothesis/",
     ".molt_cache/",
+    ".molt_cache-*/",
     ".pytest_cache/",
     ".ruff_cache/",
     ".uv-cache/",
+    ".uv-cache-*/",
+    ".mypy_cache/",
     "bench/results/",
+    "bin/",
     "build/",
     "deploy/browser/simd-ops-rs/target/",
     "deploy/browser/simd-ops-zig/libsimd.a",
@@ -30,6 +35,7 @@ DEFAULT_PATHS: tuple[str, ...] = (
     "hello_molt",
     "libsimd.a",
     "logs/",
+    "main_stub.c",
     "models/paddleocr/korean_rec/.cache/",
     "models/paddleocr/unified_mobile_rec/.cache/",
     "molt_runtime.*.rcgu.o",
@@ -57,6 +63,7 @@ DEFAULT_PATHS: tuple[str, ...] = (
     "type_facts.json",
     "wasm/molt_runtime.wasm",
     "wasm/molt_runtime_reloc.wasm",
+    "node_modules/",
 )
 
 STATEFUL_PATHS: tuple[str, ...] = (
@@ -124,6 +131,8 @@ def build_git_clean_command(*, apply: bool, pathspecs: Sequence[str]) -> list[st
 def _guarded_dev_cleanup_process(
     repo_root: Path,
     cmd: Sequence[str],
+    *,
+    capture_output: bool = False,
 ) -> harness_memory_guard.GuardedCompletedProcess:
     env = harness_memory_guard.canonical_harness_env(None, repo_root=repo_root)
     return harness_memory_guard.guarded_completed_process(
@@ -131,28 +140,60 @@ def _guarded_dev_cleanup_process(
         prefix="MOLT_DEV_CLEANUP",
         cwd=repo_root,
         env=env,
-        capture_output=False,
+        capture_output=capture_output,
         text=True,
     )
 
 
-def run_process_sentinel(repo_root: Path) -> int:
+def run_process_sentinel(
+    repo_root: Path,
+    *,
+    capture_output: bool = False,
+) -> harness_memory_guard.GuardedCompletedProcess:
     cmd = [
         sys.executable,
         str(repo_root / "tools" / "process_sentinel.py"),
         "--once",
         "--kill-all",
     ]
-    result = _guarded_dev_cleanup_process(repo_root, cmd)
-    if result.returncode not in {0, 1}:
-        return result.returncode
-    return 0
+    return _guarded_dev_cleanup_process(
+        repo_root,
+        cmd,
+        capture_output=capture_output,
+    )
 
 
-def run_git_clean(repo_root: Path, *, apply: bool, pathspecs: Sequence[str]) -> int:
+def run_git_clean(
+    repo_root: Path,
+    *,
+    apply: bool,
+    pathspecs: Sequence[str],
+    capture_output: bool = False,
+) -> harness_memory_guard.GuardedCompletedProcess:
     cmd = build_git_clean_command(apply=apply, pathspecs=pathspecs)
-    result = _guarded_dev_cleanup_process(repo_root, cmd)
-    return result.returncode
+    return _guarded_dev_cleanup_process(
+        repo_root,
+        cmd,
+        capture_output=capture_output,
+    )
+
+
+def _git_clean_entries(stdout: str) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for line in stdout.splitlines():
+        if line.startswith("Would remove "):
+            entries.append(
+                {"action": "would_remove", "path": line.removeprefix("Would remove ")}
+            )
+        elif line.startswith("Removing "):
+            entries.append({"action": "removed", "path": line.removeprefix("Removing ")})
+        elif line:
+            entries.append({"action": "output", "line": line})
+    return entries
+
+
+def _emit_json(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -189,6 +230,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print the default cleanup pathspecs and exit.",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable cleanup report.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Include command/stdout/stderr details in JSON output.",
+    )
     return parser.parse_args(argv)
 
 
@@ -204,22 +255,85 @@ def main(argv: Sequence[str] | None = None) -> int:
     pathspecs = [*default_pathspecs(), *args.extra_path]
 
     if args.list_paths:
-        print("# default artifact cleanup pathspecs")
-        for pathspec in default_pathspecs():
-            print(pathspec)
-        print("# stateful pathspecs intentionally excluded")
-        for pathspec in stateful_pathspecs():
-            print(pathspec)
+        if args.json:
+            _emit_json(
+                {
+                    "command": "artifact_cleanup",
+                    "status": "ok",
+                    "data": {
+                        "default_pathspecs": list(default_pathspecs()),
+                        "stateful_pathspecs": list(stateful_pathspecs()),
+                    },
+                }
+            )
+        else:
+            print("# default artifact cleanup pathspecs")
+            for pathspec in default_pathspecs():
+                print(pathspec)
+            print("# stateful pathspecs intentionally excluded")
+            for pathspec in stateful_pathspecs():
+                print(pathspec)
         return 0
 
     mode = "apply" if args.apply else "dry-run"
-    print(f"artifact_cleanup.mode={mode}")
-    print(f"artifact_cleanup.repo_root={repo_root}")
+    if not args.json:
+        print(f"artifact_cleanup.mode={mode}")
+        print(f"artifact_cleanup.repo_root={repo_root}")
+    sentinel_result: harness_memory_guard.GuardedCompletedProcess | None = None
     if args.kill_processes:
-        rc = run_process_sentinel(repo_root)
-        if rc != 0:
-            return rc
-    return run_git_clean(repo_root, apply=args.apply, pathspecs=pathspecs)
+        sentinel_result = run_process_sentinel(repo_root, capture_output=args.json)
+        if sentinel_result.returncode not in {0, 1}:
+            if args.json:
+                _emit_json(
+                    {
+                        "command": "artifact_cleanup",
+                        "status": "error",
+                        "data": {
+                            "mode": mode,
+                            "repo_root": str(repo_root),
+                            "pathspecs": pathspecs,
+                            "sentinel_returncode": sentinel_result.returncode,
+                        },
+                        "errors": [
+                            "process sentinel failed before artifact cleanup"
+                        ],
+                    }
+                )
+            return sentinel_result.returncode
+    result = run_git_clean(
+        repo_root,
+        apply=args.apply,
+        pathspecs=pathspecs,
+        capture_output=args.json,
+    )
+    if args.json:
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        data: dict[str, object] = {
+            "mode": mode,
+            "repo_root": str(repo_root),
+            "pathspecs": pathspecs,
+            "entries": _git_clean_entries(stdout),
+            "returncode": result.returncode,
+        }
+        if sentinel_result is not None:
+            data["sentinel_returncode"] = sentinel_result.returncode
+        if args.verbose:
+            data["stdout"] = stdout.splitlines()
+            data["stderr"] = stderr.splitlines()
+            data["command"] = build_git_clean_command(
+                apply=args.apply,
+                pathspecs=pathspecs,
+            )
+        _emit_json(
+            {
+                "command": "artifact_cleanup",
+                "status": "ok" if result.returncode == 0 else "error",
+                "data": data,
+                "errors": stderr.splitlines() if result.returncode else [],
+            }
+        )
+    return result.returncode
 
 
 if __name__ == "__main__":

@@ -250,19 +250,16 @@ Key flags:
 - `--deterministic-warn/--no-deterministic-warn`
 
 ### 4.5 `molt clean`
-**Status:** Implemented (initial).
+**Status:** Implemented.
 
-Purpose: Remove Molt caches (`$MOLT_CACHE`), repo-local temp/cache variants (`tmp/`, `.uv-cache/`, `.molt_cache/`), Molt build artifacts (`$MOLT_HOME/build`), Molt binaries (`$MOLT_BIN`), repo-local generated artifacts (logs/dist/build/output*.wasm/cache dirs), and optional Cargo build artifacts. Tracked vendored source under `vendor/` is not removed.
+Purpose: Dry-run or apply the canonical ignored artifact/cache cleanup allowlist. `molt clean`, `tools/artifact_cleanup.py`, and `tools/dev.py clean-artifacts` are one cleanup surface: they remove only ignored files selected by the allowlist through `git clean -X`, run under the `MOLT_DEV_CLEANUP` memory guard, and preserve tracked files plus stateful roots such as `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora.
 
 Key flags:
-- `--cache/--no-cache`
-- `--artifacts/--no-artifacts`
-- `--scratch/--no-scratch` (remove repo-local scratch/cache roots: `tmp/`, `.uv-cache*`, `.molt_cache*`, Python cache dirs)
-- `--bins/--no-bins`
-- `--repo-artifacts/--no-repo-artifacts` (skips virtualenvs by default)
-- `--include-venvs` (include virtualenv caches when cleaning repo artifacts)
-- `--cargo-target/--no-cargo-target` (remove Cargo `target/`, legacy `target-*`, and top-level nested workspace `*/target` artifacts)
-- `--all` (enable all cleanup targets, including repo-local, legacy, and nested workspace Cargo target dirs if present)
+- `--apply` (delete; default is dry-run)
+- `--kill-processes` (run the repo process sentinel before cleanup)
+- `--extra-path <path>` (add a repo-relative literal pathspec; still ignored-files-only and stateful roots are rejected)
+- `--list-paths`
+- `--json`
 
 ### 4.6 `molt config`
 **Status:** Implemented (initial).

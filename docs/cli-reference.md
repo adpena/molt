@@ -246,14 +246,16 @@ molt vendor --extras dev
 
 #### `molt clean`
 
-Remove build artifacts and caches.
+Dry-run or apply the canonical ignored artifact/cache cleanup allowlist. This
+uses the same cleanup engine as `tools/artifact_cleanup.py` and
+`tools/dev.py clean-artifacts`, so tracked files and stateful roots such as
+`.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are preserved.
 
 ```bash
-molt clean                               # Remove caches, tmp, and build artifacts
-molt clean --all                         # Remove everything (caches, bins, cargo, legacy/nested target dirs)
-molt clean --no-scratch                  # Keep repo-local tmp/cache roots
-molt clean --bins                        # Also remove compiled binaries
-molt clean --cargo-target                # Also remove repo-local, legacy, and nested workspace Cargo targets
+molt clean                               # Dry-run ignored artifact/cache cleanup
+molt clean --apply                       # Delete ignored artifacts from the canonical allowlist
+molt clean --apply --kill-processes      # Drain repo-scoped workers before deleting artifacts
+molt clean --list-paths                  # Show default cleanup and excluded stateful roots
 ```
 
 #### `molt doctor`

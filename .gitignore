@@ -14,12 +14,15 @@ __pycache__/
 .tmp/
 tmp/
 .molt_cache/
+.molt_cache-*/
 .molt_cache_*/
 .molt-cache/
 .uv-cache/
+.uv-cache-*/
 diff/
 dist/
 build/
+bin/
 var/
 Volumes/
 *.egg-info/
@@ -49,6 +52,7 @@ ops/linear/*.secret*
 ops/linear/*.secrets*
 hello_molt
 *_molt
+main_stub.c
 *.exe
 logs/
 tests/harness/reports/

@@ -97,8 +97,15 @@ If the structural change is too large for one session, the honest paths are: (a)
   - `export MOLT_DIFF_TMPDIR=$PWD/tmp`
   - `export UV_CACHE_DIR=$PWD/.uv-cache`
   - `export TMPDIR=$PWD/tmp`
+- Canonical cleanup commands:
+  - `molt clean`: dry-run the canonical ignored artifact/cache cleanup allowlist.
+  - `molt clean --apply`: delete ignored artifacts from the canonical allowlist.
+  - `molt clean --apply --kill-processes`: first run the repo process sentinel, then delete ignored artifacts; use this for stale/interrupted build, bench, or test workers before reclaiming `target/`.
+  - `tools/dev.py clean-artifacts --apply`: dev-wrapper alias for the same cleanup engine.
 - Notes:
   - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). Keep that state in the canonical target root rather than inventing parallel targets.
+  - `molt clean` and `tools/dev.py clean-artifacts` both route through `tools/artifact_cleanup.py`; tracked files, dirty partner work, `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are excluded from default cleanup.
+  - Keep `.gitignore` and `tools/artifact_cleanup.py` pathspecs in sync whenever a new canonical artifact root is added.
   - If a workflow would generate unusually large artifacts, put them under the canonical root for that class and clean them up once the evidence is no longer needed.
 
 ## Git Workflow Policy (Non-Negotiable)
@@ -266,6 +273,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Runtime/backend Cargo rebuilds use lock files under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` to prevent duplicate rebuild storms across concurrent agents.
 - Native backend compiles use a local backend daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - Build/daemon fingerprints + lock state live under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR` when set). Daemon sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`) to avoid external filesystems that do not support Unix sockets; logs/pid remain under build state.
+- `molt clean` dry-runs canonical ignored artifact cleanup; `molt clean --apply` deletes those ignored artifacts; add `--kill-processes` when stale repo-scoped Molt build/test/bench processes must be drained first.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14.
 - `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.

@@ -2704,92 +2704,81 @@ def test_invalidate_stale_stdlib_cache_prefers_explicit_cargo_target_dir(
     assert removed == [stdlib_object]
 
 
-def test_clean_repo_artifacts_removes_repo_local_cache_roots(
+def test_clean_delegates_to_canonical_artifact_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for relative in ("tmp", ".uv-cache", ".molt_cache", ".molt_cache-typing"):
-        path = tmp_path / relative
-        path.mkdir(parents=True)
-        (path / "stamp").write_text(relative)
-
-    vendor = tmp_path / "vendor"
-    vendor.mkdir()
-    (vendor / "tracked-dep").write_text("keep")
-
     monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
     monkeypatch.setattr(
         cli,
         "_require_molt_root",
         lambda _root, _json_output, _command: None,
     )
+    calls: list[list[str]] = []
 
-    exit_code = cli.clean(cache=False, artifacts=False, repo_artifacts=True)
+    class FakeArtifactCleanup:
+        @staticmethod
+        def main(argv: list[str]) -> int:
+            calls.append(list(argv))
+            return 0
+
+    monkeypatch.setattr(
+        cli,
+        "_load_artifact_cleanup_module",
+        lambda _root: FakeArtifactCleanup,
+    )
+
+    exit_code = cli.clean(
+        json_output=True,
+        verbose=True,
+        apply=True,
+        kill_processes=True,
+        extra_paths=["tmp/custom-cache/"],
+        list_paths=True,
+    )
 
     assert exit_code == 0
-    assert not (tmp_path / "tmp").exists()
-    assert not (tmp_path / ".uv-cache").exists()
-    assert not (tmp_path / ".molt_cache").exists()
-    assert not (tmp_path / ".molt_cache-typing").exists()
-    assert vendor.exists()
+    assert calls == [
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--apply",
+            "--kill-processes",
+            "--list-paths",
+            "--json",
+            "--verbose",
+            "--extra-path",
+            "tmp/custom-cache/",
+        ]
+    ]
 
 
-def test_clean_default_removes_repo_local_scratch_roots(
+def test_clean_defaults_to_canonical_dry_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for relative in ("tmp", ".uv-cache", ".molt_cache", ".molt_cache-typing"):
-        path = tmp_path / relative
-        path.mkdir(parents=True)
-        (path / "stamp").write_text(relative)
-
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    (logs / "evidence.log").write_text("keep")
-
     monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
     monkeypatch.setattr(
         cli,
         "_require_molt_root",
         lambda _root, _json_output, _command: None,
     )
-    monkeypatch.setattr(cli, "_default_molt_cache", lambda: tmp_path / ".molt_cache")
-    monkeypatch.setattr(cli, "_default_molt_home", lambda: tmp_path / ".molt_home")
+    calls: list[list[str]] = []
+
+    class FakeArtifactCleanup:
+        @staticmethod
+        def main(argv: list[str]) -> int:
+            calls.append(list(argv))
+            return 0
+
+    monkeypatch.setattr(
+        cli,
+        "_load_artifact_cleanup_module",
+        lambda _root: FakeArtifactCleanup,
+    )
 
     exit_code = cli.clean()
 
     assert exit_code == 0
-    assert not (tmp_path / "tmp").exists()
-    assert not (tmp_path / ".uv-cache").exists()
-    assert not (tmp_path / ".molt_cache").exists()
-    assert not (tmp_path / ".molt_cache-typing").exists()
-    assert logs.exists()
-
-
-def test_clean_cargo_target_removes_legacy_session_target_dirs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    canonical_target = tmp_path / "target"
-    legacy_target = tmp_path / "target-alpha_session_beta"
-    nested_runtime_target = tmp_path / "runtime" / "target"
-    canonical_target.mkdir()
-    legacy_target.mkdir()
-    nested_runtime_target.mkdir(parents=True)
-    (canonical_target / "stamp").write_text("canonical")
-    (legacy_target / "stamp").write_text("legacy")
-    (nested_runtime_target / "stamp").write_text("runtime")
-
-    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
-    monkeypatch.setattr(
-        cli,
-        "_require_molt_root",
-        lambda _root, _json_output, _command: None,
-    )
-
-    exit_code = cli.clean(cache=False, artifacts=False, cargo_target=True)
-
-    assert exit_code == 0
-    assert not canonical_target.exists()
-    assert not legacy_target.exists()
-    assert not nested_runtime_target.exists()
+    assert calls == [["--repo-root", str(tmp_path)]]
 
 
 def test_verify_cargo_lock_uses_workspace_member_manifests_only(
