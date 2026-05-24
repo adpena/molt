@@ -67,7 +67,7 @@ Per cluster:
 
 Required constraints:
 - `MOLT_DIFF_MEASURE_RSS=1`
-- `MOLT_DIFF_RLIMIT_GB=10`
+- default adaptive process/tree/global RSS guard plus adaptive child rlimit
 
 ## Weekly Scoreboard (Required)
 1. intrinsic-backed count

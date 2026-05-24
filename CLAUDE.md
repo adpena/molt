@@ -94,10 +94,15 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
 
 - Build with `cargo build --profile release-fast -p molt-backend --features native-backend`
 - Test with `python3 -m molt build --target native --output /tmp/test_out test_file.py --rebuild`
-- Backend daemon uses release-fast profile. Kill with `pkill -9 -f "molt-backend"` before testing new builds.
+- Backend daemon uses release-fast profile. Drain stale repo-scoped build/test/bench
+  workers through `molt clean --apply --kill-processes` or
+  `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`
+  before testing new builds.
 - Max 2 build-triggering agents at once. 5 concurrent builds OOM the machine.
 - Max 3 backend daemons enforced by the CLI. Stale sockets are auto-cleaned.
-- After a session with multiple agents, run: `pkill -9 -f "molt-backend" && rm -rf target-* .molt_cache_*`
+- After a session with multiple agents, run `molt clean --apply --kill-processes`
+  so process cleanup and artifact deletion stay inside the canonical guard and
+  allowlist.
 
 ## Concurrent Development (MOLT_SESSION_ID)
 

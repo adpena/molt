@@ -305,7 +305,8 @@ def _run_diff_matrix(
                 diff_tmp=tmp_root,
             )
             env["MOLT_DIFF_MEASURE_RSS"] = "1"
-            env["MOLT_DIFF_RLIMIT_GB"] = "10"
+            if args.diff_child_rlimit_gb is not None:
+                env["MOLT_DIFF_CHILD_RLIMIT_GB"] = str(args.diff_child_rlimit_gb)
             cmd = [
                 "uv",
                 "run",
@@ -592,6 +593,16 @@ def parse_args() -> argparse.Namespace:
         help="Per-diff command timeout in seconds (default: 180).",
     )
     parser.add_argument(
+        "--diff-child-rlimit-gb",
+        type=float,
+        default=None,
+        help=(
+            "Optional explicit child virtual-memory rlimit for diff children. "
+            "Unset inherits tests/molt_diff.py adaptive defaults; use only for "
+            "a deliberate narrower-cap investigation."
+        ),
+    )
+    parser.add_argument(
         "--gate-max-build-errors",
         type=int,
         default=0,
@@ -668,6 +679,9 @@ def main() -> int:
             "diff_scripts": args.diff_scripts if args.run_diff else [],
             "diff_jobs": args.diff_jobs if args.run_diff else 0,
             "diff_timeout_sec": args.diff_timeout_sec if args.run_diff else 0,
+            "diff_child_rlimit_gb": (
+                args.diff_child_rlimit_gb if args.run_diff else None
+            ),
             "gate_max_build_errors": args.gate_max_build_errors,
             "gate_max_build_timeouts": args.gate_max_build_timeouts,
             "gate_max_diff_command_errors": args.gate_max_diff_command_errors,

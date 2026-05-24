@@ -565,6 +565,85 @@ def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> N
     assert terminated == []
 
 
+def test_main_once_reports_operator_incident_for_terminated_group(
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_process_sentinel()
+    terminated: list[tuple[int, float]] = []
+    clock = 100.0
+
+    monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(
+        module.memory_guard,
+        "sample_processes",
+        lambda: {
+            10: module.memory_guard.ProcessSample(
+                pid=10,
+                ppid=1,
+                pgid=10,
+                rss_kb=100,
+                command=f"{module.repo_root()}/target/release-fast/molt-backend",
+                elapsed_sec=1200,
+            )
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append((pgid, grace)),
+    )
+
+    rc = module.main(["--once", "--kill-all", "--grace-sec", "0.25"])
+
+    assert rc == 1
+    assert terminated == [(10, 0.25)]
+    err = capsys.readouterr().err
+    assert "action=terminate" in err
+    assert "kill_all" in err
+    assert "pgid=10" in err
+    assert "killed_at=2026-05-24T10:00:00Z" in err
+    assert "elapsed=0.00s" in err
+    assert "age=1200s" in err
+    assert "grace=0.25s" in err
+    assert "next action: rerun the interrupted build/test/bench command" in err
+
+
+def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None:
+    module = _load_process_sentinel()
+
+    monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
+    monkeypatch.setattr(module.time, "monotonic", lambda: 50.0)
+    monkeypatch.setattr(
+        module.memory_guard,
+        "sample_processes",
+        lambda: {
+            10: module.memory_guard.ProcessSample(
+                pid=10,
+                ppid=1,
+                pgid=10,
+                rss_kb=100,
+                command=f"{module.repo_root()}/target/release-fast/molt-backend",
+            )
+        },
+    )
+    monkeypatch.setattr(module, "terminate_group", lambda pgid, *, grace: None)
+
+    rc = module.main(["--once", "--dry-run", "--kill-all", "--json"])
+
+    assert rc == 1
+    payload = module.json.loads(capsys.readouterr().out)
+    assert payload["event"] == "process_sentinel_violation"
+    assert payload["action"] == "dry_run"
+    assert payload["observed_at"] == "2026-05-24T10:00:00Z"
+    assert payload["elapsed_s"] == 0.0
+    assert payload["grace_sec"] == module.DEFAULT_GRACE_SEC
+    assert payload["violation"]["reason"] == "kill_all"
+    assert payload["violation"]["pgid"] == 10
+    assert payload["next_action"].startswith("rerun the interrupted")
+
+
 def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
     module = _load_process_sentinel()
     calls = 0
