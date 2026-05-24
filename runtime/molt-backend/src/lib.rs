@@ -2466,6 +2466,23 @@ pub(crate) fn env_setting(var: &str) -> Option<String> {
 }
 
 #[cfg(feature = "native-backend")]
+fn backend_setting_requests_llvm(setting: Option<&str>) -> bool {
+    setting == Some("llvm")
+}
+
+#[cfg(all(feature = "native-backend", not(feature = "llvm")))]
+fn assert_requested_llvm_backend_available(use_llvm: bool) {
+    if use_llvm {
+        panic!(
+            "MOLT_BACKEND=llvm requested but molt-backend was built without the llvm feature; rebuild with `--features llvm` or choose the Cranelift backend explicitly"
+        );
+    }
+}
+
+#[cfg(all(feature = "native-backend", feature = "llvm"))]
+fn assert_requested_llvm_backend_available(_use_llvm: bool) {}
+
+#[cfg(feature = "native-backend")]
 fn emitted_module_symbol(name: &str) -> Option<&str> {
     name.strip_prefix("molt_init_")
 }
@@ -3025,15 +3042,12 @@ impl SimpleBackend {
             .unwrap_or(false);
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
-        // Backend selection: MOLT_BACKEND=llvm routes through LLVM when the feature is
-        // available; otherwise falls back to Cranelift with a warning.
-        let _use_llvm = env_setting("MOLT_BACKEND").as_deref() == Some("llvm");
-        #[cfg(not(feature = "llvm"))]
-        if _use_llvm {
-            eprintln!(
-                "[molt] WARNING: MOLT_BACKEND=llvm requested but llvm feature is not compiled in; falling back to Cranelift"
-            );
-        }
+        // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
+        // missing LLVM feature must fail closed instead of substituting a
+        // different backend and producing misleading validation evidence.
+        let backend_setting = env_setting("MOLT_BACKEND");
+        let use_llvm = backend_setting_requests_llvm(backend_setting.as_deref());
+        assert_requested_llvm_backend_available(use_llvm);
         apply_profile_order(&mut ir);
         // ── Pre-TIR IR passes (parallel) ────────────────────────
         // Each pass operates on a single FunctionIR with no shared
@@ -3384,7 +3398,7 @@ impl SimpleBackend {
         // lifted to TIR, lowered to LLVM IR, then the whole module is
         // optimized and emitted as a native object file.
         #[cfg(feature = "llvm")]
-        if _use_llvm {
+        if use_llvm {
             use crate::llvm_backend::{LlvmBackend, MoltOptLevel};
             use crate::tir::lower_from_simple::lower_to_tir;
 
@@ -5625,6 +5639,21 @@ mod tests {
             None => unsafe { std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS") },
         }
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[cfg(not(feature = "llvm"))]
+    #[test]
+    #[should_panic(
+        expected = "MOLT_BACKEND=llvm requested but molt-backend was built without the llvm feature"
+    )]
+    fn llvm_backend_request_without_feature_fails_closed() {
+        super::assert_requested_llvm_backend_available(true);
+    }
+
+    #[cfg(not(feature = "llvm"))]
+    #[test]
+    fn llvm_missing_feature_guard_allows_non_llvm_backend_selection() {
+        super::assert_requested_llvm_backend_available(false);
     }
 
     #[test]
