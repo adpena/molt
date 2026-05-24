@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 import os
 import shlex
 import tomllib
@@ -8,10 +9,71 @@ from typing import Mapping, cast
 
 
 TEST_PYTHONS = ["3.12", "3.13", "3.14"]
+CANONICAL_ROOT_ENV_KEYS = (
+    "MOLT_EXT_ROOT",
+    "CARGO_TARGET_DIR",
+    "MOLT_DIFF_CARGO_TARGET_DIR",
+    "MOLT_CACHE",
+    "MOLT_DIFF_ROOT",
+    "MOLT_DIFF_TMPDIR",
+    "UV_CACHE_DIR",
+    "TMPDIR",
+)
+CANONICAL_RUN_ENV_KEYS = (*CANONICAL_ROOT_ENV_KEYS, "MOLT_SESSION_ID")
 
 
 class DxConfigError(RuntimeError):
     pass
+
+
+class RunContext:
+    """Canonical repo-local roots and session identity for dev subprocesses."""
+
+    def __init__(self, root: Path, *, session_prefix: str = "dev") -> None:
+        self.root = root.expanduser().resolve()
+        self.session_prefix = session_prefix
+
+    def _resolve_env_path(self, raw: str) -> Path:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = self.root / path
+        return path.resolve()
+
+    def canonical_env(
+        self,
+        base: Mapping[str, str] | None = None,
+        *,
+        create_dirs: bool = True,
+        force_default_keys: Collection[str] = (),
+    ) -> dict[str, str]:
+        env = dict(os.environ if base is None else base)
+        forced = set(force_default_keys)
+
+        if "MOLT_EXT_ROOT" in forced or not env.get("MOLT_EXT_ROOT"):
+            ext_root = self.root
+        else:
+            ext_root = self._resolve_env_path(env["MOLT_EXT_ROOT"])
+        env["MOLT_EXT_ROOT"] = str(ext_root)
+
+        def install_default(key: str, value: Path | str) -> None:
+            if key in forced or not env.get(key):
+                env[key] = str(value)
+
+        install_default("CARGO_TARGET_DIR", ext_root / "target")
+        install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+        install_default("MOLT_CACHE", ext_root / ".molt_cache")
+        install_default("MOLT_DIFF_ROOT", ext_root / "tmp" / "diff")
+        install_default("MOLT_DIFF_TMPDIR", ext_root / "tmp")
+        install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
+        install_default("TMPDIR", ext_root / "tmp")
+        install_default("MOLT_SESSION_ID", f"{self.session_prefix}-{os.getpid()}")
+
+        if create_dirs:
+            for key in CANONICAL_ROOT_ENV_KEYS:
+                value = env.get(key)
+                if value:
+                    Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+        return env
 
 
 class DxProject:
@@ -85,21 +147,13 @@ class DxProject:
                 if not isinstance(key, str) or not isinstance(raw_value, str):
                     continue
                 env[key] = raw_value.format(root=str(self.root))
+        env = RunContext(self.root, session_prefix="dev").canonical_env(
+            env,
+            create_dirs=create_dirs,
+        )
         env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
         env.setdefault("MOLT_BACKEND_DAEMON", "1" if dx.get("backend_daemon") else "0")
         env.setdefault("CARGO_BUILD_JOBS", str(dx.get("cargo_build_jobs", 2)))
-        if create_dirs:
-            for key in (
-                "CARGO_TARGET_DIR",
-                "MOLT_CACHE",
-                "MOLT_DIFF_ROOT",
-                "MOLT_DIFF_TMPDIR",
-                "UV_CACHE_DIR",
-                "TMPDIR",
-            ):
-                value = env.get(key)
-                if value:
-                    Path(value).mkdir(parents=True, exist_ok=True)
         return env
 
     def require_project_python(self, context: str) -> Path:
