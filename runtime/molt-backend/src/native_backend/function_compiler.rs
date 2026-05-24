@@ -2599,7 +2599,10 @@ impl SimpleBackend {
             ConditionalListBoolShadow,
         > = std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
-        let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
+        let var_is_int = |name: &str| {
+            scalar_fast_paths_enabled
+                && (int_like_vars.contains(name) || int_primary_vars.contains(name))
+        };
         let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
         let var_is_str = |name: &str| scalar_fast_paths_enabled && str_like_vars.contains(name);
         // A variable is "known non-heap" when its NaN-boxed representation is
@@ -2608,13 +2611,54 @@ impl SimpleBackend {
         // be included here.
         let var_is_known_non_heap = |name: &str| {
             int_like_vars.contains(name)
+                || int_primary_vars.contains(name)
+                || bool_like_vars.contains(name)
+                || bool_primary_vars.contains(name)
+                || float_like_vars.contains(name)
+                || float_primary_vars.contains(name)
+                || none_like_vars.contains(name)
+        };
+        let name_is_numeric_scalar = |name: &str| {
+            int_like_vars.contains(name)
                 || bool_like_vars.contains(name)
                 || float_like_vars.contains(name)
-                || none_like_vars.contains(name)
+                || int_primary_vars.contains(name)
+                || float_primary_vars.contains(name)
+        };
+        let name_is_integer_scalar = |name: &str| {
+            int_like_vars.contains(name)
+                || bool_like_vars.contains(name)
+                || int_primary_vars.contains(name)
+                || bool_primary_vars.contains(name)
+        };
+        let op_args_are_integer_scalar = |op: &OpIR| {
+            op.args.as_ref().is_some_and(|args| {
+                !args.is_empty() && args.iter().all(|arg| name_is_integer_scalar(arg))
+            })
         };
         let op_prefers_int_lane = |op: &OpIR| {
             scalar_fast_paths_enabled
-                && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
+                && (representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
+                    || (matches!(
+                        op.kind.as_str(),
+                        "add"
+                            | "inplace_add"
+                            | "sub"
+                            | "inplace_sub"
+                            | "mul"
+                            | "inplace_mul"
+                            | "floordiv"
+                            | "inplace_floordiv"
+                            | "mod"
+                            | "mod_"
+                            | "inplace_mod"
+                            | "lt"
+                            | "le"
+                            | "gt"
+                            | "ge"
+                            | "eq"
+                            | "ne"
+                    ) && op_args_are_integer_scalar(op)))
         };
         let op_index_key_is_integer_family = |op: &OpIR| {
             scalar_fast_paths_enabled && representation_plan.op_index_key_is_integer_family(op)
@@ -2630,19 +2674,6 @@ impl SimpleBackend {
             scalar_fast_paths_enabled
                 && !op_prefers_integer_runtime_lane(op)
                 && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
-        };
-        let name_is_numeric_scalar = |name: &str| {
-            int_like_vars.contains(name)
-                || bool_like_vars.contains(name)
-                || float_like_vars.contains(name)
-                || int_primary_vars.contains(name)
-                || float_primary_vars.contains(name)
-        };
-        let name_is_integer_scalar = |name: &str| {
-            int_like_vars.contains(name)
-                || bool_like_vars.contains(name)
-                || int_primary_vars.contains(name)
-                || bool_primary_vars.contains(name)
         };
         let one_raw_int_compare_operand_is_safe =
             |lhs_raw: bool, rhs_raw: bool, lhs: &str, rhs: &str| {
@@ -35011,7 +35042,7 @@ impl SimpleBackend {
                         // `total += i; i += 1` where both sides are proven-int.
                         if int_primary_vars.contains(&args[0])
                             && scalar_fast_paths_enabled
-                            && int_like_vars.contains(name)
+                            && int_primary_vars.contains(name)
                             && !slot_backed_join_slots.contains_key(name)
                         {
                             // Read raw i64 from source Variable (no boxing).
@@ -35169,7 +35200,10 @@ impl SimpleBackend {
                             }
                             found
                         };
-                        if in_loop {
+                        let store_uses_boxed_transport = !int_primary_vars.contains(name)
+                            && !bool_primary_vars.contains(name)
+                            && !float_primary_vars.contains(name);
+                        if in_loop && store_uses_boxed_transport {
                             // inc_ref the new value so it survives loop iterations.
                             // No dec_ref for old — drain_cleanup_tracked handles
                             // final cleanup at function return (lifetimes extended
@@ -35185,7 +35219,19 @@ impl SimpleBackend {
                                 self.module.declare_func_in_func(inc_callee, builder.func);
                             builder.ins().call(inc_local, &[*val]);
                         }
-                        def_var_named(&mut builder, &vars, name, *val);
+                        def_var_from_boxed_transport(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &vars,
+                            &int_primary_vars,
+                            &bool_primary_vars,
+                            &float_primary_vars,
+                            &nbc,
+                            name,
+                            *val,
+                        );
                     } else {
                         // No destination variable name — still need to evaluate
                         // the source for side effects (should not happen in
@@ -35235,7 +35281,10 @@ impl SimpleBackend {
                         // transfer raw i64 directly -- no boxing, no refcount.
                         if int_primary_vars.contains(var_name.as_str())
                             && scalar_fast_paths_enabled
-                            && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
+                            && op
+                                .out
+                                .as_ref()
+                                .is_some_and(|o| int_primary_vars.contains(o))
                         {
                             let raw_val =
                                 int_raw_value(&mut builder, &vars, &int_primary_vars, var_name)
@@ -35320,7 +35369,19 @@ impl SimpleBackend {
                         )
                         .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, *val);
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                out_name,
+                                *val,
+                            );
                         }
                     } else if let Some(ref args) = op.args
                         && !args.is_empty()
@@ -35348,7 +35409,10 @@ impl SimpleBackend {
                         // --- Raw-primary int fast path (args-based copy_var) ---
                         if int_primary_vars.contains(&args[0])
                             && scalar_fast_paths_enabled
-                            && op.out.as_ref().is_some_and(|o| int_like_vars.contains(o))
+                            && op
+                                .out
+                                .as_ref()
+                                .is_some_and(|o| int_primary_vars.contains(o))
                         {
                             let raw_val =
                                 int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
@@ -35401,7 +35465,19 @@ impl SimpleBackend {
                         )
                         .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, *val);
+                            def_var_from_boxed_transport(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &vars,
+                                &int_primary_vars,
+                                &bool_primary_vars,
+                                &float_primary_vars,
+                                &nbc,
+                                out_name,
+                                *val,
+                            );
                         }
                     }
                 }
