@@ -8,6 +8,11 @@ This file is forward-looking only.
 - Reach full CPython `>=3.12` parity for the supported Molt subset.
 - Ship standalone binaries with no hidden host Python installation fallback.
 - Outperform CPython on the benchmark suites Molt claims as core product lanes.
+- Treat tiny-program cold start and output binary size as product-critical
+  performance axes, not secondary packaging polish: native, browser/WASM, Luau,
+  and MLIR output surfaces must have the same canonical evidence matrix, with
+  release artifacts ratcheting toward <50 ms cold start and <2 MB
+  gzipped/runtime payloads on the five-year arc.
 - Preserve Molt's design exclusions around runtime monkeypatching,
   unrestricted dynamic execution, and unrestricted reflection.
 
@@ -34,6 +39,10 @@ This file is forward-looking only.
 8. Drive the Luau target from checked source emission to full current/future
    Luau parity coverage, with generated OpIR support evidence and no silent
    semantic stubs.
+9. Add first-class output startup and binary-size evidence to the performance
+   loop so regressions in minimum executable footprint, loader cost, dyld/code
+   signature fixed costs, runtime feature bloat, native/WASM parity, and WASM
+   payload size are caught before benchmark throughput hides them.
 
 ## Milestone Sequence
 
@@ -47,6 +56,13 @@ This file is forward-looking only.
 - Keep the TIR pipeline unconditional for backend-facing lowering; debugging
   uses dumps and verifier evidence rather than an environment-variable bypass.
 - Close the highest-value native and WASM parity blockers.
+- Establish baseline and ratchet artifacts for tiny hello-world output rows
+  across native, linked-WASM, Luau, and MLIR: release/dev size, backend/profile
+  dimensions, same-path startup where runnable, fresh-path startup where
+  runnable, CPython process baseline, and tiny C baseline. WASM already proves
+  that tiny payloads are possible under the right linked/profile discipline;
+  native must converge by making runtime reachability as precise as the WASM
+  import/export path rather than relying on coarse domain features alone.
 - Keep the generated Luau support matrix current and use it to prioritize
   checked CPython-vs-Luau feature-gap closure.
 - Keep the canonical local validation matrix green across:
@@ -119,11 +135,19 @@ This file is forward-looking only.
   sound.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
+- Split runtime/stdout/bootstrap feature surfaces through a shared
+  `RuntimeSurfacePlan` so a tiny supported program does not link async,
+  logging, filesystem/tempfile, GPU, networking, UI, or compatibility
+  subsystems it cannot reach. Link-time dead stripping remains necessary but is
+  not sufficient for five-year binary-size and cold-start targets; native and
+  WASM must share one per-intrinsic/per-primitive reachability authority.
 
 ### Long Term
 
 - Broaden extension support through `libmolt`.
 - Push native and WASM performance toward the project target.
+- Make cold-start and binary-size gates as central as throughput gates across
+  native, WASM browser/Node/Cloudflare, LLVM/MLIR, and Luau output surfaces.
 - Continue converging on a larger practical CPython 3.12+ surface without
   regressing determinism or packaging guarantees.
 
@@ -136,6 +160,12 @@ This file is forward-looking only.
   across native, legacy WASM, and Luau.
 - Benchmark suite results are not yet consistently faster than CPython across
   all tracked lanes.
+- Tiny native binaries currently have too much fixed linked runtime surface and
+  measurable fresh-path startup cost for the five-year <50 ms / <2 MB target.
+  The active path is a measured `RuntimeSurfacePlan` that drives native
+  link-root selection, WASM import/export manifests, and intrinsic resolver
+  generation from the same program reachability facts, not ad-hoc linker flag
+  churn.
 
 ## Deferred By Policy
 

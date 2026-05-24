@@ -24,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script import from tool
 DEFAULT_POLL_INTERVAL_SEC = 0.10
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
+DEFAULT_COMMAND_PROFILE_MAX_MB = 16.0
 TERMINATED_PGID_TTL_SEC = 60.0
 DEFAULT_STALE_ORPHAN_SEC = process_sentinel.DEFAULT_STALE_ORPHAN_SEC
 DEFAULT_STALE_PYTEST_SEC = process_sentinel.DEFAULT_STALE_PYTEST_SEC
@@ -484,10 +485,66 @@ def timeout_from_env(
     return default
 
 
-def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
+def command_profile_log_path(
+    env: Mapping[str, str] | None = None,
+    *,
+    repo_root: Path | None = None,
+) -> Path:
+    """Return the default structured command-profile log path."""
+
+    source = _effective_env(env)
+    root = (repo_root or _REPO_ROOT).resolve()
+    raw_path = source.get("MOLT_GUARD_PROFILE_LOG", "").strip()
+    if raw_path:
+        path = Path(raw_path).expanduser()
+        return path if path.is_absolute() else root / path
+    return root / "logs" / "harness_memory_guard" / "commands.jsonl"
+
+
+def _max_bytes_from_mb(value: float | None) -> int | None:
+    if value is None:
+        return None
+    if value <= 0:
+        return None
+    return max(1024, int(value * 1024 * 1024))
+
+
+def _rotate_jsonl_if_needed(
+    path: Path,
+    *,
+    incoming_bytes: int,
+    max_bytes: int | None,
+) -> None:
+    if max_bytes is None:
+        return
+    try:
+        current_size = path.stat().st_size
+    except (FileNotFoundError, OSError):
+        return
+    if current_size + incoming_bytes <= max_bytes:
+        return
+    rotated = path.with_name(f"{path.name}.1")
+    with contextlib.suppress(OSError):
+        rotated.unlink()
+    with contextlib.suppress(OSError):
+        path.replace(rotated)
+
+
+def _append_jsonl(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    max_bytes: int | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(payload, sort_keys=True) + "\n"
+    _rotate_jsonl_if_needed(
+        path,
+        incoming_bytes=len(line.encode("utf-8")),
+        max_bytes=max_bytes,
+    )
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.write(line)
 
 
 def _utc_timestamp() -> str:
@@ -625,6 +682,127 @@ def _guard_orphan_cleanup_message(
         "make helpers shut down explicitly, or run intentional warm daemons inside "
         "a suite-level sentinel that drains at scope exit.\n"
     )
+
+
+def _rss_record_payload(
+    record: memory_guard.RssViolation | None,
+) -> dict[str, object] | None:
+    if record is None:
+        return None
+    return {
+        "pid": record.pid,
+        "rss_kb": record.rss_kb,
+        "rss_gb": record.rss_gb,
+        "command": record.command,
+        "scope": record.scope,
+    }
+
+
+def _guarded_command_status(
+    *,
+    returncode: int,
+    violation: memory_guard.RssViolation | None,
+    timed_out: bool,
+    orphaned_process_groups: Sequence[int],
+) -> str:
+    if violation is not None:
+        return "rss_limit_exceeded"
+    if timed_out:
+        return "timeout"
+    if memory_guard.exit_signal_payload(returncode) is not None:
+        return "signal_exit"
+    if returncode != 0:
+        return "failed"
+    if orphaned_process_groups:
+        return "pass_with_orphan_cleanup"
+    return "pass"
+
+
+def _github_context_payload(env: Mapping[str, str]) -> dict[str, str] | None:
+    keys = (
+        "GITHUB_WORKFLOW",
+        "GITHUB_JOB",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_SHA",
+        "GITHUB_REF",
+    )
+    payload = {key: env[key] for key in keys if env.get(key)}
+    return payload or None
+
+
+def _append_guarded_command_profile(
+    *,
+    command: Sequence[str],
+    prefix: str,
+    cwd: str | Path | None,
+    env: Mapping[str, str] | None,
+    limits: HarnessMemoryLimits,
+    returncode: int,
+    elapsed_s: float | None,
+    violation: memory_guard.RssViolation | None,
+    timed_out: bool,
+    limit_at_violation: memory_guard.ResolvedMemoryLimits | None,
+    orphaned_process_groups: Sequence[int],
+    peak: memory_guard.RssViolation | None = None,
+    peak_total: memory_guard.RssViolation | None = None,
+    ) -> tuple[Path, str | None]:
+    source = _effective_env(env)
+    path = command_profile_log_path(source)
+    max_bytes = _max_bytes_from_mb(
+        _env_float(
+            source,
+            ["MOLT_GUARD_PROFILE_MAX_MB"],
+            default=DEFAULT_COMMAND_PROFILE_MAX_MB,
+        )
+    )
+    exit_signal = (
+        None
+        if violation is not None or timed_out
+        else memory_guard.exit_signal_payload(returncode)
+    )
+    payload: dict[str, object] = {
+        "schema_version": "1.0",
+        "event": "guarded_command_profile",
+        "recorded_at": _utc_timestamp(),
+        "prefix": _normalize_prefix(prefix) or "MOLT",
+        "session_id": source.get("MOLT_SESSION_ID", ""),
+        "cwd": str(Path(cwd).expanduser() if cwd is not None else Path.cwd()),
+        "command": list(command),
+        "returncode": returncode,
+        "status": _guarded_command_status(
+            returncode=returncode,
+            violation=violation,
+            timed_out=timed_out,
+            orphaned_process_groups=orphaned_process_groups,
+        ),
+        "elapsed_s": None if elapsed_s is None else round(elapsed_s, 6),
+        "memory_guard": limits_summary(limits),
+        "memory_guard_enabled": limits.enabled,
+        "timed_out": timed_out,
+        "violation": _rss_record_payload(violation),
+        "peak": _rss_record_payload(peak),
+        "peak_total": _rss_record_payload(peak_total),
+        "orphaned_process_groups": list(orphaned_process_groups),
+        "limit_at_violation": (
+            None
+            if limit_at_violation is None
+            else memory_guard.memory_limits_payload(limit_at_violation)
+        ),
+        "exit_signal": exit_signal,
+    }
+    github_context = _github_context_payload(source)
+    if github_context is not None:
+        payload["github"] = github_context
+    try:
+        _append_jsonl(path, payload, max_bytes=max_bytes)
+    except OSError as exc:
+        return (
+            path,
+            "memory_guard: command profile write failed: "
+            f"path={path} error={exc}\n",
+        )
+    return path, None
 
 
 def _stale_orphan_cleanup_enabled(
@@ -815,12 +993,29 @@ def guarded_completed_process(
             timeout=timeout,
             check=False,
         )
+        elapsed_s = time.perf_counter() - started
+        _profile_path, profile_error = _append_guarded_command_profile(
+            command=command,
+            prefix=prefix,
+            cwd=cwd,
+            env=env,
+            limits=resolved_limits,
+            returncode=completed.returncode,
+            elapsed_s=elapsed_s,
+            violation=None,
+            timed_out=False,
+            limit_at_violation=None,
+            orphaned_process_groups=(),
+        )
+        stderr = completed.stderr
+        if profile_error:
+            stderr = (stderr or "") + profile_error
         return GuardedCompletedProcess(
             list(command),
             completed.returncode,
             completed.stdout,
-            completed.stderr,
-            elapsed_s=time.perf_counter() - started,
+            stderr,
+            elapsed_s=elapsed_s,
         )
     sentinel_is_active = _sentinel_active() or _external_repo_sentinel_active(
         prefix,
@@ -900,6 +1095,23 @@ def guarded_completed_process(
             elapsed_s=guarded.elapsed_s,
             killed_at=incident_at,
         )
+    _profile_path, profile_error = _append_guarded_command_profile(
+        command=command,
+        prefix=prefix,
+        cwd=cwd,
+        env=env,
+        limits=resolved_limits,
+        returncode=guarded.returncode,
+        elapsed_s=guarded.elapsed_s,
+        violation=guarded.violation,
+        timed_out=guarded.timed_out,
+        limit_at_violation=guarded.limit_at_violation,
+        orphaned_process_groups=guarded.orphaned_process_groups,
+        peak=guarded.peak,
+        peak_total=guarded.peak_total,
+    )
+    if profile_error:
+        stderr += profile_error
     return GuardedCompletedProcess(
         list(command),
         guarded.returncode,
