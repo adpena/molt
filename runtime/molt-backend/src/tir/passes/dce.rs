@@ -13,6 +13,9 @@ use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::PassStats;
+#[cfg(test)]
+use super::effects::opcode_may_throw;
+use super::effects::{op_has_observable_effect_when_dead, op_may_throw};
 use super::reachability::metadata_preserving_reachable_blocks;
 
 // ---------------------------------------------------------------------------
@@ -27,132 +30,20 @@ use super::reachability::metadata_preserving_reachable_blocks;
 /// are never silently dropped.
 #[inline]
 fn op_is_side_effecting(op: &TirOp) -> bool {
-    if is_side_effecting(op.opcode) || is_potentially_throwing(op.opcode) {
-        return true;
-    }
-    // Safety net: if this Copy was originally an unmapped SimpleIR op (has
-    // `_original_kind` attribute), conservatively treat it as side-effecting.
-    // TIR does not model these ops, so the safe default is to keep them alive
-    // rather than silently dropping runtime calls like trace_enter_slot, store,
-    // profile helpers, etc.
-    if op.opcode == OpCode::Copy && op.attrs.contains_key("_original_kind") {
-        return true;
-    }
-    false
-}
-
-/// Returns `true` if an op with this opcode must be preserved even when all
-/// of its results are dead.
-#[inline]
-fn is_side_effecting(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        // Calls — may have arbitrary side effects.
-        OpCode::Call
-        | OpCode::CallMethod
-        | OpCode::CallBuiltin
-        // Store/delete mutations.
-        | OpCode::StoreAttr
-        | OpCode::StoreIndex
-        | OpCode::DelAttr
-        | OpCode::DelIndex
-        // Control flow / exception handling.
-        | OpCode::Raise
-        | OpCode::CheckException
-        | OpCode::TryStart
-        | OpCode::TryEnd
-        | OpCode::StateBlockStart
-        | OpCode::StateBlockEnd
-        | OpCode::StateSwitch
-        | OpCode::StateTransition
-        | OpCode::StateYield
-        | OpCode::ChanSendYield
-        | OpCode::ChanRecvYield
-        | OpCode::ClosureStore
-        // Generator protocol.
-        | OpCode::Yield
-        | OpCode::YieldFrom
-        // Reference-counting and memory management.
-        | OpCode::IncRef
-        | OpCode::DecRef
-        | OpCode::Free
-        // Allocation may trigger a finalizer / GC hook.
-        | OpCode::Alloc
-        // Class-instance allocation: same finalizer-effect concern as
-        // Alloc.  ObjectNewBoundStack is intentionally NOT side-
-        // effecting — escape-analysis only converts to it when the
-        // result provably does not escape, and the lowered Cranelift
-        // StackSlot has no finalizer to run.
-        | OpCode::ObjectNewBound
-        // Import has module-level side effects.
-        | OpCode::Import
-        | OpCode::ImportFrom
-        // Module lookup reads may raise on invalid names / missing attrs /
-        // missing globals. Preserve even when the result is unused so
-        // compile-time DCE cannot erase an observable failure.
-        | OpCode::ModuleCacheGet
-        // Module mutations update runtime cache/module dictionaries and may
-        // raise. Preserve even when their synthetic None result is unused.
-        | OpCode::ModuleCacheSet
-        | OpCode::ModuleCacheDel
-        | OpCode::ModuleGetAttr
-        | OpCode::ModuleGetGlobal
-        | OpCode::ModuleGetName
-        | OpCode::ModuleSetAttr
-        | OpCode::ModuleDelGlobal
-        | OpCode::ModuleDelGlobalIfPresent
-        // IO / diagnostics — emits to stderr.
-        | OpCode::WarnStderr
-        // Deoptimisation must not be silently dropped.
-        | OpCode::Deopt
-    )
+    op_has_observable_effect_when_dead(op)
 }
 
 /// Returns `true` if the op may throw an exception.  Used by DCE to preserve
 /// observable exceptional control flow and by `check_exception_elim` to avoid
 /// removing required checks.
 ///
-/// Also re-used by `check_exception_elim` so both passes share a
-/// single source of truth for raising semantics.
+/// Opcode-level query kept for tests and coarse callers. Op-instance effect
+/// proofs are handled by the central effects oracle before DCE weakens
+/// observable semantics.
+#[cfg(test)]
 #[inline]
-pub(super) fn is_potentially_throwing(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::Raise
-            | OpCode::Index
-            | OpCode::OrdAt
-            | OpCode::StoreIndex
-            | OpCode::LoadAttr
-            | OpCode::StoreAttr
-            | OpCode::DelAttr
-            | OpCode::DelIndex
-            | OpCode::Import
-            | OpCode::ImportFrom
-            | OpCode::ModuleCacheGet
-            | OpCode::ModuleCacheSet
-            | OpCode::ModuleCacheDel
-            | OpCode::ModuleGetAttr
-            | OpCode::ModuleGetGlobal
-            | OpCode::ModuleGetName
-            | OpCode::ModuleSetAttr
-            | OpCode::ModuleDelGlobal
-            | OpCode::ModuleDelGlobalIfPresent
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::GetIter
-            | OpCode::IterNext
-            | OpCode::IterNextUnboxed
-            | OpCode::ForIter
-            | OpCode::StateTransition
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::ClosureLoad
-            | OpCode::ClosureStore
-    )
+fn is_potentially_throwing(opcode: OpCode) -> bool {
+    opcode_may_throw(opcode)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +197,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
                 // When inside a try region, conservatively keep ops that
                 // may throw — they represent implicit edges to the handler.
-                if has_eh && try_depth[i] > 0 && is_potentially_throwing(op.opcode) {
+                if has_eh && try_depth[i] > 0 && op_may_throw(op) {
                     continue;
                 }
 
@@ -356,7 +247,8 @@ mod tests {
     use super::*;
     use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
-    use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+    use crate::tir::passes::effects::EffectProof;
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
 
@@ -567,6 +459,44 @@ mod tests {
                 .iter()
                 .any(|op| op.opcode == OpCode::ModuleCacheGet),
             "dead module_cache_get must be preserved because invalid names raise"
+        );
+    }
+
+    #[test]
+    fn static_module_class_binding_effect_proof_allows_dead_lookup_removal() {
+        let mut func =
+            TirFunction::new("f".into(), vec![TirType::Str, TirType::Str], TirType::None);
+        let module_name = ValueId(0);
+        let attr_name = ValueId(1);
+        let module = func.fresh_value();
+        let class_ref = func.fresh_value();
+
+        let mut cache_get = make_op(OpCode::ModuleCacheGet, vec![module_name], vec![module]);
+        cache_get.attrs.insert(
+            "effect_proof".into(),
+            AttrValue::Str(EffectProof::StaticModuleClassBinding.name().into()),
+        );
+        let mut attr_get = make_op(
+            OpCode::ModuleGetAttr,
+            vec![module, attr_name],
+            vec![class_ref],
+        );
+        attr_get.attrs.insert(
+            "effect_proof".into(),
+            AttrValue::Str(EffectProof::StaticModuleClassBinding.name().into()),
+        );
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(cache_get);
+        entry.ops.push(attr_get);
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 2);
+        assert!(
+            func.blocks[&func.entry_block].ops.is_empty(),
+            "effect-proven static module/class lookup chain should be removable when dead"
         );
     }
 

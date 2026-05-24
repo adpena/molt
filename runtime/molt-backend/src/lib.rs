@@ -3329,6 +3329,9 @@ impl SimpleBackend {
 
             tir_cache.save_index();
         }
+        if !self.skip_ir_passes {
+            eliminate_dead_ops(&mut ir);
+        }
         // Post-TIR: analysis + inlining (from main)
         // Capture task_kinds and task_closure_sizes BEFORE megafunction splitting.
         // Megafunction splitting can separate `func_new` from its corresponding

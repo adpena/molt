@@ -1,4 +1,5 @@
 use crate::OpIR;
+use crate::tir::passes::effects::{EffectProof, simple_ir_effect_proof};
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
     "abs",
@@ -100,7 +101,6 @@ const ARENA_ELIGIBLE_KINDS: &[&str] = &[
     "alloc_class_trusted",
     "object_new_bound",
 ];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OpFieldSchema {
     pub family: &'static str,
@@ -232,6 +232,23 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     }
     if let Some(type_hint) = op.type_hint.as_deref() {
         validate_clean_symbol(type_hint, &format!("op `{}` type_hint", op.kind))?;
+    }
+    if let Some(effect_proof) = op.effect_proof.as_deref() {
+        validate_clean_symbol(effect_proof, &format!("op `{}` effect_proof", op.kind))?;
+        let Some(proof) = EffectProof::from_name(effect_proof) else {
+            return Err(format!(
+                "op `{}` cannot carry effect_proof `{effect_proof}`",
+                op.kind
+            ));
+        };
+        if effect_proof != proof.name()
+            || simple_ir_effect_proof(&op.kind, Some(effect_proof)) != Some(proof)
+        {
+            return Err(format!(
+                "op `{}` cannot carry effect_proof `{effect_proof}`",
+                op.kind
+            ));
+        }
     }
     Ok(())
 }

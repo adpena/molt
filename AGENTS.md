@@ -41,6 +41,14 @@ The unit of work is the *complete structural change*, not the smallest committab
 
 If the structural change is too large for one session, the honest paths are: (a) do a smaller, fully-complete piece that delivers measurable value on its own, OR (b) leave a clean baton-pass note and stop. Splitting the same structural change into "I'll do half this session and the other half next session" is the shortcut this policy rejects.
 
+### Year-5 end-state architecture first
+
+Roadmap months and years are evidence horizons, not design boundaries. Do not build disposable Month-1, Year-1, or Year-2 scaffolding that will be replaced later. Every compiler/runtime/tooling design must be shaped toward the final production-hardened Year-5 architecture from the first landing point.
+
+The shortest wall clock path is architectural convergence: typed IR coherence, reusable optimization primitives, backend-neutral proofs, deterministic custody, sanitizer-clean runtime behavior, and target parity that can compound across all future work. If a proposed step only makes a near-term milestone look greener while creating a second source of truth, backend skew, or temporary compatibility lane, reject it and implement the end-state abstraction instead.
+
+Intermediate commits are acceptable only when each one is itself a complete, end-state-compatible structural primitive with durable tests and documentation. Never use the roadmap's yearly ordering as permission to defer correctness, performance, cross-backend parity, memory safety, or developer-experience automation that the final architecture requires.
+
 ## Top Priority: Tinygrad + DFlash Fidelity (Non-Negotiable, Turn Blocker)
 - Exact tinygrad semantics and API shape are the public ML contract. No drift is acceptable.
 - Exact DFlash algorithmic fidelity is non-negotiable when implementing DFlash support. Do not substitute generic speculative decoding and call it DFlash.
