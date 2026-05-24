@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -42,6 +41,7 @@ def _configure_guard(
     monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_POLL_SEC", "0.02")
     config = module._diff_memory_guard_config()
     module._prepare_memory_guard_run(config)
+    module._LAST_SENTINEL_SAMPLE_WRITE = 0.0
     return config
 
 
@@ -112,11 +112,11 @@ finally:
     assert "scope=process_tree" in result.stderr
 
 
-def test_global_monitor_kills_cumulative_parallel_trees(
+def test_shared_sentinel_kills_cumulative_parallel_trees(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_diff_module()
-    config = _configure_guard(
+    _configure_guard(
         module,
         monkeypatch,
         tmp_path,
@@ -124,33 +124,50 @@ def test_global_monitor_kills_cumulative_parallel_trees(
         tree_gb=1.0,
         global_gb=0.06,
     )
-    script = "import time; buf = bytearray(36 * 1024 * 1024); time.sleep(10)"
-    results = []
-
-    def run_one() -> None:
-        results.append(
-            module._run_subprocess(
-                [sys.executable, "-c", script],
-                env=os.environ.copy(),
-                timeout=10.0,
-            )
-        )
-
-    monitor = module._DiffGlobalMemoryMonitor(config)
-    monitor.__enter__()
-    try:
-        threads = [threading.Thread(target=run_one) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=10.0)
-    finally:
-        monitor.__exit__(None, None, None)
-
-    assert len(results) == 2
-    assert any(
-        result.returncode == module._DIFF_MEMORY_GUARD_RETURN_CODE for result in results
+    groups = [
+        module.process_sentinel.ProcessGroup(
+            pgid=200,
+            matched=True,
+            samples=(
+                module.memory_guard.ProcessSample(
+                    200, 1, 36 * 1024, "molt.cli build a", pgid=200
+                ),
+            ),
+        ),
+        module.process_sentinel.ProcessGroup(
+            pgid=300,
+            matched=True,
+            samples=(
+                module.memory_guard.ProcessSample(
+                    300, 1, 36 * 1024, "molt.cli build b", pgid=300
+                ),
+            ),
+        ),
+    ]
+    terminated: list[int] = []
+    module.harness_memory_guard._TERMINATED_PGIDS.clear()
+    monkeypatch.setattr(
+        module.harness_memory_guard.process_sentinel,
+        "process_groups",
+        lambda *args, **kwargs: groups,
     )
+    monkeypatch.setattr(
+        module.harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    sentinel = module.harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=tmp_path / "diff",
+        label="unit-diff",
+        limits=module._diff_memory_guard_limits(),
+        on_scan=module._record_memory_guard_sentinel_sample,
+        on_violation=module._record_memory_guard_sentinel_violation,
+    )
+
+    sentinel.scan_once()
+
+    assert terminated == [200, 300]
     assert module._memory_guard_trip_message() is not None
 
 
@@ -227,49 +244,63 @@ def test_diff_memory_guard_refresh_accounts_active_tree_rss(monkeypatch) -> None
     assert config.child_rlimit_gb == pytest.approx(46.262016)
 
 
-def test_global_monitor_refreshes_limits_from_active_tree_rss(
+def test_shared_sentinel_refreshes_limits_from_active_tree_rss(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
     monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "46")
-    monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_ACTIVE_DIR", str(tmp_path / "active"))
-    monkeypatch.setenv(
-        "MOLT_DIFF_MEMORY_GUARD_TRIP_FILE", str(tmp_path / "tripped.json")
-    )
-    active_dir = tmp_path / "active"
-    active_dir.mkdir()
-    (active_dir / "worker-200.json").write_text(
-        '{"pid": 200, "worker_pid": 100, "command": ["build"]}\n',
-        encoding="utf-8",
-    )
+    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TREE_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
+    module._prepare_memory_guard_run(module._diff_memory_guard_config())
+    module._LAST_SENTINEL_SAMPLE_WRITE = 0.0
     gb = 1024 * 1024
-    samples = {
-        200: module.memory_guard.ProcessSample(200, 1, 1 * gb, "root", pgid=200),
-        201: module.memory_guard.ProcessSample(201, 200, 25 * gb, "rustc-a", pgid=200),
-        202: module.memory_guard.ProcessSample(202, 200, 24 * gb, "rustc-b", pgid=200),
-    }
-    killed: list[int] = []
+    groups = [
+        module.process_sentinel.ProcessGroup(
+            pgid=200,
+            matched=True,
+            samples=(
+                module.memory_guard.ProcessSample(200, 1, 1 * gb, "root", pgid=200),
+                module.memory_guard.ProcessSample(
+                    201, 200, 25 * gb, "rustc-a", pgid=200
+                ),
+                module.memory_guard.ProcessSample(
+                    202, 200, 24 * gb, "rustc-b", pgid=200
+                ),
+            ),
+        )
+    ]
     sample_payloads: list[dict[str, object]] = []
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
-        module, "_terminate_pid_tree", lambda pid, grace=1.0: killed.append(pid)
+        module.harness_memory_guard.process_sentinel,
+        "process_groups",
+        lambda *args, **kwargs: groups,
     )
     monkeypatch.setattr(
         module,
         "_record_memory_guard_sample",
         lambda payload: sample_payloads.append(payload),
     )
+    sentinel = module.harness_memory_guard.repo_process_sentinel(
+        repo_root=REPO_ROOT,
+        artifact_root=tmp_path / "diff",
+        label="unit-diff-refresh",
+        limits=module._diff_memory_guard_limits(),
+        on_scan=module._record_memory_guard_sentinel_sample,
+        on_violation=module._record_memory_guard_sentinel_violation,
+    )
 
-    module._DiffGlobalMemoryMonitor(module._diff_memory_guard_config())._sample_once()
+    sentinel.scan_once()
 
-    assert killed == []
-    assert not (tmp_path / "tripped.json").exists()
+    assert not (tmp_path / "diff" / "memory_guard" / "tripped.json").exists()
     assert sample_payloads
     limits = sample_payloads[-1]["limits"]
     assert isinstance(limits, dict)
-    assert limits["global_gb"] == pytest.approx(85.6704)
+    assert limits["max_global_rss_gb"] == pytest.approx(85.6704)
 
 
 def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
