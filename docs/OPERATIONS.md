@@ -742,6 +742,10 @@ This section standardizes parallel agent work on Molt.
 - Use `molt validate --suite smoke` for fast local proof and `molt validate`
   for the heavier full matrix, plus any targeted `cargo` checks required by the
   touched lane.
+- Use `molt validate --suite smoke --backend luau` for Luau changes; the lane
+  covers generated support-matrix freshness, checked Luau emission,
+  Luau runner availability, backend/lowering Rust unit tests, and the targeted
+  CPython-vs-Luau smoke under the shared memory guard.
 - Executed `molt validate` runs persist their run payload under
   `logs/validate-<suite>-<backend>-<profile>.json` by default. Pass
   `--summary-out` for an explicit custody path; check-only plans only write when

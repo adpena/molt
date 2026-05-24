@@ -12,6 +12,10 @@ Canonical generated OpIR support matrix:
 `docs/spec/areas/compiler/luau_support_matrix.generated.md`. Update it with
 `python3 tools/gen_luau_support_matrix.py --write` whenever Luau lowering moves,
 and gate with `python3 tools/gen_luau_support_matrix.py --check`.
+The first-class local release gate is `molt validate --suite smoke --backend luau`,
+which runs the generated-matrix freshness check, Luau backend/lowering Rust
+regressions, checked Luau emission, Luau runner availability, and targeted
+CPython-vs-Luau smoke parity under the shared memory guard.
 
 ### 1.0 Modern Luau Target Baseline
 

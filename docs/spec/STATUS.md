@@ -170,6 +170,9 @@ It is current-state only. For forward-looking priorities, use
   - native `build` / `run` / `compare` on `dev` and `release`
   - LLVM release parity on the covered slice
   - linked-WASM CLI build plus Node execution
+  - Luau checked emission, generated support-matrix freshness, runner
+    availability, Rust backend/lowering regressions, and targeted
+    CPython-vs-Luau parity smoke
   - conformance and benchmark entrypoints on the same CLI validation surface
   - honest failure surfaces for intentionally unsupported dynamic execution
 - Compatibility evidence is tracked in the differential suites, generated

@@ -576,8 +576,14 @@ Produces a Luau script for the Roblox platform.
 
 ```bash
 molt build app.py --target luau          # Luau script
+molt validate --suite smoke --backend luau  # Guarded Luau validation lane
 molt deploy roblox app.py                # Build + deploy to Roblox
 ```
+
+The Luau validation lane checks generated OpIR support-matrix freshness, checked
+Luau emission, Luau runner availability, backend/lowering Rust regressions, and
+targeted CPython-vs-Luau smoke parity under the shared memory guard. Running the
+emitted Luau parity smoke requires `luau` or `lune` on `PATH`.
 
 ---
 

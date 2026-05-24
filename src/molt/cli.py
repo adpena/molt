@@ -30141,11 +30141,12 @@ def _planned_validate_steps(
     root: Path,
     *,
     suite: Literal["full", "smoke", "commands", "conformance", "bench"],
-    backend: Literal["all", "native", "llvm", "wasm"],
+    backend: Literal["all", "native", "llvm", "wasm", "luau"],
     profile: Literal["all", "dev", "release"],
 ) -> list[_ValidationStep]:
     python = sys.executable
     bench_profile = "release" if profile == "all" else profile
+    build_profile = "release" if profile == "all" else profile
     steps: list[_ValidationStep] = [
         _ValidationStep(
             "cli-run-json",
@@ -30193,7 +30194,7 @@ def _planned_validate_steps(
             ],
             root,
             "command",
-            ("native", "llvm", "wasm"),
+            ("native", "llvm", "wasm", "luau"),
             ("dev", "release"),
             "smoke",
         ),
@@ -30205,7 +30206,7 @@ def _planned_validate_steps(
             ],
             root,
             "command",
-            ("native", "llvm", "wasm"),
+            ("native", "llvm", "wasm", "luau"),
             ("dev", "release"),
             "smoke",
         ),
@@ -30262,6 +30263,75 @@ def _planned_validate_steps(
             "smoke",
         ),
         _ValidationStep(
+            "luau-support-matrix",
+            [
+                python,
+                "tools/gen_luau_support_matrix.py",
+                "--check",
+            ],
+            root,
+            "correctness",
+            ("luau",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "luau-compile-smoke",
+            [
+                python,
+                "-m",
+                "molt.cli",
+                "build",
+                "examples/hello.py",
+                "--target",
+                "luau",
+                "--profile",
+                build_profile,
+                "--output",
+                str(root / "tmp" / "validate" / "luau-smoke" / "hello.luau"),
+            ],
+            root,
+            "correctness",
+            ("luau",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "luau-runner-available",
+            [
+                python,
+                "-c",
+                (
+                    "import shutil, sys; "
+                    "runner = shutil.which('luau') or shutil.which('lune'); "
+                    "print(runner) if runner else sys.exit("
+                    "'luau or lune is required for Luau validation')"
+                ),
+            ],
+            root,
+            "correctness",
+            ("luau",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "luau-ord-at-parity",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_ord_at_native.py",
+                "-k",
+                "luau",
+            ],
+            root,
+            "correctness",
+            ("luau",),
+            ("dev",),
+            "smoke",
+        ),
+        _ValidationStep(
             "native-rust-regressions",
             [
                 "cargo",
@@ -30306,6 +30376,46 @@ def _planned_validate_steps(
             root,
             "correctness",
             ("wasm",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "luau-rust-regressions",
+            [
+                "cargo",
+                "test",
+                "-p",
+                "molt-backend",
+                "--features",
+                "luau-backend",
+                "--lib",
+                "luau::tests::",
+                "--",
+                "--nocapture",
+            ],
+            root,
+            "correctness",
+            ("luau",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "luau-lowering-regressions",
+            [
+                "cargo",
+                "test",
+                "-p",
+                "molt-backend",
+                "--features",
+                "luau-backend",
+                "--lib",
+                "luau_lower::tests::",
+                "--",
+                "--nocapture",
+            ],
+            root,
+            "correctness",
+            ("luau",),
             ("dev", "release"),
             "smoke",
         ),
@@ -30493,7 +30603,7 @@ def _persist_validate_summary(
 def validate(
     *,
     suite: Literal["full", "smoke", "commands", "conformance", "bench"] = "full",
-    backend: Literal["all", "native", "llvm", "wasm"] = "all",
+    backend: Literal["all", "native", "llvm", "wasm", "luau"] = "all",
     profile: Literal["all", "dev", "release"] = "all",
     json_output: bool = False,
     verbose: bool = False,
@@ -36525,7 +36635,7 @@ def main() -> int:
     )
     validate_parser.add_argument(
         "--backend",
-        choices=["all", "native", "llvm", "wasm"],
+        choices=["all", "native", "llvm", "wasm", "luau"],
         default="all",
         help="Restrict validation to one backend family.",
     )
@@ -37734,7 +37844,10 @@ def main() -> int:
                 Literal["full", "smoke", "commands", "conformance", "bench"],
                 args.suite,
             ),
-            backend=cast(Literal["all", "native", "llvm", "wasm"], args.backend),
+            backend=cast(
+                Literal["all", "native", "llvm", "wasm", "luau"],
+                args.backend,
+            ),
             profile=cast(Literal["all", "dev", "release"], args.profile),
             json_output=args.json,
             verbose=args.verbose,
