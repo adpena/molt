@@ -1,4 +1,4 @@
-//! Julia-style effects analysis for TIR functions.
+//! Julia-style effects analysis for TIR functions and operations.
 //!
 //! Classifies known builtins and methods by their effects:
 //! - `consistent`: pure function of inputs (same inputs -> same output)
@@ -11,6 +11,203 @@
 //!
 //! The concrete evaluation logic lives in `sccp.rs`, which uses the effects
 //! classification from this module to gate constant folding of calls.
+
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
+
+pub(crate) const EFFECT_PROOF_ATTR: &str = "effect_proof";
+pub(crate) const STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF: &str = "static_module_class_binding";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EffectProof {
+    StaticModuleClassBinding,
+}
+
+impl EffectProof {
+    #[inline]
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF => Some(Self::StaticModuleClassBinding),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::StaticModuleClassBinding => STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_valid_for_simple_ir_kind(self, kind: &str) -> bool {
+        match self {
+            Self::StaticModuleClassBinding => {
+                matches!(kind, "module_cache_get" | "module_get_attr")
+            }
+        }
+    }
+
+    #[inline]
+    fn is_valid_for_tir_opcode(self, opcode: OpCode) -> bool {
+        match self {
+            Self::StaticModuleClassBinding => {
+                matches!(opcode, OpCode::ModuleCacheGet | OpCode::ModuleGetAttr)
+            }
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn simple_ir_effect_proof(kind: &str, proof: Option<&str>) -> Option<EffectProof> {
+    let proof = EffectProof::from_name(proof?)?;
+    proof.is_valid_for_simple_ir_kind(kind).then_some(proof)
+}
+
+#[inline]
+pub(crate) fn simple_ir_has_static_module_class_binding_effect_proof(
+    kind: &str,
+    proof: Option<&str>,
+) -> bool {
+    simple_ir_effect_proof(kind, proof) == Some(EffectProof::StaticModuleClassBinding)
+}
+
+#[inline]
+pub(crate) fn tir_effect_proof(op: &TirOp) -> Option<EffectProof> {
+    let proof_name = match op.attrs.get(EFFECT_PROOF_ATTR) {
+        Some(AttrValue::Str(proof_name)) => proof_name,
+        _ => return None,
+    };
+    let proof = EffectProof::from_name(proof_name)?;
+    proof.is_valid_for_tir_opcode(op.opcode).then_some(proof)
+}
+
+#[inline]
+pub(crate) fn tir_has_static_module_class_binding_effect_proof(op: &TirOp) -> bool {
+    tir_effect_proof(op) == Some(EffectProof::StaticModuleClassBinding)
+}
+
+#[inline]
+pub(super) fn opcode_may_throw(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::Call
+            | OpCode::CallMethod
+            | OpCode::CallBuiltin
+            | OpCode::Raise
+            | OpCode::Index
+            | OpCode::OrdAt
+            | OpCode::StoreIndex
+            | OpCode::LoadAttr
+            | OpCode::StoreAttr
+            | OpCode::DelAttr
+            | OpCode::DelIndex
+            | OpCode::Import
+            | OpCode::ImportFrom
+            | OpCode::ModuleCacheGet
+            | OpCode::ModuleCacheSet
+            | OpCode::ModuleCacheDel
+            | OpCode::ModuleGetAttr
+            | OpCode::ModuleGetGlobal
+            | OpCode::ModuleGetName
+            | OpCode::ModuleSetAttr
+            | OpCode::ModuleDelGlobal
+            | OpCode::ModuleDelGlobalIfPresent
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::Mod
+            | OpCode::GetIter
+            | OpCode::IterNext
+            | OpCode::IterNextUnboxed
+            | OpCode::ForIter
+            | OpCode::StateTransition
+            | OpCode::ChanSendYield
+            | OpCode::ChanRecvYield
+            | OpCode::ClosureLoad
+            | OpCode::ClosureStore
+    )
+}
+
+#[inline]
+pub(super) fn op_may_throw(op: &TirOp) -> bool {
+    !tir_has_static_module_class_binding_effect_proof(op) && opcode_may_throw(op.opcode)
+}
+
+#[inline]
+fn opcode_is_side_effecting(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        // Calls — may have arbitrary side effects.
+        OpCode::Call
+        | OpCode::CallMethod
+        | OpCode::CallBuiltin
+        // Store/delete mutations.
+        | OpCode::StoreAttr
+        | OpCode::StoreIndex
+        | OpCode::DelAttr
+        | OpCode::DelIndex
+        // Control flow / exception handling.
+        | OpCode::Raise
+        | OpCode::CheckException
+        | OpCode::TryStart
+        | OpCode::TryEnd
+        | OpCode::StateBlockStart
+        | OpCode::StateBlockEnd
+        | OpCode::StateSwitch
+        | OpCode::StateTransition
+        | OpCode::StateYield
+        | OpCode::ChanSendYield
+        | OpCode::ChanRecvYield
+        | OpCode::ClosureStore
+        // Generator protocol.
+        | OpCode::Yield
+        | OpCode::YieldFrom
+        // Reference-counting and memory management.
+        | OpCode::IncRef
+        | OpCode::DecRef
+        | OpCode::Free
+        // Allocation may trigger a finalizer / GC hook.
+        | OpCode::Alloc
+        // Class-instance allocation: same finalizer-effect concern as
+        // Alloc. ObjectNewBoundStack is intentionally NOT side-effecting:
+        // escape-analysis only converts to it when the result provably does
+        // not escape, and the lowered Cranelift StackSlot has no finalizer.
+        | OpCode::ObjectNewBound
+        // Import has module-level side effects.
+        | OpCode::Import
+        | OpCode::ImportFrom
+        // Module lookup reads may raise on invalid names / missing attrs /
+        // missing globals. Preserve even when the result is unused unless a
+        // specific op instance carries a validated proof.
+        | OpCode::ModuleCacheGet
+        // Module mutations update runtime cache/module dictionaries and may
+        // raise. Preserve even when their synthetic None result is unused.
+        | OpCode::ModuleCacheSet
+        | OpCode::ModuleCacheDel
+        | OpCode::ModuleGetAttr
+        | OpCode::ModuleGetGlobal
+        | OpCode::ModuleGetName
+        | OpCode::ModuleSetAttr
+        | OpCode::ModuleDelGlobal
+        | OpCode::ModuleDelGlobalIfPresent
+        // IO / diagnostics — emits to stderr.
+        | OpCode::WarnStderr
+        // Deoptimisation must not be silently dropped.
+        | OpCode::Deopt
+    )
+}
+
+#[inline]
+pub(super) fn op_is_side_effecting(op: &TirOp) -> bool {
+    !tir_has_static_module_class_binding_effect_proof(op) && opcode_is_side_effecting(op.opcode)
+}
+
+#[inline]
+pub(super) fn op_has_observable_effect_when_dead(op: &TirOp) -> bool {
+    if op_is_side_effecting(op) || op_may_throw(op) {
+        return true;
+    }
+    op.opcode == OpCode::Copy && op.attrs.contains_key("_original_kind")
+}
 
 /// Effect classification for a function or method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

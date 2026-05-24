@@ -83,6 +83,12 @@ pub struct OpIR {
     /// operation is in-range.  Codegen can skip the runtime bounds check
     /// and emit a straight-line element access.
     pub bce_safe: Option<bool>,
+    /// Named proof that a normally observable effect/exception edge has
+    /// already been discharged by an earlier semantic analysis.
+    ///
+    /// This is not a representation hint: consumers must validate the proof
+    /// name against the op kind before weakening effect semantics.
+    pub effect_proof: Option<String>,
 }
 
 impl PgoProfileIR {
@@ -323,6 +329,7 @@ impl OpIR {
             end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
             bce_safe: optional_bool(obj, "bce_safe", ctx)?,
             arena_eligible: optional_bool(obj, "arena_eligible", ctx)?,
+            effect_proof: optional_string(obj, "effect_proof", ctx)?,
         })
     }
 }
@@ -461,6 +468,71 @@ mod json_parse_tests {
 
         assert!(err.contains("invalid SimpleIR contract"));
         assert!(err.contains("unsupported container_type `list_int`"));
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_accepts_static_module_class_binding_effect_proof() {
+        let ir = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [
+                            {"kind": "const_str", "s_value": "__main__", "out": "v0"},
+                            {
+                                "kind": "module_cache_get",
+                                "args": ["v0"],
+                                "out": "v1",
+                                "effect_proof": "static_module_class_binding"
+                            },
+                            {"kind": "const_str", "s_value": "Point", "out": "v2"},
+                            {
+                                "kind": "module_get_attr",
+                                "args": ["v1", "v2"],
+                                "out": "v3",
+                                "effect_proof": "static_module_class_binding"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect("static module/class binding proof should validate on module reads");
+
+        assert_eq!(
+            ir.functions[0].ops[1].effect_proof.as_deref(),
+            Some("static_module_class_binding")
+        );
+        assert_eq!(
+            ir.functions[0].ops[3].effect_proof.as_deref(),
+            Some("static_module_class_binding")
+        );
+    }
+
+    #[test]
+    fn simple_ir_from_json_str_rejects_effect_proof_on_non_module_read() {
+        let err = SimpleIR::from_json_str(
+            r#"{
+                "functions": [
+                    {
+                        "name": "__main__",
+                        "params": [],
+                        "ops": [
+                            {
+                                "kind": "const_str",
+                                "s_value": "Point",
+                                "out": "v0",
+                                "effect_proof": "static_module_class_binding"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("effect proof should be rejected on non-module reads");
+
+        assert!(err.contains("cannot carry effect_proof `static_module_class_binding`"));
     }
 
     #[test]

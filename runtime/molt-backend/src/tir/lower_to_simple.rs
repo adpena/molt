@@ -1652,6 +1652,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             kind: "module_cache_get".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
+            effect_proof: attr_str(&op.attrs, "effect_proof"),
             ..OpIR::default()
         }),
         OpCode::ModuleCacheSet => Some(OpIR {
@@ -1670,6 +1671,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             kind: "module_get_attr".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
+            effect_proof: attr_str(&op.attrs, "effect_proof"),
             ..OpIR::default()
         }),
         OpCode::ModuleGetGlobal => Some(OpIR {
@@ -4100,6 +4102,7 @@ mod tests {
                 end_col_offset: None,
                 bce_safe: None,
                 arena_eligible: None,
+                effect_proof: None,
             },
             OpIR {
                 kind: "loop_end".into(),
@@ -4121,6 +4124,7 @@ mod tests {
                 end_col_offset: None,
                 bce_safe: None,
                 arena_eligible: None,
+                effect_proof: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4142,6 +4146,7 @@ mod tests {
                 end_col_offset: None,
                 bce_safe: None,
                 arena_eligible: None,
+                effect_proof: None,
             },
         ];
 
@@ -4176,6 +4181,7 @@ mod tests {
                 end_col_offset: None,
                 bce_safe: None,
                 arena_eligible: None,
+                effect_proof: None,
             },
             OpIR {
                 kind: "jump".into(),
@@ -4197,6 +4203,7 @@ mod tests {
                 end_col_offset: None,
                 bce_safe: None,
                 arena_eligible: None,
+                effect_proof: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4218,6 +4225,7 @@ mod tests {
                 end_col_offset: None,
                 bce_safe: None,
                 arena_eligible: None,
+                effect_proof: None,
             },
         ];
 

@@ -23,15 +23,15 @@
 //! when the runtime exception flag is set).  Removing one is safe iff
 //! no op since the previous check could have set the flag — i.e. the
 //! intervening ops are all in the "cannot raise" set.  The base
-//! classifier delegates to the same `is_potentially_throwing` predicate
-//! that DCE uses, then tightens it with local TIR facts for operations
-//! whose only remaining exceptional case has been statically excluded
-//! (for example integer division-family ops by a proven nonzero const).
+//! classifier delegates to the same op-aware TIR effects oracle that DCE
+//! uses, then tightens it with local TIR facts for operations whose only
+//! remaining exceptional case has been statically excluded (for example
+//! integer division-family ops by a proven nonzero const).
 
 use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
-use super::dce::is_potentially_throwing;
+use super::effects::op_may_throw;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
@@ -118,8 +118,8 @@ fn original_kind_is_provably_nonthrowing(kind: &str) -> bool {
 
 /// Returns `true` if this op may raise an exception.
 ///
-/// Wraps `dce::is_potentially_throwing` with an `_original_kind`
-/// classifier for unmapped SimpleIR ops.  A `Copy` op carrying
+/// Wraps the shared TIR effects oracle with an `_original_kind`
+/// classifier for unmapped SimpleIR ops. A `Copy` op carrying
 /// `_original_kind` represents an op the SSA lift did not have a
 /// dedicated `OpCode` for; whether it can raise depends on the
 /// original SimpleIR kind, not on `OpCode::Copy` itself.  Without this
@@ -181,7 +181,7 @@ fn op_may_raise(
     {
         return false;
     }
-    if is_potentially_throwing(op.opcode) {
+    if op_may_throw(op) {
         return true;
     }
     if op.opcode == OpCode::Copy {
@@ -366,6 +366,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
 #[cfg(test)]
 mod tests {
+    use super::super::effects::EffectProof;
     use super::*;
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
@@ -411,6 +412,30 @@ mod tests {
             attrs,
             source_span: None,
         }
+    }
+
+    fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ModuleGetAttr,
+            operands: vec![module, attr_name],
+            results: vec![out],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
+    fn make_effect_proven_module_get_attr(
+        module: ValueId,
+        attr_name: ValueId,
+        out: ValueId,
+    ) -> TirOp {
+        let mut op = make_module_get_attr(module, attr_name, out);
+        op.attrs.insert(
+            "effect_proof".into(),
+            AttrValue::Str(EffectProof::StaticModuleClassBinding.name().into()),
+        );
+        op
     }
 
     fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirOp {
@@ -528,6 +553,34 @@ mod tests {
         let stats = run(&mut func);
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&BlockId(0)].ops.len(), 4);
+    }
+
+    #[test]
+    fn check_after_effect_proven_static_module_class_read_is_dropped() {
+        let mut func = make_func_with_block(vec![
+            make_check_exception(), // first check, kept
+            make_effect_proven_module_get_attr(ValueId(0), ValueId(1), ValueId(2)),
+            make_check_exception(), // certified read cannot set the exception flag
+        ]);
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 1);
+        assert_eq!(func.blocks[&BlockId(0)].ops.len(), 2);
+    }
+
+    #[test]
+    fn check_after_unproven_module_get_attr_is_kept() {
+        let mut func = make_func_with_block(vec![
+            make_check_exception(), // first check, kept
+            make_module_get_attr(ValueId(0), ValueId(1), ValueId(2)),
+            make_check_exception(), // unproven module reads may raise
+        ]);
+
+        let stats = run(&mut func);
+
+        assert_eq!(stats.ops_removed, 0);
+        assert_eq!(func.blocks[&BlockId(0)].ops.len(), 3);
     }
 
     #[test]

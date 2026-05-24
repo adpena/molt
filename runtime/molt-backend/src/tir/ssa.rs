@@ -1126,6 +1126,9 @@ impl<'a> SsaContext<'a> {
         if let Some(v) = op.ic_index {
             attrs.insert("ic_index".into(), AttrValue::Int(v));
         }
+        if let Some(ref v) = op.effect_proof {
+            attrs.insert("effect_proof".into(), AttrValue::Str(v.clone()));
+        }
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }

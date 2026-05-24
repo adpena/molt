@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 _IC_TABLE_CAPACITY = 4096
 _ic_counter: list[int] = [0]  # mutable counter in list for closure capture
+_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF = "static_module_class_binding"
 
 
 def _next_ic_index() -> int:
@@ -5314,7 +5315,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             MoltOp(kind="GUARD_TAG", args=[value, tag_val], result=MoltValue("none"))
         )
 
-    def _get_or_emit_module_cache(self, module_name: str) -> MoltValue:
+    def _get_or_emit_module_cache(
+        self, module_name: str, *, effect_proof: str | None = None
+    ) -> MoltValue:
         """Return a MoltValue for *module_name* from MODULE_CACHE_GET.
 
         Emits a fresh CONST_STR + MODULE_CACHE_GET pair on every call.  Earlier
@@ -5331,8 +5334,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         module_name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_name_val))
         module_val = MoltValue(self.next_var(), type_hint="module")
+        metadata = {"effect_proof": effect_proof} if effect_proof else None
         self.emit(
-            MoltOp(kind="MODULE_CACHE_GET", args=[module_name_val], result=module_val)
+            MoltOp(
+                kind="MODULE_CACHE_GET",
+                args=[module_name_val],
+                result=module_val,
+                metadata=metadata,
+            )
         )
         return module_val
 
@@ -5768,21 +5777,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             names.append(varkw)
         return names
 
-    def _emit_module_attr_get(self, name: str) -> MoltValue:
+    def _emit_module_attr_get(
+        self, name: str, *, effect_proof: str | None = None
+    ) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             module_val = self.module_obj
         else:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+            module_val = self._get_or_emit_module_cache(
+                self.module_name, effect_proof=effect_proof
+            )
         # Propagate the last-known type hint for this module attribute.
         # When a module-scope variable was assigned from a typed expression
         # (e.g., count = 0 → int), the MODULE_GET_ATTR result inherits
         # that type so downstream _should_fast_int checks can fire.
         attr_hint = self._module_attr_type_hints.get(name, "Any")
         res = MoltValue(self.next_var(), type_hint=attr_hint)
+        metadata = {"effect_proof": effect_proof} if effect_proof else None
         self.emit(
-            MoltOp(kind="MODULE_GET_ATTR", args=[module_val, name_val], result=res)
+            MoltOp(
+                kind="MODULE_GET_ATTR",
+                args=[module_val, name_val],
+                result=res,
+                metadata=metadata,
+            )
         )
         return res
 
@@ -8745,7 +8764,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for class_name in self._collect_loop_static_class_candidates(body):
             self.loop_static_class_counter += 1
             slot = f"__molt_static_class_{self.loop_static_class_counter}_{class_name}"
-            init = self._emit_module_attr_get(class_name)
+            init = self._emit_module_attr_get(
+                class_name, effect_proof=_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF
+            )
             self.emit(
                 MoltOp(
                     kind="STORE_VAR",
@@ -21425,7 +21446,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if class_id is not None:
                 class_info = self.classes[class_id]
                 if self.current_func_name == "molt_main":
-                    class_ref = self._emit_module_attr_get(class_id)
+                    class_value_name = class_info.get("class_value_name")
+                    if class_info.get("constructor_fold_safe") and isinstance(
+                        class_value_name, str
+                    ):
+                        class_ref = MoltValue(class_value_name, type_hint="type")
+                    else:
+                        class_ref = self._emit_module_attr_get(class_id)
                 else:
                     static_class_ref = self._current_module_static_class_ref(class_id)
                     if static_class_ref is not None:
@@ -33881,13 +33908,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "MODULE_CACHE_GET":
-                json_ops.append(
-                    {
-                        "kind": "module_cache_get",
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
+                entry = {
+                    "kind": "module_cache_get",
+                    "args": [op.args[0].name],
+                    "out": op.result.name,
+                }
+                if op.metadata is not None:
+                    effect_proof = op.metadata.get("effect_proof")
+                    if isinstance(effect_proof, str) and effect_proof:
+                        entry["effect_proof"] = effect_proof
+                json_ops.append(entry)
             elif op.kind == "MODULE_IMPORT":
                 json_ops.append(
                     {
@@ -33913,13 +33943,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "MODULE_GET_ATTR":
-                json_ops.append(
-                    {
-                        "kind": "module_get_attr",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                entry = {
+                    "kind": "module_get_attr",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                if op.metadata is not None:
+                    effect_proof = op.metadata.get("effect_proof")
+                    if isinstance(effect_proof, str) and effect_proof:
+                        entry["effect_proof"] = effect_proof
+                json_ops.append(entry)
             elif op.kind == "MODULE_GET_GLOBAL":
                 json_ops.append(
                     {
