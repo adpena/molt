@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import importlib.util
 import sys
@@ -46,6 +47,7 @@ def test_plan_uses_one_cargo_job_on_default_hosted_runner_shape() -> None:
     assert plan.cargo_build_jobs == 1
     assert "cpu=4" in plan.reason
     assert "available:14.00GB" in plan.reason
+    assert plan.resource_plan.to_json_dict()["schema"] == "molt.resource_pressure.v1"
 
 
 def test_plan_clamps_to_one_job_when_memory_is_pressured() -> None:
@@ -90,3 +92,32 @@ def test_write_github_env_emits_cargo_jobs_and_resource_reason(tmp_path: Path) -
     assert "CARGO_BUILD_JOBS=1\n" in text
     assert "MOLT_CI_RESOURCE_CPU_COUNT=4\n" in text
     assert "MOLT_CI_RESOURCE_REASON=cpu=4" in text
+    plan_json = next(
+        line.removeprefix("MOLT_CI_RESOURCE_PLAN_JSON=")
+        for line in text.splitlines()
+        if line.startswith("MOLT_CI_RESOURCE_PLAN_JSON=")
+    )
+    payload = json.loads(plan_json)
+    assert payload["schema"] == "molt.resource_pressure.v1"
+    assert payload["cargo"]["build_jobs"] == 1
+
+
+def test_main_json_dry_run_does_not_write_github_env(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_ci_resource_env()
+    env_path = tmp_path / "github_env"
+    budget = _budget(module, physical_gb=16.0, available_gb=14.0, reserve_gb=1.0)
+    monkeypatch.setattr(
+        module.memory_guard, "adaptive_memory_budget", lambda *a: budget
+    )
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 4)
+
+    assert module.main(["--github-env", str(env_path), "--dry-run", "--json"]) == 0
+
+    assert not env_path.exists()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "molt.resource_pressure.v1"
+    assert payload["cargo"]["build_jobs"] == 1
