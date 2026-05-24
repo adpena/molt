@@ -7,11 +7,11 @@
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `328`
-- `implemented-target-limited`: `18`
-- `not-admitted`: `24`
+- `implemented-exact`: `353`
+- `implemented-target-limited`: `20`
+- `not-admitted`: `23`
 - `runtime-capability-error`: `5`
-- `total`: `382`
+- `total`: `408`
 
 ## Matrix
 
@@ -59,6 +59,7 @@
 | `build_list` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `builtin_func` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `builtin_type` | `implemented-target-limited` | Modeled as Luau table object for the admitted subset. |
+| `bytearray_fill_range` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bytearray_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bytearray_from_str` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bytes_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -92,14 +93,17 @@
 | `const_bytes` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `const_ellipsis` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `const_float` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `const_int` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `const_none` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `const_not_implemented` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `const_str` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `contains` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `context_depth` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `copy` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `copy_var` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `dataclass_get` | `implemented-target-limited` | Modeled as Luau field/index access for the admitted subset. |
 | `dataclass_new` | `implemented-target-limited` | Modeled as Luau table object for the admitted subset. |
+| `dataclass_new_values` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `dataclass_set` | `implemented-target-limited` | Modeled as Luau field assignment for the admitted subset. |
 | `dataclass_set_class` | `implemented-target-limited` | Modeled as Luau field assignment for the admitted subset. |
 | `del_attr_generic_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -132,10 +136,15 @@
 | `exception_clear` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_kind` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_last` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `exception_last_pending` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `exception_match_builtin` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_message` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_new` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `exception_new_builtin` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `exception_new_builtin_empty` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `exception_new_builtin_one` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_new_from_class` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `exception_stack_depth` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `exception_stack_depth` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exceptiongroup_combine` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `exceptiongroup_match` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `extend` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -180,6 +189,7 @@
 | `insert` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `int` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `int_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `int_from_str_of_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `invert` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `invoke_ffi` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `is` | `implemented-target-limited` | Non-None identity currently lowers through equality on Luau values. |
@@ -188,6 +198,7 @@
 | `issubclass` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `iter` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `iter_next` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `iter_next_unboxed` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `json` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `json_parse` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `jump` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -200,6 +211,7 @@
 | `list_copy` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `list_count` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `list_extend` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `list_fill_new` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `list_from_range` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `list_index` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `list_index_range` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -211,6 +223,7 @@
 | `list_reverse` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `load` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `load_local` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `load_var` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_break` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_break_if_false` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_break_if_true` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -230,10 +243,16 @@
 | `min` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `missing` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `mod` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `module_cache_del` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `module_cache_get` | `implemented-target-limited` | Only known module bridges are materialized in Luau. |
+| `module_cache_set` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `module_del_global` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `module_del_global_if_present` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `module_get_attr` | `implemented-target-limited` | Known module bridges are direct; unknown attrs return nil unless rejected by checked output. |
 | `module_get_global` | `implemented-target-limited` | Dynamic module lookup depends on Luau module cache entries. |
 | `module_get_name` | `implemented-target-limited` | Dynamic module lookup depends on Luau module cache entries. |
+| `module_import` | `implemented-target-limited` | Only known module bridges are materialized in Luau. |
+| `module_import_star` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `module_new` | `implemented-target-limited` | Modeled as Luau table object for the admitted subset. |
 | `module_set_attr` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `molt_abs_builtin` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -296,6 +315,7 @@
 | `object_set_class` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `or` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `ord` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `ord_at` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `os` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `pcall_handler_end` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `pcall_wrap_begin` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -346,6 +366,7 @@
 | `store_init` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `store_local` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `store_subscript` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `store_var` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `str` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `str_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_concat` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -373,7 +394,11 @@
 | `string_rpartition` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_rstrip` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_split_field` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_split_field_eq` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `string_split_field_len` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split_sep_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `string_split_validate` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split_ws_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
 | `string_splitlines` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_startswith` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -384,6 +409,7 @@
 | `subscript` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `sum` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `super_new` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `sys` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `sys_executable` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `taq_ingest_line` | `compile-error` | Checked Luau emission rejects unsupported markers. |
 | `time` | `implemented-exact` | Lowered without checked-output stub markers. |

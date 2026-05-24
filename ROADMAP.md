@@ -18,9 +18,10 @@ This file is forward-looking only.
 2. Replace hint-driven backend recovery with a shared representation-aware
    backend contract so native, WASM, and future LLVM lowering optimize from the
    same typed facts.
-3. Drive native and WASM toward the same supported contract.
-4. Make the CLI/profile/target/backend validation matrix a first-class release
-   gate instead of relying on backend-internal proof alone.
+3. Drive native, WASM, and Luau toward the same supported contract.
+4. Expand the first-class CLI/profile/target/backend validation matrix until
+   every supported backend release claim is backed by end-to-end proof instead
+   of backend-internal proof alone.
 5. Finish consolidating setup, doctor, validate, and thin-wrapper behavior into
    one coherent CLI-first DX surface.
 6. Keep Python `3.12`/`3.13`/`3.14` target-version gates explicit across CLI,
