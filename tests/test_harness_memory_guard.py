@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -375,6 +376,113 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     assert call["dynamic_total_rss"] is False
     assert call["progress_label"] is None
     assert call["keepalive_interval"] is None
+
+
+def test_guarded_completed_process_writes_command_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=harness_memory_guard.memory_guard.RssViolation(
+                pid=123,
+                rss_kb=64 * 1024,
+                command="python3 unit.py",
+            ),
+            peak_total=harness_memory_guard.memory_guard.RssViolation(
+                pid=123,
+                rss_kb=96 * 1024,
+                command="python3 unit.py",
+                scope="process_tree",
+            ),
+            stdout="ok\n",
+            stderr="",
+            elapsed_s=0.25,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log), "MOLT_SESSION_ID": "unit"},
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    payload = [
+        json.loads(line) for line in profile_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(payload) == 1
+    event = payload[0]
+    assert event["event"] == "guarded_command_profile"
+    assert event["prefix"] == "MOLT_TEST"
+    assert event["session_id"] == "unit"
+    assert event["status"] == "pass"
+    assert event["elapsed_s"] == 0.25
+    assert event["memory_guard_enabled"] is True
+    assert event["peak"]["rss_kb"] == 64 * 1024
+    assert event["peak_total"]["scope"] == "process_tree"
+
+
+def test_guarded_completed_process_rotates_command_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+    profile_log.write_text("x" * 2048, encoding="utf-8")
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+            elapsed_s=0.1,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        env={
+            "MOLT_GUARD_PROFILE_LOG": str(profile_log),
+            "MOLT_GUARD_PROFILE_MAX_MB": "0.001",
+        },
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "commands.jsonl.1").exists()
+    event = json.loads(profile_log.read_text(encoding="utf-8"))
+    assert event["event"] == "guarded_command_profile"
 
 
 def test_guarded_completed_process_streamed_commands_emit_keepalive(

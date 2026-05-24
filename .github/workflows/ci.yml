@@ -45,6 +45,10 @@ jobs:
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
             uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py
 
+      - name: Summarize guarded command hotspots
+        if: always()
+        run: python3 tools/profile_hotspots.py --limit 20
+
   python-tooling-smoke:
     name: Python Tooling Smoke
     runs-on: ubuntu-latest
@@ -95,8 +99,7 @@ jobs:
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
             uv run python3 -m pytest -q \
-            tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline \
-            tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok
+            tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler
 
       - name: Test capability manifest import
         run: |
@@ -107,6 +110,10 @@ jobs:
         run: |
           PYTHONPATH=src uv run python3 -c \
             "from molt.harness_report import LayerResult, LayerStatus; r = LayerResult(name='ci', status=LayerStatus.PASS, duration_s=0.1); assert r.passed; print('OK')"
+
+      - name: Summarize guarded command hotspots
+        if: always()
+        run: python3 tools/profile_hotspots.py --limit 20
 
   rust-build-unit-smoke:
     name: Rust Build And Unit Smoke
@@ -161,3 +168,7 @@ jobs:
             printf '%s\n' "$WARNING_LINES"
             exit 1
           fi
+
+      - name: Summarize guarded command hotspots
+        if: always()
+        run: python3 tools/profile_hotspots.py --limit 20

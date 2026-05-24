@@ -66,6 +66,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     if result.stderr:
         sys.stderr.write(result.stderr)
+    profile_path = harness_memory_guard.command_profile_log_path(env)
+    elapsed_s = getattr(result, "elapsed_s", None)
+    elapsed = "unknown" if elapsed_s is None else f"{elapsed_s:.2f}s"
+    print(
+        "guarded_exec: "
+        f"elapsed={elapsed} returncode={result.returncode} "
+        f"profile={profile_path}",
+        file=sys.stderr,
+    )
     return int(result.returncode)
 
 
