@@ -6277,6 +6277,101 @@ mod tests {
     }
 
     #[test]
+    fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
+        let clif = compile_function_to_clif_text(
+            vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("init".to_string()),
+                        value: Some(0),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("one".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("limit".to_string()),
+                        value: Some(10),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some("_bb1_arg0".to_string()),
+                        args: Some(vec!["init".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_start".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "load_var".to_string(),
+                        out: Some("i_cur".to_string()),
+                        var: Some("_bb1_arg0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "lt".to_string(),
+                        out: Some("keep_going".to_string()),
+                        args: Some(vec!["i_cur".to_string(), "limit".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_break_if_false".to_string(),
+                        args: Some(vec!["keep_going".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "add".to_string(),
+                        out: Some("i_next".to_string()),
+                        args: Some(vec!["i_cur".to_string(), "one".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some("_bb1_arg0".to_string()),
+                        args: Some(vec!["i_next".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_continue".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_end".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("i_cur".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            "molt_main",
+        );
+
+        assert!(
+            clif.contains("icmp slt"),
+            "loop comparison should lower to a raw signed compare:\n{clif}"
+        );
+        assert!(
+            !clif.contains("0x7ffa_0000_0000_0000"),
+            "bool-primary loop compare should not materialize a NaN-boxed bool:\n{clif}"
+        );
+    }
+
+    #[test]
     fn drain_cleanup_entry_tracked_can_skip_named_value() {
         let mut names = vec!["callee".to_string(), "other".to_string()];
         let mut entry_vars = BTreeMap::new();
