@@ -610,6 +610,30 @@ fn box_raw_bool_value(
     box_bool_value(builder, cond, nbc)
 }
 
+/// Return the value that should flow through the existing boxed-result compare
+/// lowering path plus the raw 0/1 carrier for bool-primary consumers.
+///
+/// When the destination is bool-primary, the boxed value would be immediately
+/// discarded by `def_bool_result`; do not emit it. Non-primary bool results keep
+/// the NaN-boxed representation required by generic consumers.
+#[cfg(feature = "native-backend")]
+#[inline]
+fn compare_bool_result_value(
+    builder: &mut FunctionBuilder<'_>,
+    bool_primary_vars: &BTreeSet<String>,
+    out: Option<&String>,
+    cond: Value,
+    nbc: &crate::NanBoxConsts,
+) -> (Value, Value) {
+    let raw_bool = builder.ins().uextend(types::I64, cond);
+    let result = if out.is_some_and(|out| bool_primary_vars.contains(out)) {
+        raw_bool
+    } else {
+        box_bool_value(builder, cond, nbc)
+    };
+    (result, raw_bool)
+}
+
 /// Truthiness carrier for an unknown-list getitem whose source list has a
 /// cached runtime `TYPE_ID_LIST_BOOL` check.
 ///
@@ -1067,9 +1091,11 @@ fn emit_float_numeric_compare(
     int_primary_vars: &BTreeSet<String>,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
+    bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
     box_int_mask_var: Variable,
     box_int_tag_var: Variable,
+    out_name: Option<&String>,
     lhs_name: &str,
     rhs_name: &str,
     cc: FloatCC,
@@ -1107,9 +1133,7 @@ fn emit_float_numeric_compare(
         rhs_name,
     );
     let cmp = builder.ins().fcmp(cc, lhs_f, rhs_f);
-    let raw_bool = builder.ins().uextend(types::I64, cmp);
-    let boxed_bool = box_bool_value(builder, cmp, nbc);
-    (boxed_bool, raw_bool)
+    compare_bool_result_value(builder, bool_primary_vars, out_name, cmp, nbc)
 }
 
 #[cfg(feature = "native-backend")]
@@ -18797,9 +18821,11 @@ impl SimpleBackend {
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
+                            op.out.as_ref(),
                             &args[0],
                             &args[1],
                             FloatCC::LessThan,
@@ -18808,8 +18834,15 @@ impl SimpleBackend {
                         boxed
                     } else if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
-                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        lt_raw_bool = Some(raw_bool);
+                        result
                     } else if one_raw_int_compare_operand_is_safe(
                         lr.is_some(),
                         rr.is_some(),
@@ -18852,8 +18885,15 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
-                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        lt_raw_bool = Some(raw_bool);
+                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -18892,8 +18932,15 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
-                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        lt_raw_bool = Some(raw_bool);
+                        result
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -18926,8 +18973,15 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
-                        lt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        lt_raw_bool = Some(raw_bool);
+                        result
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19042,9 +19096,11 @@ impl SimpleBackend {
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
+                            op.out.as_ref(),
                             &args[0],
                             &args[1],
                             FloatCC::LessThanOrEqual,
@@ -19053,8 +19109,15 @@ impl SimpleBackend {
                         boxed
                     } else if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
-                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        le_raw_bool = Some(raw_bool);
+                        result
                     } else if one_raw_int_compare_operand_is_safe(
                         lr.is_some(),
                         rr.is_some(),
@@ -19096,8 +19159,15 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
-                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        le_raw_bool = Some(raw_bool);
+                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -19136,8 +19206,15 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
-                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        le_raw_bool = Some(raw_bool);
+                        result
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19173,8 +19250,15 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val);
-                        le_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        le_raw_bool = Some(raw_bool);
+                        result
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19294,9 +19378,11 @@ impl SimpleBackend {
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
+                            op.out.as_ref(),
                             &args[0],
                             &args[1],
                             FloatCC::GreaterThan,
@@ -19305,8 +19391,15 @@ impl SimpleBackend {
                         boxed
                     } else if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
-                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        gt_raw_bool = Some(raw_bool);
+                        result
                     } else if one_raw_int_compare_operand_is_safe(
                         lhs_shadow.is_some(),
                         rhs_shadow.is_some(),
@@ -19349,8 +19442,15 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lv, rv);
-                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        gt_raw_bool = Some(raw_bool);
+                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -19389,8 +19489,15 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
-                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        gt_raw_bool = Some(raw_bool);
+                        result
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19425,8 +19532,15 @@ impl SimpleBackend {
                         let cmp = builder
                             .ins()
                             .icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val);
-                        gt_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        gt_raw_bool = Some(raw_bool);
+                        result
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19545,9 +19659,11 @@ impl SimpleBackend {
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
+                            op.out.as_ref(),
                             &args[0],
                             &args[1],
                             FloatCC::GreaterThanOrEqual,
@@ -19556,8 +19672,15 @@ impl SimpleBackend {
                         boxed
                     } else if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
-                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ge_raw_bool = Some(raw_bool);
+                        result
                     } else if one_raw_int_compare_operand_is_safe(
                         lhs_shadow.is_some(),
                         rhs_shadow.is_some(),
@@ -19600,8 +19723,15 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lv, rv);
-                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ge_raw_bool = Some(raw_bool);
+                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -19640,8 +19770,15 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
-                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ge_raw_bool = Some(raw_bool);
+                        result
                     } else if op_prefers_int_lane(&op) {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19677,8 +19814,15 @@ impl SimpleBackend {
                             builder
                                 .ins()
                                 .icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val);
-                        ge_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ge_raw_bool = Some(raw_bool);
+                        result
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19798,9 +19942,11 @@ impl SimpleBackend {
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
+                            op.out.as_ref(),
                             &args[0],
                             &args[1],
                             FloatCC::Equal,
@@ -19811,8 +19957,15 @@ impl SimpleBackend {
                         // Both operands have raw int shadows: direct icmp,
                         // no unboxing needed.
                         let cmp = builder.ins().icmp(IntCC::Equal, lr, rr);
-                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        eq_raw_bool = Some(raw_bool);
+                        result
                     } else if one_raw_int_compare_operand_is_safe(
                         eq_lr.is_some(),
                         eq_rr.is_some(),
@@ -19855,8 +20008,15 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::Equal, lv, rv);
-                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        eq_raw_bool = Some(raw_bool);
+                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -19895,8 +20055,15 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lf, rf);
-                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        eq_raw_bool = Some(raw_bool);
+                        result
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
                         let lhs = var_get_boxed_overflow_safe(
@@ -19930,8 +20097,15 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
-                        eq_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        eq_raw_bool = Some(raw_bool);
+                        result
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -20028,9 +20202,11 @@ impl SimpleBackend {
                             &int_primary_vars,
                             &int_like_vars,
                             &bool_like_vars,
+                            &bool_primary_vars,
                             &nbc,
                             box_int_mask_var,
                             box_int_tag_var,
+                            op.out.as_ref(),
                             &args[0],
                             &args[1],
                             FloatCC::NotEqual,
@@ -20040,8 +20216,15 @@ impl SimpleBackend {
                     } else if let (Some(lr), Some(rr)) = (ne_lr, ne_rr) {
                         // Both operands have raw int shadows: direct icmp.
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lr, rr);
-                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ne_raw_bool = Some(raw_bool);
+                        result
                     } else if one_raw_int_compare_operand_is_safe(
                         ne_lr.is_some(),
                         ne_rr.is_some(),
@@ -20084,8 +20267,15 @@ impl SimpleBackend {
                             unbox_int(&mut builder, *rhs, &nbc)
                         });
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lv, rv);
-                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ne_raw_bool = Some(raw_bool);
+                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -20124,8 +20314,15 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lf, rf);
-                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ne_raw_bool = Some(raw_bool);
+                        result
                     } else if op_prefers_int_lane(&op) {
                         // Proven-int path: skip tag check, direct unbox + compare.
                         let lhs = var_get_boxed_overflow_safe(
@@ -20159,8 +20356,15 @@ impl SimpleBackend {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
-                        ne_raw_bool = Some(builder.ins().uextend(types::I64, cmp));
-                        box_bool_value(&mut builder, cmp, &nbc)
+                        let (result, raw_bool) = compare_bool_result_value(
+                            &mut builder,
+                            &bool_primary_vars,
+                            op.out.as_ref(),
+                            cmp,
+                            &nbc,
+                        );
+                        ne_raw_bool = Some(raw_bool);
+                        result
                     } else {
                         let lhs = var_get_boxed_overflow_safe(
                             &mut self.module,
