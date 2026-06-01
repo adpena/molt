@@ -468,7 +468,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     module.run_uv(
         ["python3", "-c", "print('ok')"],
         python="3.12",
-        env={"PATH": "/usr/bin"},
+        env={"PATH": "/usr/bin", "MOLT_PREFER_EXTERNAL_ARTIFACTS": "0"},
     )
 
     assert len(calls) == 1
@@ -491,7 +491,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
     assert env["TMPDIR"] == str(module.ROOT / "tmp")
-    assert env["MOLT_SESSION_ID"].startswith("guard-")
+    assert env["MOLT_SESSION_ID"].startswith("dev-")
 
 
 def test_dev_py_run_uv_preserves_explicit_canonical_roots(
@@ -605,7 +605,10 @@ def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(monkeypatch) -> None:
         raising=True,
     )
 
-    assert module._uv_project_env_matches_python("3.12", {"PATH": "/usr/bin"})
+    assert module._uv_project_env_matches_python(
+        "3.12",
+        {"PATH": "/usr/bin", "MOLT_PREFER_EXTERNAL_ARTIFACTS": "0"},
+    )
 
     assert len(calls) == 1
     cmd, kwargs = calls[0]

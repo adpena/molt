@@ -36,12 +36,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--session-prefix", default="run")
+    parser.add_argument(
+        "--prefer-external-artifacts",
+        action="store_true",
+        help="Prefer a healthy external artifact root when MOLT_EXT_ROOT is unset.",
+    )
     args = parser.parse_args(argv)
 
-    env = RunContext(args.root, session_prefix=args.session_prefix).canonical_env(
-        os.environ,
-        create_dirs=False,
-    )
+    env = RunContext(
+        args.root,
+        session_prefix=args.session_prefix,
+        prefer_external_artifacts=args.prefer_external_artifacts,
+    ).canonical_env(os.environ, create_dirs=False)
     print(emit_shell_exports(env, CANONICAL_RUN_ENV_KEYS))
     return 0
 

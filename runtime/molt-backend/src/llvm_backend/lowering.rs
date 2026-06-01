@@ -215,10 +215,6 @@ struct FunctionLowering<'ctx, 'func> {
     entry_trampoline_bb: Option<BasicBlock<'ctx>>,
     /// Maps TIR BlockId -> LLVM BasicBlock.
     block_map: HashMap<BlockId, BasicBlock<'ctx>>,
-    /// Maps TIR BlockId -> the LLVM block where the explicit terminator was emitted.
-    /// This differs from `block_map` when mid-block control flow splits (for example
-    /// `check_exception` creating a synthetic fallthrough block).
-    exit_block_map: HashMap<BlockId, BasicBlock<'ctx>>,
     /// Maps TIR ValueId -> lowered LLVM value.
     values: HashMap<ValueId, BasicValueEnum<'ctx>>,
     /// Maps TIR ValueId -> its TirType (for type-specialized dispatch).
@@ -226,6 +222,11 @@ struct FunctionLowering<'ctx, 'func> {
     /// Phi nodes that need incoming values wired up after all blocks are emitted.
     /// (target_block, arg_index, phi_node)
     pending_phis: Vec<(BlockId, usize, PhiValue<'ctx>)>,
+    /// Actual TIR branch edges emitted into the LLVM CFG, including the LLVM
+    /// predecessor block where the edge originates. Phi wiring must follow
+    /// emitted edges, not all syntactic TIR terminators, because unreachable
+    /// TIR blocks are not lowered as branches.
+    phi_edges: Vec<PhiIncomingEdge<'ctx>>,
     /// PGO branch weights for this function, indexed by branch counter.
     /// Loaded from profdata when PGO mode is `Use`.
     /// Consumed sequentially: each CondBranch pops two values (true, false).
@@ -236,11 +237,6 @@ struct FunctionLowering<'ctx, 'func> {
     const_str_counter: usize,
     /// Counter for synthetic block names introduced during lowering.
     synthetic_block_counter: usize,
-    /// Mid-block branches created by CheckException.  Each entry records the
-    /// LLVM basic block that the branch originates from and the TIR BlockId
-    /// it targets.  These are NOT visible in TIR terminators, so
-    /// `finalize_phis` must account for them separately.
-    mid_block_branches: Vec<(BasicBlock<'ctx>, BlockId)>,
     /// Synthetic or explicit resume blocks keyed by generator/coroutine state id.
     state_resume_blocks: HashMap<i64, BasicBlock<'ctx>>,
     /// All LLVM basic blocks created during lowering (including synthetic ones),
@@ -259,6 +255,16 @@ struct FunctionLowering<'ctx, 'func> {
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
     /// verification, optimization, or emission.
     diagnostics: RefCell<Vec<String>>,
+}
+
+#[cfg(feature = "llvm")]
+#[derive(Clone)]
+struct PhiIncomingEdge<'ctx> {
+    source_block: BlockId,
+    source_bb: BasicBlock<'ctx>,
+    target: BlockId,
+    edge_name: &'static str,
+    args: Vec<ValueId>,
 }
 
 /// Lower a TIR function to LLVM IR.
@@ -319,15 +325,14 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         llvm_fn,
         entry_trampoline_bb: None,
         block_map: HashMap::new(),
-        exit_block_map: HashMap::new(),
         values: HashMap::new(),
         value_types: HashMap::new(),
         pending_phis: Vec::new(),
+        phi_edges: Vec::new(),
         pgo_branch_weights,
         pgo_weight_index: 0,
         const_str_counter: 0,
         synthetic_block_counter: 0,
-        mid_block_branches: Vec::new(),
         state_resume_blocks: HashMap::new(),
         all_llvm_blocks: Vec::new(),
         llvm_pred_map: HashMap::new(),
@@ -686,7 +691,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
         // Lower each operation.
         for op in &block.ops {
-            self.lower_op(op);
+            self.lower_op(block_id, op);
             let terminated = self
                 .backend
                 .builder
@@ -706,13 +711,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .and_then(|bb| bb.get_terminator())
             .is_some();
         if !current_terminated {
-            self.lower_terminator(&block.terminator);
+            self.lower_terminator(block_id, &block.terminator);
         }
-        let exit_bb = self.backend.builder.get_insert_block().unwrap_or(bb);
-        self.exit_block_map.insert(block_id, exit_bb);
     }
 
-    fn lower_op(&mut self, op: &crate::tir::ops::TirOp) {
+    fn lower_op(&mut self, source_block: BlockId, op: &crate::tir::ops::TirOp) {
         match op.opcode {
             // ── Constants ──
             OpCode::ConstInt => {
@@ -3391,16 +3394,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "check_exc_pending",
                     )
                     .unwrap();
-                // Record the current LLVM block as a mid-block branch source
-                // to the handler target. This is needed so finalize_phis can
-                // wire up phi incoming values for the handler block.
                 let branch_from_bb = self
                     .backend
                     .builder
                     .get_insert_block()
                     .expect("must be inside a block");
-                self.mid_block_branches
-                    .push((branch_from_bb, target_block_id));
+                self.record_branch_args(
+                    source_block,
+                    branch_from_bb,
+                    target_block_id,
+                    "check-exception-edge",
+                    &op.operands,
+                );
                 self.record_llvm_edge(branch_from_bb, target_bb);
                 self.record_llvm_edge(branch_from_bb, continue_bb);
                 self.backend
@@ -4759,17 +4764,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Terminators ──
 
-    fn lower_terminator(&mut self, term: &Terminator) {
+    fn lower_terminator(&mut self, source_block: BlockId, term: &Terminator) {
         match term {
             Terminator::Branch { target, args } => {
                 let target_bb = self.block_map[target];
-                // Record args for phi resolution.
-                self.record_branch_args(*target, args);
                 let current_bb = self
                     .backend
                     .builder
                     .get_insert_block()
                     .expect("must be inside a block");
+                self.record_branch_args(source_block, current_bb, *target, "branch", args);
                 self.record_llvm_edge(current_bb, target_bb);
                 self.backend
                     .builder
@@ -4829,14 +4833,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let then_bb = self.block_map[then_block];
                 let else_bb = self.block_map[else_block];
 
-                self.record_branch_args(*then_block, then_args);
-                self.record_branch_args(*else_block, else_args);
-
                 let current_bb = self
                     .backend
                     .builder
                     .get_insert_block()
                     .expect("must be inside a block");
+                self.record_branch_args(
+                    source_block,
+                    current_bb,
+                    *then_block,
+                    "then-edge",
+                    then_args,
+                );
+                self.record_branch_args(
+                    source_block,
+                    current_bb,
+                    *else_block,
+                    "else-edge",
+                    else_args,
+                );
                 self.record_llvm_edge(current_bb, then_bb);
                 self.record_llvm_edge(current_bb, else_bb);
 
@@ -4895,13 +4910,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let switch_val = self.resolve(*value);
                 let switch_int = self.ensure_i64(switch_val);
                 let default_bb = self.block_map[default];
-                self.record_branch_args(*default, default_args);
 
                 let current_bb = self
                     .backend
                     .builder
                     .get_insert_block()
                     .expect("must be inside a block");
+                self.record_branch_args(
+                    source_block,
+                    current_bb,
+                    *default,
+                    "switch-default",
+                    default_args,
+                );
                 self.record_llvm_edge(current_bb, default_bb);
 
                 let mut switch_cases: Vec<_> = Vec::with_capacity(cases.len());
@@ -4911,8 +4932,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .context
                         .i64_type()
                         .const_int(*case_val as u64, *case_val < 0);
-                    self.record_branch_args(*target, args);
                     let target_bb = self.block_map[target];
+                    self.record_branch_args(source_block, current_bb, *target, "switch-case", args);
                     self.record_llvm_edge(current_bb, target_bb);
                     switch_cases.push((case_const, target_bb));
                 }
@@ -4974,10 +4995,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Phi node wiring ──
 
-    /// Record that a branch from the current block passes `args` to `target`.
-    fn record_branch_args(&mut self, _target: BlockId, _args: &[ValueId]) {
-        // Phi incoming values are wired up in finalize_phis using
-        // the predecessor information from the TIR blocks.
+    /// Record that an actually emitted branch passes `args` to `target`.
+    fn record_branch_args(
+        &mut self,
+        source_block: BlockId,
+        source_bb: BasicBlock<'ctx>,
+        target: BlockId,
+        edge_name: &'static str,
+        args: &[ValueId],
+    ) {
+        self.phi_edges.push(PhiIncomingEdge {
+            source_block,
+            source_bb,
+            target,
+            edge_name,
+            args: args.to_vec(),
+        });
     }
 
     /// After all blocks are lowered, wire up phi node incoming values.
@@ -4997,9 +5030,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .map(|(bid, idx, phi)| (*bid, *idx, phi.as_basic_value().get_type(), *phi))
             .collect();
 
-        // Snapshot mid-block branches to avoid borrow conflicts.
-        let mid_block_branches: Vec<_> = self.mid_block_branches.clone();
-
         for (block_id, arg_index, phi_ty, phi) in &phi_info {
             let block = self.func.blocks.get(block_id).unwrap();
             let phi_tir_ty = block
@@ -5008,95 +5038,43 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .map(|arg| arg.ty.clone())
                 .unwrap_or(TirType::DynBox);
 
-            // 1. Wire up predecessors from TIR terminators.
-            for (pred_id, pred_block) in &self.func.blocks {
-                let mut incoming_edges: Vec<(&'static str, &Vec<ValueId>)> = Vec::new();
-                match &pred_block.terminator {
-                    Terminator::Branch { target, args } if *target == *block_id => {
-                        incoming_edges.push(("branch", args));
-                    }
-                    Terminator::CondBranch {
-                        then_block,
-                        then_args,
-                        else_block,
-                        else_args,
-                        ..
-                    } => {
-                        if *then_block == *block_id {
-                            incoming_edges.push(("then-edge", then_args));
-                        }
-                        if *else_block == *block_id {
-                            incoming_edges.push(("else-edge", else_args));
-                        }
-                    }
-                    Terminator::Switch {
-                        cases,
-                        default,
-                        default_args,
-                        ..
-                    } => {
-                        for (_, case_target, case_args) in cases {
-                            if *case_target == *block_id {
-                                incoming_edges.push(("switch-case", case_args));
-                            }
-                        }
-                        if *default == *block_id {
-                            incoming_edges.push(("switch-default", default_args));
-                        }
-                    }
-                    _ => {}
-                }
-
-                for (edge_name, args) in incoming_edges {
-                    if *arg_index >= args.len() {
-                        self.record_fatal(format!(
-                            "predecessor block {:?} {} branches to {:?} with {} argument(s), but phi argument index {} is required",
-                            pred_id,
-                            edge_name,
-                            block_id,
-                            args.len(),
-                            arg_index
-                        ));
-                        continue;
-                    }
-                    let val_id = args[*arg_index];
-                    let Some(val) = self.values.get(&val_id).copied() else {
-                        self.record_fatal(format!(
-                            "predecessor block {:?} passes undefined ValueId %{} to phi argument {} in block {:?}",
-                            pred_id, val_id.0, arg_index, block_id
-                        ));
-                        continue;
-                    };
-                    let pred_bb = self
-                        .exit_block_map
-                        .get(pred_id)
-                        .copied()
-                        .unwrap_or(self.block_map[pred_id]);
-                    let source_tir_ty = self
-                        .value_types
-                        .get(&val_id)
-                        .cloned()
-                        .unwrap_or(TirType::DynBox);
-                    let coerced =
-                        self.coerce_to_tir_type(val, &source_tir_ty, &phi_tir_ty, pred_bb);
-                    let coerced = self.coerce_to_type(coerced, *phi_ty, pred_bb);
-                    phi.add_incoming(&[(&coerced, pred_bb)]);
-                }
-            }
-
-            // 2. Wire up mid-block branches (CheckException -> handler block).
-            //    These branches target `block_id` but aren't recorded in any
-            //    TIR terminator, so the loop above misses them.
-            for (_src_bb, target_bid) in &mid_block_branches {
-                if *target_bid == *block_id {
+            // 1. Wire up predecessors from branches that were actually emitted
+            //    into the LLVM CFG. This intentionally excludes dead TIR blocks
+            //    whose terminators were not lowered and whose LLVM blocks were
+            //    terminated with `unreachable`.
+            let phi_edges = self.phi_edges.clone();
+            for edge in phi_edges.iter().filter(|edge| edge.target == *block_id) {
+                if *arg_index >= edge.args.len() {
                     self.record_fatal(format!(
-                        "mid-block branch into {:?} cannot supply phi argument {}",
-                        block_id, arg_index
+                        "predecessor block {:?} {} branches to {:?} with {} argument(s), but phi argument index {} is required",
+                        edge.source_block,
+                        edge.edge_name,
+                        block_id,
+                        edge.args.len(),
+                        arg_index
                     ));
+                    continue;
                 }
+                let val_id = edge.args[*arg_index];
+                let Some(val) = self.values.get(&val_id).copied() else {
+                    self.record_fatal(format!(
+                        "predecessor block {:?} passes undefined ValueId %{} to phi argument {} in block {:?}",
+                        edge.source_block, val_id.0, arg_index, block_id
+                    ));
+                    continue;
+                };
+                let source_tir_ty = self
+                    .value_types
+                    .get(&val_id)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                let coerced =
+                    self.coerce_to_tir_type(val, &source_tir_ty, &phi_tir_ty, edge.source_bb);
+                let coerced = self.coerce_to_type(coerced, *phi_ty, edge.source_bb);
+                phi.add_incoming(&[(&coerced, edge.source_bb)]);
             }
 
-            // 3. If the original TIR entry block was demoted behind a
+            // 2. If the original TIR entry block was demoted behind a
             // trampoline, wire the function parameters in through that
             // synthetic predecessor. Entry args beyond the function arity are
             // true phi values and intentionally start as undef on the initial
@@ -5122,7 +5100,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
         }
 
-        // 4. Final safety net: scan all phi nodes for missing predecessors.
+        // 3. Final safety net: scan all phi nodes for missing predecessors.
         //    If any LLVM predecessor block is missing from a phi's incoming
         //    list, add an undef entry. This catches edge cases from synthetic
         //    blocks, trampoline blocks, and any other control flow that the
@@ -8510,15 +8488,14 @@ mod tests {
             llvm_fn,
             entry_trampoline_bb: None,
             block_map: HashMap::new(),
-            exit_block_map: HashMap::new(),
             values: HashMap::new(),
             value_types: HashMap::new(),
             pending_phis: Vec::new(),
+            phi_edges: Vec::new(),
             pgo_branch_weights: None,
             pgo_weight_index: 0,
             const_str_counter: 0,
             synthetic_block_counter: 0,
-            mid_block_branches: Vec::new(),
             all_llvm_blocks: Vec::new(),
             llvm_pred_map: HashMap::new(),
             state_resume_blocks: HashMap::new(),
@@ -8610,6 +8587,123 @@ mod tests {
             Err(err) => err,
         };
         assert_lowering_error_contains(&err, "phi argument index 0 is required");
+    }
+
+    #[test]
+    fn unreachable_predecessor_does_not_feed_phi() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+
+        let mut func = TirFunction::new("dead_phi_pred".into(), vec![], TirType::DynBox);
+        let join_id = func.fresh_block();
+        let dead_id = func.fresh_block();
+        let live_value = func.fresh_value();
+        let join_arg = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(live_value));
+        entry.terminator = Terminator::Branch {
+            target: join_id,
+            args: vec![live_value],
+        };
+        func.blocks.insert(
+            join_id,
+            TirBlock {
+                id: join_id,
+                args: vec![TirValue {
+                    id: join_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![join_arg],
+                },
+            },
+        );
+        func.blocks.insert(
+            dead_id,
+            TirBlock {
+                id: dead_id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join_id,
+                    args: vec![ValueId(999)],
+                },
+            },
+        );
+
+        try_lower_tir_to_llvm(&func, &backend)
+            .expect("dead TIR predecessor must not contribute to LLVM phi incoming values");
+        backend
+            .module
+            .verify()
+            .expect("dead predecessor phi lowering should verify");
+    }
+
+    #[test]
+    fn check_exception_edge_feeds_handler_phi() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+
+        let mut func = TirFunction::new("check_exception_phi".into(), vec![], TirType::DynBox);
+        let exit_id = func.fresh_block();
+        let handler_id = func.fresh_block();
+        let live_value = func.fresh_value();
+        let exit_value = func.fresh_value();
+        let handler_arg = func.fresh_value();
+
+        let mut handler_attrs = AttrDict::new();
+        handler_attrs.insert("value".into(), AttrValue::Int(100));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(live_value));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![live_value],
+            results: vec![],
+            attrs: handler_attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Branch {
+            target: exit_id,
+            args: vec![],
+        };
+        func.blocks.insert(
+            exit_id,
+            TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![const_none_def(exit_value)],
+                terminator: Terminator::Return {
+                    values: vec![exit_value],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_id,
+            TirBlock {
+                id: handler_id,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![handler_arg],
+                },
+            },
+        );
+        func.has_exception_handling = true;
+        func.label_id_map.insert(handler_id.0, 100);
+
+        try_lower_tir_to_llvm(&func, &backend)
+            .expect("check_exception operands must feed handler block phi args");
+        backend
+            .module
+            .verify()
+            .expect("check_exception handler phi lowering should verify");
     }
 
     #[test]
