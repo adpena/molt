@@ -517,7 +517,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         add_willreturn(ctx, func);
     }
 
-    // ── Import ──
+    // ── Import / module namespace helpers ──
     // molt_module_import(name_bits: u64) -> u64
     // May execute module-level code with arbitrary side effects.
     {
@@ -530,13 +530,38 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         add_nounwind(ctx, func);
         // No willreturn: import may execute arbitrary module init code.
     }
-    // molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64
-    // Reads module namespace — may invoke __getattr__.
     {
-        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
-        let func = module.add_function(
+        let unary_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        for name in &[
+            "molt_module_new",
+            "molt_module_cache_get",
+            "molt_module_cache_del",
+        ] {
+            let func =
+                module.add_function(name, unary_ty, Some(inkwell::module::Linkage::External));
+            add_nounwind(ctx, func);
+            add_willreturn(ctx, func);
+        }
+
+        let binary_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        for name in &[
+            "molt_module_cache_set",
             "molt_module_get_attr",
-            fn_ty,
+            "molt_module_get_global",
+            "molt_module_get_name",
+            "molt_module_del_global",
+            "molt_module_del_global_if_present",
+        ] {
+            let func =
+                module.add_function(name, binary_ty, Some(inkwell::module::Linkage::External));
+            add_nounwind(ctx, func);
+            add_willreturn(ctx, func);
+        }
+
+        let ternary_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
+        let func = module.add_function(
+            "molt_module_set_attr",
+            ternary_ty,
             Some(inkwell::module::Linkage::External),
         );
         add_nounwind(ctx, func);
@@ -845,6 +870,40 @@ mod tests {
         assert!(module.get_function("molt_get_attr_name").is_some());
         assert!(module.get_function("molt_raise").is_some());
         assert!(module.get_function("molt_is_truthy").is_some());
+    }
+
+    #[test]
+    fn module_namespace_runtime_functions_are_declared() {
+        let ctx = Context::create();
+        let module = ctx.create_module("test_module_runtime");
+        declare_runtime_functions(&ctx, &module);
+
+        for (name, arity) in &[
+            ("molt_module_new", 1usize),
+            ("molt_module_cache_get", 1),
+            ("molt_module_cache_del", 1),
+            ("molt_module_cache_set", 2),
+            ("molt_module_get_attr", 2),
+            ("molt_module_get_global", 2),
+            ("molt_module_get_name", 2),
+            ("molt_module_del_global", 2),
+            ("molt_module_del_global_if_present", 2),
+            ("molt_module_set_attr", 3),
+        ] {
+            let func = module
+                .get_function(name)
+                .unwrap_or_else(|| panic!("{name} should be declared"));
+            assert_eq!(
+                func.count_params() as usize,
+                *arity,
+                "{name} should have {arity} i64 parameters"
+            );
+            assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
+            assert!(
+                has_fn_attr(func, "willreturn"),
+                "{name} should have willreturn"
+            );
+        }
     }
 
     #[test]

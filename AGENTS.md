@@ -105,6 +105,9 @@ Intermediate commits are acceptable only when each one is itself a complete, end
   - `export MOLT_DIFF_TMPDIR=$PWD/tmp`
   - `export UV_CACHE_DIR=$PWD/.uv-cache`
   - `export TMPDIR=$PWD/tmp`
+- DX wrappers should prefer healthy external artifact roots before the internal disk when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). The ordered default candidates are `/Volumes/VertigoDataTier/Molt` then `/Volumes/APDataStore/Molt`; override with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`.
+- Explicit canonical env vars remain authoritative: if an operator sets `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_CACHE`, `TMPDIR`, or related roots, wrappers must derive only missing defaults and must not overwrite the explicit value.
+- Backend daemon sockets are control-plane state, not bulk artifacts. Keep `MOLT_BACKEND_DAEMON_SOCKET_DIR` under a short local socket-capable path by default (for example `/tmp/molt-backend-<repo-hash>`), and override it only to a filesystem proven to support Unix sockets.
 - Canonical cleanup commands:
   - `molt clean`: dry-run the canonical ignored artifact/cache cleanup allowlist.
   - `molt clean --apply`: delete ignored artifacts from the canonical allowlist.

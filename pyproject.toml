@@ -85,16 +85,17 @@ backend_package = "molt-backend"
 backend_features = ["native-backend"]
 cargo_build_jobs = 2
 backend_daemon = true
+prefer_external_artifacts = true
 
 [tool.molt.dx.env]
-MOLT_EXT_ROOT = "{root}"
-CARGO_TARGET_DIR = "{root}/target"
-MOLT_DIFF_CARGO_TARGET_DIR = "{root}/target"
-MOLT_CACHE = "{root}/.molt_cache"
-MOLT_DIFF_ROOT = "{root}/tmp/diff"
-MOLT_DIFF_TMPDIR = "{root}/tmp"
-UV_CACHE_DIR = "{root}/.uv-cache"
-TMPDIR = "{root}/tmp"
+MOLT_EXT_ROOT = "{artifact_root}"
+CARGO_TARGET_DIR = "{artifact_root}/target"
+MOLT_DIFF_CARGO_TARGET_DIR = "{artifact_root}/target"
+MOLT_CACHE = "{artifact_root}/.molt_cache"
+MOLT_DIFF_ROOT = "{artifact_root}/tmp/diff"
+MOLT_DIFF_TMPDIR = "{artifact_root}/tmp"
+UV_CACHE_DIR = "{artifact_root}/.uv-cache"
+TMPDIR = "{artifact_root}/tmp"
 PYTHONPATH = "{root}/src"
 
 [tool.molt.dx.commands]

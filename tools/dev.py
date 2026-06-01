@@ -123,10 +123,7 @@ def _uv_project_env_matches_python(
         return False
     if not requested:
         return True
-    guard_env = harness_memory_guard.canonical_harness_env(
-        env or os.environ,
-        repo_root=ROOT,
-    )
+    guard_env = DX.canonical_env(env or os.environ)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", guard_env)
     try:
         result = harness_memory_guard.guarded_completed_process(
@@ -184,10 +181,7 @@ def run_uv(
                     "or remove 3.14 from the test matrix."
                 )
     cmd.extend(args)
-    base_env = harness_memory_guard.canonical_harness_env(
-        env or os.environ,
-        repo_root=ROOT,
-    )
+    base_env = DX.canonical_env(env or os.environ)
     run_env = _normalized_uv_run_env(base_env, python=python)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
     if tty and os.name == "posix" and not limits.enabled:
