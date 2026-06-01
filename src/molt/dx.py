@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 import os
+import shutil
 import shlex
 import tomllib
 from pathlib import Path
@@ -20,18 +21,155 @@ CANONICAL_ROOT_ENV_KEYS = (
     "TMPDIR",
 )
 CANONICAL_RUN_ENV_KEYS = (*CANONICAL_ROOT_ENV_KEYS, "MOLT_SESSION_ID")
+DEFAULT_EXTERNAL_ARTIFACT_ROOTS = (
+    "/Volumes/VertigoDataTier/Molt",
+    "/Volumes/APDataStore/Molt",
+)
+TRUE_VALUES = {"1", "true", "yes", "on"}
+FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 class DxConfigError(RuntimeError):
     pass
 
 
-class RunContext:
-    """Canonical repo-local roots and session identity for dev subprocesses."""
+def _env_bool(
+    env: Mapping[str, str],
+    names: Collection[str],
+    *,
+    default: bool,
+) -> bool:
+    for name in names:
+        raw = env.get(name)
+        if raw is None:
+            continue
+        normalized = raw.strip().lower()
+        if normalized in TRUE_VALUES:
+            return True
+        if normalized in FALSE_VALUES:
+            return False
+    return default
 
-    def __init__(self, root: Path, *, session_prefix: str = "dev") -> None:
+
+def _env_float(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    default: float,
+) -> float:
+    raw = env.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _looks_like_ambient_tmpdir(raw: str) -> bool:
+    normalized = str(Path(raw).expanduser()).rstrip(os.sep)
+    return normalized in {"/tmp", "/var/tmp"} or normalized.startswith("/var/folders/")
+
+
+def _drop_ambient_tmpdir(env: dict[str, str], *, prefer_external: bool) -> None:
+    if not prefer_external:
+        return
+    if _env_bool(env, ("MOLT_PRESERVE_AMBIENT_TMPDIR",), default=False):
+        return
+    raw = env.get("TMPDIR")
+    if raw and _looks_like_ambient_tmpdir(raw):
+        env.pop("TMPDIR", None)
+
+
+def _candidate_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
+    raw = (
+        env.get("MOLT_EXTERNAL_ARTIFACT_ROOTS")
+        or env.get("MOLT_EXTERNAL_ARTIFACT_CANDIDATES")
+        or ""
+    )
+    candidates = (
+        raw.split(os.pathsep) if raw.strip() else DEFAULT_EXTERNAL_ARTIFACT_ROOTS
+    )
+    roots: list[Path] = []
+    for candidate in candidates:
+        text = candidate.strip()
+        if not text:
+            continue
+        roots.append(Path(text).expanduser())
+    return tuple(roots)
+
+
+def _nearest_existing_parent(path: Path) -> Path | None:
+    current = path
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+    return current if current.is_dir() else current.parent
+
+
+def select_external_artifact_root(
+    repo_root: Path,
+    env: Mapping[str, str],
+    *,
+    create_dirs: bool,
+    prefer_external: bool,
+) -> Path | None:
+    """Return the first healthy external artifact root, or None for repo-local."""
+
+    if env.get("MOLT_EXT_ROOT"):
+        return None
+    if not _env_bool(
+        env,
+        ("MOLT_PREFER_EXTERNAL_ARTIFACTS", "MOLT_USE_EXTERNAL_ARTIFACTS"),
+        default=prefer_external,
+    ):
+        return None
+
+    min_free_gb = _env_float(env, "MOLT_EXTERNAL_MIN_FREE_GB", default=20.0)
+    repo_root = repo_root.resolve()
+    for raw_candidate in _candidate_roots(env):
+        candidate = (
+            raw_candidate if raw_candidate.is_absolute() else repo_root / raw_candidate
+        )
+        candidate = candidate.resolve()
+        if candidate == repo_root or repo_root in candidate.parents:
+            continue
+        parent = _nearest_existing_parent(candidate)
+        if parent is None:
+            continue
+        try:
+            usage = shutil.disk_usage(parent)
+        except OSError:
+            continue
+        if usage.free < min_free_gb * 1024 * 1024 * 1024:
+            continue
+        if create_dirs:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
+        elif not os.access(parent, os.W_OK):
+            continue
+        return candidate
+    return None
+
+
+class RunContext:
+    """Canonical artifact roots and session identity for dev subprocesses."""
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        session_prefix: str = "dev",
+        prefer_external_artifacts: bool = False,
+    ) -> None:
         self.root = root.expanduser().resolve()
         self.session_prefix = session_prefix
+        self.prefer_external_artifacts = prefer_external_artifacts
 
     def _resolve_env_path(self, raw: str) -> Path:
         path = Path(raw).expanduser()
@@ -47,10 +185,20 @@ class RunContext:
         force_default_keys: Collection[str] = (),
     ) -> dict[str, str]:
         env = dict(os.environ if base is None else base)
+        _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
         forced = set(force_default_keys)
 
         if "MOLT_EXT_ROOT" in forced or not env.get("MOLT_EXT_ROOT"):
-            ext_root = self.root
+            ext_root = (
+                None
+                if "MOLT_EXT_ROOT" in forced
+                else select_external_artifact_root(
+                    self.root,
+                    env,
+                    create_dirs=create_dirs,
+                    prefer_external=self.prefer_external_artifacts,
+                )
+            ) or self.root
         else:
             ext_root = self._resolve_env_path(env["MOLT_EXT_ROOT"])
         env["MOLT_EXT_ROOT"] = str(ext_root)
@@ -141,13 +289,39 @@ class DxProject:
         env = dict(os.environ if base is None else base)
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             env.pop(name, None)
+        prefer_external = bool(dx.get("prefer_external_artifacts"))
+        _drop_ambient_tmpdir(env, prefer_external=prefer_external)
+        if env.get("MOLT_EXT_ROOT"):
+            artifact_root = Path(env["MOLT_EXT_ROOT"]).expanduser()
+            if not artifact_root.is_absolute():
+                artifact_root = self.root / artifact_root
+            artifact_root = artifact_root.resolve()
+        else:
+            artifact_root = (
+                select_external_artifact_root(
+                    self.root,
+                    env,
+                    create_dirs=create_dirs,
+                    prefer_external=prefer_external,
+                )
+                or self.root
+            )
         env_cfg = dx.get("env", {})
         if isinstance(env_cfg, dict):
             for key, raw_value in env_cfg.items():
                 if not isinstance(key, str) or not isinstance(raw_value, str):
                     continue
-                env[key] = raw_value.format(root=str(self.root))
-        env = RunContext(self.root, session_prefix="dev").canonical_env(
+                if key in CANONICAL_RUN_ENV_KEYS and env.get(key):
+                    continue
+                env[key] = raw_value.format(
+                    root=str(self.root),
+                    artifact_root=str(artifact_root),
+                )
+        env = RunContext(
+            self.root,
+            session_prefix="dev",
+            prefer_external_artifacts=prefer_external,
+        ).canonical_env(
             env,
             create_dirs=create_dirs,
         )

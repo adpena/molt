@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from molt.dx import CANONICAL_RUN_ENV_KEYS, RunContext
+from molt.dx import CANONICAL_RUN_ENV_KEYS, DxProject, RunContext
 from tools import run_context_env
 
 
@@ -41,6 +41,54 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
     assert env["MOLT_SESSION_ID"] == "caller-session"
 
 
+def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external-ssd" / "Molt"
+    repo_root.mkdir()
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+            "TMPDIR": "/var/folders/example/T/",
+        },
+        create_dirs=True,
+    )
+
+    resolved_external = external_root.resolve()
+    assert env["MOLT_EXT_ROOT"] == str(resolved_external)
+    assert env["CARGO_TARGET_DIR"] == str(resolved_external / "target")
+    assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
+    assert resolved_external.is_dir()
+
+
+def test_run_context_preserves_nonambient_tmpdir_with_external_root(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external-ssd" / "Molt"
+    explicit_tmp = tmp_path / "explicit-tmp"
+    repo_root.mkdir()
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        {
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+            "TMPDIR": str(explicit_tmp),
+        },
+        create_dirs=False,
+    )
+
+    assert env["MOLT_EXT_ROOT"] == str(external_root.resolve())
+    assert env["TMPDIR"] == str(explicit_tmp)
+
+
 def test_run_context_can_force_repo_defaults_except_explicit_keys(
     tmp_path: Path,
 ) -> None:
@@ -74,3 +122,40 @@ def test_run_context_shell_exports_are_eval_safe(tmp_path: Path) -> None:
     shell = run_context_env.emit_shell_exports(env, ("MOLT_SESSION_ID",))
 
     assert shell == 'export MOLT_SESSION_ID="session-\\"\\$\\`\\\\"'
+
+
+def test_dx_project_preserves_explicit_root_with_external_defaults(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text(
+        """
+[tool.molt.dx]
+prefer_external_artifacts = true
+
+[tool.molt.dx.env]
+MOLT_EXT_ROOT = "{artifact_root}"
+CARGO_TARGET_DIR = "{artifact_root}/target"
+MOLT_DIFF_CARGO_TARGET_DIR = "{artifact_root}/target"
+MOLT_CACHE = "{artifact_root}/.molt_cache"
+MOLT_DIFF_ROOT = "{artifact_root}/tmp/diff"
+MOLT_DIFF_TMPDIR = "{artifact_root}/tmp"
+UV_CACHE_DIR = "{artifact_root}/.uv-cache"
+TMPDIR = "{artifact_root}/tmp"
+PYTHONPATH = "{root}/src"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    explicit_root = tmp_path / "operator-root"
+
+    env = DxProject(project_root).canonical_env(
+        {"PATH": "/usr/bin", "MOLT_EXT_ROOT": str(explicit_root)},
+        create_dirs=False,
+    )
+
+    resolved_root = explicit_root.resolve()
+    assert env["MOLT_EXT_ROOT"] == str(resolved_root)
+    assert env["CARGO_TARGET_DIR"] == str(resolved_root / "target")
+    assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
+    assert env["PYTHONPATH"] == str(project_root / "src")

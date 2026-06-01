@@ -13,7 +13,15 @@ _run_context_exports() {
   PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
     python3 "$ROOT/tools/run_context_env.py" \
       --root "$ROOT" \
-      --session-prefix "${MOLT_SESSION_PREFIX:-throughput}"
+      --session-prefix "${MOLT_SESSION_PREFIX:-throughput}" \
+      --prefer-external-artifacts
+}
+
+_daemon_socket_dir() {
+  local socket_root="${MOLT_BACKEND_DAEMON_SOCKET_ROOT:-/tmp}"
+  local root_hash
+  root_hash="$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "$ROOT")"
+  printf '%s\n' "$socket_root/molt-backend-$root_hash"
 }
 
 _choose_defaults() {
@@ -27,7 +35,7 @@ _choose_defaults() {
   DEFAULT_MOLT_DIFF_TMPDIR="$MOLT_DIFF_TMPDIR"
   DEFAULT_UV_CACHE_DIR="$UV_CACHE_DIR"
   DEFAULT_TMPDIR="$TMPDIR"
-  DEFAULT_MOLT_BACKEND_DAEMON_SOCKET_DIR="${MOLT_BACKEND_DAEMON_SOCKET_DIR:-$DEFAULT_MOLT_EXT_ROOT/tmp/daemon_sock}"
+  DEFAULT_MOLT_BACKEND_DAEMON_SOCKET_DIR="${MOLT_BACKEND_DAEMON_SOCKET_DIR:-$(_daemon_socket_dir)}"
   DEFAULT_SCCACHE_DIR="${SCCACHE_DIR:-$DEFAULT_MOLT_EXT_ROOT/.sccache}"
   DEFAULT_SCCACHE_SIZE="${SCCACHE_CACHE_SIZE:-10G}"
   DEFAULT_CACHE_MAX_GB="${MOLT_CACHE_MAX_GB:-30}"
