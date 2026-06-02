@@ -61,6 +61,7 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_STDLIB_OBJ",
     "MOLT_STDLIB_CACHE_KEY",
     "MOLT_STDLIB_MODULE_SYMBOLS",
+    "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
 ];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -345,6 +346,9 @@ fn compile_stdlib_cache_object(
         let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
         stdlib_backend.skip_ir_passes = true;
         stdlib_backend.skip_shared_stdlib_partition = true;
+        // The stdlib cache object is not the main application object; the per-app
+        // resolver is emitted once, into the main object.
+        stdlib_backend.emit_app_intrinsic_resolver = false;
         let stdlib_output = stdlib_backend.compile(stdlib_ir);
         std::fs::write(stdlib_path, &stdlib_output.bytes)?;
         return Ok(());
@@ -372,6 +376,8 @@ fn compile_stdlib_cache_object(
             let mut batch_backend = SimpleBackend::new_with_target(target_triple);
             batch_backend.skip_ir_passes = true;
             batch_backend.skip_shared_stdlib_partition = true;
+            // Stdlib cache batches are not the main application object.
+            batch_backend.emit_app_intrinsic_resolver = false;
             batch_backend.external_function_names =
                 batch_external_function_names(&all_stdlib_names, &batch_ir.functions);
             batch_backend.set_module_context(stdlib_module_context.clone());
@@ -1324,6 +1330,25 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
                 let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
 
+                // When the program is split into a separate stdlib cache object,
+                // compute the per-app intrinsic manifest over the FULL function
+                // set now — before partitioning removes/externalizes the stdlib
+                // bodies — so the main object's resolver covers intrinsics whose
+                // defining stdlib wrappers live in the stdlib cache object. The
+                // non-split path leaves this `None` and `compile` derives it from
+                // the full `ir.functions` it already holds. This manifest always
+                // feeds the main object's resolver, so it is filtered against the
+                // REQUIRED staticlib symbol set (no heuristic fallback — an unknown
+                // set fails the build closed rather than emitting dangling relocs).
+                let app_intrinsic_manifest = stdlib_obj_path.as_ref().map(|_| {
+                    let runtime_intrinsic_symbols =
+                        molt_backend::runtime_intrinsic_symbols_required();
+                    molt_backend::compute_intrinsic_manifest(
+                        &ir.functions,
+                        &runtime_intrinsic_symbols,
+                    )
+                });
+
                 if let Some(ref stdlib_path_str) = stdlib_obj_path {
                     let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
                         &mut ir,
@@ -1454,6 +1479,10 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 if stdlib_obj_path.is_some() {
                     backend.skip_shared_stdlib_partition = true;
                 }
+                // This is the main application object — it emits the per-app
+                // resolver (default `emit_app_intrinsic_resolver = true`). When the
+                // program was split, hand it the full-set manifest computed above.
+                backend.app_intrinsic_manifest = app_intrinsic_manifest;
                 let output = backend.compile(ir);
                 Arc::from(output.bytes)
             }
@@ -2304,6 +2333,19 @@ fn main() -> io::Result<()> {
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
             let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
 
+            // Per-app intrinsic manifest over the FULL function set, computed
+            // before partitioning splits the stdlib bodies into the cache object
+            // (see the daemon path for the rationale). `None` in the non-split
+            // case lets `compile` derive it from the full IR it holds. Every
+            // manifest computed here feeds a resolver-emitting object, so it is
+            // filtered against the REQUIRED staticlib symbol set — an unknown set
+            // fails the build closed rather than emitting dangling relocations.
+            let mut app_intrinsic_manifest = stdlib_obj_path.as_ref().map(|_| {
+                let runtime_intrinsic_symbols =
+                    molt_backend::runtime_intrinsic_symbols_required();
+                molt_backend::compute_intrinsic_manifest(&ir.functions, &runtime_intrinsic_symbols)
+            });
+
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
                     &mut ir,
@@ -2426,11 +2468,15 @@ fn main() -> io::Result<()> {
             let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);
 
             if func_count <= batch_size {
-                // Small IR (or user-only mode): compile in one shot
+                // Small IR (or user-only mode): compile in one shot. This single
+                // object is the main application object — it emits the per-app
+                // resolver. When the program was split, hand it the full-set
+                // manifest; otherwise it derives the manifest from its full IR.
                 let mut backend = SimpleBackend::new_with_target(target_triple);
                 if stdlib_obj_path.is_some() {
                     backend.skip_shared_stdlib_partition = true;
                 }
+                backend.app_intrinsic_manifest = app_intrinsic_manifest.take();
                 let obj_output = backend.compile(ir);
                 let mut file = create_backend_output_file(output_file).map_err(|err| {
                     io::Error::new(
@@ -2457,6 +2503,19 @@ fn main() -> io::Result<()> {
                 let all_func_names: std::collections::BTreeSet<String> =
                     all_functions.iter().map(|f| f.name.clone()).collect();
                 let module_context = SimpleBackend::build_module_context(&all_functions);
+                // Ensure the manifest emitted into batch 0 covers the WHOLE
+                // program. In split builds it was already computed over the full
+                // set before partitioning; in non-split builds `all_functions` is
+                // itself the full set, so derive it here. Either way batch 0's
+                // resolver sees every name-resolved intrinsic across all batches.
+                if app_intrinsic_manifest.is_none() {
+                    let runtime_intrinsic_symbols =
+                        molt_backend::runtime_intrinsic_symbols_required();
+                    app_intrinsic_manifest = Some(molt_backend::compute_intrinsic_manifest(
+                        &all_functions,
+                        &runtime_intrinsic_symbols,
+                    ));
+                }
 
                 while !all_functions.is_empty() {
                     let remaining = all_functions.len();
@@ -2478,6 +2537,15 @@ fn main() -> io::Result<()> {
                     // full IR above. Each batch only does Cranelift codegen.
                     backend.skip_ir_passes = true;
                     backend.skip_shared_stdlib_partition = true;
+                    // The program is split across peer batches merged with ld -r.
+                    // Emit the single per-app resolver into batch 0 only (with the
+                    // full-set manifest); the rest must not, to avoid a duplicate
+                    // `_molt_app_resolve_intrinsic` symbol.
+                    if batch_idx == 0 {
+                        backend.app_intrinsic_manifest = app_intrinsic_manifest.take();
+                    } else {
+                        backend.emit_app_intrinsic_resolver = false;
+                    }
                     backend.external_function_names =
                         batch_external_function_names(&all_func_names, &batch_ir.functions);
                     backend.set_module_context(module_context.clone());

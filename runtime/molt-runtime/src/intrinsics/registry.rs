@@ -1,4 +1,13 @@
-use crate::intrinsics::generated::{INTRINSICS, resolve_symbol};
+use crate::intrinsics::generated::INTRINSICS;
+// `resolve_symbol` (which address-takes every intrinsic via `resolve_core_symbol`)
+// is referenced on wasm32 (table-based eager registration / lookup) and in any
+// `cfg(test)` build (unit tests resolve intrinsics directly, without a
+// compiler-emitted per-app resolver, and test binaries are never dead-stripped).
+// In non-test native builds it is intentionally unreferenced so the linker
+// dead-strips it and all unused intrinsics; the per-app resolver handles
+// native resolution there.
+#[cfg(any(target_arch = "wasm32", test))]
+use crate::intrinsics::generated::resolve_symbol;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
     alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place, dict_set_in_place,
@@ -21,6 +30,75 @@ static INTRINSIC_MANIFEST_LEN: AtomicU32 = AtomicU32::new(0);
 /// load and store that a plain load+store pair would have on native
 /// multi-threaded targets.
 static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
+
+/// Per-app intrinsic resolver function pointer.
+///
+/// On native, the backend emits a per-app Cranelift function
+/// `molt_app_resolve_intrinsic(name_ptr, name_len) -> u64` into the user object
+/// covering exactly the intrinsics the app reaches by name. The main stub
+/// registers it here (via `molt_set_app_intrinsic_resolver`) BEFORE
+/// `molt_runtime_init`. When set, the runtime resolves intrinsic symbols through
+/// it instead of the staticlib's `resolve_symbol`, which keeps
+/// `resolve_symbol`/`resolve_core_symbol` native-unreachable so the linker
+/// dead-strips every unused intrinsic.
+static APP_INTRINSIC_RESOLVER: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+
+/// One-shot guard for `APP_INTRINSIC_RESOLVER`, mirroring `MANIFEST_SET`.
+static APP_RESOLVER_SET: AtomicBool = AtomicBool::new(false);
+
+/// Register the per-app intrinsic resolver. One-shot: only the first call (the
+/// compiler-generated main stub, run before `molt_runtime_init`) takes effect.
+///
+/// `fn_ptr` is the address of `molt_app_resolve_intrinsic`, an
+/// `extern "C" fn(*const u8, usize) -> u64` that returns the intrinsic function
+/// pointer for `name[..len]` or 0 when the app does not reference that intrinsic.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_app_intrinsic_resolver(fn_ptr: u64) -> u64 {
+    if APP_RESOLVER_SET
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return 0; // another caller already registered the resolver
+    }
+    APP_INTRINSIC_RESOLVER.store(fn_ptr as usize as *mut u8, Ordering::Release);
+    0
+}
+
+/// Resolve `symbol` to an intrinsic function pointer.
+///
+/// When the per-app resolver is registered (native), delegate to it. Otherwise:
+/// on wasm32 fall back to the staticlib `resolve_symbol` table (WASM links every
+/// referenced intrinsic and never registers an app resolver); on native return
+/// `None` because the app resolver must be registered before any resolution and
+/// `resolve_symbol` is intentionally left native-unreachable for dead-stripping.
+pub(crate) fn try_app_resolve_symbol(symbol: &str) -> Option<u64> {
+    let resolver_ptr = APP_INTRINSIC_RESOLVER.load(Ordering::Acquire);
+    if !resolver_ptr.is_null() {
+        let name_bytes = symbol.as_bytes();
+        let fn_ptr: u64 = unsafe {
+            let resolver: extern "C" fn(*const u8, usize) -> u64 =
+                core::mem::transmute(resolver_ptr as usize);
+            resolver(name_bytes.as_ptr(), name_bytes.len())
+        };
+        return if fn_ptr == 0 { None } else { Some(fn_ptr) };
+    }
+    #[cfg(any(target_arch = "wasm32", test))]
+    {
+        // WASM links every referenced intrinsic and resolves through the
+        // staticlib table; `cfg(test)` builds resolve directly (no per-app
+        // resolver is emitted for unit tests, and the test binary is not
+        // dead-stripped, so `resolve_symbol` is reachable).
+        resolve_symbol(symbol)
+    }
+    #[cfg(not(any(target_arch = "wasm32", test)))]
+    {
+        // Non-test native: the app resolver must be registered before any
+        // resolution. `resolve_symbol` is intentionally not referenced here so it
+        // (and the address-of expressions for every intrinsic in
+        // `resolve_core_symbol`) are dead-stripped from the final binary.
+        None
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
@@ -512,7 +590,7 @@ fn resolve_intrinsic_func(
     let Some(spec) = find_spec(requested_name) else {
         return Err(IntrinsicResolveError::Unknown);
     };
-    let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
+    let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
         return Err(IntrinsicResolveError::MissingSymbol);
     };
     let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
@@ -599,6 +677,8 @@ pub(crate) fn reset_for_testing() {
     MANIFEST_SET.store(false, Ordering::SeqCst);
     INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
     INTRINSIC_MANIFEST_LEN.store(0, Ordering::SeqCst);
+    APP_RESOLVER_SET.store(false, Ordering::SeqCst);
+    APP_INTRINSIC_RESOLVER.store(core::ptr::null_mut(), Ordering::SeqCst);
 }
 
 // Expose internals for testing.
@@ -609,6 +689,14 @@ pub(crate) fn test_manifest_set() -> &'static AtomicBool {
 #[cfg(test)]
 pub(crate) fn test_manifest_ptr() -> &'static AtomicPtr<u8> {
     &INTRINSIC_MANIFEST_PTR
+}
+#[cfg(test)]
+pub(crate) fn test_app_resolver_set() -> &'static AtomicBool {
+    &APP_RESOLVER_SET
+}
+#[cfg(test)]
+pub(crate) fn test_app_resolver_ptr() -> &'static AtomicPtr<u8> {
+    &APP_INTRINSIC_RESOLVER
 }
 
 /// Runtime implementation of require_intrinsic(name, namespace=None) -> function.
@@ -649,7 +737,7 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
             std::str::from_utf8(bytes).unwrap_or("")
         };
         if trace {
-            let resolved = find_spec(name).and_then(|spec| resolve_symbol(spec.symbol));
+            let resolved = find_spec(name).and_then(|spec| try_app_resolve_symbol(spec.symbol));
             eprintln!(
                 "molt require_intrinsic: name={} resolved={}",
                 name,
@@ -922,5 +1010,93 @@ mod tests {
             0x1000,
             "INTRINSIC_MANIFEST_PTR must still be 0x1000, NOT 0x2000"
         );
+    }
+
+    /// A fake per-app resolver that returns a sentinel address for one known
+    /// name and 0 (not found) for everything else, matching the ABI of the
+    /// backend-emitted `molt_app_resolve_intrinsic`.
+    extern "C" fn fake_app_resolver(name_ptr: *const u8, name_len: usize) -> u64 {
+        let bytes = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+        if bytes == b"molt_known_intrinsic" {
+            0xDEAD_BEEF
+        } else {
+            0
+        }
+    }
+
+    /// When a resolver is registered, `try_app_resolve_symbol` must delegate to
+    /// it: hits return the resolver's address, misses return `None`. It must NOT
+    /// fall back to `resolve_symbol` on native (that path is left dead-strippable).
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "fn-pointer-as-u64 sentinel address comparison is not modelled under Miri's strict provenance"
+    )]
+    fn app_resolver_used_when_registered() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Reset globals so this test is self-contained and order-independent.
+        test_app_resolver_set().store(false, Ordering::SeqCst);
+        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+
+        let ret = molt_set_app_intrinsic_resolver(fake_app_resolver as *const () as usize as u64);
+        assert_eq!(ret, 0, "first registration should return 0 (success)");
+
+        assert_eq!(
+            try_app_resolve_symbol("molt_known_intrinsic"),
+            Some(0xDEAD_BEEF),
+            "registered resolver must be consulted for known names"
+        );
+        assert_eq!(
+            try_app_resolve_symbol("molt_unknown_intrinsic_xyz"),
+            None,
+            "registered resolver returning 0 must surface as None"
+        );
+
+        // Clean up for other tests sharing the process-global statics.
+        test_app_resolver_set().store(false, Ordering::SeqCst);
+        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+    }
+
+    /// The resolver registration is one-shot: a second call must be ignored so a
+    /// later (e.g. attacker-controlled or re-entrant) registration cannot
+    /// override the compiler-generated resolver installed by the main stub.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "fn-pointer-as-u64 sentinel address comparison is not modelled under Miri's strict provenance"
+    )]
+    fn app_resolver_one_shot_guard() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_app_resolver_set().store(false, Ordering::SeqCst);
+        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
+
+        let first = molt_set_app_intrinsic_resolver(0x1000);
+        assert_eq!(first, 0, "first registration should return 0 (success)");
+        assert!(
+            test_app_resolver_set().load(Ordering::SeqCst),
+            "APP_RESOLVER_SET should be true after first registration"
+        );
+        assert_eq!(
+            test_app_resolver_ptr().load(Ordering::SeqCst) as usize,
+            0x1000,
+            "APP_INTRINSIC_RESOLVER should be 0x1000 after first registration"
+        );
+
+        // Second registration must be silently ignored.
+        let second = molt_set_app_intrinsic_resolver(0x2000);
+        assert_eq!(second, 0, "second registration should also return 0");
+        assert_eq!(
+            test_app_resolver_ptr().load(Ordering::SeqCst) as usize,
+            0x1000,
+            "APP_INTRINSIC_RESOLVER must still be 0x1000, NOT 0x2000"
+        );
+
+        // Clean up.
+        test_app_resolver_set().store(false, Ordering::SeqCst);
+        test_app_resolver_ptr().store(core::ptr::null_mut(), Ordering::SeqCst);
     }
 }

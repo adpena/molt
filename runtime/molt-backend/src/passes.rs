@@ -3867,6 +3867,98 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     func_ir.ops = new_ops;
 }
 
+/// Compute the set of intrinsic names the app resolves through the name-based
+/// runtime lookup path (`molt_require_intrinsic_runtime` /
+/// `molt_load_intrinsic_runtime`).  This mirrors the WASM manifest scan in
+/// `wasm.rs` (the `manifest_intrinsic_names` construction): for each function,
+/// a `const_str` op's output is the candidate intrinsic name, a `builtin_func`
+/// op producing the runtime-lookup helper marks its output as a lookup var, and
+/// a `call_func` whose first arg is a lookup var and whose second arg is a
+/// const-string output names the intrinsic the app reaches by name.
+///
+/// The native backend emits a per-app Cranelift resolver covering exactly this
+/// set, so `resolve_symbol`/`resolve_core_symbol` (which address-take every
+/// intrinsic) become native-unreachable and are dead-stripped.
+///
+/// This MUST be called over ALL functions including externs (before the
+/// `is_extern` filter), so the `stdlib_shared.o` partition's intrinsic uses are
+/// covered.
+pub fn compute_intrinsic_manifest(
+    functions: &[FunctionIR],
+    runtime_intrinsic_symbols: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut manifest_intrinsic_names: BTreeSet<String> = BTreeSet::new();
+    // Every `const_str` whose value names a runtime intrinsic is a candidate the
+    // app may resolve by name at runtime. The intrinsic name reaches
+    // `require_intrinsic` / `load_intrinsic` either directly (`require_intrinsic(
+    // "molt_foo")`) or — crucially — through a stdlib wrapper such as
+    // `_require_callable_intrinsic("molt_gc_collect")` or `gc.py`'s
+    // `_require_intrinsic(name)` where `name` flows from a constant. The narrow
+    // `call_func(runtime_lookup_var, const_str)` shape only catches the direct,
+    // single-call case and misses every wrapper-indirected name, so the resolver
+    // would return 0 for them and the runtime would raise "intrinsic unavailable"
+    // (and, because `resolve_core_symbol` is dead-stripped on native, the symbol
+    // is not even present). Capturing the const-string names structurally — and
+    // validating them against the symbols the linked runtime staticlib actually
+    // defines — is the complete, robust manifest.
+    // Any `const_str` whose value is a real runtime intrinsic symbol is a name
+    // the app may resolve dynamically. The name reaches `require_intrinsic` /
+    // `load_intrinsic` through arbitrary data flow: directly
+    // (`require_intrinsic("molt_foo")`), through a wrapper call
+    // (`_require_callable_intrinsic("molt_gc_collect")`), or — crucially — stored
+    // in an object field and read back later (sys.py's
+    // `_LazyIntrinsic("molt_sys_version_info", default)` stashes the name in
+    // `self._name` and calls `_require_intrinsic(self._name)` on first use). A
+    // call-argument-only scan misses the object-field case, which silently
+    // degrades to the wrapper's fallback value (e.g. `sys.version_info` reverting
+    // to the 3.12 default under a 3.13 target) rather than crashing — exactly the
+    // class of bug a too-narrow manifest produces. Capturing every const_str
+    // whose value is a real intrinsic symbol is the only data-flow-complete
+    // manifest. The `is_candidate_intrinsic_name` filter (exact membership in the
+    // linked staticlib's intrinsic symbol set) keeps this precise: it excludes
+    // free-text strings that merely begin with `molt_` and intrinsics feature-gated
+    // out of the active stdlib profile, so the resolver never takes the address of a
+    // symbol the linker cannot resolve, and `-dead_strip` still removes every
+    // intrinsic whose name appears nowhere as a string constant. The symbol set is
+    // required (no heuristic fallback): an unknown set fails the build closed at the
+    // caller rather than guessing and re-creating the dangling-relocation corruption.
+    for func_ir in functions {
+        for op in &func_ir.ops {
+            if op.kind == "const_str"
+                && let Some(val) = op.s_value.as_deref()
+                && is_candidate_intrinsic_name(val, runtime_intrinsic_symbols)
+            {
+                manifest_intrinsic_names.insert(val.to_owned());
+            }
+        }
+    }
+    manifest_intrinsic_names
+}
+
+/// Decide whether a `const_str` value names a runtime intrinsic the app resolver
+/// may safely take the address of.
+///
+/// Membership in the set of intrinsic symbols the linked runtime staticlib
+/// *defines* (extracted by the CLI for the active stdlib profile and threaded in)
+/// is the authoritative, exact filter: it excludes diagnostic strings that merely
+/// begin with `molt_` (e.g. `"molt_sys_platform intrinsic unavailable"`) AND
+/// intrinsics that are feature-gated out of the active stdlib profile (e.g. crypto
+/// on the micro profile). Taking the address of an absent symbol via a pointer
+/// relocation would leave an unresolved relocation the linker cannot satisfy — the
+/// precise cause of the link failure / Mach-O header corruption this resolver
+/// design exists to prevent.
+///
+/// There is deliberately NO heuristic fallback: a `molt_`-prefixed identifier that
+/// passes a structural shape check can still be absent from the active profile's
+/// staticlib, so guessing re-creates the dangling-relocation corruption class. The
+/// exact symbol set is therefore a hard precondition — native callers that feed
+/// the resolver obtain it via `runtime_intrinsic_symbols_required`, which fails the
+/// build closed (with an actionable diagnostic) when it is unavailable rather than
+/// emitting a corrupt binary.
+fn is_candidate_intrinsic_name(name: &str, runtime_intrinsic_symbols: &BTreeSet<String>) -> bool {
+    runtime_intrinsic_symbols.contains(name)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -3899,6 +3991,139 @@ mod tests {
             args: Some(vec![arg.to_string()]),
             ..Default::default()
         }
+    }
+
+    fn make_const_str(out: &str, value: &str) -> OpIR {
+        OpIR {
+            kind: "const_str".to_string(),
+            out: Some(out.to_string()),
+            s_value: Some(value.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn make_call_func(out: &str, callee: &str, args: &[&str]) -> OpIR {
+        let mut full_args = vec![callee.to_string()];
+        full_args.extend(args.iter().map(|a| a.to_string()));
+        OpIR {
+            kind: "call_func".to_string(),
+            out: Some(out.to_string()),
+            args: Some(full_args),
+            ..Default::default()
+        }
+    }
+
+    fn manifest_func(ops: Vec<OpIR>) -> FunctionIR {
+        FunctionIR {
+            name: "m".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops,
+            ..Default::default()
+        }
+    }
+
+    /// A const-string intrinsic name passed as a call argument (the wrapper case,
+    /// e.g. `_require_callable_intrinsic("molt_gc_collect")`) is captured even
+    /// though it is not the direct `call_func(require_intrinsic, const_str)` shape.
+    /// This is the regression the broadened scan fixes (`gc.collect()` etc.).
+    #[test]
+    fn manifest_captures_wrapper_indirected_intrinsic_name() {
+        let symbols: BTreeSet<String> = ["molt_gc_collect".to_string()].into_iter().collect();
+        let func = manifest_func(vec![
+            make_const_str("name", "molt_gc_collect"),
+            // `_require_callable_intrinsic(name)` — a user wrapper call.
+            make_call_func("res", "wrapper", &["name"]),
+        ]);
+        let manifest = compute_intrinsic_manifest(&[func], &symbols);
+        assert!(
+            manifest.contains("molt_gc_collect"),
+            "wrapper-indirected intrinsic name must be in the manifest"
+        );
+    }
+
+    /// A const-string that names a symbol absent from the linked staticlib (e.g.
+    /// a crypto intrinsic on the micro profile) must NOT be captured — taking its
+    /// address would leave an unresolvable relocation.
+    #[test]
+    fn manifest_excludes_intrinsic_absent_from_staticlib() {
+        let symbols: BTreeSet<String> = ["molt_gc_collect".to_string()].into_iter().collect();
+        let func = manifest_func(vec![
+            make_const_str("name", "molt_pbkdf2_hmac"), // not in `symbols`
+            make_call_func("res", "wrapper", &["name"]),
+        ]);
+        let manifest = compute_intrinsic_manifest(&[func], &symbols);
+        assert!(
+            !manifest.contains("molt_pbkdf2_hmac"),
+            "an intrinsic absent from the staticlib must never be address-taken"
+        );
+    }
+
+    /// A const-string that merely begins with `molt_` but is free-text (a
+    /// diagnostic message, not a symbol) must not be captured.
+    #[test]
+    fn manifest_excludes_non_symbol_molt_strings() {
+        let symbols: BTreeSet<String> = ["molt_gc_collect".to_string()].into_iter().collect();
+        let func = manifest_func(vec![
+            make_const_str("msg", "molt_sys_platform intrinsic unavailable"),
+            make_call_func("res", "panic", &["msg"]),
+        ]);
+        let manifest = compute_intrinsic_manifest(&[func], &symbols);
+        assert!(
+            manifest.is_empty(),
+            "free-text molt_ strings must not enter the manifest"
+        );
+    }
+
+    /// A const-string intrinsic name that is stored (not passed directly to a
+    /// call) MUST still be captured: the name can flow through an object field
+    /// and be resolved later (sys.py's `_LazyIntrinsic` stashes the name in
+    /// `self._name`). Missing it silently degrades to the wrapper's fallback
+    /// value, so the data-flow-complete scan keeps every intrinsic-named
+    /// const_str.
+    #[test]
+    fn manifest_captures_stored_intrinsic_name() {
+        let symbols: BTreeSet<String> = ["molt_gc_collect".to_string()].into_iter().collect();
+        let func = manifest_func(vec![
+            make_const_str("name", "molt_gc_collect"),
+            // `name` is stored in an object field, not passed directly to a call —
+            // it is still resolved later via `_require_intrinsic(self._name)`.
+            make_store_var("slot", "name"),
+        ]);
+        let manifest = compute_intrinsic_manifest(&[func], &symbols);
+        assert!(
+            manifest.contains("molt_gc_collect"),
+            "an intrinsic name stored for later resolution must be captured"
+        );
+    }
+
+    /// The filter is EXACT membership in the staticlib symbol set — there is no
+    /// structural heuristic fallback. A well-formed `molt_`-prefixed identifier that
+    /// is NOT in the set (e.g. an intrinsic feature-gated out of the active stdlib
+    /// profile) must be excluded, because address-taking an absent symbol leaves a
+    /// dangling relocation that corrupts the binary. This locks in the contract that
+    /// replaced the prior "degrade safely" heuristic (which itself enabled the
+    /// corruption class).
+    #[test]
+    fn manifest_excludes_well_formed_name_absent_from_symbol_set() {
+        // Only `molt_gc_collect` is defined by the (simulated) staticlib.
+        let symbols: BTreeSet<String> = ["molt_gc_collect".to_string()].into_iter().collect();
+        let func = manifest_func(vec![
+            make_const_str("present", "molt_gc_collect"),
+            make_call_func("r1", "wrapper", &["present"]),
+            // A structurally valid intrinsic identifier that is feature-gated out of
+            // this profile's staticlib — must NOT be address-taken.
+            make_const_str("absent", "molt_pbkdf2_hmac"),
+            make_call_func("r2", "wrapper", &["absent"]),
+        ]);
+        let manifest = compute_intrinsic_manifest(&[func], &symbols);
+        assert!(manifest.contains("molt_gc_collect"));
+        assert!(
+            !manifest.contains("molt_pbkdf2_hmac"),
+            "a well-formed molt_ identifier absent from the staticlib must be excluded"
+        );
     }
 
     #[test]

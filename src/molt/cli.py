@@ -9269,6 +9269,80 @@ def _native_object_has_unresolved_module_chunks(
     return any(symbol not in stdlib_defined for symbol in unresolved_chunks)
 
 
+def _runtime_intrinsic_symbols_file(runtime_lib: Path) -> Path | None:
+    """Materialize a newline-separated list of the `molt_*` intrinsic symbols the
+    runtime staticlib *defines*, returning the cache file path.
+
+    The per-app intrinsic resolver (emitted into the user object) takes the
+    address of every intrinsic the app reaches by name. Those addresses are
+    resolved against this staticlib at link time, so the resolver must only
+    reference intrinsics the staticlib actually defines: the available set differs
+    by stdlib profile (the native ``micro`` profile excludes crypto/compression/
+    ast/etc.), and referencing an absent symbol leaves an unresolvable relocation
+    — the precise cause of the link failure / Mach-O header corruption the
+    resolver redesign eliminates. The backend reads this file
+    (``MOLT_RUNTIME_INTRINSIC_SYMBOLS``) and intersects the candidate manifest
+    against it.
+
+    Cached next to the staticlib and keyed by the staticlib's size+mtime so it is
+    extracted at most once per runtime build.
+    """
+    try:
+        stat = runtime_lib.stat()
+    except OSError:
+        return None
+    cache_path = runtime_lib.with_name(
+        f"{runtime_lib.name}.intrinsic_symbols.{stat.st_size}.{int(stat.st_mtime)}.txt"
+    )
+    if cache_path.exists():
+        return cache_path
+    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
+    if nm_bin is None:
+        return None
+    try:
+        # `-g` would hide the staticlib's defined intrinsic symbols when they are
+        # local after LTO; intrinsics are `#[no_mangle] pub extern "C"` (external),
+        # so the default listing captures them. Use a generous timeout: the native
+        # full/micro staticlib can exceed 100MB. Pass an absolute path so the
+        # `cwd=runtime_lib.parent` working directory cannot break path resolution.
+        runtime_lib_abs = runtime_lib.resolve()
+        result = _run_completed_command(
+            [nm_bin, "--defined-only", str(runtime_lib_abs)],
+            capture_output=True,
+            timeout=120,
+            env=None,
+            cwd=runtime_lib_abs.parent,
+            memory_guard_prefix="MOLT_BUILD",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    symbols: set[str] = set()
+    for raw_line in result.stdout.splitlines():
+        parts = raw_line.split()
+        if len(parts) < 2:
+            continue
+        # Defined symbols list as either "<addr> <kind> <name>" or "<kind> <name>".
+        kind = parts[-2]
+        name = _normalize_native_symbol_name(parts[-1])
+        # Text symbols (T/t) are the intrinsic function definitions the resolver
+        # takes the address of. Restrict to the `molt_` namespace.
+        if kind in ("T", "t") and name.startswith("molt_"):
+            symbols.add(name)
+    if not symbols:
+        return None
+    tmp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text("\n".join(sorted(symbols)) + "\n", encoding="utf-8")
+        os.replace(tmp_path, cache_path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        return None
+    return cache_path
+
+
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
     """Enable target-cpu=native for the Rust runtime compilation.
 
@@ -13502,6 +13576,13 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough["MOLT_STDLIB_CACHE_MANIFEST"] = stdlib_object_manifest
     if stdlib_module_symbols_json:
         env_passthrough["MOLT_STDLIB_MODULE_SYMBOLS"] = stdlib_module_symbols_json
+    # Per-app intrinsic resolver validation set: the file of intrinsic symbols the
+    # linked runtime staticlib defines. Set in the ambient env once the runtime
+    # lib is ready (see `_prepare_native_codegen_environment`); forward it so the
+    # daemon's resolver never references an intrinsic absent from the staticlib.
+    runtime_intrinsic_symbols = os.environ.get("MOLT_RUNTIME_INTRINSIC_SYMBOLS")
+    if runtime_intrinsic_symbols:
+        env_passthrough["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = runtime_intrinsic_symbols
     if env_passthrough:
         payload["env"] = env_passthrough
     return _backend_daemon_request_payload_bytes(payload)
@@ -17521,6 +17602,15 @@ extern long molt_chan_try_recv(void* chan);
 extern long molt_chan_send_blocking(void* chan, long val);
 extern long molt_chan_recv_blocking(void* chan);
 extern void molt_print_obj(unsigned long long val);
+/* Per-app intrinsic resolver: the backend emits molt_app_resolve_intrinsic into
+ * the user object covering only the intrinsics this app reaches by name. The
+ * runtime resolves intrinsics through it instead of the staticlib's
+ * resolve_symbol, which keeps resolve_symbol/resolve_core_symbol native-
+ * unreachable so the linker dead-strips every unused intrinsic. This MUST be
+ * registered before molt_runtime_init() so the resolver is in place before any
+ * intrinsic lookup runs. */
+extern unsigned long long molt_app_resolve_intrinsic(const char* name, unsigned long long len);
+extern unsigned long long molt_set_app_intrinsic_resolver(unsigned long long fn_ptr);
 /* MOLT_TRUSTED_SNIPPET */
 /* MOLT_CAPABILITIES_SNIPPET */
 
@@ -17546,6 +17636,7 @@ static int molt_finish() {
 int wmain(int argc, wchar_t** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
+    molt_set_app_intrinsic_resolver((unsigned long long)(void*)molt_app_resolve_intrinsic);
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
@@ -17556,6 +17647,7 @@ int wmain(int argc, wchar_t** argv) {
 int main(int argc, char** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
+    molt_set_app_intrinsic_resolver((unsigned long long)(void*)molt_app_resolve_intrinsic);
     molt_runtime_init();
     molt_runtime_ensure_gil();
     molt_set_argv(argc, (const char**)argv);
@@ -17901,6 +17993,248 @@ def _post_link_strip(binary: Path, target_triple: str | None) -> None:
         pass  # strip not available or timed out — binary is still valid
 
 
+class _NativeBinaryInvalid(Exception):
+    """A produced native binary is structurally invalid (bad object format)
+    or is rejected/killed by the OS loader on a smoke probe.
+
+    Raising this fails the build loudly. It exists to make the binary-
+    corruption class (e.g. a mis-applied relocation flipping the Mach-O magic
+    `0xfeedfacf` -> `0xfeedface`, yielding a kernel-SIGKILLed binary that still
+    "linked successfully") non-shippable: a link that returns 0 but emits a
+    structurally broken artifact must not be reported as a success.
+    """
+
+
+# Expected leading magic bytes per object format. Mach-O and PE are exact
+# 4-/2-byte signatures; ELF is the 4-byte `\x7fELF` regardless of class/endian.
+# 64-bit Mach-O (the only valid form molt emits for arm64/x86_64) is
+# `0xFEEDFACF` little-endian -> bytes CF FA ED FE. The 32-bit magic
+# `0xFEEDFACE` -> CE FA ED FE is the exact corruption signature this check
+# rejects.
+_MACHO64_MAGIC_LE = bytes((0xCF, 0xFA, 0xED, 0xFE))
+_MACHO64_MAGIC_BE = bytes((0xFE, 0xED, 0xFA, 0xCF))
+_MACHO32_MAGIC_LE = bytes((0xCE, 0xFA, 0xED, 0xFE))
+_MACHO32_MAGIC_BE = bytes((0xFE, 0xED, 0xFA, 0xCE))
+_MACHO_FAT_MAGICS = (
+    bytes((0xCA, 0xFE, 0xBA, 0xBE)),  # FAT_MAGIC
+    bytes((0xBE, 0xBA, 0xFE, 0xCA)),  # FAT_CIGAM
+    bytes((0xCA, 0xFE, 0xBA, 0xBF)),  # FAT_MAGIC_64
+    bytes((0xBF, 0xBA, 0xFE, 0xCA)),  # FAT_CIGAM_64
+)
+_ELF_MAGIC = bytes((0x7F, 0x45, 0x4C, 0x46))  # \x7fELF
+_PE_MZ_MAGIC = bytes((0x4D, 0x5A))  # MZ
+
+
+def _expected_binary_format_for_target(target_triple: str | None) -> str:
+    """Map a target triple (or the host, when None) to its object format:
+    one of 'macho', 'elf', 'pe'."""
+    triple = (target_triple or "").lower()
+    if "apple" in triple or "darwin" in triple or "macos" in triple or "ios" in triple:
+        return "macho"
+    if "windows" in triple or "msvc" in triple or triple.endswith("-pc"):
+        return "pe"
+    if (
+        "linux" in triple
+        or "android" in triple
+        or "freebsd" in triple
+        or "netbsd" in triple
+        or "openbsd" in triple
+        or "wasi" in triple
+        or "none" in triple
+    ):
+        return "elf"
+    if triple:
+        # Unknown explicit triple: default to ELF (the GNU/SysV default) rather
+        # than guessing the host format — cross targets are almost always ELF.
+        return "elf"
+    if sys.platform == "darwin":
+        return "macho"
+    if sys.platform == "win32":
+        return "pe"
+    return "elf"
+
+
+def _validate_native_binary_format(binary: Path, target_triple: str | None) -> None:
+    """Validate the produced native binary's object-file magic against the
+    format the target expects, raising `_NativeBinaryInvalid` on mismatch.
+
+    This is the structural half of the build-time output validity check: it is
+    intentionally cheap (reads the first bytes) and runs on every native link so
+    a relocation that corrupts the header (the resolver-corruption class) cannot
+    pass as a successful build.
+    """
+    if not binary.exists():
+        raise _NativeBinaryInvalid(
+            f"native link reported success but produced no output at {binary}"
+        )
+    try:
+        with binary.open("rb") as handle:
+            head = handle.read(4)
+    except OSError as exc:
+        raise _NativeBinaryInvalid(
+            f"could not read produced binary {binary} for validity check: {exc}"
+        ) from exc
+    if len(head) < 4:
+        raise _NativeBinaryInvalid(
+            f"produced binary {binary} is truncated ({len(head)} bytes); "
+            f"expected a valid object header"
+        )
+    fmt = _expected_binary_format_for_target(target_triple)
+    if fmt == "macho":
+        if head in (_MACHO64_MAGIC_LE, _MACHO64_MAGIC_BE):
+            return
+        if head in _MACHO_FAT_MAGICS:
+            return  # universal binary container — its slices are validated by the loader
+        if head in (_MACHO32_MAGIC_LE, _MACHO32_MAGIC_BE):
+            raise _NativeBinaryInvalid(
+                f"produced Mach-O {binary} has 32-bit magic "
+                f"{head.hex()} (0xFEEDFACE) — corrupt header for a 64-bit "
+                f"target (a mis-applied relocation flipped CF->CE). "
+                f"This binary would be SIGKILLed by the kernel; failing the build."
+            )
+        raise _NativeBinaryInvalid(
+            f"produced binary {binary} is not a valid Mach-O: leading bytes "
+            f"{head.hex()} (want 0xFEEDFACF / CF FA ED FE)"
+        )
+    if fmt == "elf":
+        if head == _ELF_MAGIC:
+            return
+        raise _NativeBinaryInvalid(
+            f"produced binary {binary} is not a valid ELF: leading bytes "
+            f"{head.hex()} (want \\x7fELF / 7F 45 4C 46)"
+        )
+    if fmt == "pe":
+        if head[:2] == _PE_MZ_MAGIC:
+            return
+        raise _NativeBinaryInvalid(
+            f"produced binary {binary} is not a valid PE/COFF: leading bytes "
+            f"{head[:2].hex()} (want MZ / 4D 5A)"
+        )
+    # Unreachable: _expected_binary_format_for_target only returns the 3 formats.
+    raise _NativeBinaryInvalid(
+        f"internal: unknown expected format {fmt!r} for target {target_triple!r}"
+    )
+
+
+def _smoke_probe_native_binary(binary: Path, target_triple: str | None) -> None:
+    """Execute the produced binary briefly to confirm the OS loader accepts it,
+    raising `_NativeBinaryInvalid` if the kernel rejects/kills it.
+
+    Only runs when the target is host-executable (no cross-compile) and the
+    host is not Windows (where a benign exec probe is unreliable). A structurally
+    valid header can still be unloadable (bad load commands, a corrupt segment),
+    so this catches loader-level corruption the magic check alone misses. The
+    probe sends `MOLT_BUILD_VALIDITY_PROBE=1` so the program *may* exit early
+    cooperatively; absent that, any non-signal termination (including the normal
+    program running to completion) is accepted — only a loader-level kill
+    (SIGKILL/SIGSEGV/SIGBUS/SIGILL on launch, or an Exec-format OSError) fails
+    the build.
+    """
+    if not _target_is_host_executable(target_triple):
+        return
+    if sys.platform == "win32":
+        return
+    try:
+        proc = subprocess.run(
+            [str(binary)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            env={**os.environ, "MOLT_BUILD_VALIDITY_PROBE": "1"},
+            check=False,
+        )
+    except OSError as exc:
+        # ENOEXEC / "Exec format error" — the loader cannot run this image.
+        raise _NativeBinaryInvalid(
+            f"produced binary {binary} is not executable by the OS loader: {exc}"
+        ) from exc
+    except subprocess.TimeoutExpired:
+        # The program ran (loaded fine) and merely outlived the probe window;
+        # loading succeeded, which is all this probe verifies.
+        return
+    rc = proc.returncode
+    # A negative returncode means the process was terminated by a signal.
+    # Loader-level rejection manifests as SIGKILL (9, the Mach-O-magic-corruption
+    # symptom), SIGSEGV (11), SIGBUS (10), or SIGILL (4) immediately on launch.
+    if rc is not None and rc < 0:
+        sig = -rc
+        loader_fatal = {
+            getattr(signal, "SIGKILL", 9),
+            getattr(signal, "SIGSEGV", 11),
+            getattr(signal, "SIGBUS", 10),
+            getattr(signal, "SIGILL", 4),
+        }
+        if sig in loader_fatal:
+            try:
+                signame = signal.Signals(sig).name
+            except ValueError:
+                signame = f"signal {sig}"
+            raise _NativeBinaryInvalid(
+                f"produced binary {binary} was killed by {signame} on a smoke "
+                f"probe — the OS loader rejected the image (corrupt header / "
+                f"load commands). Failing the build."
+            )
+
+
+def _target_is_host_executable(target_triple: str | None) -> bool:
+    """True when a binary for `target_triple` can run on the build host, so a
+    smoke-exec probe is meaningful. Conservative: only returns True when the
+    target's OS+arch both match the host (or the target is None = host build)."""
+    if target_triple is None:
+        return True
+    triple = target_triple.lower()
+    if "wasm" in triple or "wasi" in triple:
+        return False
+    host_os_ok = (
+        (sys.platform == "darwin" and ("apple" in triple or "darwin" in triple))
+        or (sys.platform.startswith("linux") and "linux" in triple)
+        or (sys.platform == "win32" and ("windows" in triple or "msvc" in triple))
+    )
+    if not host_os_ok:
+        return False
+    machine = platform.machine().lower()
+    host_is_arm64 = machine in ("arm64", "aarch64")
+    host_is_x86_64 = machine in ("x86_64", "amd64")
+    target_is_arm64 = triple.startswith("aarch64") or triple.startswith("arm64")
+    target_is_x86_64 = triple.startswith("x86_64") or triple.startswith("amd64")
+    if host_is_arm64 and target_is_arm64:
+        return True
+    if host_is_x86_64 and target_is_x86_64:
+        return True
+    # macOS arm64 can run x86_64 under Rosetta 2; treat as runnable.
+    if sys.platform == "darwin" and host_is_arm64 and target_is_x86_64:
+        return True
+    return False
+
+
+def _assert_native_binary_valid(binary: Path, target_triple: str | None) -> None:
+    """Build-time output validity gate (cross-platform).
+
+    Runs after a native link reports success and validates the produced binary's
+    object-file magic against the target format (Mach-O 0xFEEDFACF / ELF / PE).
+    This is deterministic and side-effect-free, and it rejects the resolver-
+    corruption class (a header flipped to the 32-bit magic 0xFEEDFACE) that
+    otherwise links "successfully" and is then SIGKILLed by the kernel. Failure
+    raises `_NativeBinaryInvalid`, which the caller turns into a loud build
+    failure.
+
+    The deeper *smoke-exec* loader probe (`_smoke_probe_native_binary`) actually
+    runs the produced image, so it can execute the user program's `main()` side
+    effects at build time; it is therefore opt-in via `MOLT_BUILD_SMOKE_EXEC=1`
+    (the validity gate in `tools/verify_native_binary_valid.sh` runs its own
+    disposable corpus binaries directly, so it does not need the in-build probe).
+
+    `MOLT_SKIP_BINARY_VALIDITY_CHECK=1` disables the whole gate (diagnostics /
+    bring-up only).
+    """
+    if os.environ.get("MOLT_SKIP_BINARY_VALIDITY_CHECK") == "1":
+        return
+    _validate_native_binary_format(binary, target_triple)
+    if os.environ.get("MOLT_BUILD_SMOKE_EXEC") == "1":
+        _smoke_probe_native_binary(binary, target_triple)
+
+
 def _run_native_link_command(
     *,
     link_cmd: Sequence[str],
@@ -18183,8 +18517,46 @@ def _emit_native_link_result(
         # Post-link strip: remove all remaining local symbols for maximum
         # binary size reduction. The linker's -x/-S flags strip most, but
         # `strip -x` on macOS catches Rust metadata and alignment padding
-        # that the linker preserves.
-        _post_link_strip(output_binary, target_triple)
+        # that the linker preserves. MOLT_KEEP_SYMBOLS=1 is a diagnostic-only
+        # escape hatch that must also skip this strip so size-attribution tools
+        # can see which functions survived dead-strip (it never affects default
+        # output).
+        if os.environ.get("MOLT_KEEP_SYMBOLS") != "1":
+            _post_link_strip(output_binary, target_triple)
+        # Build-time output validity gate (self-protection, task #18): a link
+        # that returns 0 can still emit a structurally corrupt artifact (e.g. a
+        # mis-applied relocation that flips the Mach-O magic 0xFEEDFACF->0xFEEDFACE,
+        # yielding a kernel-SIGKILLed binary). Validate the produced binary's
+        # object-file magic against the target format (deterministic and side-
+        # effect-free); the deeper exec loader probe is opt-in via
+        # MOLT_BUILD_SMOKE_EXEC=1 (it runs the image). On failure, fail the build
+        # loudly instead of reporting success — this class must never ship.
+        try:
+            _assert_native_binary_valid(output_binary, target_triple)
+        except _NativeBinaryInvalid as validity_error:
+            # Remove the corrupt artifact so a stale-but-invalid binary cannot be
+            # picked up by a later step, then surface a clear error and fail.
+            with contextlib.suppress(OSError):
+                if emit_mode == "bin" and output_binary.exists():
+                    output_binary.unlink()
+            message = f"Build failed: produced binary is invalid. {validity_error}"
+            if json_output:
+                payload = _json_payload(
+                    "build",
+                    "error",
+                    data={"output": str(output_binary), "target": target},
+                    errors=[message],
+                )
+                _emit_json(payload, json_output)
+            else:
+                print(message, file=sys.stderr)
+            _emit_build_diagnostics_if_present(
+                diagnostics_payload=diagnostics_payload,
+                diagnostics_path=diagnostics_path,
+                json_output=json_output,
+                verbosity=resolved_diagnostics_verbosity,
+            )
+            return 1
         _write_link_fingerprint_if_needed(
             link_skipped=link_skipped,
             link_fingerprint=link_fingerprint,
@@ -19640,6 +20012,7 @@ def _prepare_backend_runtime_context(
     molt_root: Path,
     stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | frozenset[str] | None = None,
+    target_triple: str | None = None,
 ) -> _PreparedBackendRuntimeContext:
     runtime_state = prepared_backend_setup.runtime_state
 
@@ -19676,6 +20049,42 @@ def _prepare_backend_runtime_context(
             resolved_modules=resolved_modules,
             required_exports=required_exports,
         )
+
+    # Native bin builds: expose the set of intrinsic symbols the linked runtime
+    # staticlib defines so the per-app resolver only references resolvable
+    # intrinsics. Setting it in the ambient env propagates to both the backend
+    # subprocess (which copies os.environ) and the daemon request env passthrough.
+    # WASM/transpile builds have no native staticlib and never register the
+    # resolver, so leave the var unset there.
+    #
+    # The backend's resolver is emitted at codegen time and references these
+    # symbols, so codegen depends on the staticlib being built. The native
+    # runtime is built on a background future; join it here (before codegen)
+    # for native bin builds so the symbol set is available. The link-time
+    # readiness check re-runs the now-synchronous (and fingerprint-cached)
+    # ensure, which is cheap once the staticlib exists.
+    # `runtime_state.runtime_lib` is only populated for native bin builds
+    # (emit_mode == "bin"); WASM/transpile leave it None and never register the
+    # resolver, so this whole block is native-only.
+    runtime_lib = runtime_state.runtime_lib
+    os.environ.pop("MOLT_RUNTIME_INTRINSIC_SYMBOLS", None)
+    if runtime_lib is not None and not is_wasm_freestanding:
+        _ensure_native_runtime_lib_ready_before_link(
+            runtime_state,
+            target_triple=target_triple,
+            json_output=json_output,
+            runtime_cargo_profile=runtime_cargo_profile,
+            molt_root=molt_root,
+            cargo_timeout=cargo_timeout,
+            diagnostics_enabled=False,
+            phase_starts={},
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+        )
+        if runtime_lib.exists():
+            symbols_file = _runtime_intrinsic_symbols_file(runtime_lib)
+            if symbols_file is not None:
+                os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = str(symbols_file)
 
     return _PreparedBackendRuntimeContext(
         runtime_state=runtime_state,
@@ -20823,6 +21232,7 @@ def _run_backend_pipeline(
         molt_root=prepared_build_roots.molt_root,
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
+        target_triple=output_layout.target_triple,
     )
     prepared_backend_compile, prepared_backend_compile_error = _prepare_backend_compile(
         diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
@@ -37387,6 +37797,22 @@ def main() -> int:
         stdlib_profile = (
             stdlib_profile_raw if isinstance(stdlib_profile_raw, str) else None
         )
+        # When `--stdlib-profile` is not given on the command line, honor the
+        # `MOLT_STDLIB_PROFILE` environment variable as the single canonical
+        # source of truth. The module-graph construction reads this env var
+        # directly (`_ensure_core_stdlib_modules`, the core-module closure), so
+        # the runtime-staticlib build profile MUST be derived from the same
+        # signal — otherwise the two diverge: an env-only `full` request pulls
+        # full-profile modules (e.g. `hashlib`) into the dependency closure
+        # while the staticlib is still built `micro`, leaving the full-profile
+        # crypto intrinsics (`molt_pbkdf2_hmac`, `molt_scrypt`, ...) undefined
+        # and the link failing on `_..._molt_trampoline_*_import`. The explicit
+        # arg still wins over the env; the env wins over the deploy-profile
+        # default and the `micro` fallback below.
+        if stdlib_profile is None:
+            env_stdlib_profile = os.environ.get("MOLT_STDLIB_PROFILE")
+            if env_stdlib_profile in ("full", "micro"):
+                stdlib_profile = env_stdlib_profile
 
         if deploy_profile and deploy_profile in _DEPLOY_PROFILE_DEFAULTS:
             defaults = _DEPLOY_PROFILE_DEFAULTS[deploy_profile]
