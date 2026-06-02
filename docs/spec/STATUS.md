@@ -45,6 +45,20 @@ It is current-state only. For forward-looking priorities, use
 - Backend-facing native and WASM lowering always runs through the TIR pipeline;
   the old environment-variable opt-out has been removed so SimpleIR transport
   metadata cannot bypass typed-IR validation.
+- Configurable runtime memory protection is supported and opt-in. A compiled
+  binary caps its own memory through a single `ResourceLimits` enforcement path:
+  the human-readable `MOLT_MEMORY_LIMIT` env (e.g. `64M`, `2G`) is an alias that
+  normalizes into the same `max_memory` field as the manifest-emitted
+  `MOLT_RESOURCE_MAX_MEMORY`, installed via the global tracker factory so worker
+  threads inherit it. Enforcement is two-layer: the precise in-VM
+  `LimitedTracker` (Layer 1, cross-target, deterministic, uncatchable
+  `MemoryError`) plus an OS-level `RLIMIT_AS`/`RLIMIT_DATA` backstop (Layer 2,
+  native; effective on Linux, best-effort on macOS, n/a on WASM). The
+  capability-manifest per-operation result caps (`max_pow_result`,
+  `max_repeat_result`, `max_shift_result`, `max_string_result`) now reach the
+  Rust tracker without being dropped at the env boundary. Default is unchanged
+  (no limit) unless the env is set; capability-tier default-on policy is
+  deferred pending tier-vocabulary disambiguation. See `docs/RESOURCE_CONTROLS.md`.
 
 ## Intentionally Unsupported
 
