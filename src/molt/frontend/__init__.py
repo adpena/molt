@@ -3322,6 +3322,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     ) -> tuple[list[tuple[str, ast.expr, int]], dict[int, int]]:
         items: list[tuple[str, ast.expr, int]] = []
         id_map: dict[int, int] = {}
+        outer = self
 
         class Collector(ast.NodeVisitor):
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -3335,6 +3336,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             def visit_Lambda(self, node: ast.Lambda) -> None:
                 return
+
+            def visit_If(self, node: ast.If) -> None:
+                # CPython does not record annotations from a statically-dead
+                # branch (`if False:`/`if TYPE_CHECKING:`) in `__annotations__`.
+                static_branch = outer._static_if_live_branch(node)
+                if static_branch is not None:
+                    for stmt in static_branch:
+                        self.visit(stmt)
+                    return None
+                self.generic_visit(node)
 
             def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
                 if isinstance(node.target, ast.Name):
@@ -3472,8 +3483,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.visit(stmt)
 
             def visit_If(self, node: ast.If) -> None:
-                if outer._is_type_checking_test(node.test):
-                    for stmt in node.orelse:
+                static_branch = outer._static_if_live_branch(node)
+                if static_branch is not None:
+                    for stmt in static_branch:
                         self.visit(stmt)
                     return None
                 self.visit(node.test)
@@ -7769,8 +7781,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.generic_visit(node)
 
             def visit_If(self, node: ast.If) -> None:
-                if outer._is_type_checking_test(node.test):
-                    for stmt in node.orelse:
+                static_branch = outer._static_if_live_branch(node)
+                if static_branch is not None:
+                    for stmt in static_branch:
                         self.visit(stmt)
                     return None
                 self.visit(node.test)
@@ -7871,8 +7884,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.generic_visit(node)
 
             def visit_If(self, node: ast.If) -> None:
-                if outer._is_type_checking_test(node.test):
-                    for stmt in node.orelse:
+                static_branch = outer._static_if_live_branch(node)
+                if static_branch is not None:
+                    for stmt in static_branch:
                         self.visit(stmt)
                     return None
                 self.visit(node.test)
@@ -7986,6 +8000,49 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if isinstance(expr.value, ast.Name):
                 return expr.value.id in {"typing", "typing_extensions"}
         return False
+
+    @staticmethod
+    def _static_test_truthiness(expr: ast.expr) -> bool | None:
+        """Return the compile-time truth value of an `if`/`while` test, or None.
+
+        CPython's compiler eliminates the dead branch of an `if` whose test is a
+        compile-time constant (`if False:`, `if 0:`, `if "":`, `if True:`,
+        `if None:`), so the dead branch never reaches bytecode — names assigned
+        only there stay unbound and references inside it are never emitted. Molt
+        must match this exactly: a `const_str` left inside a never-executed
+        `if False:` body (e.g. the `__annotations__` keys of a
+        `if False:  # TYPE_CHECKING` block) would otherwise leak into the
+        per-app intrinsic manifest and pin runtime intrinsics that the program
+        never resolves.
+
+        `TYPE_CHECKING` is always statically False here: Molt compiles code, it
+        never runs a type checker, so a `if TYPE_CHECKING:` guard's body is dead
+        exactly like `if False:`. Returning False for it unifies the existing
+        TYPE_CHECKING-skip with general constant folding (one code path, not two).
+
+        Returns None when the test is not a compile-time constant — the caller
+        must then emit both branches under a runtime guard.
+        """
+        if SimpleTIRGenerator._is_type_checking_test(expr):
+            return False
+        if isinstance(expr, ast.Constant):
+            # Mirror CPython's constant folding: any literal test value collapses
+            # to its truthiness (None/bool/int/float/str/bytes/tuple-of-consts).
+            return bool(expr.value)
+        return None
+
+    @staticmethod
+    def _static_if_live_branch(node: ast.If) -> list[ast.stmt] | None:
+        """Statically-live branch of `node` when its test is constant, else None.
+
+        Constant-true selects `node.body`; constant-false (including
+        `TYPE_CHECKING`) selects `node.orelse`. None means the test is
+        runtime-conditional and both branches may execute.
+        """
+        truth = SimpleTIRGenerator._static_test_truthiness(node.test)
+        if truth is None:
+            return None
+        return node.body if truth else node.orelse
 
     def _collect_namedexpr_names(self, node: ast.AST) -> set[str]:
         names: set[str] = set()
@@ -26970,35 +27027,41 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return None
 
+    def _emit_static_if_live_branch(self, branch: list[ast.stmt]) -> None:
+        """Emit only the statically-live branch of a constant `if`.
+
+        The dead branch is dropped entirely (CPython parity: its assignments and
+        any value/intrinsic references never reach the IR). Live-branch names are
+        boxed / module-backed exactly as a normal conditional branch would do, so
+        a name assigned only here behaves identically whether or not the fold
+        fired.
+        """
+        if branch and not self.is_async():
+            assigned = self._collect_assigned_names(branch)
+            if self.current_func_name == "molt_main":
+                module_backed = {n for n in assigned if not n.startswith("__molt_")}
+                if module_backed:
+                    for name in sorted(module_backed):
+                        existing = self.globals.get(name)
+                        if existing is None:
+                            existing = self.locals.get(name)
+                        if existing is not None and self.module_obj is not None:
+                            self._emit_module_attr_set_on(
+                                self.module_obj, name, existing
+                            )
+                    self.module_global_mutations.update(module_backed)
+                for name in sorted(assigned - module_backed):
+                    self._box_local(name)
+            else:
+                for name in sorted(assigned):
+                    if name not in self.scope_assigned or name in self.closure_locals:
+                        self._box_local(name)
+        self._visit_block(branch)
+
     def visit_If(self, node: ast.If) -> None:
-        if self._is_type_checking_test(node.test):
-            if node.orelse:
-                if not self.is_async():
-                    assigned = self._collect_assigned_names(node.orelse)
-                    if self.current_func_name == "molt_main":
-                        module_backed = {
-                            n for n in assigned if not n.startswith("__molt_")
-                        }
-                        if module_backed:
-                            for name in sorted(module_backed):
-                                existing = self.globals.get(name)
-                                if existing is None:
-                                    existing = self.locals.get(name)
-                                if existing is not None and self.module_obj is not None:
-                                    self._emit_module_attr_set_on(
-                                        self.module_obj, name, existing
-                                    )
-                            self.module_global_mutations.update(module_backed)
-                        for name in sorted(assigned - module_backed):
-                            self._box_local(name)
-                    else:
-                        for name in sorted(assigned):
-                            if (
-                                name not in self.scope_assigned
-                                or name in self.closure_locals
-                            ):
-                                self._box_local(name)
-                self._visit_block(node.orelse)
+        static_branch = self._static_if_live_branch(node)
+        if static_branch is not None:
+            self._emit_static_if_live_branch(static_branch)
             return None
         if not self.is_async():
             assigned = self._collect_assigned_names(node.body + node.orelse)

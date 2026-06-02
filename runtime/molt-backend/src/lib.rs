@@ -3954,6 +3954,17 @@ impl SimpleBackend {
         const RESOLVER_NAME: &str = "molt_app_resolve_intrinsic";
         const RECORD_BYTES: usize = 16; // u32 name_off + u32 name_len + u64 func_ptr
 
+        // Diagnostic-only (default off): emit the exact per-app intrinsic manifest
+        // so size-reduction work can verify, deterministically and at the manifest
+        // level (not just the final binary size), exactly which intrinsics the
+        // reachability gate keeps. Mirrors the `MOLT_DUMP_*` diagnostic family.
+        if std::env::var("MOLT_DUMP_INTRINSIC_MANIFEST").as_deref() == Ok("1") {
+            eprintln!("MOLT_INTRINSIC_MANIFEST: count={}", manifest_names.len());
+            for name in manifest_names {
+                eprintln!("MOLT_INTRINSIC_MANIFEST: {name}");
+            }
+        }
+
         // Declare the exported resolver: (i64 name_ptr, i64 name_len) -> i64.
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
