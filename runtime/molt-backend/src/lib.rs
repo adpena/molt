@@ -52,12 +52,80 @@ pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir
 use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
-    elide_dead_struct_allocs, elide_safe_exception_checks, eliminate_dead_functions,
-    eliminate_dead_imports, eliminate_dead_ops, eliminate_redundant_guard_tags,
-    eliminate_unbound_local_checks, escape_analysis, fold_constants, fold_constants_cross_block,
-    hoist_loop_invariants, inject_runtime_exit, inline_functions, rc_coalescing,
-    rewrite_stateful_loops, split_megafunctions,
+    compute_intrinsic_manifest, elide_dead_struct_allocs, elide_safe_exception_checks,
+    eliminate_dead_functions, eliminate_dead_imports, eliminate_dead_ops,
+    eliminate_redundant_guard_tags, eliminate_unbound_local_checks, escape_analysis, fold_constants,
+    fold_constants_cross_block, hoist_loop_invariants, inject_runtime_exit, inline_functions,
+    rc_coalescing, rewrite_stateful_loops, split_megafunctions,
 };
+
+/// Load the set of intrinsic symbols the linked runtime staticlib defines.
+///
+/// The CLI extracts the `molt_*` text symbols from the runtime staticlib for the
+/// active stdlib profile (micro vs full select different feature sets, so the
+/// available intrinsic set differs) and writes them newline-separated to a file,
+/// passing its path in `MOLT_RUNTIME_INTRINSIC_SYMBOLS`. The per-app resolver
+/// validates candidate intrinsic names against this set so it never takes the
+/// address of a symbol absent from the staticlib (an unresolvable relocation).
+///
+/// Returns `None` when the env var is unset or the file cannot be read, in which
+/// case the manifest scan falls back to a conservative structural heuristic.
+pub fn runtime_intrinsic_symbols_from_env() -> Option<std::collections::BTreeSet<String>> {
+    let path = std::env::var_os("MOLT_RUNTIME_INTRINSIC_SYMBOLS")?;
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let set: std::collections::BTreeSet<String> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    if set.is_empty() { None } else { Some(set) }
+}
+
+/// Obtain the linked runtime staticlib's intrinsic-symbol set, failing the build
+/// CLOSED when it is unavailable.
+///
+/// The per-app intrinsic resolver address-takes every manifest intrinsic via a
+/// pointer relocation resolved against the staticlib. Filtering the manifest by
+/// exact membership in this set is the only sound way to guarantee the resolver
+/// never references a symbol the linker cannot satisfy — a dangling relocation
+/// writes garbage into the object (historically flipping the Mach-O magic
+/// `0xfeedfacf` -> `0xfeedface`, yielding a kernel-SIGKILLed binary). There is no
+/// safe heuristic substitute: a `molt_`-prefixed name can be feature-gated out of
+/// the active stdlib profile, so guessing re-creates that corruption. The CLI
+/// always extracts and exposes this set (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`) before
+/// native codegen for any binary that emits the resolver, so absence here is a
+/// build-environment contract violation, not a recoverable condition — panic with
+/// an actionable message rather than emit a corrupt binary.
+///
+/// `cfg(test)` is the sole carve-out (mirroring the resolver machinery in
+/// `molt-runtime`'s `registry`): in-crate codegen unit tests call `compile`
+/// directly to inspect the emitted object, but that object is never linked into a
+/// final binary and never dead-stripped, and no symbol file is staged for it.
+/// There, the precondition does not apply, so the symbol set is empty — the
+/// resolver emits its trivial zero-entry "always not found" form (no relocations),
+/// which is exactly correct for an object no intrinsic is ever resolved through.
+pub fn runtime_intrinsic_symbols_required() -> std::collections::BTreeSet<String> {
+    if let Some(symbols) = runtime_intrinsic_symbols_from_env() {
+        return symbols;
+    }
+    #[cfg(test)]
+    {
+        std::collections::BTreeSet::new()
+    }
+    #[cfg(not(test))]
+    {
+        panic!(
+            "native backend cannot emit the per-app intrinsic resolver without the \
+             linked runtime staticlib's intrinsic-symbol set. \
+             `MOLT_RUNTIME_INTRINSIC_SYMBOLS` was unset or pointed at an empty/unreadable \
+             file. The CLI must extract the staticlib's `molt_*` text symbols (via `nm \
+             --defined-only`) and expose the path before codegen; without it the resolver \
+             would emit dangling relocations against absent symbols and corrupt the binary. \
+             Verify `nm`/`llvm-nm` is on PATH and the runtime staticlib built successfully."
+        )
+    }
+}
 
 #[cfg(feature = "luau-backend")]
 pub mod luau;
@@ -2350,6 +2418,18 @@ pub struct SimpleBackend {
     import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     pub skip_ir_passes: bool,
     pub skip_shared_stdlib_partition: bool,
+    /// Whether this object emits the per-app `molt_app_resolve_intrinsic` resolver.
+    /// Exactly one object per final binary must emit it (the one main_stub.c
+    /// registers): the main application object. Stdlib-cache batch objects and all
+    /// but one program batch set this `false` to avoid a duplicate symbol.
+    pub emit_app_intrinsic_resolver: bool,
+    /// Pre-computed per-app intrinsic manifest (the intrinsics reached by the
+    /// dynamic name-based resolver path). Set by the orchestrator when the full
+    /// function set is split across objects (stdlib cache split / batching) so the
+    /// resolver covers names whose defining functions live in another object. When
+    /// `None`, `compile` derives it from this object's own `ir.functions` (the
+    /// single-object, non-split case where `ir` already holds the full set).
+    pub app_intrinsic_manifest: Option<std::collections::BTreeSet<String>>,
     /// Function names that exist in other batches — use Linkage::Import.
     pub external_function_names: std::collections::BTreeSet<String>,
     module_context: Option<NativeBackendModuleContext>,
@@ -2828,6 +2908,8 @@ impl SimpleBackend {
             import_ids: BTreeMap::new(),
             skip_ir_passes: false,
             skip_shared_stdlib_partition: false,
+            emit_app_intrinsic_resolver: true,
+            app_intrinsic_manifest: None,
             external_function_names: std::collections::BTreeSet::new(),
             module_context: None,
             data_pool: BTreeMap::new(),
@@ -3385,6 +3467,43 @@ impl SimpleBackend {
                 let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
             }
         }
+        // Compute the per-app intrinsic manifest BEFORE the stdlib partition
+        // clears extern function bodies. The stdlib_shared.o partition's
+        // trampolines reach intrinsics by name too, and those uses must be
+        // covered by the per-app resolver (RISK-3) — once `externalize_shared_stdlib_partition`
+        // clears their ops, the manifest scan can no longer see them. The native
+        // backend emits `molt_app_resolve_intrinsic` over exactly this set so
+        // `resolve_symbol`/`resolve_core_symbol` become native-unreachable and
+        // the linker dead-strips every unused intrinsic.
+        // The manifest must cover every intrinsic reached via the dynamic
+        // name-based resolver path across ALL objects of the final binary. When
+        // the orchestrator split the program (stdlib cache split / batching) it
+        // pre-computes the manifest over the full function set and threads it in;
+        // otherwise this object holds the full set and we derive it locally.
+        // Only the object that emits the resolver needs (and computes) the
+        // manifest; stdlib-cache / non-primary batch objects set
+        // `emit_app_intrinsic_resolver = false` and never reference it. Deriving it
+        // there would also wrongly demand the staticlib symbol set for an object
+        // that takes no intrinsic addresses. When the orchestrator split the
+        // program it threads a pre-computed full-set manifest in; otherwise this
+        // object holds the full set and derives it locally against the REQUIRED
+        // staticlib symbol set (no heuristic fallback — see
+        // `runtime_intrinsic_symbols_required`).
+        // The per-app resolver is emitted only by the Cranelift path below; the
+        // LLVM path (`use_llvm`) returns early and never references this manifest,
+        // so deriving it — and demanding the staticlib symbol set — there would be
+        // both wasted work and a spurious build failure for LLVM objects that take
+        // no intrinsic addresses. Compute (and require the exact symbol set) only
+        // when this Cranelift object will actually emit the resolver.
+        let emit_resolver_here = self.emit_app_intrinsic_resolver && !use_llvm;
+        let app_intrinsic_manifest = if emit_resolver_here {
+            self.app_intrinsic_manifest.take().unwrap_or_else(|| {
+                let runtime_symbols = runtime_intrinsic_symbols_required();
+                crate::passes::compute_intrinsic_manifest(&ir.functions, &runtime_symbols)
+            })
+        } else {
+            self.app_intrinsic_manifest.take().unwrap_or_default()
+        };
         if !self.skip_shared_stdlib_partition {
             externalize_shared_stdlib_partition(&mut ir);
         }
@@ -3682,6 +3801,24 @@ impl SimpleBackend {
                 }
             }
         }
+        // ── Per-app intrinsic resolver ────────────────────────────
+        // Emit `molt_app_resolve_intrinsic` AFTER the main flush so every
+        // intrinsic FuncId created by a direct call already exists in the module
+        // (reused via `get_name`); only manifest intrinsics are address-taken
+        // here. The main stub registers this resolver before `molt_runtime_init`,
+        // so the runtime resolves intrinsics through it instead of the
+        // staticlib's `resolve_symbol`, keeping `resolve_symbol`/
+        // `resolve_core_symbol` native-unreachable for dead-stripping.
+        //
+        // Emit it ONCE per final binary, into the designated main application
+        // object (`emit_app_intrinsic_resolver`). Stdlib-cache batch objects and
+        // all-but-one program batch set this `false`, so there is no duplicate
+        // `_molt_app_resolve_intrinsic` symbol at link. The threaded manifest
+        // covers every name-resolved intrinsic across all objects, including
+        // stdlib wrappers compiled into the separate stdlib cache object.
+        if self.emit_app_intrinsic_resolver {
+            self.emit_app_resolver_function(&app_intrinsic_manifest);
+        }
         // ── Post-compilation: fail closed on declared-but-undefined exports.
         // These are always backend contract violations: either a call site
         // declared an impossible overload, a function was skipped, or codegen
@@ -3762,6 +3899,330 @@ impl SimpleBackend {
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
+    /// Emit the per-app intrinsic resolver `molt_app_resolve_intrinsic` into the
+    /// user object as a compact, relocated **data table** plus a small O(log n)
+    /// binary-search lookup, rather than a giant O(n) linear-scan function.
+    ///
+    /// Layout (all `Local`, so the linker dead-strips them when the resolver
+    /// itself is unreferenced — e.g. WASM builds — and keeps only this object's
+    /// table otherwise):
+    ///
+    /// * `molt_app_intrinsic_names`: the manifest names, sorted by unsigned-byte
+    ///   lexicographic order and concatenated (no separators).
+    /// * `molt_app_intrinsic_table`: N fixed-size 16-byte records, sorted to
+    ///   match the names blob: `[name_off: u32][name_len: u32][func_ptr: u64]`.
+    ///   Each `func_ptr` slot carries a single pointer relocation
+    ///   (`ARM64_RELOC_UNSIGNED` / `R_X86_64_64` / `R_AARCH64_ABS64` /
+    ///   `IMAGE_REL_AMD64_ADDR64`) to the intrinsic, emitted via
+    ///   `DataDescription::write_function_addr`. This is the portable, scalable
+    ///   relocation form — the linker applies thousands of these without the
+    ///   21-bit ADRP / branch-range pressure of thousands of `func_addr`
+    ///   instructions packed into one oversized function (the failure mode that
+    ///   corrupted the Mach-O header).
+    ///
+    /// The intrinsic `FuncId`s are declared `Import` (reusing any declaration a
+    /// direct call already created), so the linker resolves the pointer relocs
+    /// against the runtime staticlib. Only manifest intrinsics are referenced, so
+    /// `-dead_strip` / `--gc-sections` still removes every unused intrinsic once
+    /// `resolve_symbol` / `resolve_core_symbol` are native-unreachable.
+    ///
+    /// ABI: `extern "C" fn(name_ptr: i64, name_len: i64) -> i64`. Returns the
+    /// intrinsic function pointer as a `u64`, or 0 when the name is not in the
+    /// manifest.
+    fn emit_app_resolver_function(&mut self, manifest_names: &BTreeSet<String>) {
+        const RESOLVER_NAME: &str = "molt_app_resolve_intrinsic";
+        const RECORD_BYTES: usize = 16; // u32 name_off + u32 name_len + u64 func_ptr
+
+        // Declare the exported resolver: (i64 name_ptr, i64 name_len) -> i64.
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let resolver_id = self
+            .module
+            .declare_function(RESOLVER_NAME, Linkage::Export, &sig)
+            .unwrap_or_else(|e| panic!("failed to declare {RESOLVER_NAME}: {e:?}"));
+
+        // Pre-resolve a FuncId for every manifest intrinsic, reusing any
+        // declaration created by a direct call (so we never re-declare with a
+        // conflicting signature). The signature only matters when the name was
+        // not already declared; the address is taken via a pointer relocation and
+        // is signature-independent. `manifest_names` is a `BTreeSet`, so the
+        // iteration order is already unsigned-byte lexicographic — exactly the
+        // order the binary search requires.
+        let mut canonical_sig = self.module.make_signature();
+        canonical_sig.params.push(AbiParam::new(types::I64));
+        canonical_sig.returns.push(AbiParam::new(types::I64));
+        let mut entries: Vec<(&str, cranelift_module::FuncId)> = Vec::with_capacity(manifest_names.len());
+        for name in manifest_names {
+            let func_id =
+                if let Some(cranelift_module::FuncOrDataId::Func(id)) = self.module.get_name(name) {
+                    id
+                } else {
+                    self.module
+                        .declare_function(name, Linkage::Import, &canonical_sig)
+                        .unwrap_or_else(|e| {
+                            panic!("app resolver: failed to declare intrinsic '{name}': {e:?}")
+                        })
+                };
+            entries.push((name.as_str(), func_id));
+        }
+        let count = entries.len();
+
+        // Build the names blob and the record table. The record table's
+        // `func_ptr` slots are filled by relocations, not literal bytes; we
+        // pre-size the blob with zeros and attach a `write_function_addr` reloc at
+        // each slot offset.
+        let mut names_blob: Vec<u8> = Vec::new();
+        let mut table_blob: Vec<u8> = vec![0u8; count * RECORD_BYTES];
+        let mut name_spans: Vec<(u32, u32)> = Vec::with_capacity(count);
+        for (idx, (name, _)) in entries.iter().enumerate() {
+            let off = names_blob.len();
+            let bytes = name.as_bytes();
+            assert!(
+                off <= u32::MAX as usize && bytes.len() <= u32::MAX as usize,
+                "app resolver: intrinsic name table exceeds u32 addressing"
+            );
+            names_blob.extend_from_slice(bytes);
+            name_spans.push((off as u32, bytes.len() as u32));
+            let rec = idx * RECORD_BYTES;
+            table_blob[rec..rec + 4].copy_from_slice(&(off as u32).to_le_bytes());
+            table_blob[rec + 4..rec + 8].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+            // bytes [rec+8 .. rec+16] (the func_ptr) stay zero; the relocation
+            // supplies the address at link time.
+        }
+
+        // Declare and define the names blob (immutable, no relocations).
+        let names_data_id = self
+            .module
+            .declare_data("molt_app_intrinsic_names", Linkage::Local, false, false)
+            .unwrap_or_else(|e| panic!("app resolver: failed to declare names blob: {e:?}"));
+        let mut names_desc = DataDescription::new();
+        names_desc.define(names_blob.into_boxed_slice());
+        self.module
+            .define_data(names_data_id, &names_desc)
+            .unwrap_or_else(|e| panic!("app resolver: failed to define names blob: {e:?}"));
+
+        // Declare and define the record table with one pointer relocation per
+        // func_ptr slot. `import_function` + `write_function_addr` emit a native
+        // absolute-pointer relocation (8 bytes) — portable across Mach-O, ELF and
+        // COFF — that the linker resolves to the intrinsic in the staticlib.
+        let table_data_id = self
+            .module
+            .declare_data("molt_app_intrinsic_table", Linkage::Local, false, false)
+            .unwrap_or_else(|e| panic!("app resolver: failed to declare table: {e:?}"));
+        let mut table_desc = DataDescription::new();
+        table_desc.set_align(8);
+        table_desc.define(table_blob.into_boxed_slice());
+        for (idx, (_, func_id)) in entries.iter().enumerate() {
+            let func_ref = self.module.declare_func_in_data(*func_id, &mut table_desc);
+            let slot = (idx * RECORD_BYTES + 8) as u32;
+            table_desc.write_function_addr(slot, func_ref);
+        }
+        self.module
+            .define_data(table_data_id, &table_desc)
+            .unwrap_or_else(|e| panic!("app resolver: failed to define table: {e:?}"));
+
+        // Build the lookup function body: binary search over the sorted record
+        // table, comparing the query name against each candidate via an unsigned
+        // byte-wise lexicographic compare.
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+        let name_ptr = builder.block_params(entry_block)[0];
+        let name_len = builder.block_params(entry_block)[1];
+
+        let not_found_block = builder.create_block();
+
+        if count == 0 {
+            // Empty manifest: the resolver always reports "not found". The table
+            // and names blobs are still emitted (size 0) for layout uniformity.
+            builder.ins().jump(not_found_block, &[]);
+        } else {
+            // Materialize the base addresses of the two data segments.
+            let names_gv = self.module.declare_data_in_func(names_data_id, builder.func);
+            let names_base = builder.ins().symbol_value(types::I64, names_gv);
+            let table_gv = self.module.declare_data_in_func(table_data_id, builder.func);
+            let table_base = builder.ins().symbol_value(types::I64, table_gv);
+
+            // Binary-search loop: maintain a half-open range [lo, hi).
+            //   loop_head(lo, hi): if lo >= hi -> not_found; else probe mid.
+            let loop_head = builder.create_block();
+            builder.append_block_param(loop_head, types::I64); // lo
+            builder.append_block_param(loop_head, types::I64); // hi
+            let zero = builder.ins().iconst(types::I64, 0);
+            let count_val = builder.ins().iconst(types::I64, count as i64);
+            jump_block(&mut builder, loop_head, &[zero, count_val]);
+
+            builder.switch_to_block(loop_head);
+            let lo = builder.block_params(loop_head)[0];
+            let hi = builder.block_params(loop_head)[1];
+            let probe_block = builder.create_block();
+            let range_nonempty = builder.ins().icmp(IntCC::SignedLessThan, lo, hi);
+            builder
+                .ins()
+                .brif(range_nonempty, probe_block, &[], not_found_block, &[]);
+
+            // probe: mid = lo + (hi - lo) / 2; load record(mid); compare.
+            builder.switch_to_block(probe_block);
+            let span = builder.ins().isub(hi, lo);
+            let half = builder.ins().ushr_imm(span, 1);
+            let mid = builder.ins().iadd(lo, half);
+            let rec_stride = builder.ins().iconst(types::I64, RECORD_BYTES as i64);
+            let rec_off = builder.ins().imul(mid, rec_stride);
+            let rec_ptr = builder.ins().iadd(table_base, rec_off);
+            let flags = MemFlags::new();
+            let cand_off32 = builder.ins().load(types::I32, flags, rec_ptr, 0);
+            let cand_len32 = builder.ins().load(types::I32, flags, rec_ptr, 4);
+            let cand_off = builder.ins().uextend(types::I64, cand_off32);
+            let cand_len = builder.ins().uextend(types::I64, cand_len32);
+            let cand_ptr = builder.ins().iadd(names_base, cand_off);
+
+            // cmp = lexicographic_compare(query, candidate) in {-1, 0, 1}.
+            let cmp = Self::emit_lexicographic_compare(
+                &mut builder,
+                name_ptr,
+                name_len,
+                cand_ptr,
+                cand_len,
+            );
+
+            // cmp == 0 -> hit: load and return func_ptr at rec_ptr+8.
+            let hit_block = builder.create_block();
+            let go_left_or_right = builder.create_block();
+            let is_eq = builder.ins().icmp_imm(IntCC::Equal, cmp, 0);
+            builder
+                .ins()
+                .brif(is_eq, hit_block, &[], go_left_or_right, &[]);
+
+            builder.switch_to_block(hit_block);
+            builder.seal_block(hit_block);
+            let func_ptr = builder.ins().load(types::I64, flags, rec_ptr, 8);
+            builder.ins().return_(&[func_ptr]);
+
+            // cmp < 0 -> search left half [lo, mid); else right half [mid+1, hi).
+            builder.switch_to_block(go_left_or_right);
+            builder.seal_block(go_left_or_right);
+            let left_block = builder.create_block();
+            let right_block = builder.create_block();
+            let cmp_lt = builder.ins().icmp_imm(IntCC::SignedLessThan, cmp, 0);
+            builder
+                .ins()
+                .brif(cmp_lt, left_block, &[], right_block, &[]);
+
+            builder.switch_to_block(left_block);
+            builder.seal_block(left_block);
+            jump_block(&mut builder, loop_head, &[lo, mid]);
+
+            builder.switch_to_block(right_block);
+            builder.seal_block(right_block);
+            let one = builder.ins().iconst(types::I64, 1);
+            let mid_plus_1 = builder.ins().iadd(mid, one);
+            jump_block(&mut builder, loop_head, &[mid_plus_1, hi]);
+
+            builder.seal_block(probe_block);
+            builder.seal_block(loop_head);
+        }
+
+        builder.switch_to_block(not_found_block);
+        builder.seal_block(not_found_block);
+        let zero_ret = builder.ins().iconst(types::I64, 0);
+        builder.ins().return_(&[zero_ret]);
+
+        builder.finalize();
+
+        self.module
+            .define_function(resolver_id, &mut ctx)
+            .unwrap_or_else(|e| panic!("failed to define {RESOLVER_NAME}: {e:?}"));
+        self.defined_func_names.insert(RESOLVER_NAME.to_string());
+    }
+
+    /// Emit an unsigned byte-wise lexicographic comparison of two runtime byte
+    /// ranges `(a_ptr, a_len)` and `(b_ptr, b_len)`, returning an `I64` in
+    /// `{-1, 0, 1}` (a<b, a==b, a>b) — the same ordering `BTreeSet<String>` uses
+    /// to sort the table, so binary search is consistent.
+    ///
+    /// The compare loop walks `min(a_len, b_len)` bytes; on the first differing
+    /// byte it returns the sign of the unsigned difference, and on a common
+    /// prefix it returns the sign of `a_len - b_len`. All loads stay within their
+    /// respective `[0, len)` ranges.
+    fn emit_lexicographic_compare(
+        builder: &mut FunctionBuilder,
+        a_ptr: Value,
+        a_len: Value,
+        b_ptr: Value,
+        b_len: Value,
+    ) -> Value {
+        let flags = MemFlags::new();
+        let neg_one = builder.ins().iconst(types::I64, -1);
+        let zero = builder.ins().iconst(types::I64, 0);
+        let one = builder.ins().iconst(types::I64, 1);
+
+        // min_len = min(a_len, b_len)
+        let a_lt_b_len = builder.ins().icmp(IntCC::UnsignedLessThan, a_len, b_len);
+        let min_len = builder.ins().select(a_lt_b_len, a_len, b_len);
+
+        // Loop over i in [0, min_len). loop_head(i): if i>=min_len break to tail.
+        let loop_head = builder.create_block();
+        builder.append_block_param(loop_head, types::I64); // i
+        let body_block = builder.create_block();
+        let tail_block = builder.create_block();
+        let ret_block = builder.create_block();
+        builder.append_block_param(ret_block, types::I64); // result
+        jump_block(builder, loop_head, &[zero]);
+
+        builder.switch_to_block(loop_head);
+        let i = builder.block_params(loop_head)[0];
+        let in_range = builder.ins().icmp(IntCC::UnsignedLessThan, i, min_len);
+        builder.ins().brif(in_range, body_block, &[], tail_block, &[]);
+
+        // body: compare bytes at offset i.
+        builder.switch_to_block(body_block);
+        builder.seal_block(body_block);
+        let a_addr = builder.ins().iadd(a_ptr, i);
+        let b_addr = builder.ins().iadd(b_ptr, i);
+        let a_byte = builder.ins().uload8(types::I64, flags, a_addr, 0);
+        let b_byte = builder.ins().uload8(types::I64, flags, b_addr, 0);
+        let bytes_eq = builder.ins().icmp(IntCC::Equal, a_byte, b_byte);
+        let advance_block = builder.create_block();
+        let diff_block = builder.create_block();
+        builder.ins().brif(bytes_eq, advance_block, &[], diff_block, &[]);
+
+        // advance: i += 1, continue.
+        builder.switch_to_block(advance_block);
+        builder.seal_block(advance_block);
+        let next_i = builder.ins().iadd(i, one);
+        jump_block(builder, loop_head, &[next_i]);
+
+        // diff: bytes differ — sign of (a_byte - b_byte).
+        builder.switch_to_block(diff_block);
+        builder.seal_block(diff_block);
+        let a_lt_b = builder.ins().icmp(IntCC::UnsignedLessThan, a_byte, b_byte);
+        let diff_sign = builder.ins().select(a_lt_b, neg_one, one);
+        jump_block(builder, ret_block, &[diff_sign]);
+
+        // tail: common prefix equal — order by length.
+        builder.switch_to_block(tail_block);
+        builder.seal_block(tail_block);
+        let len_lt = builder.ins().icmp(IntCC::UnsignedLessThan, a_len, b_len);
+        let len_gt = builder.ins().icmp(IntCC::UnsignedGreaterThan, a_len, b_len);
+        let lt_or_zero = builder.ins().select(len_lt, neg_one, zero);
+        let tail_result = builder.ins().select(len_gt, one, lt_or_zero);
+        jump_block(builder, ret_block, &[tail_result]);
+
+        builder.seal_block(loop_head);
+
+        builder.switch_to_block(ret_block);
+        builder.seal_block(ret_block);
+        builder.block_params(ret_block)[0]
+    }
+
     fn ensure_trampoline(
         module: &mut ObjectModule,
         trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
