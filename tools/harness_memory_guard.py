@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,35 @@ _TERMINATED_PGIDS: dict[int, float] = {}
 _TERMINATED_PGIDS_LOCK = threading.Lock()
 _AUTO_SENTINEL_SUPPRESSORS = 0
 _AUTO_SENTINEL_SUPPRESSORS_LOCK = threading.Lock()
+
+
+def canonical_interpreter(executable: str) -> str:
+    """Resolve an interpreter command to an absolute, existing path.
+
+    `sys.executable` under `uv run` is an absolute `.venv/bin/python3` symlink
+    chain; a relative form (e.g. resolved against a relative repo root by a
+    caller) breaks under the memory guard's `cwd`-relative spawn. Resolve to an
+    absolute path so the guarded subprocess can exec it regardless of cwd.
+    Fail closed with a clear error rather than emit a relative path the guard
+    will mis-resolve.
+
+    This is the construction-time complement to
+    ``memory_guard._resolve_relative_executable`` (the spawn-time bug-class fix):
+    callers canonicalize the interpreter they intend to hand the guard so a
+    relative form never reaches the spawn boundary in the first place.
+    """
+    path = Path(executable)
+    if not path.is_absolute():
+        resolved = shutil.which(executable)
+        if resolved is None:
+            raise FileNotFoundError(
+                f"CPython baseline interpreter not found on PATH: {executable!r}"
+            )
+        path = Path(resolved)
+    abs_path = path.resolve(strict=False)
+    if not abs_path.exists():
+        raise FileNotFoundError(f"CPython baseline interpreter missing: {abs_path}")
+    return str(abs_path)
 
 
 class GuardedCompletedProcess(subprocess.CompletedProcess[str]):
@@ -981,6 +1011,10 @@ def guarded_completed_process(
     errors: str = "replace",
 ) -> GuardedCompletedProcess:
     resolved_limits = limits or limits_from_env(prefix, env)
+    # Resolve a relative path-bearing interpreter against the parent cwd so the
+    # disabled-guard fast path matches the guarded path: `subprocess.run(cwd=...)`
+    # would otherwise mis-resolve a relative `command[0]` against the child cwd.
+    command = memory_guard._resolve_relative_executable(command)
     if not resolved_limits.enabled:
         started = time.perf_counter()
         completed = subprocess.run(
@@ -1233,6 +1267,9 @@ def guarded_completed_process_to_tempfiles(
     """
 
     resolved_limits = limits or limits_from_env(prefix, env)
+    # Resolve a relative path-bearing executable against the parent cwd before
+    # Popen, which would otherwise exec it relative to the child `cwd=`.
+    command = memory_guard._resolve_relative_executable(command)
     guard_enabled = bool(resolved_limits.enabled)
     popen_kwargs: dict[str, object] = {}
     if guard_enabled:

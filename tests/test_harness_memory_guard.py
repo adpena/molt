@@ -1571,3 +1571,84 @@ def test_guarded_harness_scope_standardizes_repo_sentinel(monkeypatch, tmp_path:
     assert calls[0]["limits"] is limits
     assert calls[1] == {"event": "enter"}
     assert calls[2] == {"event": "exit"}
+
+
+def _make_relative_interpreter(tmp_path: Path) -> Path:
+    """Create `<tmp_path>/relbin/python3` pointing at the real interpreter.
+
+    Mirrors the real-world `.venv/bin/python3` symlink chain a caller can hand
+    the guard as a relative path. A symlink preserves the interpreter's behavior
+    while letting the test reference it as a relative path that only resolves
+    against the parent (test) cwd, not an arbitrary child `cwd=`.
+    """
+    rel_dir = tmp_path / "relbin"
+    rel_dir.mkdir()
+    rel_interp = rel_dir / "python3"
+    rel_interp.symlink_to(Path(sys.executable).resolve())
+    return rel_interp
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="relative venv interpreter symlink chain is a POSIX concern",
+)
+def test_relative_executable_resolved_against_parent_cwd_under_guard(
+    monkeypatch, tmp_path
+) -> None:
+    # Regression: a relative path-bearing interpreter (e.g. `.venv/bin/python3`)
+    # must resolve against the PARENT cwd, not the child `cwd=`. Before the fix
+    # this raised FileNotFoundError when `cwd` differed from where the relative
+    # interpreter lives.
+    _make_relative_interpreter(tmp_path)
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(tmp_path)
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.01,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        ["relbin/python3", "-c", "print('relok')"],
+        prefix="MOLT_TEST",
+        cwd=str(other_cwd),
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "relok\n"
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="relative venv interpreter symlink chain is a POSIX concern",
+)
+def test_relative_executable_resolved_when_guard_disabled(
+    monkeypatch, tmp_path
+) -> None:
+    # The disabled-guard fast path goes straight through `subprocess.run(cwd=...)`
+    # and must apply the same relative-executable resolution as the guarded path.
+    _make_relative_interpreter(tmp_path)
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(tmp_path)
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=False,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.01,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        ["relbin/python3", "-c", "print('relok-disabled')"],
+        prefix="MOLT_TEST",
+        cwd=str(other_cwd),
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "relok-disabled\n"

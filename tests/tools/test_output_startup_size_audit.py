@@ -67,15 +67,52 @@ def test_measure_executable_uses_fresh_path_copies(
         env={},
         timeout=1.0,
         fresh_copies=True,
-        label="molt_fresh_path",
+        label="molt_page_cache_cold",
     )
 
     assert result["ok"] is True
-    assert result["mode"] == "fresh_path_copy"
+    assert result["mode"] == "page_cache_cold_copy"
     assert result["stats"]["count"] == 2
     assert commands[0][0].endswith(".fresh-0")
     assert commands[1][0].endswith(".fresh-1")
     assert not any((binary.parent / ".fresh_start_samples").iterdir())
+
+
+def test_measure_cold_first_sighting_runs_artifact_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    audit = _load_audit()
+    binary = tmp_path / "probe_molt"
+    binary.write_text("#!/bin/sh\nprintf '1\\n'\n", encoding="utf-8")
+    binary.chmod(0o755)
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        commands.append(list(command))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="1\n",
+            stderr="",
+            elapsed_s=0.30,
+        )
+
+    monkeypatch.setattr(audit, "_run_guarded", fake_run)
+
+    result = audit._measure_cold_first_sighting(
+        binary,
+        env={},
+        timeout=1.0,
+        label="molt_cold_first_sighting",
+        runner_factory=audit._native_runner_factory(),
+    )
+
+    assert result["ok"] is True
+    assert result["mode"] == "cold_first_sighting"
+    assert result["stats"]["count"] == 1
+    assert len(commands) == 1
+    assert commands[0] == [str(binary)]
 
 
 def test_budget_status_flags_size_and_startup_regressions() -> None:
@@ -149,34 +186,35 @@ def test_main_writes_json_report_without_running_real_build(
 
     def fake_startup(case, artifact_path, **kwargs):  # type: ignore[no-untyped-def]
         del case, artifact_path, kwargs
+        single_stat = {
+            "count": 1,
+            "min_s": 0.01,
+            "median_s": 0.01,
+            "mean_s": 0.01,
+            "max_s": 0.01,
+            "samples_s": [0.01],
+        }
         return {
             "runner": "native-exec",
+            "cold_first_sighting": {
+                "label": "molt_cold_first_sighting",
+                "mode": "cold_first_sighting",
+                "ok": True,
+                "stats": dict(single_stat),
+                "records": [{"command": [str(artifact)], "returncode": 0}],
+            },
             "same_path": {
                 "label": "molt_same_path",
                 "mode": "same_path_reuse",
                 "ok": True,
-                "stats": {
-                    "count": 1,
-                    "min_s": 0.01,
-                    "median_s": 0.01,
-                    "mean_s": 0.01,
-                    "max_s": 0.01,
-                    "samples_s": [0.01],
-                },
+                "stats": dict(single_stat),
                 "records": [{"command": [str(artifact)], "returncode": 0}],
             },
-            "fresh_path": {
-                "label": "molt_fresh_path",
-                "mode": "fresh_path_copy",
+            "page_cache_cold": {
+                "label": "molt_page_cache_cold",
+                "mode": "page_cache_cold_copy",
                 "ok": True,
-                "stats": {
-                    "count": 1,
-                    "min_s": 0.01,
-                    "median_s": 0.01,
-                    "mean_s": 0.01,
-                    "max_s": 0.01,
-                    "samples_s": [0.01],
-                },
+                "stats": dict(single_stat),
                 "records": [{"command": [str(artifact)], "returncode": 0}],
             },
         }
@@ -210,4 +248,6 @@ def test_main_writes_json_report_without_running_real_build(
     assert payload["event"] == "output_startup_size_audit"
     assert payload["summary"]["cases"] == 1
     assert payload["cases"][0]["artifact"]["bytes"] == len(b"molt-binary")
-    assert payload["cases"][0]["startup"]["fresh_path"]["mode"] == "fresh_path_copy"
+    startup = payload["cases"][0]["startup"]
+    assert startup["page_cache_cold"]["mode"] == "page_cache_cold_copy"
+    assert startup["cold_first_sighting"]["mode"] == "cold_first_sighting"
