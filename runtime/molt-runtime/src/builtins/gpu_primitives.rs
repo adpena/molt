@@ -865,4 +865,38 @@ mod metal_realize_tests {
             );
         }
     }
+
+    /// The full `realize()` path runs `specialize_shapes`, which rewrites
+    /// `kernel.grid` to the THREADGROUP count (`ceil(total/local)`). This runs a
+    /// specialized kernel through `execute_kernel_metal` exactly as `realize()`
+    /// does, catching any mismatch between the scheduler's grid convention and
+    /// `MetalDevice`'s dispatch model — which a hand-built (un-specialized)
+    /// kernel hides.
+    #[test]
+    fn execute_kernel_metal_matches_cpu_after_specialize_shapes() {
+        let device = match MetalDevice::new() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let n = 1024usize;
+        let a: Vec<f32> = (0..n).map(|i| i as f32 + 1.0).collect();
+        let b: Vec<f32> = (0..n).map(|i| (i as f32) * 3.0).collect();
+
+        let mut kernels = vec![binary_kernel(PrimitiveOp::Add, n)];
+        schedule::specialize_shapes(&mut kernels);
+        let kernel = &kernels[0];
+
+        let mut cpu_bufs = vec![vec![0u8; n * 4], f32_to_bytes(&a), f32_to_bytes(&b)];
+        interpret::execute_kernel(kernel, &mut cpu_bufs);
+
+        let mut metal_bufs = vec![vec![0u8; n * 4], f32_to_bytes(&a), f32_to_bytes(&b)];
+        execute_kernel_metal(&device, kernel, &mut metal_bufs).expect("metal kernel execution");
+
+        assert_eq!(
+            bytes_to_f32(&cpu_bufs[0]),
+            bytes_to_f32(&metal_bufs[0]),
+            "specialized-kernel Metal dispatch diverged from CPU: the scheduler's \
+             grid convention mismatches MetalDevice's dispatch model"
+        );
+    }
 }
