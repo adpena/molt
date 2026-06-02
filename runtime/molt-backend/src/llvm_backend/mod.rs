@@ -24,6 +24,8 @@ use inkwell::targets::TargetMachine;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "llvm")]
+use crate::representation_plan::LlvmReprFacts;
+#[cfg(feature = "llvm")]
 use crate::tir::types::TirType;
 #[cfg(feature = "llvm")]
 pub struct LlvmBackend<'ctx> {
@@ -32,6 +34,11 @@ pub struct LlvmBackend<'ctx> {
     pub builder: Builder<'ctx>,
     pub function_param_types: BTreeMap<String, Vec<TirType>>,
     pub function_return_types: BTreeMap<String, TirType>,
+    /// Per-function representation facts derived from the shared
+    /// `ScalarRepresentationPlan`, keyed by function name. These drive the
+    /// LLVM backend's integer-carrier and container dispatch decisions from the
+    /// same typed facts the native/WASM/Luau backends consume.
+    pub(crate) function_repr_facts: BTreeMap<String, LlvmReprFacts>,
 }
 
 #[cfg(feature = "llvm")]
@@ -48,6 +55,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             builder,
             function_param_types: BTreeMap::new(),
             function_return_types: BTreeMap::new(),
+            function_repr_facts: BTreeMap::new(),
         }
     }
 
