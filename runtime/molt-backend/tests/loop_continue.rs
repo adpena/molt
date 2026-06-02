@@ -89,7 +89,12 @@ fn loop_continue_in_if_compiles() {
     };
 
     let result = std::panic::catch_unwind(|| {
-        let backend = SimpleBackend::new();
+        // Standalone codegen object — not linked into a final binary, so it
+        // must not emit the per-app intrinsic resolver (which would require the
+        // runtime staticlib's intrinsic-symbol set and panic without it,
+        // masking the control-flow behavior this test actually exercises).
+        let mut backend = SimpleBackend::new();
+        backend.emit_app_intrinsic_resolver = false;
         let _ = backend.compile(ir);
     });
     assert!(result.is_ok());
