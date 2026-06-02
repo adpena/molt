@@ -225,10 +225,17 @@ impl Executor for MetalDevice {
         }
         drop(live);
 
-        // Dispatch
-        let grid_size = MTLSize::new(grid[0] as u64, grid[1] as u64, grid[2] as u64);
-        let local_size = MTLSize::new(local[0] as u64, local[1] as u64, local[2] as u64);
-        encoder.dispatch_threads(grid_size, local_size);
+        // Dispatch. `grid` is the number of THREADGROUPS (tinygrad's dispatch
+        // model, and exactly what `schedule::specialize_shapes` computes —
+        // `grid_x = ceil(total / local)`). `dispatch_thread_groups` launches
+        // `grid * local` total threads, the kernel guarding the `gid >= total`
+        // tail. The previous `dispatch_threads` treated `grid` as a raw thread
+        // count, so a specialized kernel whose grid is the threadgroup count
+        // launched only `ceil(total/local)` threads (e.g. 16 of 1024 elements)
+        // and silently left the rest unwritten.
+        let threadgroups = MTLSize::new(grid[0] as u64, grid[1] as u64, grid[2] as u64);
+        let threads_per_group = MTLSize::new(local[0] as u64, local[1] as u64, local[2] as u64);
+        encoder.dispatch_thread_groups(threadgroups, threads_per_group);
         encoder.end_encoding();
         command_buffer.commit();
 
