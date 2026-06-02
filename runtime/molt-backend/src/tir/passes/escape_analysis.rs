@@ -46,6 +46,44 @@ fn attr_str<'a>(attrs: &'a AttrDict, key: &str) -> Option<&'a str> {
     }
 }
 
+/// Returns `true` when an `OpCode::Copy` op is a genuine SSA move (its result
+/// aliases its operand — the same heap object), as opposed to the opaque
+/// `_original_kind` passthrough that `kind_to_opcode` assigns to SimpleIR ops
+/// without a dedicated TIR opcode.
+///
+/// A move has either no `_original_kind` (a true SSA-lift copy) or one of the
+/// pure variable-copy kinds. Anything else under `Copy` is a passthrough whose
+/// result is a *distinct* value (e.g. a freshly built container), so it must
+/// NOT be aliased to its operand.
+fn is_pure_move_copy(attrs: &AttrDict) -> bool {
+    match attr_str(attrs, "_original_kind") {
+        None => true,
+        Some(kind) => matches!(kind, "copy" | "copy_var" | "store_var" | "load_var"),
+    }
+}
+
+/// Returns `true` when an `OpCode::Copy` op is the passthrough carrier for a
+/// container constructor (`list_new`, `dict_new`, `tuple_new`, `set_new`, or the
+/// `build_*` spellings). Such ops consume their operands *into a new container*
+/// that may outlive the frame, so every operand must be treated as escaping —
+/// exactly like the first-class `BuildList`/`BuildDict`/… opcodes.
+fn is_container_builder_passthrough(attrs: &AttrDict) -> bool {
+    matches!(
+        attr_str(attrs, "_original_kind"),
+        Some(
+            "list_new"
+                | "dict_new"
+                | "tuple_new"
+                | "set_new"
+                | "frozenset_new"
+                | "build_list"
+                | "build_dict"
+                | "build_tuple"
+                | "build_set"
+        )
+    )
+}
+
 /// Returns `true` if the named builtin only borrows (reads) its arguments and
 /// never stores them into heap-reachable locations.
 ///
@@ -179,13 +217,55 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
         return escapes;
     }
 
-    let alloc_set: HashSet<ValueId> = escapes.keys().copied().collect();
+    let mut alloc_set: HashSet<ValueId> = escapes.keys().copied().collect();
 
     // Step 2: Build use-map — for each alloc'd ValueId, collect all uses.
     let mut use_map: HashMap<ValueId, Vec<UseInfo>> = HashMap::new();
     // Also track "stored-into" relationships: if value B is stored into A's
     // field, record (A -> B) so we can propagate escape from A to B.
     let mut stored_into: Vec<(ValueId, ValueId)> = Vec::new();
+
+    // Step 1b: Track *pure SSA move* `Copy` aliases of allocation results.
+    //
+    // `OpCode::Copy` is overloaded in this IR: it is BOTH a pure SSA move
+    // (result and operand name the same object) AND the opaque carrier for any
+    // SimpleIR op that has no dedicated TIR opcode (the `_original_kind`
+    // passthrough — see `kind_to_opcode`'s `_ => OpCode::Copy` fallback and the
+    // `lower_to_simple` Copy reconstruction). Container constructors
+    // (`list_new`, `dict_new`, `tuple_new`, `set_new`) ride this passthrough, so
+    // a freshly-constructed object flowing into a literal appears as the operand
+    // of a `Copy`-carried `list_new` whose *result is a new container*, not an
+    // alias. Only a genuine move aliases its source; treat those (and only
+    // those) as alias edges. Passthrough constructors are handled as escapes in
+    // Step 3 (`is_container_builder_passthrough`).
+    //
+    // For a real move `tmp = Copy obj`, record a `(tmp -> obj)` propagation edge
+    // and track `tmp` so its own uses are scanned; the Step 4 fixpoint then
+    // escalates `obj` whenever any alias escapes. Without this, `[Box()]`'s
+    // `obj = ObjectNewBound; tmp = move obj; <consume tmp>` left `obj` wrongly
+    // `NoEscape` and stack-promoted — a use-after-free that release-mode codegen
+    // masked while dev-mode codegen surfaced as a dangling element. Iterate to a
+    // fixpoint so moves-of-moves are covered.
+    let mut copy_added = true;
+    while copy_added {
+        copy_added = false;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode != OpCode::Copy || !is_pure_move_copy(&op.attrs) {
+                    continue;
+                }
+                let (Some(&src), Some(&dst)) = (op.operands.first(), op.results.first()) else {
+                    continue;
+                };
+                if alloc_set.contains(&src) && !alloc_set.contains(&dst) {
+                    alloc_set.insert(dst);
+                    escapes.insert(dst, EscapeState::NoEscape);
+                    stored_into.push((dst, src));
+                    copy_added = true;
+                }
+            }
+        }
+    }
 
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -401,7 +481,6 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::TypeGuard
                 | OpCode::IncRef
                 | OpCode::DecRef
-                | OpCode::Copy
                 | OpCode::GetIter
                 | OpCode::IterNext
                 | OpCode::IterNextUnboxed
@@ -416,6 +495,25 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::StateBlockStart
                 | OpCode::StateBlockEnd => {
                     // No escape.
+                }
+                // `Copy` is overloaded: a pure SSA move (no escape — the move
+                // alias is propagated separately in Step 1b/Step 4), the
+                // passthrough carrier for container constructors (operands
+                // escape into the new container), or the passthrough carrier for
+                // some other SimpleIR op without a dedicated opcode. Only the
+                // pure move is non-escaping; every passthrough is treated as an
+                // escape because the carried op's storing semantics are not
+                // modeled here (conservative-correct — it can only over-approximate).
+                OpCode::Copy => {
+                    if is_pure_move_copy(&use_info.attrs) {
+                        // No escape — handled as an alias edge.
+                    } else if is_container_builder_passthrough(&use_info.attrs) {
+                        // Element flows into a (possibly escaping) container.
+                        escapes.insert(val, EscapeState::GlobalEscape);
+                    } else {
+                        // Unknown passthrough op — assume it may capture the value.
+                        escapes.insert(val, EscapeState::GlobalEscape);
+                    }
                 }
                 // Build containers: if alloc'd value is an element, it escapes
                 // into the new container (which may itself escape).
@@ -651,6 +749,246 @@ mod tests {
 
         assert_eq!(stats.values_changed, 1);
         assert_eq!(entry.ops[0].opcode, OpCode::ObjectNewBoundStack);
+    }
+
+    /// Regression: a freshly-constructed object that flows into a container
+    /// literal *through an SSA `Copy`* must be classified `GlobalEscape`, not
+    /// `NoEscape`. The frontend lowers `[Box()]` to
+    /// `obj = ObjectNewBound; tmp = Copy obj; BuildList tmp`. Without Copy-alias
+    /// tracking, `obj` was wrongly left `NoEscape` and stack-promoted while the
+    /// escaping list outlived the frame — a use-after-free (objects read back as
+    /// type `object`) that only manifested under dev-mode codegen.
+    #[test]
+    fn object_new_bound_copied_into_container_escapes() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let copy_val = func.fresh_value();
+        let list_val = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(
+            OpCode::ObjectNewBound,
+            vec![class_ref],
+            vec![inst_val],
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::Copy, vec![inst_val], vec![copy_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::BuildList, vec![copy_val], vec![list_val]));
+        entry.terminator = Terminator::Return {
+            values: vec![list_val],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&inst_val],
+            EscapeState::GlobalEscape,
+            "object copied into an escaping container must escape"
+        );
+        assert_eq!(
+            escapes[&copy_val],
+            EscapeState::GlobalEscape,
+            "the copy alias must escape too"
+        );
+    }
+
+    /// Regression (apply-level): the same `ObjectNewBound -> Copy -> BuildList`
+    /// shape, even with a payload size present, must NOT be rewritten to
+    /// `ObjectNewBoundStack`, because the object escapes into the container.
+    #[test]
+    fn object_new_bound_copied_into_container_is_not_stack_promoted() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let copy_val = func.fresh_value();
+        let list_val = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(8));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs,
+            source_span: None,
+        });
+        entry
+            .ops
+            .push(make_op(OpCode::Copy, vec![inst_val], vec![copy_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::BuildList, vec![copy_val], vec![list_val]));
+        entry.terminator = Terminator::Return {
+            values: vec![list_val],
+        };
+
+        run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+        assert_eq!(
+            entry.ops[0].opcode,
+            OpCode::ObjectNewBound,
+            "an escaping object must stay heap-allocated"
+        );
+    }
+
+    /// Build a `Copy` op carrying an `_original_kind` passthrough (the form the
+    /// SSA lift assigns to SimpleIR ops without a dedicated TIR opcode, e.g.
+    /// container constructors like `list_new`/`dict_new`).
+    fn make_passthrough(
+        original_kind: &str,
+        operands: Vec<ValueId>,
+        results: Vec<ValueId>,
+    ) -> TirOp {
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str(original_kind.into()),
+        );
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands,
+            results,
+            attrs,
+            source_span: None,
+        }
+    }
+
+    /// Regression for the real production lowering: container constructors
+    /// (`list_new`/`dict_new`/…) have no dedicated TIR opcode and ride the
+    /// `OpCode::Copy` `_original_kind` passthrough. A freshly-constructed object
+    /// passed *directly* as such a constructor's operand — `obj = ObjectNewBound;
+    /// lst = Copy[list_new] obj` — must be classified `GlobalEscape`. Before the
+    /// fix the escape pass treated every `Copy` as a pure no-escape move, so the
+    /// object was stack-promoted and freed while the escaping container lived on
+    /// (the `[Box()]` / `{'k': Box()}` use-after-free that surfaced only under
+    /// dev-mode codegen).
+    #[test]
+    fn object_new_bound_into_list_new_passthrough_escapes() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let list_val = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(
+            OpCode::ObjectNewBound,
+            vec![class_ref],
+            vec![inst_val],
+        ));
+        entry
+            .ops
+            .push(make_passthrough("list_new", vec![inst_val], vec![list_val]));
+        entry.terminator = Terminator::Return {
+            values: vec![list_val],
+        };
+
+        let escapes = analyze(&func);
+        assert_eq!(
+            escapes[&inst_val],
+            EscapeState::GlobalEscape,
+            "object built directly into a list_new passthrough must escape"
+        );
+    }
+
+    /// Same for the dict-value position (`{'k': Box()}` → `dict_new`), and
+    /// asserted end-to-end through `run`: the object must stay heap-allocated.
+    #[test]
+    fn object_new_bound_into_dict_new_passthrough_is_not_stack_promoted() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let key_val = func.fresh_value();
+        let inst_val = func.fresh_value();
+        let dict_val = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(8));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::ConstStr, vec![], vec![key_val]));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs,
+            source_span: None,
+        });
+        entry.ops.push(make_passthrough(
+            "dict_new",
+            vec![key_val, inst_val],
+            vec![dict_val],
+        ));
+        entry.terminator = Terminator::Return {
+            values: vec![dict_val],
+        };
+
+        run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+        let obj_op = entry
+            .ops
+            .iter()
+            .find(|op| op.results.first() == Some(&inst_val))
+            .expect("object alloc op present");
+        assert_eq!(
+            obj_op.opcode,
+            OpCode::ObjectNewBound,
+            "object built into a dict_new passthrough value must stay heap-allocated"
+        );
+    }
+
+    /// A genuine SSA move that does NOT escape must still allow stack promotion —
+    /// the pure-move classification must not over-conservatively escape locals.
+    #[test]
+    fn local_object_new_bound_through_pure_move_still_stack_promotes() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let moved_val = func.fresh_value();
+        let load_result = func.fresh_value();
+        let const_result = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(8));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs,
+            source_span: None,
+        });
+        // Pure SSA move (no `_original_kind`): aliases inst_val.
+        entry
+            .ops
+            .push(make_op(OpCode::Copy, vec![inst_val], vec![moved_val]));
+        entry
+            .ops
+            .push(make_op(OpCode::LoadAttr, vec![moved_val], vec![load_result]));
+        entry
+            .ops
+            .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));
+        entry.terminator = Terminator::Return {
+            values: vec![const_result],
+        };
+
+        run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+        assert_eq!(
+            entry.ops[0].opcode,
+            OpCode::ObjectNewBoundStack,
+            "a local object used only through a pure move must still stack-promote"
+        );
     }
 
     #[test]
