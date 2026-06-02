@@ -17825,7 +17825,12 @@ def _build_native_link_command(
         _exp_path = output_binary.parent / ".molt_exports.exp"
         _exp_path.write_text("_main\n")
         link_cmd.append(f"-Wl,-exported_symbols_list,{_exp_path}")
-        link_cmd.extend(["-Wl,-x", "-Wl,-S"])
+        # MOLT_KEEP_SYMBOLS=1 is a diagnostic-only escape hatch (default off):
+        # it preserves local symbol names so size-attribution tools (nm/bloaty)
+        # can show which functions survived dead-strip. It never changes default
+        # output and is not part of any product behavior.
+        if os.environ.get("MOLT_KEEP_SYMBOLS") != "1":
+            link_cmd.extend(["-Wl,-x", "-Wl,-S"])
         if suppress_linker_warnings:
             link_cmd.append("-Wl,-w")
         link_cmd.append("-lc++")
