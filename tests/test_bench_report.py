@@ -473,3 +473,97 @@ def test_failed_comparator_stale_values_do_not_feed_ratio_tables(
     )[0]
     assert "| - | - | - | - |" in codon_section
     assert "0.010000" not in codon_section
+
+
+def _startup_audit_fixture() -> dict:
+    def _mode(median_s: float, *, min_s: float | None = None) -> dict:
+        lo = median_s if min_s is None else min_s
+        return {
+            "ok": True,
+            "stats": {
+                "count": 3,
+                "min_s": lo,
+                "median_s": median_s,
+                "mean_s": median_s,
+                "max_s": median_s,
+                "samples_s": [lo, median_s, median_s],
+            },
+        }
+
+    return {
+        "recorded_at": "20260602T000000Z",
+        "cases": [
+            {
+                "case": {
+                    "target": "native",
+                    "build_profile": "release",
+                    "backend": "auto",
+                },
+                "status": "ok",
+                "artifact": {"bytes": 65536},
+                "startup": {
+                    "runner": "native-exec",
+                    "same_path": _mode(0.006, min_s=0.005),
+                    "page_cache_cold": _mode(0.030),
+                    "cold_first_sighting": _mode(0.180),
+                },
+                "budgets": {"passed": True, "checks": []},
+            }
+        ],
+        "baselines": {
+            "cpython": {"ok": True, "stats": {"median_s": 0.040}},
+            "c": {"ok": True, "stats": {"median_s": 0.003}},
+        },
+    }
+
+
+def test_startup_section_renders_cold_start_and_size(tmp_path: Path) -> None:
+    module = _load_module()
+    module.ROOT = tmp_path
+    native_path = tmp_path / "native.json"
+    wasm_path = tmp_path / "wasm.json"
+    native = {"benchmarks": {}}
+    wasm = {"benchmarks": {}}
+
+    report = module._render_report_markdown(
+        native_path, wasm_path, native, wasm, _startup_audit_fixture()
+    )
+
+    assert "## Cold Start & Binary Size" in report
+    section = report.split("## Cold Start & Binary Size", maxsplit=1)[1]
+    # native row: size, warm min/median, page-cache-cold, cold first-sighting.
+    assert "65536 (0.06 MB)" in section
+    assert "5.0 / 6.0" in section  # warm min / median ms
+    assert "30.0" in section  # page-cache-cold ms
+    assert "180.0" in section  # cold first-sighting ms
+    assert "| OK |" in section
+    assert "C 3.0ms, CPython 40.0ms" in section
+
+
+def test_startup_section_empty_when_audit_absent(tmp_path: Path) -> None:
+    module = _load_module()
+    module.ROOT = tmp_path
+    native_path = tmp_path / "native.json"
+    wasm_path = tmp_path / "wasm.json"
+
+    report = module._render_report_markdown(
+        native_path, wasm_path, {"benchmarks": {}}, {"benchmarks": {}}, {}
+    )
+
+    assert "## Cold Start & Binary Size" in report
+    assert "section empty" in report
+
+
+def test_status_summary_includes_startup_line() -> None:
+    module = _load_module()
+    summary = module._status_summary(
+        {"benchmarks": {}},
+        {"benchmarks": {}},
+        {},
+        {},
+        _startup_audit_fixture(),
+    )
+
+    assert "Startup/size: native hello-world 65536 (0.06 MB)" in summary
+    assert "warm 6.0ms / cold(first-sighting) 180.0ms" in summary
+    assert "budget OK" in summary

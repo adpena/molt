@@ -463,7 +463,7 @@ def _measure_artifact(
 
     return {
         "label": label,
-        "mode": "fresh_path_copy" if fresh_copies else "same_path_reuse",
+        "mode": "page_cache_cold_copy" if fresh_copies else "same_path_reuse",
         "ok": len(elapsed) == samples,
         "stats": _stats(elapsed),
         "records": records,
@@ -486,7 +486,7 @@ def _measure_executable(
         timeout=timeout,
         fresh_copies=fresh_copies,
         label=label,
-        runner_factory=lambda path, _env: ([str(path)], {}),
+        runner_factory=_native_runner_factory(),
         executable_copy=True,
     )
 
@@ -527,6 +527,48 @@ def _lune_runner_factory(lune_bin: str) -> RunnerFactory:
     return lambda path, _env: ([lune_bin, "run", str(path), "--"], {})
 
 
+def _measure_cold_first_sighting(
+    artifact: Path,
+    *,
+    env: dict[str, str],
+    timeout: float,
+    label: str,
+    runner_factory: RunnerFactory,
+) -> dict[str, Any]:
+    """Record the single TRUE-cold first run of a freshly built artifact.
+
+    The freshly built artifact has a brand-new cdhash the OS has never seen,
+    so its very first execution pays the genuine one-time amfid/provenance tax
+    on macOS (and the full page-cache-cold load everywhere). This must run
+    BEFORE any other execution of the same bytes, otherwise the cdhash is
+    already provenance-warm and the sample is no longer cold. It is therefore a
+    single run, recorded ahead of the same-path/page-cache-cold measurements.
+
+    NOTE: this is only genuinely cold when the build did not prime the binary.
+    The audit invokes `molt build` without `--prime`, which defaults to off for
+    ordinary builds, so the artifact is unprimed when this runs.
+    """
+    command, env_overrides = runner_factory(artifact, env)
+    run_env = {**env, **env_overrides} if env_overrides else env
+    result = _run_guarded(command, env=run_env, timeout=timeout)
+    elapsed = (
+        [result.elapsed_s]
+        if result.returncode == 0 and result.elapsed_s is not None
+        else []
+    )
+    return {
+        "label": label,
+        "mode": "cold_first_sighting",
+        "ok": len(elapsed) == 1,
+        "stats": _stats(elapsed),
+        "records": [_sample_record(index=0, command=command, result=result)],
+    }
+
+
+def _native_runner_factory() -> RunnerFactory:
+    return lambda path, _env: ([str(path)], {})
+
+
 def _measure_case_startup(
     case: MatrixCase,
     artifact: Path,
@@ -536,8 +578,18 @@ def _measure_case_startup(
     timeout: float,
 ) -> dict[str, Any]:
     if case.target == "native":
+        native_runner = _native_runner_factory()
+        # TRUE-cold first sighting must precede every other run of these bytes.
+        cold = _measure_cold_first_sighting(
+            artifact,
+            env=env,
+            timeout=timeout,
+            label="molt_cold_first_sighting",
+            runner_factory=native_runner,
+        )
         return {
             "runner": "native-exec",
+            "cold_first_sighting": cold,
             "same_path": _measure_executable(
                 artifact,
                 samples=samples,
@@ -546,13 +598,13 @@ def _measure_case_startup(
                 fresh_copies=False,
                 label="molt_same_path",
             ),
-            "fresh_path": _measure_executable(
+            "page_cache_cold": _measure_executable(
                 artifact,
                 samples=samples,
                 env=env,
                 timeout=timeout,
                 fresh_copies=True,
-                label="molt_fresh_path",
+                label="molt_page_cache_cold",
             ),
         }
     if case.target == "wasm":
@@ -562,8 +614,16 @@ def _measure_case_startup(
         if node_bin is None:
             return {"runner": "node", "skipped": "node >=18 not found"}
         runner = _node_runner_factory(node_bin)
+        cold = _measure_cold_first_sighting(
+            artifact,
+            env=env,
+            timeout=timeout,
+            label="molt_wasm_cold_first_sighting",
+            runner_factory=runner,
+        )
         return {
             "runner": "node",
+            "cold_first_sighting": cold,
             "same_path": _measure_artifact(
                 artifact,
                 samples=samples,
@@ -573,13 +633,13 @@ def _measure_case_startup(
                 label="molt_wasm_same_path",
                 runner_factory=runner,
             ),
-            "fresh_path": _measure_artifact(
+            "page_cache_cold": _measure_artifact(
                 artifact,
                 samples=samples,
                 env=env,
                 timeout=timeout,
                 fresh_copies=True,
-                label="molt_wasm_fresh_path",
+                label="molt_wasm_page_cache_cold",
                 runner_factory=runner,
             ),
         }
@@ -588,8 +648,16 @@ def _measure_case_startup(
         if lune_bin is None:
             return {"runner": "lune", "skipped": "lune not found"}
         runner = _lune_runner_factory(lune_bin)
+        cold = _measure_cold_first_sighting(
+            artifact,
+            env=env,
+            timeout=timeout,
+            label="molt_luau_cold_first_sighting",
+            runner_factory=runner,
+        )
         return {
             "runner": "lune",
+            "cold_first_sighting": cold,
             "same_path": _measure_artifact(
                 artifact,
                 samples=samples,
@@ -599,13 +667,13 @@ def _measure_case_startup(
                 label="molt_luau_same_path",
                 runner_factory=runner,
             ),
-            "fresh_path": _measure_artifact(
+            "page_cache_cold": _measure_artifact(
                 artifact,
                 samples=samples,
                 env=env,
                 timeout=timeout,
                 fresh_copies=True,
-                label="molt_luau_fresh_path",
+                label="molt_luau_page_cache_cold",
                 runner_factory=runner,
             ),
         }
@@ -631,8 +699,9 @@ def _measure_cpython(
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     elapsed: list[float] = []
+    interpreter = harness_memory_guard.canonical_interpreter(sys.executable)
     for index in range(samples):
-        command = [sys.executable, str(script)]
+        command = [interpreter, str(script)]
         result = _run_guarded(command, env=env, timeout=timeout, prefix="MOLT_BENCH")
         records.append(_sample_record(index=index, command=command, result=result))
         if result.returncode == 0 and result.elapsed_s is not None:
@@ -730,7 +799,11 @@ def _budget_status(
 
 
 def _startup_fresh_stats(startup: dict[str, Any]) -> dict[str, Any] | None:
-    fresh = startup.get("fresh_path")
+    # Budget gates on the multi-sample page-cache-cold metric (median over
+    # several copy-based runs), which is stable enough for a hard limit. The
+    # single-sample cold_first_sighting is reported for evidence but is too
+    # noisy to gate on.
+    fresh = startup.get("page_cache_cold")
     return fresh.get("stats") if isinstance(fresh, dict) else None
 
 
@@ -747,12 +820,15 @@ def _startup_ok(startup: dict[str, Any], *, require_runners: bool) -> bool:
     if startup.get("skipped"):
         return not require_runners
     same = startup.get("same_path")
-    fresh = startup.get("fresh_path")
+    fresh = startup.get("page_cache_cold")
+    cold = startup.get("cold_first_sighting")
     return bool(
         isinstance(same, dict)
         and isinstance(fresh, dict)
+        and isinstance(cold, dict)
         and same.get("ok")
         and fresh.get("ok")
+        and cold.get("ok")
     )
 
 
@@ -996,8 +1072,12 @@ def format_report(report: dict[str, Any]) -> str:
             lines.append(f"  {label}: {size}; startup skipped: {skipped}")
         else:
             same = _case_startup_median(row, "same_path")
-            fresh = _case_startup_median(row, "fresh_path")
-            lines.append(f"  {label}: {size}; same={same}; fresh={fresh}")
+            page_cold = _case_startup_median(row, "page_cache_cold")
+            cold = _case_startup_median(row, "cold_first_sighting")
+            lines.append(
+                f"  {label}: {size}; same={same}; "
+                f"page_cache_cold={page_cold}; cold_first_sighting={cold}"
+            )
     cpython = report.get("baselines", {}).get("cpython")
     if cpython is not None:
         lines.append(

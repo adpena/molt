@@ -298,6 +298,59 @@ Common tools:
 - `wasm-tools strip output.opt.wasm -o output.stripped.wasm`
 - `gzip -k output.wasm` / `brotli -f output.wasm` (compressed size)
 
+### Cold start vs steady state
+
+The throughput table (`tools/bench.py`) reports **warm steady-state**: each
+runtime is warmed (`--warmup`, default 1) on the exact artifact path the
+measured runs reuse, so on macOS the warmup primes the `amfid`/provenance cache
+for the binary's cdhash and the page cache for the same bytes. The `MoltRun`
+number is therefore post-warmup, same-cdhash, and `bench.py` now records
+**mean (headline) + min (best-achievable) + variance** for every runtime
+unconditionally (hyperfine norm), not only under `--super`. Best-case
+regressions are visible in `runtime_stats` without a special flag.
+
+**Cold start and binary size** come from the dedicated matrix tool
+`tools/output_startup_size_audit.py`, never from the throughput table (mixing a
+cold molt launch against a warm CPython launch would be unfair). Per matrix case
+(`native`/`wasm`/`luau` × profile × backend) it records:
+
+- `same_path`: warm steady-state startup (provenance + page cache warm).
+- `page_cache_cold`: a fresh-copy load. NOTE: `shutil.copy2` preserves the bytes
+  and thus the **cdhash**, so on macOS this is page-cache-cold but
+  provenance-WARM — it does not pay the amfid tax.
+- `cold_first_sighting`: the genuine TRUE-cold sample — the single first run of a
+  freshly built artifact, recorded before any other run touches its cdhash, so
+  it pays the one-time `amfid`/`syspolicyd` validation tax (~100-280ms on macOS,
+  OS-side/IPC-bound, 0 CPU, cached per cdhash thereafter). This is only genuinely
+  cold when the build did not prime the binary; the audit invokes `molt build`
+  without `--prime` (off by default for ordinary builds), so the artifact is
+  unprimed.
+- process baselines: `cpython` and a tiny `c_baseline` for reference.
+
+The one-time macOS amfid tax is unavoidable on the first launch of a given
+cdhash; it can be moved to build time with `molt build --prime`. Notarization
+fixes Gatekeeper *trust*, not launch *speed*.
+
+Run the audit and feed it into the report:
+
+```bash
+uv run --python 3.14 python3 tools/output_startup_size_audit.py \
+  --out-dir bench/results --json
+uv run --python 3.14 python3 tools/bench_report.py \
+  --manifest bench/results/docs_manifest.json \
+  --startup-audit bench/results/output_startup_size_audit.json \
+  --update-status-doc
+```
+
+`bench_report.py` renders a **Cold Start & Binary Size** section (warm min/median,
+page-cache-cold, cold first-sighting, CPython/C baselines, budget verdict) and
+emits a one-line `Startup/size:` summary into the `STATUS.md` generated block.
+
+Sources for the macOS amfid/provenance facts: The Eclectic Light Company,
+"Checking code can take longer now" (first-launch ~0.192s Ventura / ~0.303s
+Sequoia, warm amfid ~0.003s once hashes are cached); hyperfine reports
+Mean/Min/Max/σ by default and uses `--warmup` to prime caches.
+
 ## Performance Gates
 
 We enforce strict "Performance Gates" in CI. If a PR causes a regression beyond these limits, it will be blocked.
@@ -341,7 +394,17 @@ gate bundle (no exceptions):
 
 - **Speedup (x.xx)**: Molt is X times faster than CPython. (e.g., 10.0x = Molt is 10x faster).
 - **Regression (< 1.0x)**: Molt is slower than CPython. This is generally unacceptable for Tier 0 constructs.
-- **Super Bench (`--super`)**: Runs 10 samples, records raw successful sample arrays, and calculates variance. Use this for final release validation or when results are noisy.
+- **MoltRun = warm steady-state**: the run-time number is measured after warmup on
+  the same artifact path (same cdhash), so it excludes the one-time macOS amfid
+  cold-start tax. Cold-start is reported separately by the startup/size audit
+  (see "Cold start vs steady state"), never folded into this throughput number.
+- **min + σ are always recorded**: every runtime's `runtime_stats` carries
+  `mean_s` (headline), `min_s` (best-achievable, hyperfine norm), and
+  `variance_s`, regardless of `--super`, so best-case regressions surface without
+  a special flag.
+- **Super Bench (`--super`)**: Runs 10 samples and additionally emits
+  `super_stats` (raw successful sample arrays + variance) for the verbose table.
+  Use this for final release validation or when results are noisy.
 - **Molt build vs run time**: `molt_build_s` captures compile time; `molt_time_s` is run time only for fair runtime comparisons.
 - **WASM build vs run time**: `molt_wasm_build_s` captures wasm compile time; `molt_wasm_time_s` is run time only and is `null` unless every measured WASM sample succeeds with a positive finite duration.
 - **WASM import density**: use `molt_wasm_function_imports_per_kb` and related

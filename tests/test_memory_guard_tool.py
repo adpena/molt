@@ -933,6 +933,70 @@ def test_child_runner_env_wraps_command_without_leaking_guard_keys() -> None:
     assert child_env == {"KEEP": "1"}
 
 
+def test_resolve_relative_executable_leaves_absolute_and_bare_names() -> None:
+    # Absolute paths and bare program names (no separator) are untouched so
+    # PATH lookup still works and an explicit absolute command is preserved.
+    absolute = [sys.executable, "-c", "print('x')"]
+    assert memory_guard._resolve_relative_executable(absolute) == absolute
+    bare = ["python3", "-c", "print('x')"]
+    assert memory_guard._resolve_relative_executable(bare) == bare
+    assert memory_guard._resolve_relative_executable([]) == []
+
+
+def test_resolve_relative_executable_resolves_against_parent_cwd(
+    monkeypatch, tmp_path
+) -> None:
+    rel_dir = tmp_path / "relbin"
+    rel_dir.mkdir()
+    rel_interp = rel_dir / "python3"
+    rel_interp.symlink_to(Path(sys.executable).resolve())
+    monkeypatch.chdir(tmp_path)
+
+    resolved = memory_guard._resolve_relative_executable(
+        ["relbin/python3", "-c", "print('x')"]
+    )
+
+    assert resolved[0] == str(rel_interp.resolve())
+    assert resolved[1:] == ["-c", "print('x')"]
+
+
+def test_resolve_relative_executable_skips_nonexistent_relative_path(
+    monkeypatch, tmp_path
+) -> None:
+    # A relative path that does not exist under the parent cwd is left as-is so
+    # an intentionally child-relative command is never clobbered.
+    monkeypatch.chdir(tmp_path)
+    command = ["does/not/exist", "arg"]
+    assert memory_guard._resolve_relative_executable(command) == command
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="relative venv interpreter symlink chain is a POSIX concern",
+)
+def test_run_guarded_execs_relative_interpreter_with_other_cwd(
+    monkeypatch, tmp_path
+) -> None:
+    rel_dir = tmp_path / "relbin"
+    rel_dir.mkdir()
+    rel_interp = rel_dir / "python3"
+    rel_interp.symlink_to(Path(sys.executable).resolve())
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    result = memory_guard.run_guarded(
+        ["relbin/python3", "-c", "print('relrun')"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        cwd=str(other_cwd),
+        child_rlimit_kb=1_000_000,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "relrun\n"
+
+
 def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
     command = [sys.executable, "-c", "print('child')"]
     launch = memory_guard._guarded_launch(

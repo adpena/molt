@@ -1132,12 +1132,50 @@ def _child_runner_env(
     return runner_env
 
 
+def _resolve_relative_executable(command: Sequence[str]) -> list[str]:
+    """Resolve a relative, path-bearing ``command[0]`` against the PARENT cwd.
+
+    POSIX ``subprocess.Popen``/``os.execvpe`` with ``cwd=`` set exec a relative
+    executable that contains a path separator (e.g. ``.venv/bin/python3``)
+    relative to the CHILD's working directory, not the parent's. When the guard
+    is asked to run such a command with a differing ``cwd=``, the relative
+    interpreter is silently mis-resolved and the child fails with
+    ``FileNotFoundError``. Resolve it deterministically against the launcher's
+    (parent's) cwd before spawn so the guarded subprocess execs the correct
+    binary regardless of ``cwd=``.
+
+    Bare program names (no path separator, e.g. ``python3``) are left untouched
+    so normal PATH lookup still applies; absolute paths are returned as-is.
+    Resolution is skipped when the resolved path does not exist, so a genuinely
+    PATH-resolved or intentionally child-relative command is never clobbered.
+    """
+    if not command:
+        return list(command)
+    cmd0 = command[0]
+    if not cmd0:
+        return list(command)
+    has_sep = os.sep in cmd0 or (os.altsep is not None and os.altsep in cmd0)
+    if not has_sep:
+        return list(command)
+    candidate = Path(cmd0)
+    if candidate.is_absolute():
+        return list(command)
+    resolved = (Path.cwd() / candidate).resolve(strict=False)
+    if not resolved.exists():
+        return list(command)
+    return [str(resolved), *command[1:]]
+
+
 def _guarded_launch(
     command: Sequence[str],
     env: Mapping[str, str] | None,
     *,
     child_rlimit_kb: int | None,
 ) -> GuardedLaunch:
+    # Normalize a relative path-bearing executable against the parent cwd before
+    # any spawn path (POSIX rlimit, POSIX no-rlimit, or the Windows child-runner
+    # env encoding) so none of them mis-resolve it against the child's `cwd=`.
+    command = _resolve_relative_executable(command)
     if child_rlimit_kb is None or child_rlimit_kb <= 0:
         return GuardedLaunch(command=list(command), env=env)
     base_env = os.environ if env is None else env
