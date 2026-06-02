@@ -96,10 +96,82 @@ fn ensure_i64_with_builder<'ctx>(
     }
 }
 
+/// NaN-box a raw signed `i64`, promoting to a heap BigInt when the value does
+/// not fit the 47-bit inline payload.
+///
+/// Shared, builder-parameterized implementation of the overflow-safe integer
+/// box used by both the in-function lowering path
+/// ([`FunctionLowering::box_i64_overflow_safe`]) and the trampoline / direct
+/// call return-boxing path ([`materialize_dynbox_bits_with_builder`]). It emits
+/// a single fits-inline range check; the inline (hot) path tags the 47-bit
+/// payload, the cold path calls `molt_int_from_i64`. See the method wrapper for
+/// the full rationale.
+#[cfg(feature = "llvm")]
+fn box_i64_overflow_safe_with_builder<'ctx>(
+    builder: &inkwell::builder::Builder<'ctx>,
+    context: &'ctx inkwell::context::Context,
+    module: &inkwell::module::Module<'ctx>,
+    current_fn: FunctionValue<'ctx>,
+    raw: inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let i64_ty = context.i64_type();
+
+    let bias = i64_ty.const_int(1u64 << 46, false);
+    let biased = builder.build_int_add(raw, bias, "int_inline_bias").unwrap();
+    let limit = i64_ty.const_int(1u64 << 47, false);
+    let fits = builder
+        .build_int_compare(inkwell::IntPredicate::ULT, biased, limit, "int_fits_inline")
+        .unwrap();
+
+    let inline_bb = context.append_basic_block(current_fn, "box_int_inline");
+    let bigint_bb = context.append_basic_block(current_fn, "box_int_bigint");
+    let merge_bb = context.append_basic_block(current_fn, "box_int_merge");
+    builder
+        .build_conditional_branch(fits, inline_bb, bigint_bb)
+        .unwrap();
+
+    builder.position_at_end(inline_bb);
+    let masked = builder
+        .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
+        .unwrap();
+    let inline_boxed = builder
+        .build_or(
+            masked,
+            i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
+            "box_i64",
+        )
+        .unwrap();
+    builder.build_unconditional_branch(merge_bb).unwrap();
+
+    builder.position_at_end(bigint_bb);
+    let from_i64_fn = module.get_function("molt_int_from_i64").unwrap_or_else(|| {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_int_from_i64",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        )
+    });
+    let bigint_boxed = builder
+        .build_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+        .unwrap()
+        .try_as_basic_value()
+        .unwrap_basic()
+        .into_int_value();
+    builder.build_unconditional_branch(merge_bb).unwrap();
+
+    builder.position_at_end(merge_bb);
+    let phi = builder.build_phi(i64_ty, "boxed_int").unwrap();
+    phi.add_incoming(&[(&inline_boxed, inline_bb), (&bigint_boxed, bigint_bb)]);
+    phi.as_basic_value().into_int_value()
+}
+
 #[cfg(feature = "llvm")]
 fn materialize_dynbox_bits_with_builder<'ctx>(
     builder: &inkwell::builder::Builder<'ctx>,
     context: &'ctx inkwell::context::Context,
+    module: &inkwell::module::Module<'ctx>,
+    current_fn: FunctionValue<'ctx>,
     operand: BasicValueEnum<'ctx>,
     operand_ty: &TirType,
 ) -> inkwell::values::IntValue<'ctx> {
@@ -107,16 +179,7 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
     match operand_ty {
         TirType::I64 => {
             let raw = ensure_i64_with_builder(builder, context, operand);
-            let masked = builder
-                .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
-                .unwrap();
-            builder
-                .build_or(
-                    masked,
-                    i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
-                    "box_i64",
-                )
-                .unwrap()
+            box_i64_overflow_safe_with_builder(builder, context, module, current_fn, raw)
         }
         TirType::Bool => {
             let raw = match operand {
@@ -255,6 +318,11 @@ struct FunctionLowering<'ctx, 'func> {
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
     /// verification, optimization, or emission.
     diagnostics: RefCell<Vec<String>>,
+    /// Shared representation facts for this function, derived from the
+    /// `ScalarRepresentationPlan`. Drives the overflow-safe integer-carrier and
+    /// container dispatch decisions so the LLVM backend reads the same typed
+    /// facts as the native/WASM/Luau backends instead of trusting `TirType`.
+    repr_facts: crate::representation_plan::LlvmReprFacts,
 }
 
 #[cfg(feature = "llvm")]
@@ -319,6 +387,11 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
 
     // 1. Build or reuse the LLVM function signature.
     let llvm_fn = declare_tir_function(func, backend);
+    let repr_facts = backend
+        .function_repr_facts
+        .get(&func.name)
+        .cloned()
+        .unwrap_or_default();
     let mut lowering = FunctionLowering {
         backend,
         func,
@@ -339,6 +412,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         try_stack_baselines: Vec::new(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
+        repr_facts,
     };
 
     // 2. Create LLVM basic blocks for each TIR block.
@@ -677,14 +751,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             // Non-entry blocks: create phi nodes for block arguments.
             for (i, arg) in block.args.iter().enumerate() {
-                let llvm_ty = lower_type(self.backend.context, &arg.ty);
+                // A loop-carried integer that the plan does not prove
+                // overflow-safe must travel boxed (DynBox), not as a raw i64
+                // phi. Otherwise a runtime BigInt result flowing back along the
+                // loop edge would be unboxed into a truncating 47-bit payload.
+                // I64 and DynBox both lower to the i64 machine type, so this only
+                // changes the *semantic* carrier; the incoming-edge coercion
+                // boxes the raw-i64 init value to keep the bits consistent.
+                let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
+                let llvm_ty = lower_type(self.backend.context, &effective_ty);
                 let phi = self
                     .backend
                     .builder
                     .build_phi(llvm_ty, &format!("phi_{}", arg.id.0))
                     .unwrap();
                 self.values.insert(arg.id, phi.as_basic_value());
-                self.value_types.insert(arg.id, arg.ty.clone());
+                self.value_types.insert(arg.id, effective_ty);
                 self.pending_phis.push((block_id, i, phi));
             }
         }
@@ -1895,6 +1977,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                                 materialize_dynbox_bits_with_builder(
                                     &self.backend.builder,
                                     self.backend.context,
+                                    &self.backend.module,
+                                    self.llvm_fn,
                                     raw_result,
                                     &target_return_tir_ty,
                                 )
@@ -4022,11 +4106,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         //  - Loop vectorization with known induction variable ranges
         let nsw = has_attr(op, "no_signed_wrap");
 
+        // Overflow-safety gate (the structural fix for the LLVM int-overflow
+        // miscompile): a raw machine `add`/`sub`/`mul` may only be emitted when
+        // the plan proves the *result* is an overflow-safe exact-i64 carrier
+        // (interval-proven not to wrap a signed i64). `TirType::I64` alone is a
+        // *semantic* int — `type_refine` assigns `add(I64, I64) -> I64` with no
+        // overflow proof — so gating on the type would silently wrap and then
+        // truncate to 47 bits at box time. Names outside the overflow-safe set
+        // fall through to the boxed runtime path (`molt_add`/`molt_sub`/
+        // `molt_mul`), which is BigInt-correct, mirroring the native and WASM
+        // backends.
+        let int_overflow_safe = self.repr_facts.is_overflow_safe_int(result_id);
+
         let (val, out_ty) = match (&lhs_ty, &rhs_ty, name) {
             // I64 + I64 -> I64 (direct machine instruction).
             // When `nsw` is set, use build_int_nsw_add to tell LLVM the
             // result is guaranteed not to overflow as a signed i64.
-            (TirType::I64, TirType::I64, "add") => {
+            (TirType::I64, TirType::I64, "add") if int_overflow_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -4037,7 +4133,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "sub") => {
+            (TirType::I64, TirType::I64, "sub") if int_overflow_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -4048,7 +4144,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "mul") => {
+            (TirType::I64, TirType::I64, "mul") if int_overflow_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -4534,7 +4630,113 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.value_types.insert(result_id, out_ty);
     }
 
+    // ── Representation authority ──
+
+    /// Effective semantic carrier type for a block argument (phi).
+    ///
+    /// A `TirType::I64` block argument that the shared `ScalarRepresentationPlan`
+    /// does not prove overflow-safe is carried as `DynBox` (NaN-boxed) instead
+    /// of a raw i64. Both lower to the i64 machine type, so this only changes
+    /// the semantic carrier — but it is what keeps a non-overflow-safe
+    /// accumulator boxed across the loop back-edge instead of unboxing a runtime
+    /// BigInt result into a truncating 47-bit payload.
+    fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
+        if matches!(declared, TirType::I64) && !self.repr_facts.is_overflow_safe_int(id) {
+            TirType::DynBox
+        } else {
+            declared.clone()
+        }
+    }
+
+    /// Resolve the specialized `len` runtime function for a container operand.
+    ///
+    /// The container dispatch kind is taken from the shared
+    /// `ScalarRepresentationPlan` (the same authority the native/WASM/Luau
+    /// backends consult). When the plan has no fact for this value — for example
+    /// a pipeline-introduced temporary with no stable SimpleIR name — we fall
+    /// back to the refined `TirType`, which the plan itself derives from
+    /// (`ScalarRepresentationFact::container_kind`), so the two never disagree
+    /// where both speak.
+    fn container_len_fn(&self, operand_id: ValueId) -> &'static str {
+        use crate::representation_plan::ContainerKind;
+        if let Some(kind) = self.repr_facts.container_kind(operand_id) {
+            return match kind {
+                ContainerKind::List => "molt_len_list",
+                ContainerKind::Str => "molt_len_str",
+                ContainerKind::Dict => "molt_len_dict",
+                ContainerKind::Tuple => "molt_len_tuple",
+                ContainerKind::Set => "molt_len_set",
+            };
+        }
+        let operand_ty = self
+            .value_types
+            .get(&operand_id)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        match operand_ty {
+            TirType::List(_) => "molt_len_list",
+            TirType::Str => "molt_len_str",
+            TirType::Dict(_, _) => "molt_len_dict",
+            TirType::Tuple(_) => "molt_len_tuple",
+            TirType::Set(_) => "molt_len_set",
+            _ => "molt_len",
+        }
+    }
+
     // ── Box / Unbox ──
+
+    /// NaN-box a raw signed `i64`, promoting to a heap BigInt when the value
+    /// does not fit the 47-bit inline payload.
+    ///
+    /// The inline integer representation is a sign-extended 47-bit payload
+    /// (range `[-(1<<46), (1<<46)-1]`). An unconditional `raw & INT_MASK | TAG`
+    /// silently truncates any value outside that range to 47 bits — the LLVM
+    /// integer-overflow miscompile this fixes. Instead we emit a single
+    /// fits-inline range check: on the hot path (fits) we box inline; on the
+    /// cold path we call `molt_int_from_i64`. This mirrors the native backend's
+    /// `ensure_boxed_overflow_safe` and the WASM backend's
+    /// `emit_inline_int_range_check` + runtime fallback.
+    ///
+    /// LLVM's range analysis (SCEV / known-bits) folds the branch away whenever
+    /// it can prove `raw` fits inline (e.g. bounded loop induction variables and
+    /// constants), so the check is free on values that are statically small.
+    ///
+    /// This form splits the current block, so callers that must keep the boxed
+    /// value as a single SSA value in a fixed block (phi-incoming
+    /// materialization, function-return coercion) use [`Self::box_i64_branchless`]
+    /// instead.
+    fn box_i64_overflow_safe(
+        &self,
+        raw: inkwell::values::IntValue<'ctx>,
+    ) -> inkwell::values::IntValue<'ctx> {
+        box_i64_overflow_safe_with_builder(
+            &self.backend.builder,
+            self.backend.context,
+            &self.backend.module,
+            self.llvm_fn,
+            raw,
+        )
+    }
+
+    /// Branchless overflow-safe integer box: a single `molt_int_from_i64` call
+    /// that yields one SSA value and never alters control flow. Used where the
+    /// boxed value must be a single value in a fixed block (phi-incoming
+    /// materialization, function-return coercion). `molt_int_from_i64` returns
+    /// the inline NaN-box for values that fit the 47-bit payload and a heap
+    /// BigInt otherwise, so the result matches `box_i64_overflow_safe`.
+    fn box_i64_branchless(
+        &self,
+        raw: inkwell::values::IntValue<'ctx>,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let from_i64_fn = self.ensure_runtime_i64_fn("molt_int_from_i64", 1);
+        self.backend
+            .builder
+            .build_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value()
+    }
 
     fn materialize_dynbox_bits(
         &self,
@@ -4545,19 +4747,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         match operand_ty {
             TirType::I64 => {
                 let raw = self.ensure_i64(operand);
-                let masked = self
-                    .backend
-                    .builder
-                    .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
-                    .unwrap();
-                self.backend
-                    .builder
-                    .build_or(
-                        masked,
-                        i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
-                        "box_i64",
-                    )
-                    .unwrap()
+                self.box_i64_overflow_safe(raw)
             }
             TirType::Bool => {
                 let raw = match operand {
@@ -5035,7 +5225,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let phi_tir_ty = block
                 .args
                 .get(*arg_index)
-                .map(|arg| arg.ty.clone())
+                .map(|arg| self.effective_block_arg_type(arg.id, &arg.ty))
                 .unwrap_or(TirType::DynBox);
 
             // 1. Wire up predecessors from branches that were actually emitted
@@ -5361,7 +5551,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = if Self::tir_type_is_dynbox_like(target_tir_ty)
             && !Self::tir_type_is_dynbox_like(source_tir_ty)
         {
-            self.materialize_dynbox_bits(val, source_tir_ty).into()
+            // `coerce_to_tir_type` materializes a value at a fixed position —
+            // either the current block (return) or, for phi incoming edges, the
+            // END of a predecessor block that already has a terminator. Both
+            // restore the builder afterwards and (for phi edges) require the
+            // result to be a single SSA value defined in `in_block`. The
+            // overflow-safe integer box that adds a fits-inline branch would
+            // split `in_block`, leaving the boxed value in a new merge block
+            // that does not dominate the phi user. We therefore box integers
+            // here with the branchless runtime call, which yields one SSA value
+            // and never alters control flow. (`molt_int_from_i64` returns the
+            // inline box for small values and a heap BigInt otherwise — the
+            // same value the branch form produces.)
+            if matches!(source_tir_ty, TirType::I64) {
+                let raw = self.ensure_i64(val);
+                self.box_i64_branchless(raw).into()
+            } else {
+                self.materialize_dynbox_bits(val, source_tir_ty).into()
+            }
         } else if !Self::tir_type_is_dynbox_like(target_tir_ty)
             && Self::tir_type_is_dynbox_like(source_tir_ty)
         {
@@ -5688,6 +5895,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let ret_bits = materialize_dynbox_bits_with_builder(
             &builder,
             self.backend.context,
+            &self.backend.module,
+            trampoline_fn,
             result,
             &target_return_tir_ty,
         );
@@ -6278,19 +6487,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 1 {
                     return false;
                 }
-                let operand_ty = self
-                    .value_types
-                    .get(&op.operands[0])
-                    .cloned()
-                    .unwrap_or(TirType::DynBox);
-                let fn_name = match operand_ty {
-                    TirType::List(_) => "molt_len_list",
-                    TirType::Str => "molt_len_str",
-                    TirType::Dict(_, _) => "molt_len_dict",
-                    TirType::Tuple(_) => "molt_len_tuple",
-                    TirType::Set(_) => "molt_len_set",
-                    _ => "molt_len",
-                };
+                let fn_name = self.container_len_fn(op.operands[0]);
                 let len_fn = self.ensure_runtime_i64_fn(fn_name, 1);
                 let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
                 let result = self
@@ -8502,6 +8699,7 @@ mod tests {
             try_stack_baselines: Vec::new(),
             call_site_counter: 0,
             diagnostics: RefCell::new(Vec::new()),
+            repr_facts: crate::representation_plan::LlvmReprFacts::default(),
         }
     }
 
@@ -8706,12 +8904,9 @@ mod tests {
             .expect("check_exception handler phi lowering should verify");
     }
 
-    #[test]
-    fn lower_i64_add() {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-
-        // Build: fn add(a: i64, b: i64) -> i64 { return a + b }
+    /// Build the trivial `fn add(a: i64, b: i64) -> i64 { return a + b }` TIR
+    /// used by the overflow-safety gating tests below.
+    fn build_i64_add_func() -> (TirFunction, ValueId) {
         let mut func = TirFunction::new(
             "add_i64".into(),
             vec![TirType::I64, TirType::I64],
@@ -8730,19 +8925,57 @@ mod tests {
         entry.terminator = Terminator::Return {
             values: vec![v_sum],
         };
+        (func, v_sum)
+    }
+
+    #[test]
+    fn lower_i64_add_overflow_safe_uses_native_add() {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+
+        // Build: fn add(a: i64, b: i64) -> i64 { return a + b }, with the result
+        // marked overflow-safe by the representation plan. The backend may then
+        // emit a raw machine `add` instead of routing through the runtime.
+        let (func, v_sum) = build_i64_add_func();
+        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+        facts.overflow_safe_values.insert(v_sum);
+        backend
+            .function_repr_facts
+            .insert(func.name.clone(), facts);
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
 
-        // Should contain a native `add` instruction, NOT a call to molt_add
         assert!(
             ir.contains("add i64"),
-            "expected native i64 add in IR: {}",
+            "expected native i64 add for an overflow-safe result: {}",
             ir
         );
         assert!(
             !ir.contains("call") || !ir.contains("molt_add"),
-            "should NOT call runtime for i64+i64 add"
+            "overflow-safe i64+i64 add must NOT call the runtime: {}",
+            ir
+        );
+    }
+
+    #[test]
+    fn lower_i64_add_not_overflow_safe_routes_to_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+
+        // Same add, but with NO overflow-safety proof (empty plan facts). The
+        // structural fix for the LLVM int-overflow miscompile requires this to
+        // route through `molt_add` (BigInt-correct) rather than emit a raw
+        // machine `add` that would silently wrap and truncate at box time.
+        let (func, _v_sum) = build_i64_add_func();
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+
+        assert!(
+            ir.contains("call i64 @molt_add"),
+            "non-overflow-safe i64+i64 add must route through molt_add: {}",
+            ir
         );
     }
 

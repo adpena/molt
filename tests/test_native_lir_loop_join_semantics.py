@@ -663,3 +663,145 @@ def test_native_llvm_bool_or_matches_cpython(profile: str) -> None:
     ).stdout.strip()
 
     assert _compile_and_run(source, profile, backend="llvm") == expected
+
+
+# ── Integer-overflow regression guards for the LLVM backend ──
+#
+# The LLVM backend used to emit raw machine `add`/`sub`/`mul` whenever both
+# operands were `TirType::I64`, then mask the result to 47 bits at box time —
+# with no inline-range check and no BigInt promotion. The same Python program
+# therefore produced a WRONG result on the LLVM backend for any integer
+# operation crossing 2**47 (e.g. a doubled accumulator silently truncated to
+# 0), while the native and WASM backends promoted to BigInt. These tests build
+# the program through the LLVM backend and assert the output matches BOTH
+# CPython and the native (Cranelift) backend, so the divergence cannot return.
+#
+# The programs deliberately use `while` loops with function-local accumulators
+# (no `range()` / builtin-call machinery) so they exercise the raw-i64 loop
+# carrier path that exposed the miscompile.
+
+
+def _cpython_output(source: str) -> str:
+    return run_native_test_process(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_int_accumulator_crosses_47_bits_matches_cpython_and_native(
+    profile: str,
+) -> None:
+    # Doubling accumulator: x = 2**60 after 60 iterations, well past the 47-bit
+    # inline integer payload. Pre-fix LLVM printed 0 (2**60 & (2**47 - 1)).
+    source = textwrap.dedent(
+        """
+        def compute():
+            x = 1
+            n = 0
+            while n < 60:
+                x = x + x
+                n = n + 1
+            return x
+
+        print(compute())
+        """
+    )
+    expected = _cpython_output(source)
+    assert expected == "1152921504606846976"
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+    assert _compile_and_run(source, profile, backend="cranelift") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_int_overflows_i64_promotes_to_bigint_matches_cpython_and_native(
+    profile: str,
+) -> None:
+    # Doubling 70 times reaches 2**70, which exceeds a signed i64. This requires
+    # the non-overflow-safe arithmetic to route through the runtime (BigInt),
+    # not a raw machine `add` that would wrap at 64 bits.
+    source = textwrap.dedent(
+        """
+        def compute():
+            x = 1
+            n = 0
+            while n < 70:
+                x = x + x
+                n = n + 1
+            return x
+
+        print(compute())
+        """
+    )
+    expected = _cpython_output(source)
+    assert expected == "1180591620717411303424"
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+    assert _compile_and_run(source, profile, backend="cranelift") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_int_sum_accumulator_overflow_matches_cpython_and_native(
+    profile: str,
+) -> None:
+    # A summing accumulator whose total crosses 2**47 mid-loop. The loop counter
+    # is interval-bounded (overflow-safe, stays a raw i64), while the unbounded
+    # total must stay boxed — exercising both halves of the carrier split.
+    source = textwrap.dedent(
+        """
+        def compute():
+            total = 0
+            i = 0
+            while i < 9000000:
+                total = total + i * i
+                i = i + 1
+            return total
+
+        print(compute())
+        """
+    )
+    expected = _cpython_output(source)
+    assert int(expected) > (1 << 47)
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+    assert _compile_and_run(source, profile, backend="cranelift") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_non_overflowing_int_loop_matches_cpython(profile: str) -> None:
+    # Regression guard: a non-overflowing integer loop must remain correct under
+    # the carrier-split fix (the raw-i64 fast path is still taken and exact).
+    source = textwrap.dedent(
+        """
+        def compute():
+            total = 0
+            i = 0
+            while i < 1000:
+                total = total + i
+                i = i + 1
+            return total
+
+        print(compute())
+        print(7 * 11 + 7 - 11)
+        """
+    )
+    expected = _cpython_output(source)
+    assert expected == "499500\n73"
+    assert _compile_and_run(source, profile, backend="llvm") == expected

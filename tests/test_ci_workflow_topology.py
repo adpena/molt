@@ -43,6 +43,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "docs-gates:" in ci_text
     assert "python-tooling-smoke:" in ci_text
     assert "rust-build-unit-smoke:" in ci_text
+    assert "llvm-backend:" in ci_text
     assert "needs: docs-gates" not in ci_text
     assert "differential-tests:" not in ci_text
     assert "benchmark:" not in ci_text
@@ -50,10 +51,12 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "runs-on: ubuntu-latest" in ci_text
     assert "runs-on: macos-14" not in ci_text
     assert "Swatinem/rust-cache@v2" in ci_text
-    assert ci_text.count("Configure adaptive Rust parallelism") == 2
+    # Three rust-bearing jobs configure adaptive parallelism: python-tooling-smoke,
+    # rust-build-unit-smoke, and the LLVM backend job.
+    assert ci_text.count("Configure adaptive Rust parallelism") == 3
     assert (
         ci_text.count('python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"')
-        == 2
+        == 3
     )
     assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
     assert "uv sync --frozen --group dev" in ci_text
@@ -81,8 +84,10 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "ld.lld --version" in ci_text
     assert 'MOLT_NATIVE_TEST_TIMEOUT_SEC: "900"' in ci_text
     assert ci_text.count("Run bench CLI native smoke tests") == 1
-    assert ci_text.count("Summarize guarded command hotspots") == 3
-    assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 3
+    # Four jobs summarize hotspots: docs-gates, python-tooling-smoke,
+    # rust-build-unit-smoke, and the LLVM backend job.
+    assert ci_text.count("Summarize guarded command hotspots") == 4
+    assert ci_text.count("python3 tools/profile_hotspots.py --limit 20") == 4
 
 
 def test_github_workflows_opt_into_node24_action_runtime() -> None:

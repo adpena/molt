@@ -10,6 +10,10 @@ use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
+#[cfg(feature = "llvm")]
+use crate::tir::blocks::{BlockId, Terminator};
+#[cfg(feature = "llvm")]
+use crate::tir::ops::OpCode;
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -152,6 +156,217 @@ pub(crate) struct ScalarPrimaryNameSets {
     pub(crate) float: BTreeSet<String>,
 }
 
+/// Per-function representation facts consumed by the LLVM backend.
+///
+/// The LLVM backend lowers `TirFunction` (SSA `ValueId`s) directly, while the
+/// `ScalarRepresentationPlan` is keyed by the legacy SimpleIR variable
+/// namespace. This struct bridges the two: it carries the plan's
+/// representation decisions (overflow-safe int carrier subset, container
+/// dispatch kinds) and the `ValueId -> SimpleIR name` mapping derived from the
+/// *same* `TirFunction` the LLVM backend is lowering.
+///
+/// This makes the LLVM backend consume the identical typed facts the
+/// native/WASM/Luau backends consume, rather than treating `TirType::I64` as an
+/// exact-i64 carrier (which it is not — `type_refine` assigns `add(I64, I64) ->
+/// I64` with no overflow proof, so unbounded integer arithmetic must stay
+/// boxed/runtime-backed until a range proof exists).
+#[derive(Clone, Debug, Default)]
+#[cfg(feature = "llvm")]
+pub(crate) struct LlvmReprFacts {
+    /// Container dispatch kind keyed by SimpleIR name (the plan's authority for
+    /// `len`/container-kind specialization).
+    pub(crate) container_kind_by_name: BTreeMap<String, ContainerKind>,
+    /// `ValueId -> SimpleIR name` for this exact `TirFunction`. Built from the
+    /// LLVM backend's own post-pipeline TIR so names line up with the op
+    /// `_simple_out` attributes the plan keys on.
+    pub(crate) name_by_value: HashMap<ValueId, String>,
+    /// TIR `ValueId`s that are overflow-safe exact-i64 carriers.
+    ///
+    /// Seeded from the plan's `primary_name_sets().int` (an interval-proven,
+    /// no-i64-wrap carrier subset, keyed by SimpleIR name) and then propagated
+    /// across the TIR SSA graph: through `Copy` chains and through block
+    /// arguments (phis) — a phi is overflow-safe only when *every* incoming
+    /// edge value is overflow-safe. Loop-carried block arguments have no stable
+    /// `_simple_out` name (they are canonical slot names), so a pure name
+    /// lookup cannot classify them; the dataflow propagation is what lets the
+    /// backend keep a non-overflow-safe accumulator phi boxed (DynBox) instead
+    /// of unboxing a runtime BigInt result back into a truncating raw i64.
+    pub(crate) overflow_safe_values: std::collections::HashSet<ValueId>,
+}
+
+#[cfg(feature = "llvm")]
+impl LlvmReprFacts {
+    /// Build the LLVM representation facts for `func_ir` (the SimpleIR function
+    /// about to be lowered) and `tir_func` (the LLVM backend's post-pipeline
+    /// TIR for that function).
+    pub(crate) fn build(func_ir: &FunctionIR, tir_func: &TirFunction) -> Self {
+        let plan = ScalarRepresentationPlan::for_function_ir(func_ir);
+        let overflow_safe_int_names = &plan.primary_names.int;
+        let container_kind_by_name = plan
+            .facts_by_name
+            .iter()
+            .filter_map(|(name, fact)| fact.container_kind().map(|kind| (name.clone(), kind)))
+            .collect();
+        let names = SimpleValueNames::for_function(tir_func);
+        let mut name_by_value = HashMap::new();
+        for block in tir_func.blocks.values() {
+            for op in &block.ops {
+                for &result in &op.results {
+                    name_by_value.insert(result, names.value_name(result));
+                }
+            }
+            for arg in &block.args {
+                name_by_value.insert(arg.id, names.value_name(arg.id));
+            }
+        }
+        let overflow_safe_values =
+            compute_overflow_safe_values(tir_func, overflow_safe_int_names, &name_by_value);
+        Self {
+            container_kind_by_name,
+            name_by_value,
+            overflow_safe_values,
+        }
+    }
+
+    /// SimpleIR name for a TIR `ValueId`, if known.
+    pub(crate) fn name_for(&self, id: ValueId) -> Option<&str> {
+        self.name_by_value.get(&id).map(String::as_str)
+    }
+
+    /// Whether the value `id` is an overflow-safe exact-i64 carrier (may use raw
+    /// machine arithmetic and a raw i64 representation).
+    pub(crate) fn is_overflow_safe_int(&self, id: ValueId) -> bool {
+        self.overflow_safe_values.contains(&id)
+    }
+
+    /// Container dispatch kind for the value named by `id`, per the plan.
+    pub(crate) fn container_kind(&self, id: ValueId) -> Option<ContainerKind> {
+        self.name_for(id)
+            .and_then(|name| self.container_kind_by_name.get(name).copied())
+    }
+}
+
+/// Propagate overflow-safety across the TIR SSA graph to a fixpoint.
+///
+/// A value is overflow-safe when the LLVM backend may carry it as a raw i64 and
+/// emit raw machine arithmetic for it. The seed is the plan's interval-proven
+/// int carrier subset (`overflow_safe_int_names`, keyed by SimpleIR
+/// `_simple_out` name). Safety then flows along value-preserving edges:
+///
+/// - A `Copy` result is overflow-safe iff its source operand is.
+/// - A block argument (phi) is overflow-safe iff *every* value passed to it on
+///   every incoming branch edge is overflow-safe.
+///
+/// Built upward from the seed (monotone — only ever adds safety), so the
+/// worklist terminates; back-edges resolve because a phi becomes safe only once
+/// all of its incomings are known safe.
+#[cfg(feature = "llvm")]
+fn compute_overflow_safe_values(
+    tir_func: &TirFunction,
+    overflow_safe_int_names: &BTreeSet<String>,
+    name_by_value: &HashMap<ValueId, String>,
+) -> std::collections::HashSet<ValueId> {
+    use std::collections::HashSet;
+
+    // Collect block-argument incoming edges: (target block, arg index) -> list
+    // of source values passed on each emitted branch edge.
+    let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
+    let mut add_edge = |target: BlockId, args: &[ValueId]| {
+        for (index, &arg) in args.iter().enumerate() {
+            block_arg_incomings
+                .entry((target, index))
+                .or_default()
+                .push(arg);
+        }
+    };
+    for block in tir_func.blocks.values() {
+        match &block.terminator {
+            Terminator::Branch { target, args } => add_edge(*target, args),
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => {
+                add_edge(*then_block, then_args);
+                add_edge(*else_block, else_args);
+            }
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            } => {
+                for (_, target, args) in cases {
+                    add_edge(*target, args);
+                }
+                add_edge(*default, default_args);
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => {}
+        }
+    }
+
+    // Index Copy producers and block-arg membership for the worklist.
+    let mut copy_source: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut block_arg_ids: HashMap<ValueId, (BlockId, usize)> = HashMap::new();
+    let mut all_value_ids: Vec<ValueId> = Vec::new();
+    for block in tir_func.blocks.values() {
+        for (index, arg) in block.args.iter().enumerate() {
+            block_arg_ids.insert(arg.id, (block.id, index));
+            all_value_ids.push(arg.id);
+        }
+        for op in &block.ops {
+            if op.opcode == OpCode::Copy
+                && let (Some(&result), Some(&source)) = (op.results.first(), op.operands.first())
+            {
+                copy_source.insert(result, source);
+            }
+            for &result in &op.results {
+                all_value_ids.push(result);
+            }
+        }
+    }
+
+    let name_seeded = |id: ValueId| -> bool {
+        name_by_value
+            .get(&id)
+            .is_some_and(|name| overflow_safe_int_names.contains(name))
+    };
+
+    let mut safe: HashSet<ValueId> = HashSet::new();
+    for &id in &all_value_ids {
+        if name_seeded(id) {
+            safe.insert(id);
+        }
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &id in &all_value_ids {
+            if safe.contains(&id) {
+                continue;
+            }
+            let becomes_safe = if let Some(&src) = copy_source.get(&id) {
+                safe.contains(&src)
+            } else if let Some(&(block, index)) = block_arg_ids.get(&id) {
+                block_arg_incomings
+                    .get(&(block, index))
+                    .is_some_and(|incomings| {
+                        !incomings.is_empty() && incomings.iter().all(|src| safe.contains(src))
+                    })
+            } else {
+                false
+            };
+            if becomes_safe {
+                safe.insert(id);
+                changed = true;
+            }
+        }
+    }
+    safe
+}
+
 impl ScalarRepresentationPlan {
     pub(crate) fn for_function_ir(func_ir: &FunctionIR) -> Self {
         let mut tir_func = lower_to_tir(func_ir);
@@ -242,7 +457,7 @@ impl ScalarRepresentationPlan {
         self.integer_family_names.clone()
     }
 
-    #[cfg(any(feature = "native-backend", test))]
+    #[cfg(any(feature = "native-backend", feature = "llvm", test))]
     pub(crate) fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
         self.primary_names.clone()
     }
