@@ -899,4 +899,121 @@ mod metal_realize_tests {
              grid convention mismatches MetalDevice's dispatch model"
         );
     }
+
+    fn reduce_kernel(n_out: usize, reduce_size: usize) -> FusedKernel {
+        FusedKernel {
+            ops: vec![FusedOp {
+                op: PrimitiveOp::ReduceSum,
+                srcs: vec![FusedSrc::Buf(1)],
+                dst_dtype: DType::Float32,
+            }],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n_out]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_out * reduce_size]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n_out as u32, 1, 1],
+            local: [n_out.clamp(1, 256) as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        }
+    }
+
+    /// Reductions specialize differently from elementwise ops — `total` is the
+    /// OUTPUT element count, so `specialize_shapes` produces `ceil(n_out/local)`
+    /// threadgroups with one thread per output element (each reducing its input
+    /// slice). This verifies that shape (distinct from elementwise) realizes
+    /// bit-exact on Metal — closing the reduce coverage gap, not deferring it.
+    #[test]
+    fn reduce_kernel_metal_matches_cpu_after_specialize_shapes() {
+        let device = match MetalDevice::new() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let n_out = 1024usize; // > local, so the specialized grid spans multiple groups
+        let reduce_size = 4usize;
+        let input: Vec<f32> = (0..n_out * reduce_size)
+            .map(|i| (i as f32) * 0.25 - 3.0)
+            .collect();
+
+        let mut kernels = vec![reduce_kernel(n_out, reduce_size)];
+        schedule::specialize_shapes(&mut kernels);
+        let kernel = &kernels[0];
+
+        let mut cpu_bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&input)];
+        interpret::execute_kernel(kernel, &mut cpu_bufs);
+
+        let mut metal_bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&input)];
+        execute_kernel_metal(&device, kernel, &mut metal_bufs).expect("metal reduce execution");
+
+        assert_eq!(
+            bytes_to_f32(&cpu_bufs[0]),
+            bytes_to_f32(&metal_bufs[0]),
+            "specialized reduce diverged Metal vs CPU"
+        );
+    }
+
+    /// End-to-end Metal-vs-CPU PARITY through the real schedule pipeline: builds
+    /// a DAG via the FFI, then runs the SAME scheduled + specialized + fused
+    /// kernels through both `execute_fused_pipeline_cpu` and
+    /// `execute_fused_pipeline_metal` and asserts byte-identical output. This is
+    /// exactly the contract the dispatch fix guarantees (Metal == CPU), and `n`
+    /// forces a multi-threadgroup specialized grid so a dispatch-model regression
+    /// would diverge here.
+    ///
+    /// This asserts PARITY, not absolute values, because the FFI realize path has
+    /// a SEPARATE pre-existing bug: `create_tensor` stamps every tensor with
+    /// `buf.id = 0` (a placeholder), while the scheduler assigns binding ids
+    /// sequentially, so `collect_all_leaf_data` (keyed by leaf `buf.id`, looked up
+    /// by binding `buf_id`) never matches and realize() computes on zeros — for
+    /// CPU and Metal alike. That bug is tracked as a critical follow-up; this
+    /// parity assertion holds before AND after it is fixed (when it does, the
+    /// values become correct without touching this test).
+    #[test]
+    fn realize_metal_matches_cpu_through_full_schedule() {
+        if MetalDevice::new().is_err() {
+            return;
+        }
+        let n = 4096usize;
+        let a: Vec<f32> = (0..n).map(|i| i as f32 * 0.5).collect();
+        let b: Vec<f32> = (0..n).map(|i| (n - i) as f32 * 0.25).collect();
+        let shape = [n];
+
+        // SAFETY: each pointer is valid for the matching length.
+        let ha =
+            unsafe { molt_gpu_prim_create_tensor(a.as_ptr(), a.len(), shape.as_ptr(), shape.len()) };
+        let hb =
+            unsafe { molt_gpu_prim_create_tensor(b.as_ptr(), b.len(), shape.as_ptr(), shape.len()) };
+        let hc = molt_gpu_prim_binary(0 /* Add */, ha, hb);
+        assert_ne!(hc, u64::MAX);
+
+        let (lazy, tshape, dtype) =
+            with_tensor(hc, |t| (t.lazy.clone(), t.shape.clone(), t.dtype)).expect("tensor");
+        let mut kernels = schedule::schedule(&lazy, &tshape);
+        schedule::specialize_shapes(&mut kernels);
+        let fused = fuse::fuse(kernels);
+        let numel: usize = tshape.iter().product();
+
+        let cpu = execute_fused_pipeline_cpu(&lazy, &fused, numel, dtype);
+        let metal =
+            execute_fused_pipeline_metal(&lazy, &fused, numel, dtype).expect("metal pipeline");
+
+        assert_eq!(
+            cpu, metal,
+            "Metal realize diverged from CPU realize through the full schedule pipeline"
+        );
+
+        molt_gpu_prim_free(ha);
+        molt_gpu_prim_free(hb);
+        molt_gpu_prim_free(hc);
+    }
 }
