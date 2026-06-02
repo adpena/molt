@@ -144,6 +144,23 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         add_willreturn(ctx, func);
     }
 
+    // ── Integer boxing (i64 -> u64 NaN-boxed) ──
+    //
+    // `molt_int_from_i64` boxes a raw i64 into a tagged integer handle. Used by
+    // the overflow-safe integer box path (`box_i64_overflow_safe`) so the LLVM
+    // backend boxes integers through the same runtime entry point the native
+    // backend uses, instead of an unconditional 47-bit truncating mask.
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        let func = module.add_function(
+            "molt_int_from_i64",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        add_nounwind(ctx, func);
+        add_willreturn(ctx, func);
+    }
+
     // Truthy / type-check functions: GIL-wrapped, may read heap objects
     // and env vars, but never allocate or mutate user-visible state.
     for name in &["molt_is_truthy", "molt_is_function_obj"] {

@@ -3564,6 +3564,27 @@ impl SimpleBackend {
                 .iter()
                 .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
                 .collect();
+            // Build the shared representation facts from the exact SimpleIR
+            // function and the post-pipeline TIR the LLVM backend is about to
+            // lower. This is the structural convergence point: the LLVM
+            // backend's integer-carrier and container dispatch decisions now
+            // come from the same `ScalarRepresentationPlan` the other three
+            // backends use, instead of treating `TirType::I64` as an exact-i64
+            // carrier. Built in its own pass (after every function's TIR
+            // pipeline has run) so the plan's internal lowering never interleaves
+            // with the main pipeline.
+            llvm.function_repr_facts = ir
+                .functions
+                .iter()
+                .zip(tir_funcs.iter())
+                .filter(|(func, _)| !func.is_extern)
+                .map(|(func, (_, tir_func))| {
+                    (
+                        tir_func.name.clone(),
+                        crate::representation_plan::LlvmReprFacts::build(func, tir_func),
+                    )
+                })
+                .collect();
 
             for (_, tir_func) in &tir_funcs {
                 crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
