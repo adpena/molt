@@ -60,53 +60,72 @@ pub fn fuse(kernels: Vec<FusedKernel>) -> Vec<FusedKernel> {
 }
 
 /// Merge a chain of kernels into a single fused kernel.
+///
+/// Inter-kernel data flow is expressed by **buffer identity**: a consuming
+/// kernel reads a producing kernel's result via an input binding whose `buf_id`
+/// equals the producer's output `buf_id`. When such a producer is fused into the
+/// same kernel, its result lives in an SSA value (`FusedSrc::Op`), not a device
+/// buffer — so every reference to a produced-in-chain id is rewritten to the
+/// producing op, and that id is dropped from the merged buffer list (it is no
+/// longer a real input). Only ids that are NOT produced within the chain remain
+/// as external input bindings.
+///
+/// This is the same buffer-identity contract the scheduler establishes (each
+/// binding id is the identity of the node that produces it), so fusion composes
+/// with it without a second, divergent notion of "which buffer is which".
 fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
     if chain.len() == 1 {
         return chain.into_iter().next().unwrap();
     }
 
-    // Collect all unique input buffers and build merged ops
-    let mut merged_ops = Vec::new();
-    let mut merged_bufs = Vec::new();
+    // Output ids produced by kernels in this chain. A binding with one of these
+    // ids is an intermediate computed in-chain, not an external input.
+    let produced_ids: std::collections::HashSet<usize> =
+        chain.iter().map(|k| k.bufs[0].buf_id).collect();
 
-    // Output buffer from the last kernel
     let last = chain.last().unwrap();
-    merged_bufs.push(last.bufs[0].clone()); // output is always bufs[0]
 
-    // Collect input buffers from all kernels, remapping indices
+    // Merged inputs: the last kernel's output at slot 0, then every DISTINCT
+    // input binding whose id is NOT produced within the chain (i.e. genuinely
+    // external leaves / upstream intermediates), deduplicated by id.
+    let mut merged_bufs: Vec<BufferBinding> = Vec::new();
+    merged_bufs.push(last.bufs[0].clone());
     for kernel in &chain {
         for buf in &kernel.bufs[1..] {
-            if !merged_bufs
-                .iter()
-                .any(|b: &BufferBinding| b.buf_id == buf.buf_id)
-            {
+            if produced_ids.contains(&buf.buf_id) {
+                continue; // produced in-chain → becomes an Op, not an input.
+            }
+            if !merged_bufs.iter().any(|b| b.buf_id == buf.buf_id) {
                 merged_bufs.push(buf.clone());
             }
         }
     }
 
-    // Build ops chain: remap FusedSrc references
-    for (kernel_idx, kernel) in chain.iter().enumerate() {
+    // Map each in-chain-produced buffer id to the merged-op index that writes it
+    // (a kernel's last op). Filled as kernels are appended so later kernels can
+    // reference earlier outputs as `Op(..)`.
+    let mut produced_at: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+
+    // Build ops chain: remap FusedSrc references by buffer identity.
+    let mut merged_ops: Vec<FusedOp> = Vec::new();
+    for kernel in &chain {
         let op_offset = merged_ops.len();
         for op in &kernel.ops {
-            let mut remapped_srcs = Vec::new();
+            let mut remapped_srcs = Vec::with_capacity(op.srcs.len());
             for src in &op.srcs {
                 match src {
                     FusedSrc::Buf(idx) => {
-                        if *idx == 0 {
-                            // Output of previous kernel -> reference the previous op
-                            if kernel_idx > 0 {
-                                remapped_srcs.push(FusedSrc::Op(op_offset - 1));
-                            } else {
-                                remapped_srcs.push(FusedSrc::Buf(0));
-                            }
+                        let buf_id = kernel.bufs[*idx].buf_id;
+                        if let Some(&producer_op) = produced_at.get(&buf_id) {
+                            // Produced by an earlier kernel in this chain — read
+                            // its SSA result instead of a device buffer.
+                            remapped_srcs.push(FusedSrc::Op(producer_op));
                         } else {
-                            // Input buffer -> find in merged_bufs
-                            let buf_id = kernel.bufs[*idx].buf_id;
                             let new_idx = merged_bufs
                                 .iter()
                                 .position(|b| b.buf_id == buf_id)
-                                .expect("buffer not found in merged set");
+                                .expect("external input must be in the merged buffer set");
                             remapped_srcs.push(FusedSrc::Buf(new_idx));
                         }
                     }
@@ -127,6 +146,8 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
                 dst_dtype: op.dst_dtype,
             });
         }
+        // This kernel's output is produced by its final merged op.
+        produced_at.insert(kernel.bufs[0].buf_id, merged_ops.len() - 1);
     }
 
     FusedKernel {
