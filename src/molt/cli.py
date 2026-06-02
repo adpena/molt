@@ -19974,6 +19974,7 @@ def _prepare_backend_setup(
         entry_module=entry_module,
         module_graph_metadata=module_graph_metadata,
         target_python=target_python,
+        stdlib_profile=stdlib_profile,
     )
     if emit_mode != "obj":
         _maybe_start_native_runtime_lib_ready_async(
@@ -22909,12 +22910,23 @@ def _build_cache_variant(
     codegen_env: str,
     linked: bool,
     target_python: TargetPythonVersion,
+    stdlib_profile: str | None = "micro",
     partition_mode: bool = False,
 ) -> str:
     """Build a cache variant key from build configuration.
 
     Changes to any parameter produce a different variant, ensuring cache
     entries for different build configurations never collide.
+
+    ``stdlib_profile`` (micro vs full) MUST be part of the variant: the two
+    profiles compile the molt-runtime hub with different Cargo features
+    (``stdlib_micro`` + ``no-default-features`` vs ``stdlib_full`` +
+    ``default-features``) and the frontend lowers the entry differently
+    (e.g. ``_inject_sys_init`` only under full). Two builds whose reachable
+    stdlib IR happens to be identical would otherwise collide on the same
+    ``stdlib_shared.o`` (and main backend object), so a micro build could
+    silently reuse a full build's object and vice versa — a stale cache hit
+    that yields the wrong runtime surface or a duplicate/missing-symbol link.
     """
     parts = [
         f"profile={profile}",
@@ -22922,6 +22934,7 @@ def _build_cache_variant(
         f"backend_cargo={backend_cargo}",
         f"emit={emit}",
         f"stdlib_split={int(stdlib_split)}",
+        f"stdlib_profile={_normalize_runtime_stdlib_profile(stdlib_profile)}",
         f"codegen_env={codegen_env}",
         f"target_python={target_python.tag}",
     ]
@@ -22951,6 +22964,7 @@ def _prepare_backend_cache_setup(
     entry_module: str,
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
+    stdlib_profile: str | None = "micro",
 ) -> _BackendCacheSetup:
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -22971,6 +22985,7 @@ def _prepare_backend_cache_setup(
         codegen_env=_backend_codegen_env_digest(is_wasm=is_wasm),
         linked=linked,
         target_python=target_python,
+        stdlib_profile=stdlib_profile,
     )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
@@ -25571,13 +25586,33 @@ def _ensure_runtime_wasm(
     if reloc:
         flags = "" if use_legacy_wasm_flags else runtime_exports
     else:
-        shared_flags = (
+        # Shared-runtime ABI: import the host-provided memory and table, and
+        # allow the table to grow for app-specific call_indirect slots.
+        shared_import_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table -C link-arg=--export-dynamic"
+            " -C link-arg=--growable-table"
         )
-        flags = (
-            shared_flags if use_legacy_wasm_flags else shared_flags + runtime_exports
-        )
+        if use_legacy_wasm_flags:
+            # Legacy path keeps --export-dynamic for bit-for-bit reproducibility
+            # of older shared runtimes.
+            flags = (
+                f"{shared_import_flags} -C link-arg=--export-dynamic"
+            )
+        else:
+            # Split-runtime size policy (feedback_wasm_export_treeshaking: "only
+            # export table refs for split-runtime builds").  --export-dynamic
+            # exports every defined Rust symbol — thousands of mangled
+            # serde_json/num_bigint/alloc/core internals.  Those leaked exports
+            # (a) bloat the export-name section by ~800KB of mangled strings and
+            # (b) pin internal-only functions as wasm-opt GC roots, blocking
+            # --remove-unused-module-elements from stripping ~MBs of dead code.
+            # The public surface is fully described by the explicit
+            # wasm_runtime_export_link_args() allowlist plus the post-link
+            # __molt_table_ref_* export pass (_export_wasm_table_refs), so
+            # --export-dynamic is pure bloat here.  Dropping it lets the shared
+            # runtime shrink under the cacheable-runtime size budget while the
+            # full public ABI still resolves for every app.
+            flags = f"{shared_import_flags}{runtime_exports}"
     rustflags = env.get("RUSTFLAGS", "").strip()
     if flags:
         rustflags = f"{rustflags} {flags}".strip()
@@ -26053,8 +26088,16 @@ def _ensure_runtime_wasm(
                     )
                 return False
             if recovery_state != "valid":
+                # The wasm fallback MUST preserve wasm-release's size + panic
+                # contract (opt size, panic=abort, strip). The previous default
+                # `release-fast` (opt-3, panic=unwind) re-introduced wasm unwind
+                # tables and inflated the runtime past the 3 MB Cloudflare
+                # ceiling — a workaround, not a recovery. `wasm-release-fallback`
+                # (Cargo.toml) keeps opt-"s"/abort/strip and only relaxes the
+                # codegen knobs (thin LTO + 16 codegen-units) to escape the
+                # fat-LTO single-CGU corruption class a fallback recovers from.
                 fallback_profile = os.environ.get(
-                    "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "release-fast"
+                    "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "wasm-release-fallback"
                 ).strip()
                 can_try_fallback_profile = (
                     requested_cargo_profile == "release"

@@ -293,7 +293,17 @@ debug = 0
 inherits = "release"
 opt-level = 3          # O3: auto-vectorization + aggressive inlining for daemon hot paths
 lto = "fat"
-codegen-units = 1
+# codegen-units controls only the PRE-LTO per-crate partitioning here: fat LTO
+# re-merges every crate's bitcode into a single module and re-optimizes the whole
+# program, so the initial cgu count has negligible effect on the final binary's
+# runtime perf (rustc fat-LTO semantics) but DOES parallelize each crate's
+# MIR->LLVM codegen across cores. release-fast is a build-ITERATION profile (the
+# backend daemon + runtime staging), not a ship profile — the shipping native
+# runtime is built with release-output and WASM with wasm-release, both of which
+# keep codegen-units=1. So we use a high cgu here purely to parallelize the
+# incremental recompile of the 342k-LoC molt-runtime hub (cgu=1 serialized it
+# into a ~72s one-line-edit rebuild; cgu=256 parallelizes it across 18 cores).
+codegen-units = 256
 strip = "symbols"
 panic = "unwind"       # required for catch_unwind in Cranelift retry path
 
@@ -306,6 +316,19 @@ opt-level = 3
 
 [profile.release-fast.package.regalloc2]
 opt-level = 3
+
+# Override the inherited [profile.release.package.molt-runtime] codegen-units = 1
+# for the build-iteration profile. Without this explicit override, release-fast
+# would inherit the ship-tuned cgu=1 from the base release profile and serialize
+# the 342k-LoC hub's codegen into a single unit (~72s for a one-line edit). Under
+# fat LTO the cgu count does not change final perf (whole-program re-merge), so
+# raising it is a pure incremental-rebuild win. opt-level stays 3 to match the
+# release-fast intent (the daemon-adjacent runtime staging should be optimized).
+# The SHIPPING runtime staticlib is built with release-output (cgu=1, untouched),
+# so this does NOT regress shipped runtime performance.
+[profile.release-fast.package.molt-runtime]
+opt-level = 3
+codegen-units = 256
 
 # Output-binary profile: used when building the runtime staticlib that gets
 # linked into user output binaries. Key differences from release-fast:
@@ -349,19 +372,50 @@ panic = "abort"
 strip = true
 
 # Size-optimized release profile for micro stdlib builds.
-# Uses opt-level "z" (minimize binary size) with fat LTO and single codegen
-# unit for maximum cross-crate inlining and dead code elimination.
+# Uses opt-level "z" (minimize binary size) at profile scope with fat LTO and a
+# single codegen unit for maximum cross-crate inlining and dead code
+# elimination. The four hot runtime crates are re-asserted to opt-"s" below
+# (see the hot-crate opt-level policy block) so they do not silently ride at the
+# opt-3 inherited from `release`.
+#
+# panic = "abort" (matches `release-output`): the cfg(panic) FFI-boundary
+# unification landed in 242595bc1 ("unify FFI panic boundary under cfg(panic)"),
+# which was the gate this comment previously waited on. Adversarial re-diagnosis
+# there established that the ~1121 catching `with_gil_entry!`/`with_core_gil!`
+# stdlib FFI sites (`runtime/molt-runtime/src/concurrency/mod.rs`,
+# `runtime/molt-runtime-core/src/lib.rs`) do NOT rely on catch_unwind to surface
+# Python-level errors: every Python error is propagated explicitly (raise_exception
+# + sentinel, checked_* arithmetic, guarded div/mod, bounds checks). catch_unwind
+# only ever caught TRUE Rust invariant violations (mutex poison, callback faults),
+# where process-abort is the correct fail-closed behavior — not a CPython parity
+# divergence. Under `panic = "abort"` the shared `with_gil_entry_body!` macro's
+# catch arm is cfg-eliminated before codegen, so the ~1121 FFI sites emit no catch
+# landing pads — the catch-arm unwind-table bloat panic #8 measured as -1.7MB
+# across the runtime rlibs (serial -639KB/16.7%, math -396KB/23%), pure waste on a
+# SIZE profile. (The native staticlib still bundles std's prebuilt unwind
+# personality, present in EVERY abort build — release-size carries fewer such
+# residue symbols than the shipping release-output abort baseline.) `release-output`
+# already ships this exact native FFI boundary under abort; `release-size` is the
+# same FFI boundary (the catch-arm cfg in `with_gil_entry_body!` is keyed on
+# `panic` alone, independent of opt-level / LTO), so the same proof applies — the
+# abort boundary is gate-verified for `release-output` (native) and `wasm-release`
+# (wasm). Do NOT revert to unwind — that re-inflates the size profile with dead
+# unwind tables for zero correctness gain.
 [profile.release-size]
 inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-panic = "unwind"
+panic = "abort"
 strip = true
 
 # WASM-optimized release profile: fat LTO with single codegen unit for
 # maximum cross-crate inlining and dead code elimination. Build time
 # increases but runtime wasm artifacts are cached and infrequently rebuilt.
+# NOTE: the profile-scope opt-level="z" below governs bulk stdlib crates only;
+# the four hot runtime crates are re-asserted to opt-"s" in the hot-crate
+# opt-level policy block (they would otherwise inherit opt-3 from `release` and
+# inflate the shipped runtime by ~1.65 MB / 25.5%, measured).
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
@@ -393,11 +447,34 @@ opt-level = 3
 [profile.release.package.regalloc2]
 opt-level = 3
 
-# Optimize runtime crates — statically linked into output binaries.
-# Runtime packages: opt-level 3 for maximum native performance.
-# The WASM/size-optimized builds use profile.wasm-release (opt="z").
-# These are the hot-path functions called millions of times — every
-# bit of inlining, vectorization, and scheduling matters.
+# ── Hot runtime crate opt-level policy (per profile family) ──────────────────
+#
+# IMPORTANT inheritance fact (verified with `cargo build -v`): Cargo per-package
+# overrides set on a *parent* profile ARE inherited by child profiles via
+# `inherits` unless the child re-declares the same `[profile.<child>.package.X]`
+# table. So the opt-level=3 hot-crate overrides below propagate from `release`
+# into every `inherits = "release"` child — including the *size* profiles
+# (`release-size`, `wasm-release`). That is correct for the speed profiles
+# (`release`, `release-fast`, `release-output`, `dev-release`) but WRONG for the
+# size profiles: it silently lifted the hot crates to opt-3 there, defeating the
+# size profiles' stated goal.
+#
+# Measured effect on the shipped wasm runtime cdylib (strip + wasm-opt -Oz):
+#   opt-3 hot crates (old, leaked): 6,809,756 bytes
+#   opt-s hot crates (re-asserted):  5,075,011 bytes  → 1.65 MB (25.5%) smaller
+# (opt-"s" and opt-"z" produced byte-identical wasm here; "s" is chosen to keep
+#  speed-leaning optimizations for the perf-vs-CPython contract at no size cost.)
+#
+# So: the SPEED profiles keep the hot crates at opt-3 (below); the SIZE profiles
+# re-assert opt-"s" on the same crates (further below). Bulk stdlib crates stay
+# at each profile's own opt-level (3 for speed, "z" for size) via the default.
+
+# Speed profiles (release / release-fast / release-output / dev-release): the
+# hot-path object-model + arith + container functions are called millions of
+# times — every bit of inlining, vectorization, and scheduling matters, so
+# opt-3 even though the surrounding profile may select a smaller default
+# (release-output is opt-"z" at profile scope; these overrides keep the hot
+# crates at 3, verified shipping at opt-3 via `cargo build -v`).
 [profile.release.package.molt-runtime]
 opt-level = 3
 codegen-units = 1
@@ -410,3 +487,66 @@ opt-level = 3
 
 [profile.release.package.molt-runtime-collections]
 opt-level = 3
+
+# Size profiles (release-size / wasm-release): re-assert opt-"s" on the four hot
+# runtime crates, overriding the opt-3 inherited from `release` above. "s"
+# (optimize for size, retaining cheap speed wins) gives the full 25.5% wasm size
+# reduction measured above while protecting the faster-than-CPython contract
+# better than "z" would. codegen-units=1 is preserved for cross-crate DCE.
+[profile.release-size.package.molt-runtime]
+opt-level = "s"
+codegen-units = 1
+
+[profile.release-size.package.molt-runtime-core]
+opt-level = "s"
+
+[profile.release-size.package.molt-lang-obj-model]
+opt-level = "s"
+
+[profile.release-size.package.molt-runtime-collections]
+opt-level = "s"
+
+[profile.wasm-release.package.molt-runtime]
+opt-level = "s"
+codegen-units = 1
+
+[profile.wasm-release.package.molt-runtime-core]
+opt-level = "s"
+
+[profile.wasm-release.package.molt-lang-obj-model]
+opt-level = "s"
+
+[profile.wasm-release.package.molt-runtime-collections]
+opt-level = "s"
+
+# Fallback profile for the wasm runtime recovery path (cli.py
+# MOLT_WASM_RUNTIME_FALLBACK_PROFILE). It MUST preserve wasm-release's size +
+# panic contract (opt size, panic=abort, strip) — switching the fallback to
+# `release-fast` (opt-3, panic=unwind) re-introduced unwind tables and inflated
+# the artifact past the 3MB Cloudflare ceiling. The ONLY differences from
+# wasm-release are the codegen knobs that change to escape the fat-LTO single-CGU
+# corruption class a fallback is recovering from: thin LTO + 16 codegen units,
+# applied to ALL crates including the hot ones (the hot crates would otherwise
+# keep codegen-units=1 from the inherited `release` package override and so be
+# exempt from the very relaxation the fallback exists to apply). Same opt-"s"
+# hot-crate re-assertion as wasm-release so size stays bounded.
+[profile.wasm-release-fallback]
+inherits = "wasm-release"
+lto = "thin"
+codegen-units = 16
+
+[profile.wasm-release-fallback.package.molt-runtime]
+opt-level = "s"
+codegen-units = 16
+
+[profile.wasm-release-fallback.package.molt-runtime-core]
+opt-level = "s"
+codegen-units = 16
+
+[profile.wasm-release-fallback.package.molt-lang-obj-model]
+opt-level = "s"
+codegen-units = 16
+
+[profile.wasm-release-fallback.package.molt-runtime-collections]
+opt-level = "s"
+codegen-units = 16

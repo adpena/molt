@@ -100,6 +100,20 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         lambda *args, **kwargs: contextlib.nullcontext(),
         raising=True,
     )
+    # The synthetic recovery artifact carries valid wasm magic but no export /
+    # shared-memory-import ABI sections; this test exercises the recovery
+    # target-dir control flow, not the export ABI (which has dedicated tests),
+    # so stub the two post-build ABI validators (same pattern as the other
+    # reloc=False tests in this module).
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_missing_exports", lambda path, required: set(), raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
+    )
 
     seen_target_roots: list[Path] = []
 
@@ -156,7 +170,13 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     primary_target = tmp_path / "target-release"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(primary_target))
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "release-fast")
+    # The fallback MUST preserve wasm-release's size + panic contract; the
+    # recommended (and default) fallback is wasm-release-fallback. The previous
+    # `release-fast` value (opt-3, panic=unwind) inflated the wasm runtime past
+    # the 3MB Cloudflare ceiling and is no longer the contract.
+    monkeypatch.setenv(
+        "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "wasm-release-fallback"
+    )
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
@@ -173,6 +193,20 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         cli,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    # The synthetic fallback artifact carries valid wasm magic but no export /
+    # shared-memory-import ABI sections; this test exercises the fallback-profile
+    # selection control flow, not the export ABI (which has dedicated tests), so
+    # stub the two post-build ABI validators (same pattern as the other
+    # reloc=False tests in this module).
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_missing_exports", lambda path, required: set(), raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda path: True,
         raising=True,
     )
 
@@ -197,7 +231,7 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         seen_targets.append(target_root)
         src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
-        if profile == "release-fast":
+        if profile == "wasm-release-fallback":
             src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
         else:
             src.write_bytes(b"\x00" * 64)
@@ -219,7 +253,11 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         project_root=project_root,
     )
     assert cli._is_valid_wasm_binary(runtime_wasm)
-    assert seen_profiles == ["wasm-release", "wasm-release", "release-fast"]
+    assert seen_profiles == [
+        "wasm-release",
+        "wasm-release",
+        "wasm-release-fallback",
+    ]
     assert seen_targets[0] == primary_target
     assert seen_targets[1] == cli._wasm_runtime_recovery_target_root(primary_target)
 
