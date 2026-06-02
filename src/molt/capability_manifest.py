@@ -257,6 +257,19 @@ class CapabilityManifest:
             env["MOLT_RESOURCE_MAX_RECURSION_DEPTH"] = str(
                 self.resources.max_recursion_depth
             )
+        # Per-operation result caps. These mirror the Rust ResourceLimits
+        # per-op fields one-for-one so a manifest-declared operation limit is
+        # NOT silently dropped at the env boundary (the asymmetry the runtime's
+        # single-source-of-truth ResourceLimits closes).
+        for field_name, env_name in (
+            ("max_pow_result", "MOLT_RESOURCE_MAX_POW_RESULT"),
+            ("max_repeat_result", "MOLT_RESOURCE_MAX_REPEAT_RESULT"),
+            ("max_shift_result", "MOLT_RESOURCE_MAX_SHIFT_RESULT"),
+            ("max_string_result", "MOLT_RESOURCE_MAX_STRING_RESULT"),
+        ):
+            value = getattr(self.resources, field_name)
+            if value is not None:
+                env[env_name] = str(value)
         if self.audit.enabled:
             env["MOLT_AUDIT_ENABLED"] = "1"
             env["MOLT_AUDIT_SINK"] = self.audit.sink
@@ -346,6 +359,15 @@ def validate_manifest(manifest: CapabilityManifest) -> list[str]:
         raise ManifestError(
             f"max_recursion_depth must be positive, got {rl.max_recursion_depth}"
         )
+    for op_field in (
+        "max_pow_result",
+        "max_repeat_result",
+        "max_shift_result",
+        "max_string_result",
+    ):
+        value = getattr(rl, op_field)
+        if value is not None and value <= 0:
+            raise ManifestError(f"{op_field} must be positive, got {value}")
 
     # IO mode
     if manifest.io.mode not in VALID_IO_MODES:

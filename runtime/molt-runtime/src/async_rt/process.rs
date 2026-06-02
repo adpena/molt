@@ -83,6 +83,16 @@ const CHILD_RESOURCE_ENV_KEYS: &[&str] = &[
     "MOLT_RESOURCE_MAX_DURATION_MS",
     "MOLT_RESOURCE_MAX_ALLOCATIONS",
     "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
+    // Per-operation result caps are raw-byte integers like the keys above, so a
+    // spawned child inherits the tighter of (parent, child-requested) for each.
+    // The `MOLT_MEMORY_LIMIT` human-size alias is intentionally absent: a child
+    // resolves it into `max_memory` at its own init, and the numeric min-merge
+    // here only handles raw integers.
+    "MOLT_RESOURCE_MAX_OPERATION_RESULT",
+    "MOLT_RESOURCE_MAX_POW_RESULT",
+    "MOLT_RESOURCE_MAX_REPEAT_RESULT",
+    "MOLT_RESOURCE_MAX_SHIFT_RESULT",
+    "MOLT_RESOURCE_MAX_STRING_RESULT",
 ];
 
 fn parse_resource_limit(raw: &str) -> Option<u128> {
@@ -279,12 +289,13 @@ fn configure_unix_owned_process_group(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod child_resource_tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     fn with_env<R>(updates: &[(&str, Option<&str>)], f: impl FnOnce() -> R) -> R {
-        let _guard = ENV_TEST_MUTEX
+        // Use the single process-wide test mutex shared with the resource-env
+        // tests (resource.rs, ops_sys.rs). These suites mutate the SAME
+        // MOLT_RESOURCE_MAX_* env vars; a private mutex here would let them race
+        // and clobber each other's env across module boundaries.
+        let _guard = crate::TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let saved = updates

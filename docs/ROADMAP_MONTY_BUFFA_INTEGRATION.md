@@ -29,6 +29,14 @@ Sprint 2026-03-28. All items verified: 4 crates compile, 40 Rust + 69 Python tes
 ### Security Infrastructure
 - [x] `ResourceTracker` trait + `LimitedTracker` (memory, time, alloc, recursion limits)
 - [x] Pre-emptive DoS guards on 5 operations (pow, lshift, repeat, bigint mul, str.replace)
+- [x] Per-operation result caps (`max_pow/repeat/shift/string_result`) honored by
+      the Rust tracker end-to-end (Python↔env↔tracker parity — no silent field drop)
+- [x] Configurable memory protection front door: `MOLT_MEMORY_LIMIT` human-size
+      alias normalizing into the single `ResourceLimits.max_memory` path
+- [x] OS-level `RLIMIT_AS`/`RLIMIT_DATA` backstop at runtime init (native; Linux
+      effective, macOS best-effort, WASM n/a) layered under the in-VM tracker
+- [ ] Capability-tier (deployment-profile) memory defaults — deferred pending
+      "tier" vocabulary disambiguation (trust tier vs execution tier vs profile)
 - [x] Uncatchable resource exceptions (dual WASM exception tags)
 - [x] Structured audit logging (`AuditSink` trait, 4 sinks, JSON Lines)
 - [x] IO mode toggle (Real/Virtual/Callback)

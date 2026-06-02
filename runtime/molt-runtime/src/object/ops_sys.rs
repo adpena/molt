@@ -3188,20 +3188,76 @@ where
     Ok(Some(parsed))
 }
 
+/// Resolve the memory limit from the two coherent env sources.
+///
+/// `MOLT_MEMORY_LIMIT` is the ergonomic, human-readable front door (`"512M"`,
+/// `"2G"`); `MOLT_RESOURCE_MAX_MEMORY` is the canonical raw-byte field emitted
+/// by the capability manifest. Both resolve to the SAME
+/// `ResourceLimits.max_memory` field — there is exactly one enforcement path.
+/// When both are set the user-facing alias wins and a one-line override notice
+/// is printed. A misconfigured value fails loudly (never silently ignored).
+fn resolve_memory_limit_from_env() -> Result<Option<usize>, String> {
+    let alias = match std::env::var("MOLT_MEMORY_LIMIT") {
+        Ok(raw) => Some(
+            crate::resource::parse_human_size(&raw)
+                .map_err(|e| format!("MOLT_MEMORY_LIMIT: {e}"))?,
+        ),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("MOLT_MEMORY_LIMIT must be valid UTF-8".to_string());
+        }
+    };
+    let canonical = parse_positive_integer_resource_env::<usize>("MOLT_RESOURCE_MAX_MEMORY")?;
+
+    match (alias, canonical) {
+        (Some(alias_bytes), Some(canonical_bytes)) => {
+            if alias_bytes != canonical_bytes {
+                eprintln!(
+                    "molt: MOLT_MEMORY_LIMIT ({alias_bytes} bytes) overrides \
+                     MOLT_RESOURCE_MAX_MEMORY ({canonical_bytes} bytes)"
+                );
+            }
+            Ok(Some(alias_bytes))
+        }
+        (Some(alias_bytes), None) => Ok(Some(alias_bytes)),
+        (None, Some(canonical_bytes)) => Ok(Some(canonical_bytes)),
+        (None, None) => Ok(None),
+    }
+}
+
 fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>, String> {
     use std::time::Duration;
 
-    let max_memory = parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_MEMORY")?;
+    let max_memory = resolve_memory_limit_from_env()?;
     let max_duration_ms =
         parse_positive_integer_resource_env::<u64>("MOLT_RESOURCE_MAX_DURATION_MS")?;
     let max_allocations = parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_ALLOCATIONS")?;
     let max_recursion_depth =
         parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_RECURSION_DEPTH")?;
 
+    // Per-operation result caps. These mirror the Python ResourceLimits
+    // dataclass fields (max_pow_result / max_repeat_result / max_shift_result /
+    // max_string_result) so manifest-declared per-op limits reach the Rust
+    // tracker without being silently dropped at the env boundary.
+    let max_operation_result_bytes =
+        parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_OPERATION_RESULT")?;
+    let max_pow_result_bytes = parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_POW_RESULT")?;
+    let max_repeat_result_bytes =
+        parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_REPEAT_RESULT")?;
+    let max_shift_result_bytes =
+        parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_SHIFT_RESULT")?;
+    let max_string_result_bytes =
+        parse_positive_integer_resource_env("MOLT_RESOURCE_MAX_STRING_RESULT")?;
+
     let has_any = max_memory.is_some()
         || max_duration_ms.is_some()
         || max_allocations.is_some()
-        || max_recursion_depth.is_some();
+        || max_recursion_depth.is_some()
+        || max_operation_result_bytes.is_some()
+        || max_pow_result_bytes.is_some()
+        || max_repeat_result_bytes.is_some()
+        || max_shift_result_bytes.is_some()
+        || max_string_result_bytes.is_some();
     if !has_any {
         return Ok(None);
     }
@@ -3211,21 +3267,44 @@ fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>,
         max_duration: max_duration_ms.map(Duration::from_millis),
         max_allocations,
         max_recursion_depth,
-        max_operation_result_bytes: None,
+        max_operation_result_bytes,
+        max_pow_result_bytes,
+        max_repeat_result_bytes,
+        max_shift_result_bytes,
+        max_string_result_bytes,
     }))
 }
 
 /// Initialize the resource tracker from environment variables set by the
 /// capability manifest. Called during runtime startup.
 ///
-/// Reads: MOLT_RESOURCE_MAX_MEMORY, MOLT_RESOURCE_MAX_DURATION_MS,
-///        MOLT_RESOURCE_MAX_ALLOCATIONS, MOLT_RESOURCE_MAX_RECURSION_DEPTH
+/// Reads (raw-byte canonical fields, all positive integers):
+///   MOLT_MEMORY_LIMIT (human-size alias for the memory cap),
+///   MOLT_RESOURCE_MAX_MEMORY, MOLT_RESOURCE_MAX_DURATION_MS,
+///   MOLT_RESOURCE_MAX_ALLOCATIONS, MOLT_RESOURCE_MAX_RECURSION_DEPTH,
+///   MOLT_RESOURCE_MAX_OPERATION_RESULT and the per-op caps
+///   MOLT_RESOURCE_MAX_{POW,REPEAT,SHIFT,STRING}_RESULT.
+///
+/// Two-layer enforcement: the parsed limits install the precise in-VM
+/// [`LimitedTracker`] (Layer 1, cross-target, deterministic) via the global
+/// factory, and — when a memory cap is set — an OS-level `RLIMIT_AS` backstop
+/// (Layer 2, native only) bounds anything that bypasses the tracker. The
+/// backstop never replaces the tracker; it only converts a runaway into a clean
+/// failure instead of an OOM-kill of the host.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init_resources() {
-    use crate::resource::install_global_limited_tracker;
+    use crate::resource::{install_address_space_backstop, install_global_limited_tracker};
 
     match resource_limits_from_env() {
-        Ok(Some(limits)) => install_global_limited_tracker(limits),
+        Ok(Some(limits)) => {
+            // Layer 2 (OS backstop) FIRST so the address-space ceiling is in
+            // place before any tracker-allocated structures grow. Layer 1
+            // remains the deterministic contract.
+            if let Some(max_memory) = limits.max_memory {
+                install_address_space_backstop(max_memory);
+            }
+            install_global_limited_tracker(limits);
+        }
         Ok(None) => {}
         Err(message) => {
             eprintln!("molt runtime resource configuration error: {message}");
@@ -3240,10 +3319,16 @@ mod runtime_resource_env_tests {
     use std::time::Duration;
 
     const RESOURCE_ENV_KEYS: &[&str] = &[
+        "MOLT_MEMORY_LIMIT",
         "MOLT_RESOURCE_MAX_MEMORY",
         "MOLT_RESOURCE_MAX_DURATION_MS",
         "MOLT_RESOURCE_MAX_ALLOCATIONS",
         "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
+        "MOLT_RESOURCE_MAX_OPERATION_RESULT",
+        "MOLT_RESOURCE_MAX_POW_RESULT",
+        "MOLT_RESOURCE_MAX_REPEAT_RESULT",
+        "MOLT_RESOURCE_MAX_SHIFT_RESULT",
+        "MOLT_RESOURCE_MAX_STRING_RESULT",
     ];
 
     fn clear_resource_env() {
@@ -3302,6 +3387,90 @@ mod runtime_resource_env_tests {
         assert_eq!(limits.max_duration, Some(Duration::from_millis(2500)));
         assert_eq!(limits.max_allocations, Some(1000));
         assert_eq!(limits.max_recursion_depth, Some(50));
+    }
+
+    #[test]
+    fn resource_limits_from_env_carries_per_operation_caps() {
+        // Parity guard: per-op env vars (mirroring the Python ResourceLimits
+        // per-op fields) must reach the Rust ResourceLimits without loss.
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        unsafe {
+            std::env::set_var("MOLT_RESOURCE_MAX_OPERATION_RESULT", "9000");
+            std::env::set_var("MOLT_RESOURCE_MAX_POW_RESULT", "1048576");
+            std::env::set_var("MOLT_RESOURCE_MAX_REPEAT_RESULT", "2097152");
+            std::env::set_var("MOLT_RESOURCE_MAX_SHIFT_RESULT", "3145728");
+            std::env::set_var("MOLT_RESOURCE_MAX_STRING_RESULT", "4194304");
+        }
+
+        let limits = resource_limits_from_env().unwrap().unwrap();
+
+        clear_resource_env();
+        assert_eq!(limits.max_operation_result_bytes, Some(9000));
+        assert_eq!(limits.max_pow_result_bytes, Some(1_048_576));
+        assert_eq!(limits.max_repeat_result_bytes, Some(2_097_152));
+        assert_eq!(limits.max_shift_result_bytes, Some(3_145_728));
+        assert_eq!(limits.max_string_result_bytes, Some(4_194_304));
+    }
+
+    #[test]
+    fn molt_memory_limit_alias_parses_human_size() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "64M") };
+
+        let limits = resource_limits_from_env().unwrap().unwrap();
+
+        clear_resource_env();
+        assert_eq!(limits.max_memory, Some(64 * 1024 * 1024));
+    }
+
+    #[test]
+    fn molt_memory_limit_alias_overrides_canonical_field() {
+        // When both are set, the user-facing alias wins (single source of
+        // truth; the alias resolves into the SAME max_memory field).
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        unsafe {
+            std::env::set_var("MOLT_MEMORY_LIMIT", "128M");
+            std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576");
+        }
+
+        let limits = resource_limits_from_env().unwrap().unwrap();
+
+        clear_resource_env();
+        assert_eq!(limits.max_memory, Some(128 * 1024 * 1024));
+    }
+
+    #[test]
+    fn molt_memory_limit_alias_rejects_garbage() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "not-a-size") };
+
+        let err = resource_limits_from_env().unwrap_err();
+
+        clear_resource_env();
+        assert!(err.contains("MOLT_MEMORY_LIMIT"));
+    }
+
+    #[test]
+    fn no_resource_env_yields_none() {
+        // Without any env set, behavior is unchanged: no limits installed.
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_resource_env();
+        let limits = resource_limits_from_env().unwrap();
+        assert!(limits.is_none());
     }
 }
 
