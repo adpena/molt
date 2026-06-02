@@ -4759,11 +4759,22 @@ fn prepare_class_impl(
         return None;
     };
     let metaclass_bits = unsafe { dict_get_in_place(_py, kwds_copy_ptr, metaclass_name_bits) };
-    if metaclass_bits.is_some() {
+    if let Some(bits) = metaclass_bits {
+        // `dict_get_in_place` returns a borrowed reference into `kwds_copy`.
+        // The following `dict_del_in_place` drops the dict's strong reference to
+        // this value, which frees the object outright when the dict held the
+        // only reference (the common `prepare_class(name, (), {'metaclass':
+        // Factory()})` literal case). Acquire an owned reference *before* the
+        // delete so the metaclass survives — without this, `winner_bits` below
+        // would dangle and `__prepare__` would be read from freed memory (a
+        // use-after-free that release-mode codegen happened to mask while
+        // dev-mode codegen surfaced as a missing namespace key).
+        inc_ref_bits(_py, bits);
         unsafe {
             dict_del_in_place(_py, kwds_copy_ptr, metaclass_name_bits);
         }
         if exception_pending(_py) {
+            dec_ref_bits(_py, bits);
             dec_ref_bits(_py, metaclass_name_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
@@ -4771,6 +4782,12 @@ fn prepare_class_impl(
     }
     dec_ref_bits(_py, metaclass_name_bits);
 
+    // `winner_bits` is held as an OWNED reference for the whole function and is
+    // returned as an owned reference in `PreparedClassState.metaclass_bits`
+    // (both callers decref it, symmetric with `namespace_bits`/`kwds_bits`).
+    // The dict branch is already owned (incref'd above); the registry-backed
+    // branches return borrowed references, so incref them to make ownership
+    // uniform.
     let mut winner_bits = if let Some(bits) = metaclass_bits {
         bits
     } else if is_truthy(_py, obj_from_bits(bases_bits)) {
@@ -4781,10 +4798,13 @@ fn prepare_class_impl(
             return None;
         }
         let bits = type_of_bits(_py, first_base_bits);
+        inc_ref_bits(_py, bits);
         dec_ref_bits(_py, first_base_bits);
         bits
     } else {
-        builtin_classes(_py).type_obj
+        let bits = builtin_classes(_py).type_obj;
+        inc_ref_bits(_py, bits);
+        bits
     };
 
     let winner_is_type = obj_from_bits(winner_bits)
@@ -4792,11 +4812,13 @@ fn prepare_class_impl(
         .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE });
     if winner_is_type {
         let Some(bases_tuple_bits) = (unsafe { tuple_from_iter_bits(_py, bases_bits) }) else {
+            dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         };
         let Some(bases_tuple_ptr) = obj_from_bits(bases_tuple_bits).as_ptr() else {
             dec_ref_bits(_py, bases_tuple_bits);
+            dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         };
@@ -4807,10 +4829,17 @@ fn prepare_class_impl(
                 continue;
             }
             if issubclass_bits(base_meta_bits, winner_bits) {
+                // Promote to the more-derived base metaclass. `winner_bits` is
+                // owned, so release the prior winner and acquire the new one to
+                // keep ownership balanced (the registry-backed `base_meta_bits`
+                // is borrowed).
+                inc_ref_bits(_py, base_meta_bits);
+                dec_ref_bits(_py, winner_bits);
                 winner_bits = base_meta_bits;
                 continue;
             }
             dec_ref_bits(_py, bases_tuple_bits);
+            dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             let _ = raise_exception::<u64>(
                 _py,
@@ -4827,6 +4856,7 @@ fn prepare_class_impl(
         missing
     } else {
         let Some(prepare_name_bits) = attr_name_bits_from_bytes(_py, b"__prepare__") else {
+            dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         };
@@ -4840,6 +4870,7 @@ fn prepare_class_impl(
             if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
                 lookup_bits = missing;
             } else {
+                dec_ref_bits(_py, winner_bits);
                 dec_ref_bits(_py, kwds_copy_bits);
                 return None;
             }
@@ -4849,6 +4880,7 @@ fn prepare_class_impl(
     let namespace_bits = if crate::is_missing_bits(_py, prepare_bits) {
         let ptr = alloc_dict_with_pairs(_py, &[]);
         if ptr.is_null() {
+            dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         }
@@ -4858,6 +4890,7 @@ fn prepare_class_impl(
             call_with_kwargs(_py, prepare_bits, &[name_bits, bases_bits], kwds_copy_bits);
         dec_ref_bits(_py, prepare_bits);
         if exception_pending(_py) {
+            dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         }
@@ -5008,6 +5041,10 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
         if owned_bases {
             dec_ref_bits(_py, bases_bits);
         }
+        // `prepare_class_impl` returns all three state fields as owned
+        // references; `alloc_tuple` took its own reference on each element, so
+        // release ours.
+        dec_ref_bits(_py, state.metaclass_bits);
         dec_ref_bits(_py, state.namespace_bits);
         dec_ref_bits(_py, state.kwds_bits);
         if out_ptr.is_null() {
@@ -5184,6 +5221,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
         if !obj_from_bits(exec_body_bits).is_none() {
             let _ = unsafe { call_callable1(_py, exec_body_bits, state.namespace_bits) };
             if exception_pending(_py) {
+                dec_ref_bits(_py, state.metaclass_bits);
                 dec_ref_bits(_py, state.namespace_bits);
                 dec_ref_bits(_py, state.kwds_bits);
                 dec_ref_bits(_py, resolved_bases_bits);
@@ -5196,6 +5234,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
         if resolved_bases_bits != bases_bits {
             let Some(orig_bases_name_bits) = attr_name_bits_from_bytes(_py, b"__orig_bases__")
             else {
+                dec_ref_bits(_py, state.metaclass_bits);
                 dec_ref_bits(_py, state.namespace_bits);
                 dec_ref_bits(_py, state.kwds_bits);
                 dec_ref_bits(_py, resolved_bases_bits);
@@ -5207,6 +5246,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
             let _ = molt_setitem_method(state.namespace_bits, orig_bases_name_bits, bases_bits);
             dec_ref_bits(_py, orig_bases_name_bits);
             if exception_pending(_py) {
+                dec_ref_bits(_py, state.metaclass_bits);
                 dec_ref_bits(_py, state.namespace_bits);
                 dec_ref_bits(_py, state.kwds_bits);
                 dec_ref_bits(_py, resolved_bases_bits);
@@ -5222,6 +5262,9 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
             &[name_bits, resolved_bases_bits, state.namespace_bits],
             state.kwds_bits,
         );
+        // `prepare_class_impl` returns `metaclass_bits` as an owned reference;
+        // release it now that the metaclass has been called.
+        dec_ref_bits(_py, state.metaclass_bits);
         dec_ref_bits(_py, state.namespace_bits);
         dec_ref_bits(_py, state.kwds_bits);
         dec_ref_bits(_py, resolved_bases_bits);
