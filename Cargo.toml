@@ -312,12 +312,24 @@ opt-level = 3
 #
 # panic = "abort"    — eliminates ~800KB of exception handling tables
 #                      (__eh_frame + __gcc_except_tab + __unwind_info).
-#                      Safe because all 3900+ FFI entry points use the
-#                      with_gil_entry_nopanic! macro (no catch_unwind).
-#                      The few catch_unwind sites in isolates/object code
-#                      degrade to process abort on panic — acceptable for
-#                      output binaries since panics indicate runtime bugs,
-#                      not recoverable Python exceptions.
+#                      Safe because under panic="abort" NO FFI entry point
+#                      compiles a catch_unwind: the catching GIL-entry macros
+#                      (with_gil_entry! / with_core_gil!) and the explicitly
+#                      panic-free with_gil_entry_nopanic! all expand, via the
+#                      single cfg(panic=...) dispatch in
+#                      molt-runtime-core::with_gil_entry_body!, to the bare body
+#                      under this profile (the catch_unwind branch is
+#                      cfg-eliminated; verified: 0 __rust_try symbols in the
+#                      release-output rlibs). Every FFI body propagates all
+#                      Python-level errors explicitly (pending exception +
+#                      sentinel return) and never relies on a panic to surface a
+#                      recoverable Python error, so the only reachable panic is a
+#                      runtime invariant violation (poisoned lock, corrupted
+#                      allocator, unreachable branch) for which process abort is
+#                      the correct fail-closed behavior — never a recoverable
+#                      Python exception. Under panic="unwind" (dev / dev-fast /
+#                      release-fast, used by tests + CI) the same macros keep
+#                      catch_unwind as a defense-in-depth net.
 # opt-level "z"      — minimises code size; user hot paths are in compiled
 #                      Python code (optimized by Cranelift), not runtime glue.
 # lto = "fat"        — fat LTO + codegen-units=1 produces a single object file

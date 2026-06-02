@@ -148,37 +148,107 @@ impl Drop for GilReleaseGuard {
     }
 }
 
-/// Execute a body while "holding the GIL".
+/// Profile-conditional FFI-boundary body dispatch shared by every catching
+/// GIL-entry macro (`with_gil_entry!` and `with_core_gil!` in this crate, plus
+/// `molt-runtime`'s `with_gil_entry!`).  This is the single source of truth for
+/// the FFI panic contract: centralising the `cfg(panic = ...)` selection here
+/// is what keeps the historical macro copies from drifting apart (the audit's
+/// Finding 4).
 ///
-/// Stub implementation: binds a [`PyToken`] and runs the body immediately.
-/// The real version in `molt-runtime` actually acquires the GIL.
+/// # Panic contract
 ///
-/// Wraps the body in `catch_unwind` to prevent panics from unwinding through
-/// `extern "C"` boundaries (which is undefined behavior in Rust). On panic,
-/// a `RuntimeError` exception is raised and a safe zero-sentinel is returned.
+/// Every `$body` used through a catching GIL-entry macro is required to
+/// propagate **all Python-level error conditions explicitly** — set a pending
+/// Python exception (e.g. `rt_raise_str` / `raise_exception`) and return the
+/// runtime error sentinel — and must **never** rely on a Rust panic to surface
+/// a recoverable Python error.  The only reachable panic is therefore a genuine
+/// runtime *invariant violation* (a compiler/runtime bug: a poisoned lock, a
+/// corrupted allocator, an unreachable branch), which is not a recoverable
+/// Python exception and for which aborting the process is the correct,
+/// fail-closed behavior.
+///
+/// Dispatch is on the crate panic strategy, fixed per build profile:
+///
+/// * `panic = "unwind"` (dev / dev-fast / release-fast — tests + CI): wrap
+///   `$body` in `catch_unwind` as a defense-in-depth net so an invariant
+///   violation becomes a catchable `RuntimeError` instead of an abort, and so
+///   no unwind ever crosses the `extern "C"` boundary (which would be UB).
+///
+/// * `panic = "abort"` (release-output / wasm-release — the SHIPPED runtime):
+///   `catch_unwind` is a documented no-op (the process aborts *at* the panic
+///   site, before unwinding), so the catch is `cfg`-eliminated before codegen
+///   and `$body` runs directly.  This is sound because the contract guarantees
+///   the only reachable panics are invariant violations, for which abort is
+///   correct.  Under this profile the FFI entry point genuinely contains no
+///   `catch_unwind` — making the `Cargo.toml` `release-output` claim true.
+///
+/// The `raise: |msg| { .. }` fragment is a caller-supplied statement block run,
+/// with `msg: &str` in scope, only on the `panic = "unwind"` catch path; it
+/// sets the pending Python exception.  Under `panic = "abort"` it is
+/// `cfg`-eliminated and never expanded into reachable code.
+#[doc(hidden)]
 #[macro_export]
-macro_rules! with_gil_entry {
-    ($py:ident, $body:expr) => {{
-        let __py_token = $crate::PyToken::new();
-        let $py = &__py_token;
-
+macro_rules! with_gil_entry_body {
+    // panic = "unwind": keep the catch_unwind defense-in-depth net.
+    (@unwind |$msg:ident| $raise:block, $body:expr) => {{
         match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body)) {
             Ok(val) => val,
             Err(payload) => {
-                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                let __payload_msg: String = if let Some(s) = payload.downcast_ref::<&str>() {
                     s.to_string()
                 } else if let Some(s) = payload.downcast_ref::<String>() {
                     s.clone()
                 } else {
                     "unknown panic in FFI boundary".to_string()
                 };
-                $crate::rt_raise_str("RuntimeError", &msg);
-                // SAFETY: All FFI return types used with this macro (u64, i64,
-                // i32, *mut u8, ()) are safely zero-initializable. The caller
-                // will check for the pending exception before using this value.
-                unsafe { ::std::mem::zeroed() }
+                let $msg: &str = &__payload_msg;
+                $raise;
+                // SAFETY: All FFI return types used with these macros (u64, i64,
+                // i32, f64, *mut u8, *const u8, bool, ()) are safely zero-
+                // initializable. The caller checks for the pending exception
+                // before using this value.
+                #[allow(unused_unsafe)]
+                unsafe {
+                    ::std::mem::zeroed()
+                }
             }
         }
+    }};
+    // panic = "abort": catch_unwind is a no-op; run the body directly.
+    (@abort |$msg:ident| $raise:block, $body:expr) => {{ $body }};
+    // Entry: dispatch on the crate panic strategy, which is fixed per build
+    // profile and known at compile time.  Exactly one of the two arms below is
+    // `cfg`-compiled, and it is the *single tail expression* of this block — so
+    // a diverging body (`!`, e.g. a bare `loop {}`) does not trip a spurious
+    // `unreachable_code` warning (which an intermediate `let` binding would).
+    (raise: |$msg:ident| $raise:block, $body:expr) => {{
+        #[cfg(panic = "unwind")]
+        {
+            $crate::with_gil_entry_body!(@unwind |$msg| $raise, $body)
+        }
+        #[cfg(not(panic = "unwind"))]
+        {
+            $crate::with_gil_entry_body!(@abort |$msg| $raise, $body)
+        }
+    }};
+}
+
+/// Execute a body while "holding the GIL".
+///
+/// Stub implementation: binds a [`PyToken`] and runs the body immediately.
+/// The real version in `molt-runtime` actually acquires the GIL.
+///
+/// The FFI panic contract (catch under `panic = "unwind"`, direct under
+/// `panic = "abort"`) is centralised in [`with_gil_entry_body!`].
+#[macro_export]
+macro_rules! with_gil_entry {
+    ($py:ident, $body:expr) => {{
+        let __py_token = $crate::PyToken::new();
+        let $py = &__py_token;
+
+        $crate::with_gil_entry_body!(raise: |__msg| {
+            $crate::rt_raise_str("RuntimeError", __msg);
+        }, $body)
     }};
 }
 
@@ -274,10 +344,11 @@ impl Drop for CoreGilGuard {
     }
 }
 
-/// Cross-crate GIL entry macro — equivalent to with_gil_entry! but works from any crate.
+/// Cross-crate GIL entry macro — equivalent to `with_gil_entry!` but works from
+/// any crate.
 ///
-/// Wraps the body in `catch_unwind` to prevent panics from unwinding through
-/// `extern "C"` boundaries (which is undefined behavior in Rust).
+/// The FFI panic contract (catch under `panic = "unwind"`, direct under
+/// `panic = "abort"`) is centralised in [`with_gil_entry_body!`].
 #[macro_export]
 macro_rules! with_core_gil {
     ($py:ident, $body:block) => {{
@@ -285,23 +356,9 @@ macro_rules! with_core_gil {
         let $py = _gil_guard.token();
         let $py = &$py;
 
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body)) {
-            Ok(val) => val,
-            Err(payload) => {
-                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic in FFI boundary".to_string()
-                };
-                $crate::rt_raise_str("RuntimeError", &msg);
-                // SAFETY: All FFI return types used with this macro (u64, i64,
-                // i32, *mut u8, ()) are safely zero-initializable. The caller
-                // will check for the pending exception before using this value.
-                unsafe { ::std::mem::zeroed() }
-            }
-        }
+        $crate::with_gil_entry_body!(raise: |__msg| {
+            $crate::rt_raise_str("RuntimeError", __msg);
+        }, $body)
     }};
 }
 
@@ -846,6 +903,7 @@ pub mod prelude {
     pub use crate::type_ids::*;
     pub use crate::with_core_gil;
     pub use crate::with_gil_entry;
+    pub use crate::with_gil_entry_body;
     pub use crate::{
         bits_from_ptr, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, bridge_owned_u8_buffer,
         bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits, ptr_from_bits,
