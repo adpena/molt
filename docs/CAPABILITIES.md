@@ -92,6 +92,33 @@ Notes:
 
 Tooling enforces capability/effect allowlists during `molt package` and `molt verify`.
 
+## Memory and Resource Limits
+
+Beyond capability tokens, a manifest can constrain *how much* a program may
+consume (memory, time, allocations, recursion depth, and per-operation result
+sizes) via a `[resources]` table — see `docs/RESOURCE_CONTROLS.md` for the full
+schema. These limits are enforced by the in-VM `ResourceTracker`, shared by all
+backends.
+
+For memory specifically, a compiled binary can also cap itself at run time
+through the ergonomic `MOLT_MEMORY_LIMIT` env var (human sizes like `64M`,
+`2G`), which is an **alias** that resolves into the same single
+`ResourceLimits.max_memory` enforcement path as the manifest-emitted
+`MOLT_RESOURCE_MAX_MEMORY` — there is no parallel limit system:
+
+```bash
+# Cap the binary at 64 MiB; a runaway raises an uncatchable MemoryError
+# instead of OOM-killing the host.
+MOLT_MEMORY_LIMIT=64M ./my_app
+```
+
+Enforcement is two-layer: the precise in-VM tracker (deterministic, identical
+across native/WASM/LLVM/Luau) plus, on native, an OS-level `RLIMIT_AS` backstop
+that bounds anything the tracker cannot see. This protection is **opt-in** (no
+default limit unless configured); capability-tier (deployment-profile) defaults
+are deferred. A misconfigured limit fails loudly at init rather than being
+silently ignored.
+
 ## Native vs WASM Parity
 
 - **Native**: Capabilities are enforced by the `molt-runtime` via standard OS call wrappers.

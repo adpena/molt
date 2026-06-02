@@ -264,6 +264,13 @@ pub trait ResourceTracker {
 // ---------------------------------------------------------------------------
 
 /// Declarative resource limits, typically parsed from a capability manifest.
+///
+/// This is the **single source of truth** for resource configuration. The
+/// Python `ResourceLimits` dataclass (`src/molt/capability_manifest.py`) and the
+/// `molt.capabilities.toml` schema both serialize INTO this struct via the
+/// `MOLT_RESOURCE_MAX_*` environment variables; no field on the Python side may
+/// exist without a corresponding field here (otherwise it is silently dropped at
+/// the env boundary — the asymmetry this struct's per-op fields exist to close).
 #[derive(Debug, Clone, Default)]
 pub struct ResourceLimits {
     /// Maximum heap memory in bytes.
@@ -274,9 +281,23 @@ pub struct ResourceLimits {
     pub max_allocations: Option<usize>,
     /// Maximum call-stack recursion depth.
     pub max_recursion_depth: Option<usize>,
-    /// Maximum estimated result size (bytes) for a single operation.
+    /// Maximum estimated result size (bytes) for a single operation, used as the
+    /// fallback for any per-operation cap left unset below.
     /// Defaults to 10 MB when `None`.
     pub max_operation_result_bytes: Option<usize>,
+    /// Per-operation result cap (bytes) for integer exponentiation (`a ** b`).
+    /// Falls back to `max_operation_result_bytes` when `None`.
+    pub max_pow_result_bytes: Option<usize>,
+    /// Per-operation result cap (bytes) for sequence repetition (`[x] * n`,
+    /// `"s" * n`). Falls back to `max_operation_result_bytes` when `None`.
+    pub max_repeat_result_bytes: Option<usize>,
+    /// Per-operation result cap (bytes) for left shift and BigInt
+    /// multiplication (`a << n`, `a * b`). Falls back to
+    /// `max_operation_result_bytes` when `None`.
+    pub max_shift_result_bytes: Option<usize>,
+    /// Per-operation result cap (bytes) for string operations (`str.replace`).
+    /// Falls back to `max_operation_result_bytes` when `None`.
+    pub max_string_result_bytes: Option<usize>,
 }
 
 /// Default per-operation result size limit: 10 MB.
@@ -309,13 +330,24 @@ pub struct LimitedTracker {
     max_duration: Option<Duration>,
     max_memory: Option<usize>,
     max_recursion_depth: Option<usize>,
-    max_operation_result_bytes: usize,
+    /// Resolved per-operation caps (bytes). The manifest's combined
+    /// `max_operation_result_bytes` (or the 10 MB default) is the fallback for
+    /// any per-op field left unset, applied once at construction so every
+    /// variant always carries a concrete cap — there is no separate combined
+    /// field on the tracker, only the four resolved per-op caps.
+    max_pow_result_bytes: usize,
+    max_repeat_result_bytes: usize,
+    max_shift_result_bytes: usize,
+    max_string_result_bytes: usize,
 }
 
 impl LimitedTracker {
     /// Create a new tracker from declarative limits. The wall-clock timer
     /// starts immediately.
     pub fn new(limits: &ResourceLimits) -> Self {
+        let fallback = limits
+            .max_operation_result_bytes
+            .unwrap_or(DEFAULT_MAX_OPERATION_RESULT_BYTES);
         Self {
             allocation_count: 0,
             memory_used: 0,
@@ -325,9 +357,26 @@ impl LimitedTracker {
             max_duration: limits.max_duration,
             max_memory: limits.max_memory,
             max_recursion_depth: limits.max_recursion_depth,
-            max_operation_result_bytes: limits
-                .max_operation_result_bytes
-                .unwrap_or(DEFAULT_MAX_OPERATION_RESULT_BYTES),
+            max_pow_result_bytes: limits.max_pow_result_bytes.unwrap_or(fallback),
+            max_repeat_result_bytes: limits.max_repeat_result_bytes.unwrap_or(fallback),
+            max_shift_result_bytes: limits.max_shift_result_bytes.unwrap_or(fallback),
+            max_string_result_bytes: limits.max_string_result_bytes.unwrap_or(fallback),
+        }
+    }
+
+    /// Resolve the per-operation byte cap for a given operation estimate.
+    ///
+    /// Multiplication maps to the shift cap (both are BigInt-amplification
+    /// guards governed by the manifest's `max_shift_result`).
+    #[inline(always)]
+    fn operation_cap(&self, op: &OperationEstimate) -> usize {
+        match op {
+            OperationEstimate::Pow { .. } => self.max_pow_result_bytes,
+            OperationEstimate::Repeat { .. } => self.max_repeat_result_bytes,
+            OperationEstimate::LeftShift { .. } | OperationEstimate::Multiply { .. } => {
+                self.max_shift_result_bytes
+            }
+            OperationEstimate::StringReplace { .. } => self.max_string_result_bytes,
         }
     }
 
@@ -436,7 +485,7 @@ impl ResourceTracker for LimitedTracker {
                 });
             }
         };
-        if estimated > self.max_operation_result_bytes {
+        if estimated > self.operation_cap(op) {
             return Err(ResourceError::OperationTooLarge {
                 op: op.label(),
                 estimated_bytes: estimated,
@@ -677,6 +726,229 @@ pub(crate) fn clear_resource_state() {
     let _ = TRACKER.try_with(|cell| {
         *cell.borrow_mut() = Box::new(UnlimitedTracker);
     });
+}
+
+// ---------------------------------------------------------------------------
+// Human-readable size parsing (MOLT_MEMORY_LIMIT front door)
+// ---------------------------------------------------------------------------
+
+/// Error describing why a human-readable size string could not be parsed.
+///
+/// Carried as an owned `String` so callers can surface a precise, fail-loud
+/// diagnostic (the project policy forbids silently ignoring a misconfigured
+/// limit).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SizeParseError(pub String);
+
+impl fmt::Display for SizeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Parse a human-readable byte size such as `"512M"`, `"2G"`, `"64MB"`,
+/// `"1024"`, or `"1.5GiB"` into a byte count.
+///
+/// This mirrors `parse_size` in `src/molt/capability_manifest.py` so the
+/// user-facing `MOLT_MEMORY_LIMIT` front door normalizes into the SAME
+/// `ResourceLimits.max_memory` field as `MOLT_RESOURCE_MAX_MEMORY` — there is
+/// exactly one enforcement path. Units are base-1024 (a bare `K`/`M`/`G`
+/// suffix is treated identically to `KB`/`MB`/`GB`, matching common CLI
+/// ergonomics; an explicit `KiB`/`MiB`/`GiB` is also accepted). A bare integer
+/// is interpreted as raw bytes.
+///
+/// Returns `Err` (never silently zero/ignore) on malformed input or a
+/// non-positive result, so a misconfigured limit fails loudly.
+pub fn parse_human_size(raw: &str) -> Result<usize, SizeParseError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(SizeParseError(
+            "memory limit must be a positive size, got an empty value".to_string(),
+        ));
+    }
+
+    // Split the leading numeric portion from the trailing unit.
+    let split_at = trimmed
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(trimmed.len());
+    let (num_part, unit_part) = trimmed.split_at(split_at);
+    let num_part = num_part.trim();
+    let unit = unit_part.trim().to_ascii_uppercase();
+
+    if num_part.is_empty() {
+        return Err(SizeParseError(format!(
+            "invalid memory size {raw:?} — expected a number with an optional \
+             unit like '512M', '2G', '64MB'"
+        )));
+    }
+    let value: f64 = num_part.parse().map_err(|_| {
+        SizeParseError(format!(
+            "invalid memory size {raw:?} — could not parse {num_part:?} as a number"
+        ))
+    })?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(SizeParseError(format!(
+            "memory limit must be a positive size, got {raw:?}"
+        )));
+    }
+
+    let multiplier: u64 = match unit.as_str() {
+        "" | "B" => 1,
+        "K" | "KB" | "KIB" => 1024,
+        "M" | "MB" | "MIB" => 1024 * 1024,
+        "G" | "GB" | "GIB" => 1024 * 1024 * 1024,
+        "T" | "TB" | "TIB" => 1024 * 1024 * 1024 * 1024,
+        other => {
+            return Err(SizeParseError(format!(
+                "invalid memory size unit {other:?} in {raw:?} — \
+                 expected one of B, K/KB, M/MB, G/GB, T/TB"
+            )));
+        }
+    };
+
+    let bytes = value * (multiplier as f64);
+    if bytes > usize::MAX as f64 {
+        return Err(SizeParseError(format!(
+            "memory limit {raw:?} overflows the addressable byte range"
+        )));
+    }
+    let bytes = bytes as usize;
+    if bytes == 0 {
+        return Err(SizeParseError(format!(
+            "memory limit must be a positive size, got {raw:?} (resolves to 0 bytes)"
+        )));
+    }
+    Ok(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// OS-level hard backstop (RLIMIT_AS) — native only
+// ---------------------------------------------------------------------------
+
+/// Install an OS-level address-space backstop for the current process.
+///
+/// This is **Layer 2** of the two-layer memory protection contract: a coarse
+/// `setrlimit(RLIMIT_AS, …)` (and `RLIMIT_DATA` where distinct) set ABOVE the
+/// precise in-VM [`LimitedTracker`] limit (Layer 1). It catches allocations the
+/// tracker cannot see — Rust-internal metadata, FFI, runtime structures — and
+/// converts a runaway into a clean allocation failure / SIGABRT instead of
+/// OOM-killer roulette on the host.
+///
+/// It is a **backstop only** and never the contract: the tracker is the
+/// deterministic, cross-target limit; this layer merely bounds the blast radius
+/// of anything that slips past it. To preserve that property we add headroom
+/// above the tracker limit so the precise tracker error fires first in normal
+/// operation.
+///
+/// `limit_bytes` is the Layer-1 (tracker) limit; the backstop is set to
+/// `limit_bytes` plus headroom, saturating at the platform maximum. Returns the
+/// effective backstop in bytes that was installed, or `None` when the platform
+/// or kernel rejected the request (e.g. wasm — where linear-memory `max` pages
+/// are the host-controlled backstop already — or macOS, whose `setrlimit` for
+/// `RLIMIT_AS` returns `EINVAL` for small finite caps, leaving the in-VM tracker
+/// as the sole enforcement). A `None` here never weakens Layer 1; it only means
+/// the OS-level net is unavailable on this target.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub fn install_address_space_backstop(limit_bytes: usize) -> Option<usize> {
+    // Headroom above the tracker limit: the larger of 64 MiB or 25% of the
+    // tracker limit. This keeps the precise Layer-1 error firing first for
+    // ordinary Python heap growth while still bounding total address space.
+    const MIN_HEADROOM: usize = 64 * 1024 * 1024;
+    let headroom = (limit_bytes / 4).max(MIN_HEADROOM);
+    let backstop = limit_bytes.saturating_add(headroom);
+    // Clamp to the rlimit value type so the cast below cannot truncate.
+    let rlim_value = backstop.min(libc::rlim_t::MAX as usize) as libc::rlim_t;
+
+    // RLIMIT_AS bounds the total virtual address space — the broadest backstop.
+    let installed = set_rlimit_as(rlim_value);
+    // RLIMIT_DATA bounds the data segment (brk/sbrk + on some platforms mmap).
+    // Best-effort layered guard; failure here does not invalidate RLIMIT_AS.
+    let _ = set_rlimit_data(rlim_value);
+
+    if installed {
+        Some(rlim_value as usize)
+    } else {
+        None
+    }
+}
+
+/// Apply the raise-only soft-limit policy to a single `rlimit` resource.
+///
+/// Reads the current limits first so the soft limit is never raised beyond the
+/// inherited hard limit and a host-imposed tighter bound is never loosened.
+/// Returns whether the soft limit ends up at (or already below) the requested
+/// value. `resource` and the libc shims share the platform-correct id type
+/// (`__rlimit_resource_t` on Linux, `c_int` on macOS/BSD) by construction.
+///
+/// # Safety
+///
+/// `getrlimit`/`setrlimit` with a valid `RLIMIT_*` id and a properly
+/// initialized `rlimit` are sound.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+unsafe fn apply_rlimit_soft(
+    get: unsafe extern "C" fn(*mut libc::rlimit) -> bool,
+    set: unsafe extern "C" fn(*const libc::rlimit) -> bool,
+    requested: libc::rlim_t,
+) -> bool {
+    let mut current = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if !unsafe { get(&mut current) } {
+        return false;
+    }
+
+    let effective = if current.rlim_max == libc::RLIM_INFINITY {
+        requested
+    } else {
+        requested.min(current.rlim_max)
+    };
+
+    // Only tighten the soft limit; if it is already at or below `effective`,
+    // leave it untouched (do not loosen a host-imposed bound).
+    if current.rlim_cur != libc::RLIM_INFINITY && current.rlim_cur <= effective {
+        return true;
+    }
+
+    let new_limit = libc::rlimit {
+        rlim_cur: effective,
+        rlim_max: current.rlim_max,
+    };
+    unsafe { set(&new_limit) }
+}
+
+/// Tighten `RLIMIT_AS` (virtual address space) to `requested`, raise-only.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn set_rlimit_as(requested: libc::rlim_t) -> bool {
+    unsafe extern "C" fn get(out: *mut libc::rlimit) -> bool {
+        unsafe { libc::getrlimit(libc::RLIMIT_AS, out) == 0 }
+    }
+    unsafe extern "C" fn set(value: *const libc::rlimit) -> bool {
+        unsafe { libc::setrlimit(libc::RLIMIT_AS, value) == 0 }
+    }
+    unsafe { apply_rlimit_soft(get, set, requested) }
+}
+
+/// Tighten `RLIMIT_DATA` (data segment) to `requested`, raise-only.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn set_rlimit_data(requested: libc::rlim_t) -> bool {
+    unsafe extern "C" fn get(out: *mut libc::rlimit) -> bool {
+        unsafe { libc::getrlimit(libc::RLIMIT_DATA, out) == 0 }
+    }
+    unsafe extern "C" fn set(value: *const libc::rlimit) -> bool {
+        unsafe { libc::setrlimit(libc::RLIMIT_DATA, value) == 0 }
+    }
+    unsafe { apply_rlimit_soft(get, set, requested) }
+}
+
+/// No-op address-space backstop on platforms without POSIX rlimits.
+///
+/// On wasm the host controls linear-memory `max` pages, which is the backstop;
+/// on other non-unix targets there is no portable equivalent, so the precise
+/// in-VM tracker (Layer 1) is the sole enforcement. Returns `None`.
+#[cfg(not(all(unix, not(target_arch = "wasm32"))))]
+pub fn install_address_space_backstop(_limit_bytes: usize) -> Option<usize> {
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -937,6 +1209,136 @@ mod tests {
         };
         let err = t.check_operation_size(&huge).unwrap_err();
         assert!(matches!(err, ResourceError::OperationTooLarge { .. }));
+    }
+
+    #[test]
+    fn per_operation_caps_resolve_independently() {
+        // Distinct per-op caps must each govern only their own operation.
+        let mut t = make_limited(ResourceLimits {
+            // Fallback is generous; per-op caps are tight and must win.
+            max_operation_result_bytes: Some(10 * 1024 * 1024),
+            max_pow_result_bytes: Some(16),
+            max_repeat_result_bytes: Some(16),
+            max_shift_result_bytes: Some(16),
+            max_string_result_bytes: Some(16),
+            ..Default::default()
+        });
+
+        // Pow result_bits = base_bits * exponent * 4 = 64 * 2 * 4 = 512 bits
+        // = 64 bytes > 16-byte cap.
+        let pow = OperationEstimate::Pow {
+            base_bits: 64,
+            exponent: 2,
+        };
+        assert!(matches!(
+            t.check_operation_size(&pow),
+            Err(ResourceError::OperationTooLarge { .. })
+        ));
+
+        // Repeat of 100 bytes > 16 cap.
+        let repeat = OperationEstimate::Repeat {
+            item_bytes: 100,
+            count: 1,
+        };
+        assert!(t.check_operation_size(&repeat).is_err());
+
+        // Multiply maps to the shift cap; 256+256 bits = 64 bytes > 16.
+        let mul = OperationEstimate::Multiply {
+            a_bits: 256,
+            b_bits: 256,
+        };
+        assert!(t.check_operation_size(&mul).is_err());
+
+        // String replace producing 300 bytes > 16 cap.
+        let s = OperationEstimate::StringReplace {
+            input_len: 100,
+            old_len: 1,
+            new_len: 3,
+            count: 100,
+        };
+        assert!(t.check_operation_size(&s).is_err());
+    }
+
+    #[test]
+    fn per_operation_cap_falls_back_to_combined() {
+        // With only the combined fallback set, every operation honors it.
+        let mut t = make_limited(ResourceLimits {
+            max_operation_result_bytes: Some(8),
+            ..Default::default()
+        });
+        let repeat = OperationEstimate::Repeat {
+            item_bytes: 100,
+            count: 1,
+        };
+        assert!(t.check_operation_size(&repeat).is_err());
+        // A pow well under 8 bytes passes via the fallback.
+        let small_pow = OperationEstimate::Pow {
+            base_bits: 1,
+            exponent: 1,
+        };
+        assert!(t.check_operation_size(&small_pow).is_ok());
+    }
+
+    #[test]
+    fn per_operation_cap_is_per_op_not_shared() {
+        // A tight pow cap must NOT constrain a repeat that uses its own
+        // (generous) cap — proves the caps are not collapsed.
+        let mut t = make_limited(ResourceLimits {
+            max_pow_result_bytes: Some(1),
+            max_repeat_result_bytes: Some(1024),
+            ..Default::default()
+        });
+        let repeat = OperationEstimate::Repeat {
+            item_bytes: 100,
+            count: 1,
+        };
+        assert!(t.check_operation_size(&repeat).is_ok());
+        let pow = OperationEstimate::Pow {
+            base_bits: 64,
+            exponent: 1,
+        };
+        assert!(t.check_operation_size(&pow).is_err());
+    }
+
+    #[test]
+    fn parse_human_size_accepts_common_forms() {
+        assert_eq!(parse_human_size("64M").unwrap(), 64 * 1024 * 1024);
+        assert_eq!(parse_human_size("64MB").unwrap(), 64 * 1024 * 1024);
+        assert_eq!(parse_human_size("64MiB").unwrap(), 64 * 1024 * 1024);
+        assert_eq!(parse_human_size("2G").unwrap(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_human_size("512K").unwrap(), 512 * 1024);
+        assert_eq!(parse_human_size("1024").unwrap(), 1024);
+        assert_eq!(parse_human_size("1024B").unwrap(), 1024);
+        assert_eq!(parse_human_size("  1.5G  ").unwrap(), 1610612736);
+    }
+
+    #[test]
+    fn parse_human_size_rejects_garbage_and_zero() {
+        assert!(parse_human_size("").is_err());
+        assert!(parse_human_size("M").is_err());
+        assert!(parse_human_size("abc").is_err());
+        assert!(parse_human_size("12XB").is_err());
+        assert!(parse_human_size("0").is_err());
+        assert!(parse_human_size("0M").is_err());
+        assert!(parse_human_size("-5M").is_err());
+    }
+
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[test]
+    fn address_space_backstop_installs_above_limit() {
+        // The backstop is set ABOVE the tracker limit (headroom) so the precise
+        // Layer-1 error fires first. We use a large value (1 TiB) that does NOT
+        // try to lower the process limit — both because lowering the test
+        // runner's own address space is unsafe and because Darwin rejects
+        // lowering RLIMIT_AS to a small finite cap (the Linux-only genuine-cap
+        // proof lives in tests/resource_enforcement.rs). Here we assert only
+        // that the helper wires setrlimit correctly and reports success.
+        let tracker_limit = 1usize << 40; // 1 TiB — comfortably above test RSS
+        let installed = install_address_space_backstop(tracker_limit);
+        assert!(
+            installed.is_some(),
+            "RLIMIT_AS backstop should install for a large (non-lowering) value on unix"
+        );
     }
 
     #[test]
