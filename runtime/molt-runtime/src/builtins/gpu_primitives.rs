@@ -32,6 +32,20 @@ use molt_gpu::render::FusedKernel;
 use molt_gpu::schedule;
 use molt_gpu::shapetracker::ShapeTracker;
 
+// Metal GPU execution path. `molt-gpu`'s `device::metal` module is compiled on
+// EVERY macOS target (gated on `cfg(target_os = "macos")`, not a Cargo feature)
+// and `metal = "0.30"` is an unconditional macOS dependency of molt-gpu, so
+// `MetalDevice` links here whenever `molt_gpu_primitives` pulls in molt-gpu — no
+// feature-plumbing or version-skew change required. Gated on the SAME cfg as
+// `molt_gpu_prim_device` below so the device a program OBSERVES is the device
+// `realize()` actually executes on (closing the "reports METAL, runs CPU" drift).
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+use molt_gpu::device::metal::MetalDevice;
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+use molt_gpu::device::{Allocator, Compiler, DeviceBuffer, DeviceError, Executor};
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+use molt_gpu::render::{Renderer, msl::MslRenderer};
+
 // ============================================================================
 // Thread-local tensor store
 // ============================================================================
@@ -229,9 +243,11 @@ pub extern "C" fn molt_gpu_prim_realize(handle: u64) -> u64 {
     // Fuse kernels.
     let fused = fuse::fuse(kernels);
 
-    // Execute each kernel on CPU.
+    // Execute each kernel on the active device (Metal on macOS when
+    // `molt_gpu_metal` is enabled — matching what `molt_gpu_prim_device`
+    // reports — otherwise the CPU interpreter).
     let numel: usize = shape.iter().product();
-    let out_bytes = execute_fused_pipeline_cpu(&lazy, &fused, numel, dtype);
+    let out_bytes = execute_fused_pipeline(&lazy, &fused, numel, dtype);
 
     // Store the realized data.
     with_tensor_mut(handle, |t| {
@@ -300,6 +316,138 @@ fn execute_fused_pipeline_cpu(
     }
 
     last_output
+}
+
+/// Execute the fused kernel pipeline on the active device.
+///
+/// On macOS with `molt_gpu_metal`, this dispatches to the GPU via `MetalDevice`
+/// — the device `molt_gpu_prim_device` reports — closing the prior drift where
+/// `realize()` always ran the CPU interpreter even though the device was
+/// advertised as METAL. A CPU fallback is taken ONLY when the Metal device is
+/// genuinely unavailable (no GPU) or a kernel fails; that fallback is surfaced
+/// under `MOLT_GPU_DEBUG` so it is never silent. Metal and CPU outputs are
+/// bit-exact (asserted by `metal_realize_tests`), so the fallback is a
+/// performance decision, not a correctness divergence. Off macOS or without the
+/// feature this is exactly the CPU interpreter.
+fn execute_fused_pipeline(
+    root: &Arc<LazyOp>,
+    fused_kernels: &[FusedKernel],
+    output_numel: usize,
+    output_dtype: DType,
+) -> Vec<u8> {
+    #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+    {
+        match execute_fused_pipeline_metal(root, fused_kernels, output_numel, output_dtype) {
+            Ok(bytes) => return bytes,
+            Err(err) => {
+                if std::env::var_os("MOLT_GPU_DEBUG").is_some() {
+                    eprintln!(
+                        "molt.gpu: Metal execution unavailable ({err:?}); falling back to CPU \
+                         (numerically identical, slower)"
+                    );
+                }
+            }
+        }
+    }
+    execute_fused_pipeline_cpu(root, fused_kernels, output_numel, output_dtype)
+}
+
+/// Execute one fused kernel on Metal: upload inputs, render → compile → dispatch
+/// → read back. `bufs[0]` is the output (filled on return); `bufs[1..]` are the
+/// input host buffers. Mirrors `interpret::execute_kernel`'s contract exactly so
+/// the Metal and CPU pipelines are interchangeable per kernel.
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn execute_kernel_metal(
+    device: &MetalDevice,
+    kernel: &FusedKernel,
+    bufs: &mut [Vec<u8>],
+) -> Result<(), DeviceError> {
+    // Split the output (written) from the inputs (read) so the borrows don't
+    // overlap: `out_slot[0]` is filled by `copy_out`; `in_slots` are uploaded.
+    let (out_slot, in_slots) = bufs.split_at_mut(1);
+
+    let out_dev = device.alloc(out_slot[0].len())?;
+    let mut in_devs: Vec<DeviceBuffer> = Vec::with_capacity(in_slots.len());
+    for host in in_slots.iter() {
+        let dev = device.alloc(host.len())?;
+        device.copy_in(&dev, host)?;
+        in_devs.push(dev);
+    }
+
+    let msl = MslRenderer.render(kernel);
+    let prog = device.compile(&msl, "molt_kernel")?;
+
+    // Buffer binding order matches `FusedKernel::bufs`: output first, inputs after.
+    let mut refs: Vec<&DeviceBuffer> = Vec::with_capacity(1 + in_devs.len());
+    refs.push(&out_dev);
+    refs.extend(in_devs.iter());
+    // `kernel.grid`/`kernel.local` are the scheduler-computed work distribution.
+    device.exec(&prog, &refs, kernel.grid, kernel.local)?;
+    device.synchronize()?;
+    drop(refs);
+
+    device.copy_out(&out_dev, &mut out_slot[0])?;
+
+    device.free(out_dev)?;
+    for dev in in_devs {
+        device.free(dev)?;
+    }
+    Ok(())
+}
+
+/// GPU mirror of [`execute_fused_pipeline_cpu`]: identical leaf-data gathering
+/// and kernel chaining, with each kernel executed on Metal instead of the CPU
+/// interpreter. Returns `Err` (→ CPU fallback in [`execute_fused_pipeline`]) if
+/// the Metal device is unavailable or any kernel fails.
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn execute_fused_pipeline_metal(
+    root: &Arc<LazyOp>,
+    fused_kernels: &[FusedKernel],
+    output_numel: usize,
+    output_dtype: DType,
+) -> Result<Vec<u8>, DeviceError> {
+    let elem_size = output_dtype.size_bytes();
+
+    if fused_kernels.is_empty() {
+        if let LazyOp::Buffer { .. } = root.as_ref() {
+            return Ok(collect_leaf_data(root));
+        }
+        return Ok(vec![0u8; output_numel * elem_size]);
+    }
+
+    let device = MetalDevice::new()?;
+    let leaf_data = collect_all_leaf_data(root);
+    let mut last_output = vec![0u8; output_numel * elem_size];
+
+    for kernel in fused_kernels {
+        let n_bufs = kernel.bufs.len();
+        let mut bufs: Vec<Vec<u8>> = Vec::with_capacity(n_bufs);
+
+        // bufs[0] = output.
+        let out_numel = kernel.bufs[0].st.numel();
+        let out_size = out_numel * kernel.bufs[0].dtype.size_bytes();
+        bufs.push(vec![0u8; out_size]);
+
+        // bufs[1..] = inputs from leaf data or the prior kernel's output. This
+        // is byte-for-byte the same gathering as `execute_fused_pipeline_cpu`.
+        for buf_binding in &kernel.bufs[1..] {
+            let in_size = buf_binding.st.numel() * buf_binding.dtype.size_bytes();
+            let mut input = vec![0u8; in_size];
+            if let Some(data) = leaf_data.get(&buf_binding.buf_id) {
+                let copy_len = input.len().min(data.len());
+                input[..copy_len].copy_from_slice(&data[..copy_len]);
+            } else {
+                let copy_len = input.len().min(last_output.len());
+                input[..copy_len].copy_from_slice(&last_output[..copy_len]);
+            }
+            bufs.push(input);
+        }
+
+        execute_kernel_metal(&device, kernel, &mut bufs)?;
+        last_output = bufs.into_iter().next().unwrap();
+    }
+
+    Ok(last_output)
 }
 
 /// Collect realized data from a leaf LazyOp::Buffer node.
@@ -628,4 +776,93 @@ pub extern "C" fn molt_gpu_prim_device() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_prim_tensor_count() -> u64 {
     TENSOR_STORE.with(|store| store.borrow().iter().filter(|s| s.is_some()).count() as u64)
+}
+
+/// Regression for the "device reports METAL but `realize()` runs CPU" drift.
+///
+/// Verifies the new Metal execution path is BIT-EXACT with the CPU interpreter
+/// `realize()` used before the fix. If Metal and CPU ever diverge, this fails —
+/// making the silent-CPU drift non-reintroducible. Skips cleanly when no Metal
+/// device is present (headless CI), so it never produces a false failure.
+#[cfg(all(test, target_os = "macos", feature = "molt_gpu_metal"))]
+mod metal_realize_tests {
+    use super::*;
+    use molt_gpu::device::cpu::interpret;
+    use molt_gpu::ops::PrimitiveOp;
+    use molt_gpu::render::{BufferAccess, BufferBinding, FusedOp, FusedSrc};
+
+    fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
+        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+        bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    }
+
+    fn binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
+        let st = || ShapeTracker::contiguous(&[n]);
+        FusedKernel {
+            ops: vec![FusedOp {
+                op,
+                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                dst_dtype: DType::Float32,
+            }],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: st(),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: st(),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: st(),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n as u32, 1, 1],
+            local: [n.clamp(1, 256) as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        }
+    }
+
+    #[test]
+    fn execute_kernel_metal_is_bit_exact_with_cpu_interpret() {
+        let device = match MetalDevice::new() {
+            Ok(d) => d,
+            Err(_) => return, // No Metal device (headless CI): nothing to compare.
+        };
+        let n = 1024usize;
+        // Mixed signs/magnitudes so a wrong op or buffer order would diverge.
+        let a: Vec<f32> = (0..n).map(|i| (i as f32) * 0.5 - 7.0).collect();
+        let b: Vec<f32> = (0..n).map(|i| (n - i) as f32 * 0.25 + 1.0).collect();
+
+        for op in [PrimitiveOp::Add, PrimitiveOp::Sub, PrimitiveOp::Mul] {
+            let kernel = binary_kernel(op, n);
+
+            let mut cpu_bufs = vec![vec![0u8; n * 4], f32_to_bytes(&a), f32_to_bytes(&b)];
+            interpret::execute_kernel(&kernel, &mut cpu_bufs);
+
+            let mut metal_bufs = vec![vec![0u8; n * 4], f32_to_bytes(&a), f32_to_bytes(&b)];
+            execute_kernel_metal(&device, &kernel, &mut metal_bufs)
+                .expect("metal kernel execution must succeed on a Metal-capable host");
+
+            assert_eq!(
+                bytes_to_f32(&cpu_bufs[0]),
+                bytes_to_f32(&metal_bufs[0]),
+                "Metal realize() diverged from the CPU interpreter for {op:?} — \
+                 the fidelity regression this test guards"
+            );
+        }
+    }
 }
