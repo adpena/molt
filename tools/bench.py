@@ -169,6 +169,17 @@ def _base_python_env() -> dict[str, str]:
     return _prepend_pythonpath(env, "src")
 
 
+def _canonical_interpreter(executable: str) -> str:
+    """Resolve the CPython baseline interpreter to an absolute, existing path.
+
+    Delegates to the single source of truth in `harness_memory_guard` so the
+    bench and the startup/size audit canonicalize the baseline identically and
+    a relative `.venv/bin/python3` form can never reach the guard's spawn
+    boundary (where it would be mis-resolved against the child cwd).
+    """
+    return harness_memory_guard.canonical_interpreter(executable)
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -666,6 +677,13 @@ def measure_molt_run(
 
 
 def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
+    # Warmup runs are discarded. They prime (1) the page cache for the binary
+    # and its shared libs, and (2) on macOS the amfid/provenance cache for the
+    # binary's cdhash — both keyed to the EXACT artifact path the measured runs
+    # reuse, so the recorded samples reflect warm steady-state. The same warmup
+    # count is applied identically to every runtime (cpython, pypy, molt) by the
+    # shared call site in `_bench_one`, keeping the comparison fair. Cold-start
+    # and binary-size live in tools/output_startup_size_audit.py, not here.
     warmup_samples: list[RunSample] = []
     for _ in range(warmup):
         sample = measure_fn()
@@ -1026,7 +1044,7 @@ def bench_results(
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
     runtimes = {}
     if use_cpython:
-        runtimes["cpython"] = [sys.executable]
+        runtimes["cpython"] = [_canonical_interpreter(sys.executable)]
     if use_pypy:
         pypy_cmd = _pypy_command(base_env, limits)
         if pypy_cmd:
@@ -1152,7 +1170,10 @@ def _bench_one(
         sample_times = batch.times_s
         results[rt_name] = statistics.mean(sample_times) if batch.ok else None
         runtime_ok[rt_name] = batch.ok
-        if super_run and batch.ok:
+        if batch.ok:
+            # Always record min (best-achievable, hyperfine norm) and σ
+            # (via variance_s) alongside the mean headline so best-case
+            # regressions are caught without requiring --super-run.
             stats[rt_name] = summarize_samples(sample_times)
 
     codon_time: float | None = None
@@ -1188,8 +1209,10 @@ def _bench_one(
             if codon_ok:
                 codon_samples = codon_batch.times_s
                 codon_time = statistics.mean(codon_samples)
-                if super_run:
-                    stats["codon"] = summarize_samples(codon_samples)
+                # min + σ recorded unconditionally (hyperfine norm), matching
+                # the primary-runtime lane so best-case regressions are visible
+                # without --super-run.
+                stats["codon"] = summarize_samples(codon_samples)
         else:
             print(f"Skipping Codon for {name}.", file=sys.stderr)
 
@@ -1227,8 +1250,7 @@ def _bench_one(
             if nuitka_ok:
                 nuitka_samples = nuitka_batch.times_s
                 nuitka_time = statistics.mean(nuitka_samples)
-                if super_run:
-                    stats["nuitka"] = summarize_samples(nuitka_samples)
+                stats["nuitka"] = summarize_samples(nuitka_samples)
         else:
             print(f"Skipping Nuitka for {name}.", file=sys.stderr)
 
@@ -1259,8 +1281,7 @@ def _bench_one(
             if pyodide_ok:
                 pyodide_samples = pyodide_batch.times_s
                 pyodide_time = statistics.mean(pyodide_samples)
-                if super_run:
-                    stats["pyodide"] = summarize_samples(pyodide_samples)
+                stats["pyodide"] = summarize_samples(pyodide_samples)
         else:
             print(f"Skipping Pyodide for {name}.", file=sys.stderr)
 
@@ -1297,8 +1318,7 @@ def _bench_one(
             if molt_ok:
                 molt_samples = molt_batch.times_s
                 molt_time = statistics.mean(molt_samples)
-                if super_run:
-                    stats["molt"] = summarize_samples(molt_samples)
+                stats["molt"] = summarize_samples(molt_samples)
             molt_build = molt_runner.build_s
             molt_size = molt_runner.size_kb
         finally:
@@ -1439,6 +1459,11 @@ def _bench_one(
         "nuitka_ok": nuitka_ok,
         "pyodide_ok": pyodide_ok,
     }
+    # Always serialize per-runtime min/mean/σ so downstream consumers
+    # (bench_report, regression checks) see best-achievable + variance without
+    # requiring --super-run. `super_stats` is retained under --super-run for the
+    # legacy verbose-table consumer.
+    data[name]["runtime_stats"] = stats
     if super_run:
         data[name]["super_stats"] = stats
     return data
