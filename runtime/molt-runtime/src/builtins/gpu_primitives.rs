@@ -26,7 +26,7 @@ use molt_gpu::device::cpu::CpuDevice;
 use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::fuse;
-use molt_gpu::lazy::{DeviceBufferRef, LazyOp};
+use molt_gpu::lazy::{DeviceBufferRef, LazyOp, alloc_buffer_id};
 use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::FusedKernel;
 use molt_gpu::schedule;
@@ -147,8 +147,13 @@ pub unsafe extern "C" fn molt_gpu_prim_create_tensor(
     // Convert to bytes.
     let bytes: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
 
+    // Allocate a globally-unique buffer id. This id is the key the
+    // schedule→execute bridge uses to fetch this leaf's bytes from the tensor
+    // store (`collect_leaves_recursive`), and the scheduler stamps the matching
+    // `BufferBinding::buf_id` from it — so `realize()` routes the real input data
+    // instead of falling back to zeros.
     let buf_ref = DeviceBufferRef {
-        id: 0, // Placeholder; CpuDevice interpreter uses raw bytes directly.
+        id: alloc_buffer_id(),
         size_bytes: bytes.len(),
     };
 
@@ -190,8 +195,10 @@ pub unsafe extern "C" fn molt_gpu_prim_zeros(shape_ptr: *const usize, shape_len:
     let numel: usize = shape.iter().product();
     let bytes = vec![0u8; numel * 4]; // f32 zeros
 
+    // Unique buffer id (see `molt_gpu_prim_create_tensor`): keeps every leaf's
+    // identity distinct so the schedule→execute bridge resolves the right bytes.
     let buf_ref = DeviceBufferRef {
-        id: 0,
+        id: alloc_buffer_id(),
         size_bytes: bytes.len(),
     };
 
@@ -257,10 +264,62 @@ pub extern "C" fn molt_gpu_prim_realize(handle: u64) -> u64 {
     0
 }
 
+/// Build the host `bufs` vector for one kernel: `bufs[0]` is a freshly-zeroed
+/// output, `bufs[1..]` are the kernel's inputs, each routed to its real data by
+/// matching `BufferBinding::buf_id`.
+///
+/// Routing is purely id-keyed and uniform across leaf and intermediate inputs —
+/// the structural property the buffer-id fix establishes:
+/// - a **leaf** binding's id is found in `leaf_data` (the DAG's realized leaves);
+/// - an **intermediate** binding's id is found in `intermediates` (outputs of
+///   earlier kernels in this pipeline, keyed by their output binding id).
+///
+/// This replaces the previous `last_output`-only heuristic, which silently
+/// mis-routed any kernel that consumed more than one live intermediate or an
+/// intermediate other than the immediately-preceding kernel's output (a real DAG
+/// shape, e.g. `reduce(x) + reduce(y)`). A binding whose id is in neither map is
+/// a scheduling invariant violation; we surface it under `MOLT_GPU_DEBUG` and use
+/// a correctly-sized zero buffer rather than corrupting an unrelated input.
+fn gather_kernel_inputs(
+    kernel: &FusedKernel,
+    leaf_data: &std::collections::HashMap<usize, Vec<u8>>,
+    intermediates: &std::collections::HashMap<usize, Vec<u8>>,
+) -> Vec<Vec<u8>> {
+    let mut bufs: Vec<Vec<u8>> = Vec::with_capacity(kernel.bufs.len());
+
+    // bufs[0] = output (written by the kernel).
+    let out_size = kernel.bufs[0].st.numel() * kernel.bufs[0].dtype.size_bytes();
+    bufs.push(vec![0u8; out_size]);
+
+    // bufs[1..] = inputs, routed by buffer id.
+    for binding in &kernel.bufs[1..] {
+        let in_size = binding.st.numel() * binding.dtype.size_bytes();
+        let mut input = vec![0u8; in_size];
+        let source = leaf_data
+            .get(&binding.buf_id)
+            .or_else(|| intermediates.get(&binding.buf_id));
+        if let Some(data) = source {
+            let copy_len = input.len().min(data.len());
+            input[..copy_len].copy_from_slice(&data[..copy_len]);
+        } else if std::env::var_os("MOLT_GPU_DEBUG").is_some() {
+            eprintln!(
+                "molt.gpu: kernel input buf_id {} not found in leaf or intermediate \
+                 data — scheduling invariant violation; using zeros",
+                binding.buf_id
+            );
+        }
+        bufs.push(input);
+    }
+
+    bufs
+}
+
 /// Execute a fused kernel pipeline on CpuDevice, returning the output bytes.
 ///
-/// This traverses the LazyOp DAG to collect leaf buffer data, then
-/// executes each fused kernel in sequence using the CPU interpreter.
+/// Traverses the LazyOp DAG to collect leaf buffer data, executes each fused
+/// kernel in topological order, and routes every kernel input to its real data
+/// by buffer id (leaves from the DAG, intermediates from earlier kernels). The
+/// final kernel computes the root, so its output is the realized result.
 fn execute_fused_pipeline_cpu(
     root: &Arc<LazyOp>,
     fused_kernels: &[FusedKernel],
@@ -277,42 +336,18 @@ fn execute_fused_pipeline_cpu(
         return vec![0u8; output_numel * elem_size];
     }
 
-    // Execute each fused kernel.
-    // Collect all leaf buffer data for input buffers.
     let leaf_data = collect_all_leaf_data(root);
-
+    // Outputs of already-executed kernels, keyed by their output binding id, so
+    // a downstream kernel reading that intermediate resolves the exact bytes.
+    let mut intermediates: std::collections::HashMap<usize, Vec<u8>> =
+        std::collections::HashMap::new();
     let mut last_output = vec![0u8; output_numel * elem_size];
 
     for kernel in fused_kernels {
-        let n_bufs = kernel.bufs.len();
-        let mut bufs: Vec<Vec<u8>> = Vec::with_capacity(n_bufs);
-
-        // bufs[0] = output
-        let out_numel = kernel.bufs[0].st.numel();
-        let out_size = out_numel * kernel.bufs[0].dtype.size_bytes();
-        bufs.push(vec![0u8; out_size]);
-
-        // bufs[1..] = inputs from leaf data or prior output
-        for buf_binding in &kernel.bufs[1..] {
-            let in_numel = buf_binding.st.numel();
-            let in_size = in_numel * buf_binding.dtype.size_bytes();
-            // Try to find matching leaf data by buffer ID.
-            if let Some(data) = leaf_data.get(&buf_binding.buf_id) {
-                let mut input = vec![0u8; in_size];
-                let copy_len = input.len().min(data.len());
-                input[..copy_len].copy_from_slice(&data[..copy_len]);
-                bufs.push(input);
-            } else {
-                // Use the last output as input (chained kernels).
-                let mut input = vec![0u8; in_size];
-                let copy_len = input.len().min(last_output.len());
-                input[..copy_len].copy_from_slice(&last_output[..copy_len]);
-                bufs.push(input);
-            }
-        }
-
+        let mut bufs = gather_kernel_inputs(kernel, &leaf_data, &intermediates);
         interpret::execute_kernel(kernel, &mut bufs);
         last_output = bufs.into_iter().next().unwrap();
+        intermediates.insert(kernel.bufs[0].buf_id, last_output.clone());
     }
 
     last_output
@@ -395,10 +430,11 @@ fn execute_kernel_metal(
     Ok(())
 }
 
-/// GPU mirror of [`execute_fused_pipeline_cpu`]: identical leaf-data gathering
-/// and kernel chaining, with each kernel executed on Metal instead of the CPU
-/// interpreter. Returns `Err` (→ CPU fallback in [`execute_fused_pipeline`]) if
-/// the Metal device is unavailable or any kernel fails.
+/// GPU mirror of [`execute_fused_pipeline_cpu`]: identical id-keyed input
+/// gathering (via [`gather_kernel_inputs`]) and kernel chaining, with each kernel
+/// executed on Metal instead of the CPU interpreter. Returns `Err`
+/// (→ CPU fallback in [`execute_fused_pipeline`]) if the Metal device is
+/// unavailable or any kernel fails.
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
 fn execute_fused_pipeline_metal(
     root: &Arc<LazyOp>,
@@ -417,47 +453,53 @@ fn execute_fused_pipeline_metal(
 
     let device = MetalDevice::new()?;
     let leaf_data = collect_all_leaf_data(root);
+    let mut intermediates: std::collections::HashMap<usize, Vec<u8>> =
+        std::collections::HashMap::new();
     let mut last_output = vec![0u8; output_numel * elem_size];
 
     for kernel in fused_kernels {
-        let n_bufs = kernel.bufs.len();
-        let mut bufs: Vec<Vec<u8>> = Vec::with_capacity(n_bufs);
-
-        // bufs[0] = output.
-        let out_numel = kernel.bufs[0].st.numel();
-        let out_size = out_numel * kernel.bufs[0].dtype.size_bytes();
-        bufs.push(vec![0u8; out_size]);
-
-        // bufs[1..] = inputs from leaf data or the prior kernel's output. This
-        // is byte-for-byte the same gathering as `execute_fused_pipeline_cpu`.
-        for buf_binding in &kernel.bufs[1..] {
-            let in_size = buf_binding.st.numel() * buf_binding.dtype.size_bytes();
-            let mut input = vec![0u8; in_size];
-            if let Some(data) = leaf_data.get(&buf_binding.buf_id) {
-                let copy_len = input.len().min(data.len());
-                input[..copy_len].copy_from_slice(&data[..copy_len]);
-            } else {
-                let copy_len = input.len().min(last_output.len());
-                input[..copy_len].copy_from_slice(&last_output[..copy_len]);
-            }
-            bufs.push(input);
-        }
-
+        // Byte-for-byte the same input routing as the CPU path.
+        let mut bufs = gather_kernel_inputs(kernel, &leaf_data, &intermediates);
         execute_kernel_metal(&device, kernel, &mut bufs)?;
         last_output = bufs.into_iter().next().unwrap();
+        intermediates.insert(kernel.bufs[0].buf_id, last_output.clone());
     }
 
     Ok(last_output)
 }
 
-/// Collect realized data from a leaf LazyOp::Buffer node.
-fn collect_leaf_data(node: &Arc<LazyOp>) -> Vec<u8> {
-    // Leaf nodes should have their data stored in the tensor store.
-    // For now, return empty; the tensor store lookup happens at a higher level.
-    match node.as_ref() {
-        LazyOp::Buffer { buf: _, dtype, st } => {
-            vec![0u8; st.numel() * dtype.size_bytes()]
+/// Resolve a leaf buffer's realized bytes from the tensor store by its unique
+/// `buf.id`.
+///
+/// The DAG leaf node carries only the buffer *identity* (`buf.id`); the realized
+/// bytes live in the tensor store (the single source of truth). Because every
+/// leaf id is globally unique ([`alloc_buffer_id`]), the first store entry whose
+/// `Buffer` id matches is unambiguously this leaf's data. Returns `None` if no
+/// realized tensor with that id is live (a dropped/never-realized source).
+fn leaf_bytes_from_store(buf_id: usize) -> Option<Vec<u8>> {
+    TENSOR_STORE.with(|store| {
+        let store = store.borrow();
+        for slot in store.iter().flatten() {
+            if let LazyOp::Buffer { buf: ref b, .. } = *slot.lazy
+                && b.id == buf_id
+                && let Some(ref data) = slot.data
+            {
+                return Some(data.clone());
+            }
         }
+        None
+    })
+}
+
+/// Collect realized data from a leaf `LazyOp::Buffer` node.
+///
+/// Used for the degenerate "DAG is a bare realized leaf" path. The bytes come
+/// from the tensor store keyed by the leaf's unique id; only if the source is no
+/// longer live do we fall back to zeros (a correctly-sized empty buffer).
+fn collect_leaf_data(node: &Arc<LazyOp>) -> Vec<u8> {
+    match node.as_ref() {
+        LazyOp::Buffer { buf, dtype, st } => leaf_bytes_from_store(buf.id)
+            .unwrap_or_else(|| vec![0u8; st.numel() * dtype.size_bytes()]),
         _ => Vec::new(),
     }
 }
@@ -469,7 +511,10 @@ fn collect_all_leaf_data(root: &Arc<LazyOp>) -> std::collections::HashMap<usize,
     leaves
 }
 
-/// Recursively walk the DAG to find all Buffer leaf nodes.
+/// Recursively walk the DAG to find all Buffer leaf nodes, keying each leaf's
+/// realized bytes by its unique `buf.id` (the same id the scheduler stamps into
+/// the corresponding `BufferBinding::buf_id`, so the executor's per-binding
+/// lookup hits).
 fn collect_leaves_recursive(
     node: &Arc<LazyOp>,
     leaves: &mut std::collections::HashMap<usize, Vec<u8>>,
@@ -477,19 +522,8 @@ fn collect_leaves_recursive(
     match node.as_ref() {
         LazyOp::Buffer { buf, dtype, st } => {
             leaves.entry(buf.id).or_insert_with(|| {
-                // Look up the tensor store for this buffer's data.
-                TENSOR_STORE.with(|store| {
-                    let store = store.borrow();
-                    for slot in store.iter().flatten() {
-                        if let LazyOp::Buffer { buf: ref b, .. } = *slot.lazy
-                            && b.id == buf.id
-                            && let Some(ref data) = slot.data
-                        {
-                            return data.clone();
-                        }
-                    }
-                    vec![0u8; st.numel() * dtype.size_bytes()]
-                })
+                leaf_bytes_from_store(buf.id)
+                    .unwrap_or_else(|| vec![0u8; st.numel() * dtype.size_bytes()])
             });
         }
         LazyOp::Unary { src, .. } => collect_leaves_recursive(src, leaves),
@@ -962,22 +996,19 @@ mod metal_realize_tests {
         );
     }
 
-    /// End-to-end Metal-vs-CPU PARITY through the real schedule pipeline: builds
-    /// a DAG via the FFI, then runs the SAME scheduled + specialized + fused
-    /// kernels through both `execute_fused_pipeline_cpu` and
-    /// `execute_fused_pipeline_metal` and asserts byte-identical output. This is
-    /// exactly the contract the dispatch fix guarantees (Metal == CPU), and `n`
-    /// forces a multi-threadgroup specialized grid so a dispatch-model regression
-    /// would diverge here.
+    /// End-to-end Metal realize through the real schedule pipeline, asserting
+    /// ABSOLUTE VALUES: builds `c = a + b` via the FFI, runs the scheduled +
+    /// specialized + fused kernels through both pipelines, and checks that each
+    /// element equals `a[i] + b[i]` — on Metal AND on CPU — and that the two are
+    /// byte-identical. `n` forces a multi-threadgroup specialized grid so a
+    /// dispatch-model regression would diverge here.
     ///
-    /// This asserts PARITY, not absolute values, because the FFI realize path has
-    /// a SEPARATE pre-existing bug: `create_tensor` stamps every tensor with
-    /// `buf.id = 0` (a placeholder), while the scheduler assigns binding ids
-    /// sequentially, so `collect_all_leaf_data` (keyed by leaf `buf.id`, looked up
-    /// by binding `buf_id`) never matches and realize() computes on zeros — for
-    /// CPU and Metal alike. That bug is tracked as a critical follow-up; this
-    /// parity assertion holds before AND after it is fixed (when it does, the
-    /// values become correct without touching this test).
+    /// This formerly asserted only Metal==CPU *parity* because the FFI realize
+    /// path computed on zeros (every leaf stamped `buf.id = 0`, colliding in the
+    /// leaf-data map while the scheduler used disjoint sequential binding ids).
+    /// The buffer-id fix makes leaf ids globally unique and routes binding ids
+    /// from node identity, so the values are now correct; the assertion is
+    /// upgraded to absolute correctness accordingly.
     #[test]
     fn realize_metal_matches_cpu_through_full_schedule() {
         if MetalDevice::new().is_err() {
@@ -1007,6 +1038,18 @@ mod metal_realize_tests {
         let metal =
             execute_fused_pipeline_metal(&lazy, &fused, numel, dtype).expect("metal pipeline");
 
+        let expected: Vec<f32> = (0..n).map(|i| a[i] + b[i]).collect();
+        assert_eq!(
+            bytes_to_f32(&metal),
+            expected,
+            "Metal realize did not compute a[i] + b[i] (the buffer-id fix routes \
+             real leaf data instead of zeros)"
+        );
+        assert_eq!(
+            bytes_to_f32(&cpu),
+            expected,
+            "CPU realize did not compute a[i] + b[i] through the full schedule"
+        );
         assert_eq!(
             cpu, metal,
             "Metal realize diverged from CPU realize through the full schedule pipeline"
@@ -1015,5 +1058,218 @@ mod metal_realize_tests {
         molt_gpu_prim_free(ha);
         molt_gpu_prim_free(hb);
         molt_gpu_prim_free(hc);
+    }
+
+    /// Metal realize of `reduce_sum(a + b)` through the FULL public FFI entry
+    /// (`molt_gpu_prim_realize` → `molt_gpu_prim_read_data`), asserting the exact
+    /// reduced scalar `sum_i (a[i] + b[i])`. This is the strongest end-to-end
+    /// check: it drives the same path compiled Python uses, on the device the
+    /// runtime advertises (Metal here), and a single value summarizes every
+    /// element so a leaf-routing regression cannot hide. `a + b` then a reduce
+    /// also exercises elementwise→reduce fusion on real input data.
+    #[test]
+    fn realize_reduce_sum_of_add_correct_value_via_ffi() {
+        if MetalDevice::new().is_err() {
+            return;
+        }
+        let n = 2048usize;
+        let a: Vec<f32> = (0..n).map(|i| (i as f32) * 0.5 - 11.0).collect();
+        let b: Vec<f32> = (0..n).map(|i| (n - i) as f32 * 0.25 + 2.0).collect();
+        let shape = [n];
+
+        // SAFETY: pointers valid for their lengths.
+        let ha =
+            unsafe { molt_gpu_prim_create_tensor(a.as_ptr(), a.len(), shape.as_ptr(), shape.len()) };
+        let hb =
+            unsafe { molt_gpu_prim_create_tensor(b.as_ptr(), b.len(), shape.as_ptr(), shape.len()) };
+        let hsum = molt_gpu_prim_binary(0 /* Add */, ha, hb);
+        let hred = molt_gpu_prim_reduce(24 /* ReduceSum */, hsum, 0 /* axis */);
+        assert_ne!(hred, u64::MAX);
+
+        assert_eq!(molt_gpu_prim_realize(hred), 0, "realize must succeed");
+
+        let mut out = [0.0f32; 1];
+        let written = molt_gpu_prim_read_data(hred, out.as_mut_ptr(), out.len());
+        assert_eq!(written, 1, "reduce_sum produces one scalar");
+
+        let expected: f32 = (0..n).map(|i| a[i] + b[i]).sum();
+        // f32 summation order differs between the reference and the kernel, so
+        // compare with a relative tolerance rather than bit-exactly.
+        let tol = expected.abs() * 1e-4 + 1e-3;
+        assert!(
+            (out[0] - expected).abs() <= tol,
+            "reduce_sum(a+b) on Metal via FFI = {}, expected ~{} (tol {})",
+            out[0],
+            expected,
+            tol
+        );
+
+        molt_gpu_prim_free(ha);
+        molt_gpu_prim_free(hb);
+        molt_gpu_prim_free(hsum);
+        molt_gpu_prim_free(hred);
+    }
+}
+
+/// CPU-path realize VALUE regressions, gated on `molt_gpu_primitives` only (no
+/// Metal). The buffer-id bug affected the CPU pipeline identically to Metal, so
+/// these assert the CPU `realize()` produces correct VALUES — exercising
+/// [`execute_fused_pipeline_cpu`] directly (independent of which device the
+/// public FFI dispatches to), through DAGs built via the real FFI constructors.
+///
+/// Coverage is deliberately structural, not a single happy path:
+/// - single-kernel binary (`a + b`),
+/// - a leaf read twice in one kernel (`x * x`) — the id-dedup / aliasing case,
+/// - a reduce (`reduce_sum(a)`) — distinct output-vs-input shape,
+/// - a multi-kernel DAG with TWO live intermediates (`reduce_sum(a) +
+///   reduce_sum(b)`) — the case the old `last_output`-only routing mis-handled.
+#[cfg(all(test, feature = "molt_gpu_primitives"))]
+mod cpu_realize_value_tests {
+    use super::*;
+
+    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+        bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    }
+
+    /// Schedule + specialize + fuse a tensor handle's DAG and run it through the
+    /// CPU pipeline, returning the realized f32 values.
+    fn realize_cpu_values(handle: u64) -> Vec<f32> {
+        let (lazy, shape, dtype) =
+            with_tensor(handle, |t| (t.lazy.clone(), t.shape.clone(), t.dtype)).expect("tensor");
+        let mut kernels = schedule::schedule(&lazy, &shape);
+        schedule::specialize_shapes(&mut kernels);
+        let fused = fuse::fuse(kernels);
+        let numel: usize = shape.iter().product();
+        bytes_to_f32(&execute_fused_pipeline_cpu(&lazy, &fused, numel, dtype))
+    }
+
+    fn make_tensor(data: &[f32], shape: &[usize]) -> u64 {
+        // SAFETY: pointers valid for their lengths for the duration of the call.
+        unsafe {
+            molt_gpu_prim_create_tensor(data.as_ptr(), data.len(), shape.as_ptr(), shape.len())
+        }
+    }
+
+    #[test]
+    fn cpu_realize_add_computes_real_values_not_zeros() {
+        let n = 1024usize;
+        let a: Vec<f32> = (0..n).map(|i| (i as f32) * 0.5 - 4.0).collect();
+        let b: Vec<f32> = (0..n).map(|i| (n - i) as f32 * 0.25 + 1.0).collect();
+
+        let ha = make_tensor(&a, &[n]);
+        let hb = make_tensor(&b, &[n]);
+        let hc = molt_gpu_prim_binary(0 /* Add */, ha, hb);
+        assert_ne!(hc, u64::MAX);
+
+        let out = realize_cpu_values(hc);
+        let expected: Vec<f32> = (0..n).map(|i| a[i] + b[i]).collect();
+        assert_eq!(out, expected, "CPU realize a+b must equal a[i]+b[i], not zeros");
+
+        // Sanity: prove it is NOT the all-zeros fallback (the historical bug).
+        assert!(
+            out.iter().any(|&v| v != 0.0),
+            "output is all zeros — the leaf-data bridge regressed"
+        );
+
+        molt_gpu_prim_free(ha);
+        molt_gpu_prim_free(hb);
+        molt_gpu_prim_free(hc);
+    }
+
+    #[test]
+    fn cpu_realize_square_same_leaf_twice() {
+        // x * x reads ONE leaf into BOTH operands. The scheduler must emit a
+        // single input binding (deduped by buffer id) with srcs [Buf(1), Buf(1)],
+        // and the bridge must route the leaf's real data to it.
+        let n = 512usize;
+        let x: Vec<f32> = (0..n).map(|i| (i as f32) * 0.125 - 2.0).collect();
+
+        let hx = make_tensor(&x, &[n]);
+        let hsq = molt_gpu_prim_binary(2 /* Mul */, hx, hx);
+        assert_ne!(hsq, u64::MAX);
+
+        let out = realize_cpu_values(hsq);
+        let expected: Vec<f32> = x.iter().map(|&v| v * v).collect();
+        assert_eq!(out, expected, "x*x must square the real leaf data");
+
+        molt_gpu_prim_free(hx);
+        molt_gpu_prim_free(hsq);
+    }
+
+    #[test]
+    fn cpu_realize_reduce_sum_value() {
+        let n = 1000usize;
+        let a: Vec<f32> = (0..n).map(|i| (i as f32) * 0.01 - 5.0).collect();
+
+        let ha = make_tensor(&a, &[n]);
+        let hred = molt_gpu_prim_reduce(24 /* ReduceSum */, ha, 0);
+        assert_ne!(hred, u64::MAX);
+
+        let out = realize_cpu_values(hred);
+        assert_eq!(out.len(), 1, "reduce over the only axis yields a scalar");
+        let expected: f32 = a.iter().sum();
+        let tol = expected.abs() * 1e-4 + 1e-3;
+        assert!(
+            (out[0] - expected).abs() <= tol,
+            "reduce_sum(a) = {}, expected ~{}",
+            out[0],
+            expected
+        );
+
+        molt_gpu_prim_free(ha);
+        molt_gpu_prim_free(hred);
+    }
+
+    #[test]
+    fn cpu_realize_two_reduces_then_add_routes_both_intermediates() {
+        // DAG: ADD(reduce_sum(a), reduce_sum(b)). This forces the scheduler to
+        // emit >= 2 kernels whose results are BOTH consumed by the final add —
+        // two distinct live intermediates. The old `last_output`-only routing
+        // fed the final kernel the same (last) intermediate for both operands and
+        // was wrong; the id-keyed `intermediates` map routes each correctly.
+        let n = 256usize;
+        let a: Vec<f32> = (0..n).map(|i| (i as f32) * 0.5 + 1.0).collect();
+        let b: Vec<f32> = (0..n).map(|i| -(i as f32) * 0.25 - 3.0).collect();
+
+        let ha = make_tensor(&a, &[n]);
+        let hb = make_tensor(&b, &[n]);
+        let ra = molt_gpu_prim_reduce(24 /* ReduceSum */, ha, 0);
+        let rb = molt_gpu_prim_reduce(24 /* ReduceSum */, hb, 0);
+        let hsum = molt_gpu_prim_binary(0 /* Add */, ra, rb);
+        assert_ne!(hsum, u64::MAX);
+
+        // Confirm this DAG really schedules to multiple kernels (so the
+        // intermediate-routing path is actually exercised, not fused away).
+        let (lazy, shape, _dtype) =
+            with_tensor(hsum, |t| (t.lazy.clone(), t.shape.clone(), t.dtype)).expect("tensor");
+        let kernels = schedule::schedule(&lazy, &shape);
+        assert!(
+            kernels.len() >= 3,
+            "expected >=3 kernels (two reduces + add), got {}",
+            kernels.len()
+        );
+
+        let out = realize_cpu_values(hsum);
+        assert_eq!(out.len(), 1);
+        let sum_a: f32 = a.iter().sum();
+        let sum_b: f32 = b.iter().sum();
+        let expected = sum_a + sum_b;
+        let tol = expected.abs() * 1e-4 + 1e-3;
+        assert!(
+            (out[0] - expected).abs() <= tol,
+            "reduce_sum(a)+reduce_sum(b) = {}, expected ~{} (each intermediate \
+             must route to its own buffer)",
+            out[0],
+            expected
+        );
+
+        molt_gpu_prim_free(ha);
+        molt_gpu_prim_free(hb);
+        molt_gpu_prim_free(ra);
+        molt_gpu_prim_free(rb);
+        molt_gpu_prim_free(hsum);
     }
 }

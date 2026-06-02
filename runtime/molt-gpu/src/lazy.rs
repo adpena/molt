@@ -5,16 +5,50 @@
 //! the fusion engine to see the full computation graph.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
 use crate::shapetracker::ShapeTracker;
 
+/// Process-global monotonic allocator for buffer identities.
+///
+/// Every concrete buffer (a realized leaf tensor) AND every scheduler-materialized
+/// intermediate draws its `buf_id` from this single counter, so all buffer
+/// identities in the system are globally unique by construction. This is the
+/// invariant that makes the schedule/execute bridge correct:
+///
+/// - A leaf's [`DeviceBufferRef::id`] is the key the runtime uses to look its
+///   realized bytes up in the tensor store. It must be stable and unique per
+///   distinct leaf so two different leaves never collide in that store, and so
+///   the *same* leaf referenced by multiple ops resolves to the *same* data.
+/// - The scheduler assigns each `BufferBinding::buf_id` from the identity of the
+///   DAG node that produces that buffer (a leaf's own id, or a fresh id for an
+///   intermediate). Because leaf ids and intermediate ids are drawn from this
+///   one counter, the two id spaces can never overlap, and the codegen layer
+///   (which uses `buf_id` as a unique per-kernel parameter name) stays correct.
+///
+/// Starts at 1 so `0` is never a live buffer id — making a stale/placeholder `0`
+/// (the historical "realize computes on zeros" bug) impossible to mistake for a
+/// real buffer.
+static NEXT_BUFFER_ID: AtomicUsize = AtomicUsize::new(1);
+
+/// Allocate a fresh, process-globally-unique buffer identity.
+///
+/// Used both by runtime tensor constructors (for realized leaves) and by the
+/// scheduler (for materialized intermediates), guaranteeing the two never
+/// collide. `Relaxed` ordering is sufficient: we only require uniqueness of the
+/// returned values, not ordering relative to other memory operations.
+pub fn alloc_buffer_id() -> usize {
+    NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Opaque handle to a device buffer. The actual buffer is managed
 /// by the device's Allocator and not exposed through the DAG.
 #[derive(Debug, Clone)]
 pub struct DeviceBufferRef {
-    /// Unique identifier for this buffer in the device's allocation table.
+    /// Globally-unique identifier for this buffer, drawn from
+    /// [`alloc_buffer_id`]. Never `0` for a live buffer.
     pub id: usize,
     /// Size in bytes.
     pub size_bytes: usize,

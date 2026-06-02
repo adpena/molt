@@ -57,12 +57,107 @@ pub fn preferred_local_sizes_for_backend(
 ///
 /// Phase 1: single-op kernels (no fusion). The fusion engine (fuse.rs)
 /// will merge these in a subsequent pass.
+///
+/// ## Buffer identity contract
+///
+/// Each [`BufferBinding::buf_id`] is the *identity of the DAG node that
+/// produces that buffer's data*, NOT a fresh per-binding counter:
+///
+/// - A **leaf** ([`LazyOp::Buffer`]) contributes its own [`DeviceBufferRef::id`]
+///   as the binding id. That id is the key the runtime uses to fetch the leaf's
+///   realized bytes, so the schedule→execute bridge (which looks data up by
+///   binding id) resolves to the correct input buffer. Two ops reading the same
+///   leaf therefore share a binding id, and a leaf read twice within one kernel
+///   (e.g. `x - x`) collapses to a single binding.
+/// - An **intermediate** (the result of a non-leaf op that another kernel
+///   consumes) gets a fresh globally-unique id from [`alloc_buffer_id`],
+///   memoized per node so the producing kernel's output binding and every
+///   consuming kernel's input binding agree. This is what `fuse::merge_chain`'s
+///   buffer-dedup and the executor's kernel-chaining rely on.
+///
+/// Because leaf ids and intermediate ids are both drawn from the single global
+/// [`alloc_buffer_id`] counter, the two id spaces never overlap.
 pub fn schedule(root: &Arc<LazyOp>, _output_shape: &[usize]) -> Vec<FusedKernel> {
     let mut kernels = Vec::new();
-    let mut next_buf_id = 0;
+    let mut ctx = ScheduleCtx::default();
 
-    schedule_recursive(root, &mut kernels, &mut next_buf_id);
+    schedule_recursive(root, &mut kernels, &mut ctx);
     kernels
+}
+
+/// Scheduler state: maps each DAG node to its stable buffer identity.
+///
+/// Keyed by the node's `Arc<LazyOp>` pointer address (stable for the lifetime of
+/// the DAG, which the root keeps alive across scheduling). The same node always
+/// resolves to the same id; distinct nodes resolve to distinct ids.
+#[derive(Default)]
+struct ScheduleCtx {
+    /// `Arc<LazyOp>` pointer (as usize) -> assigned buffer id.
+    node_ids: HashMap<usize, usize>,
+}
+
+impl ScheduleCtx {
+    /// The stable buffer id of the buffer produced by `node`.
+    ///
+    /// Leaves contribute their concrete [`DeviceBufferRef::id`]; non-leaves are
+    /// assigned a fresh globally-unique id on first encounter and memoized so all
+    /// later references to the same node observe the same id.
+    fn buf_id_for(&mut self, node: &Arc<LazyOp>) -> usize {
+        if let LazyOp::Buffer { buf, .. } = node.as_ref() {
+            return buf.id;
+        }
+        let key = Arc::as_ptr(node) as usize;
+        *self.node_ids.entry(key).or_insert_with(crate::lazy::alloc_buffer_id)
+    }
+}
+
+/// Build the input bindings for a kernel from its ordered operand nodes,
+/// deduplicating operands that refer to the same DAG node.
+///
+/// Returns `(input_bindings, operand_slots)` where `input_bindings` are the
+/// distinct input [`BufferBinding`]s (to be appended after the output at
+/// `bufs[0]`) and `operand_slots[i]` is the `bufs` index that operand `i`
+/// resolves to — i.e. the value to wrap in `FusedSrc::Buf`.
+///
+/// Deduplication is required for two reasons that the historical
+/// fresh-id-per-operand scheme violated:
+/// 1. **Codegen correctness**: renderers emit `buf{buf_id}` as a unique kernel
+///    parameter name; two bindings with the same id (the same source) would
+///    declare the parameter twice. Collapsing repeats keeps names unique.
+/// 2. **Data routing**: the same source must map to one physical input buffer
+///    (e.g. `x - x` reads one buffer, used for both operands), mirroring the
+///    `srcs: [Buf(1), Buf(1)]` convention the interpreter and Metal paths expect.
+///
+/// `binding_st` is the [`ShapeTracker`] view every input binding of this kernel
+/// shares: the output view for elementwise ops, the source view for a reduce
+/// (whose input element count differs from its output).
+fn build_input_bindings(
+    ctx: &mut ScheduleCtx,
+    binding_st: &ShapeTracker,
+    operands: &[&Arc<LazyOp>],
+) -> (Vec<BufferBinding>, Vec<usize>) {
+    let mut input_bindings: Vec<BufferBinding> = Vec::with_capacity(operands.len());
+    let mut operand_slots: Vec<usize> = Vec::with_capacity(operands.len());
+
+    for operand in operands {
+        let id = ctx.buf_id_for(operand);
+        // bufs[0] is the output; inputs begin at slot 1. Reuse an existing slot
+        // if this operand's source is already bound (same buffer id).
+        if let Some(pos) = input_bindings.iter().position(|b| b.buf_id == id) {
+            operand_slots.push(pos + 1);
+        } else {
+            let slot = input_bindings.len() + 1;
+            input_bindings.push(BufferBinding {
+                buf_id: id,
+                st: binding_st.clone(),
+                dtype: operand.dtype(),
+                access: BufferAccess::Read,
+            });
+            operand_slots.push(slot);
+        }
+    }
+
+    (input_bindings, operand_slots)
 }
 
 /// Run shape specialization on a list of kernels.
@@ -213,40 +308,39 @@ fn kernel_structural_hash(kernel: &FusedKernel) -> u64 {
     hasher.finish()
 }
 
-fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, next_buf_id: &mut usize) {
+fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &mut ScheduleCtx) {
     match node.as_ref() {
         LazyOp::Buffer { .. } => {
-            // Leaf node — already materialized, nothing to schedule.
+            // Leaf node — already materialized, nothing to schedule. Its buffer
+            // id is its own `DeviceBufferRef::id`, resolved on demand by
+            // `ScheduleCtx::buf_id_for` when a parent op binds it.
         }
         LazyOp::Unary { op, src } => {
-            schedule_recursive(src, kernels, next_buf_id);
+            schedule_recursive(src, kernels, ctx);
             let shape = node.shape();
             let n = shape.iter().product::<usize>();
-            let out_id = *next_buf_id;
-            *next_buf_id += 1;
-            let in_id = *next_buf_id;
-            *next_buf_id += 1;
+
+            let out_id = ctx.buf_id_for(node);
+            let st = ShapeTracker::contiguous(&shape);
+            let (inputs, slots) =
+                build_input_bindings(ctx, &st, &[src]);
+
+            let mut bufs = Vec::with_capacity(1 + inputs.len());
+            bufs.push(BufferBinding {
+                buf_id: out_id,
+                st: st.clone(),
+                dtype: node.dtype(),
+                access: BufferAccess::Write,
+            });
+            bufs.extend(inputs);
 
             kernels.push(FusedKernel {
                 ops: vec![FusedOp {
                     op: *op,
-                    srcs: vec![FusedSrc::Buf(1)],
+                    srcs: vec![FusedSrc::Buf(slots[0])],
                     dst_dtype: node.dtype(),
                 }],
-                bufs: vec![
-                    BufferBinding {
-                        buf_id: out_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: node.dtype(),
-                        access: BufferAccess::Write,
-                    },
-                    BufferBinding {
-                        buf_id: in_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: src.dtype(),
-                        access: BufferAccess::Read,
-                    },
-                ],
+                bufs,
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
                 spec: None,
@@ -254,43 +348,32 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, next_b
             });
         }
         LazyOp::Binary { op, lhs, rhs } => {
-            schedule_recursive(lhs, kernels, next_buf_id);
-            schedule_recursive(rhs, kernels, next_buf_id);
+            schedule_recursive(lhs, kernels, ctx);
+            schedule_recursive(rhs, kernels, ctx);
             let shape = node.shape();
             let n = shape.iter().product::<usize>();
-            let out_id = *next_buf_id;
-            *next_buf_id += 1;
-            let lhs_id = *next_buf_id;
-            *next_buf_id += 1;
-            let rhs_id = *next_buf_id;
-            *next_buf_id += 1;
+
+            let out_id = ctx.buf_id_for(node);
+            let st = ShapeTracker::contiguous(&shape);
+            let (inputs, slots) =
+                build_input_bindings(ctx, &st, &[lhs, rhs]);
+
+            let mut bufs = Vec::with_capacity(1 + inputs.len());
+            bufs.push(BufferBinding {
+                buf_id: out_id,
+                st: st.clone(),
+                dtype: node.dtype(),
+                access: BufferAccess::Write,
+            });
+            bufs.extend(inputs);
 
             kernels.push(FusedKernel {
                 ops: vec![FusedOp {
                     op: *op,
-                    srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                    srcs: vec![FusedSrc::Buf(slots[0]), FusedSrc::Buf(slots[1])],
                     dst_dtype: node.dtype(),
                 }],
-                bufs: vec![
-                    BufferBinding {
-                        buf_id: out_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: node.dtype(),
-                        access: BufferAccess::Write,
-                    },
-                    BufferBinding {
-                        buf_id: lhs_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: lhs.dtype(),
-                        access: BufferAccess::Read,
-                    },
-                    BufferBinding {
-                        buf_id: rhs_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: rhs.dtype(),
-                        access: BufferAccess::Read,
-                    },
-                ],
+                bufs,
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
                 spec: None,
@@ -298,52 +381,37 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, next_b
             });
         }
         LazyOp::Ternary { op, cond, a, b } => {
-            schedule_recursive(cond, kernels, next_buf_id);
-            schedule_recursive(a, kernels, next_buf_id);
-            schedule_recursive(b, kernels, next_buf_id);
+            schedule_recursive(cond, kernels, ctx);
+            schedule_recursive(a, kernels, ctx);
+            schedule_recursive(b, kernels, ctx);
             let shape = node.shape();
             let n = shape.iter().product::<usize>();
-            let out_id = *next_buf_id;
-            *next_buf_id += 1;
-            let cond_id = *next_buf_id;
-            *next_buf_id += 1;
-            let a_id = *next_buf_id;
-            *next_buf_id += 1;
-            let b_id = *next_buf_id;
-            *next_buf_id += 1;
+
+            let out_id = ctx.buf_id_for(node);
+            let st = ShapeTracker::contiguous(&shape);
+            let (inputs, slots) =
+                build_input_bindings(ctx, &st, &[cond, a, b]);
+
+            let mut bufs = Vec::with_capacity(1 + inputs.len());
+            bufs.push(BufferBinding {
+                buf_id: out_id,
+                st: st.clone(),
+                dtype: node.dtype(),
+                access: BufferAccess::Write,
+            });
+            bufs.extend(inputs);
 
             kernels.push(FusedKernel {
                 ops: vec![FusedOp {
                     op: *op,
-                    srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+                    srcs: vec![
+                        FusedSrc::Buf(slots[0]),
+                        FusedSrc::Buf(slots[1]),
+                        FusedSrc::Buf(slots[2]),
+                    ],
                     dst_dtype: node.dtype(),
                 }],
-                bufs: vec![
-                    BufferBinding {
-                        buf_id: out_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: node.dtype(),
-                        access: BufferAccess::Write,
-                    },
-                    BufferBinding {
-                        buf_id: cond_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: cond.dtype(),
-                        access: BufferAccess::Read,
-                    },
-                    BufferBinding {
-                        buf_id: a_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: a.dtype(),
-                        access: BufferAccess::Read,
-                    },
-                    BufferBinding {
-                        buf_id: b_id,
-                        st: ShapeTracker::contiguous(&shape),
-                        dtype: b.dtype(),
-                        access: BufferAccess::Read,
-                    },
-                ],
+                bufs,
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
                 spec: None,
@@ -351,35 +419,35 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, next_b
             });
         }
         LazyOp::Reduce { op, src, axis: _ } => {
-            schedule_recursive(src, kernels, next_buf_id);
+            schedule_recursive(src, kernels, ctx);
             let in_shape = src.shape();
             let out_shape = node.shape();
             let out_n = out_shape.iter().product::<usize>().max(1);
-            let out_id = *next_buf_id;
-            *next_buf_id += 1;
-            let in_id = *next_buf_id;
-            *next_buf_id += 1;
+
+            let out_id = ctx.buf_id_for(node);
+            // The reduce input keeps the SOURCE shape (which differs from the
+            // output), so the binding ShapeTracker is the input shape, not the
+            // output shape.
+            let in_st = ShapeTracker::contiguous(&in_shape);
+            let (inputs, slots) =
+                build_input_bindings(ctx, &in_st, &[src]);
+
+            let mut bufs = Vec::with_capacity(1 + inputs.len());
+            bufs.push(BufferBinding {
+                buf_id: out_id,
+                st: ShapeTracker::contiguous(&out_shape),
+                dtype: node.dtype(),
+                access: BufferAccess::Write,
+            });
+            bufs.extend(inputs);
 
             kernels.push(FusedKernel {
                 ops: vec![FusedOp {
                     op: *op,
-                    srcs: vec![FusedSrc::Buf(1)],
+                    srcs: vec![FusedSrc::Buf(slots[0])],
                     dst_dtype: node.dtype(),
                 }],
-                bufs: vec![
-                    BufferBinding {
-                        buf_id: out_id,
-                        st: ShapeTracker::contiguous(&out_shape),
-                        dtype: node.dtype(),
-                        access: BufferAccess::Write,
-                    },
-                    BufferBinding {
-                        buf_id: in_id,
-                        st: ShapeTracker::contiguous(&in_shape),
-                        dtype: src.dtype(),
-                        access: BufferAccess::Read,
-                    },
-                ],
+                bufs,
                 grid: [out_n as u32, 1, 1],
                 local: [out_n.min(256) as u32, 1, 1],
                 spec: None,
@@ -388,11 +456,11 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, next_b
         }
         LazyOp::Movement { src, st: _ } => {
             // Movement ops are free — just modify the ShapeTracker.
-            schedule_recursive(src, kernels, next_buf_id);
+            schedule_recursive(src, kernels, ctx);
         }
         LazyOp::Contiguous { src } => {
             // Force materialization — insert a copy kernel.
-            schedule_recursive(src, kernels, next_buf_id);
+            schedule_recursive(src, kernels, ctx);
         }
     }
 }
