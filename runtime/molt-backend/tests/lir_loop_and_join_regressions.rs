@@ -1,3 +1,4 @@
+use cranelift_object::object::{Object, ObjectSymbol};
 use molt_backend::tir::lower_from_simple::lower_to_tir;
 use molt_backend::tir::lower_to_simple::lower_to_simple_ir;
 use molt_backend::tir::passes::run_pipeline;
@@ -9,6 +10,70 @@ fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
         ..OpIR::default()
+    }
+}
+
+/// Compile a standalone codegen object for inspection.
+///
+/// These tests compile a single function to an object purely to inspect the
+/// emitted symbols; the object is never linked into a final binary. Such
+/// objects must NOT emit the per-app `molt_app_resolve_intrinsic` resolver —
+/// emitting it would demand the linked runtime staticlib's intrinsic-symbol
+/// set (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`), which a unit-level codegen test
+/// neither has nor needs. Production uses the identical opt-out for every
+/// non-primary object (stdlib-cache / batch objects; see
+/// `runtime/molt-backend/src/main.rs`). The `cfg(test)` carve-out in
+/// `runtime_intrinsic_symbols_required` only covers *in-crate* unit tests;
+/// integration tests link `molt-backend` as a non-test library, so they take
+/// the canonical `emit_app_intrinsic_resolver = false` path instead.
+fn compile_standalone(ir: SimpleIR) -> CompileOutput {
+    let mut backend = SimpleBackend::new();
+    backend.emit_app_intrinsic_resolver = false;
+    backend.compile(ir)
+}
+
+/// Assert that `func_name` was lowered to a real, defined symbol in the
+/// emitted object — the structural successor to the old
+/// `output.trap_stub_names.is_empty()` check.
+///
+/// The native backend no longer has a trap-stub fallback (removed in
+/// `8649b923b` "native: fail closed on codegen failures"). It now *fails
+/// closed*: if a function cannot be compiled, `SimpleBackend::compile` panics
+/// ("Cranelift compilation failed for `…`" or "native backend left … exported
+/// function declaration(s) undefined") rather than emitting an object with a
+/// runtime-aborting trap-stub body. The original tests asserted "this program
+/// produced no trap-stub fallbacks"; the equivalent invariant today is that
+/// `compile` returns at all *and* the function under test is present as a
+/// defined (non-undefined) Export symbol — a trap-stubbed function never
+/// reaches this state because codegen aborts first.
+fn assert_function_compiled(bytes: &[u8], func_name: &str) {
+    let file = cranelift_object::object::File::parse(bytes)
+        .expect("backend must emit a parseable object file");
+    let defined = file.symbols().any(|symbol| {
+        symbol_matches(symbol.name().ok(), func_name)
+            && symbol.is_definition()
+            && !symbol.is_undefined()
+    });
+    assert!(
+        defined,
+        "function `{func_name}` must be emitted as a defined symbol (no trap-stub fallback); \
+         present symbols: {:?}",
+        file.symbols()
+            .filter_map(|s| s.name().ok().map(str::to_string))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Compare an object-file symbol name against an unmangled function name.
+///
+/// Mach-O (macOS) prefixes C-ABI symbols with a leading underscore in the
+/// object's symbol table (`_foo`), while ELF (Linux) does not (`foo`). The
+/// `object` crate surfaces the raw table name, so accept either form to keep
+/// the assertion target-portable.
+fn symbol_matches(symbol_name: Option<&str>, func_name: &str) -> bool {
+    match symbol_name {
+        Some(name) => name == func_name || name.strip_prefix('_') == Some(func_name),
+        None => false,
     }
 }
 
@@ -34,7 +99,7 @@ fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
         }],
         profile: None,
     };
-    SimpleBackend::new().compile(ir)
+    compile_standalone(ir)
 }
 
 #[test]
@@ -191,13 +256,9 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
         profile: None,
     };
 
-    let output = SimpleBackend::new().compile(ir);
+    let output = compile_standalone(ir);
     assert!(!output.bytes.is_empty());
-    assert!(
-        output.trap_stub_names.is_empty(),
-        "unexpected trap stubs: {:?}",
-        output.trap_stub_names
-    );
+    assert_function_compiled(&output.bytes, "nested_loop_if_phi_regression");
 }
 
 #[test]
@@ -283,13 +344,9 @@ fn loop_body_if_join_then_continue_compiles() {
         profile: None,
     };
 
-    let output = SimpleBackend::new().compile(ir);
+    let output = compile_standalone(ir);
     assert!(!output.bytes.is_empty());
-    assert!(
-        output.trap_stub_names.is_empty(),
-        "unexpected trap stubs: {:?}",
-        output.trap_stub_names
-    );
+    assert_function_compiled(&output.bytes, "loop_body_if_join_continue");
 }
 
 #[test]
@@ -382,11 +439,7 @@ fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
 
     let output = roundtrip_compile(func);
     assert!(!output.bytes.is_empty());
-    assert!(
-        output.trap_stub_names.is_empty(),
-        "unexpected trap stubs: {:?}",
-        output.trap_stub_names
-    );
+    assert_function_compiled(&output.bytes, "loop_if_return_continue_roundtrip");
 }
 
 #[test]
