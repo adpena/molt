@@ -3729,6 +3729,18 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
         let output = tmp_dir.join("out.o");
         let stdlib = tmp_dir.join("stdlib.o");
+        // The main application object emits the per-app intrinsic resolver, which
+        // requires the linked runtime staticlib's `molt_*` intrinsic-symbol set
+        // (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`). Production always extracts and
+        // exposes this before native codegen; replicate that precondition through
+        // the daemon's env-passthrough so this test exercises the real resolver
+        // path instead of hitting the fail-closed guard. These IR functions take
+        // no intrinsic addresses (no `const_str` ops), so the resolved manifest is
+        // empty regardless; the file just satisfies the required-symbol-set
+        // contract with the symbols this object actually references.
+        let runtime_symbols = tmp_dir.join("runtime_intrinsic_symbols.txt");
+        std::fs::write(&runtime_symbols, "molt_init_sys\nmolt_main\n")
+            .expect("write runtime intrinsic symbol set");
         let request = serde_json::json!({
             "version": BACKEND_DAEMON_PROTOCOL_VERSION,
             "config_digest": "daemon-test",
@@ -3737,6 +3749,7 @@ mod tests {
                 "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
                 "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
+                "MOLT_RUNTIME_INTRINSIC_SYMBOLS": runtime_symbols.to_string_lossy(),
             },
             "jobs": [{
                 "id": "job0",
@@ -3866,6 +3879,10 @@ mod tests {
             "daemon path emitted empty object"
         );
 
+        // The daemon env-passthrough mutated the process environment; clear the
+        // resolver symbol-set var so it does not leak into sibling tests that
+        // share `ENV_TEST_MUTEX`.
+        unsafe { std::env::remove_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS") };
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -3919,6 +3936,21 @@ mod tests {
         std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
         let output = tmp_dir.join("out.o");
         let stdlib = tmp_dir.join("stdlib.o");
+        // The main application object emits the per-app intrinsic resolver, which
+        // requires the linked runtime staticlib's `molt_*` intrinsic-symbol set
+        // (`MOLT_RUNTIME_INTRINSIC_SYMBOLS`). Production always extracts and
+        // exposes this before native codegen; replicate that precondition through
+        // the daemon's env-passthrough so this test exercises the real resolver
+        // path instead of hitting the fail-closed guard. These IR functions take
+        // no intrinsic addresses (no `const_str` ops), so the resolved manifest is
+        // empty regardless; the file just satisfies the required-symbol-set
+        // contract with the symbols this object actually references.
+        let runtime_symbols = tmp_dir.join("runtime_intrinsic_symbols.txt");
+        std::fs::write(
+            &runtime_symbols,
+            "molt_init_sys\nmolt_init_demo\nmolt_main\nmolt_host_init\n",
+        )
+        .expect("write runtime intrinsic symbol set");
         let request = serde_json::json!({
             "version": BACKEND_DAEMON_PROTOCOL_VERSION,
             "config_digest": "daemon-test",
@@ -3927,6 +3959,7 @@ mod tests {
                 "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
                 "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
+                "MOLT_RUNTIME_INTRINSIC_SYMBOLS": runtime_symbols.to_string_lossy(),
                 "MOLT_BACKEND_BATCH_SIZE": "1",
             },
             "jobs": [{
@@ -4015,6 +4048,10 @@ mod tests {
             "unexpected undefined chunk symbol:\n{text}"
         );
 
+        // The daemon env-passthrough mutated the process environment; clear the
+        // resolver symbol-set var so it does not leak into sibling tests that
+        // share `ENV_TEST_MUTEX`.
+        unsafe { std::env::remove_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS") };
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
