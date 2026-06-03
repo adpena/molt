@@ -17040,7 +17040,6 @@ _DEAD_FUNCTION_ELIM_REFERENCE_KINDS = frozenset(
         "import_from",
         "import_name",
         "class_def",
-        "make_function",
         "decorator",
         "super_call",
         "yield_from",

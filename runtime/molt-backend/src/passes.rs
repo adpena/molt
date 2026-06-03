@@ -2083,7 +2083,7 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                 }
                 // Other op kinds that legitimately reference functions by name.
                 "task_new" | "generator_send" | "spawn" | "call_func" | "call_method"
-                | "import_from" | "import_name" | "class_def" | "make_function" | "decorator"
+                | "import_from" | "import_name" | "class_def" | "decorator"
                 | "super_call" | "yield_from" | "await" => {
                     if let Some(name) = op.s_value.as_ref()
                         && defined.contains(name.as_str())
