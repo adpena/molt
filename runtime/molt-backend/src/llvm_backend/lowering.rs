@@ -8938,7 +8938,9 @@ mod tests {
         // emit a raw machine `add` instead of routing through the runtime.
         let (func, v_sum) = build_i64_add_func();
         let mut facts = crate::representation_plan::LlvmReprFacts::default();
-        facts.overflow_safe_values.insert(v_sum);
+        facts
+            .repr_by_value
+            .insert(v_sum, crate::representation_plan::Repr::RawI64Safe);
         backend
             .function_repr_facts
             .insert(func.name.clone(), facts);
