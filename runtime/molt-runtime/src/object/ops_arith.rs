@@ -1036,6 +1036,90 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
     })
 }
 
+/// Correctly-rounded integer true division `num / den` returning the nearest
+/// IEEE-754 double, matching CPython's `long_true_divide` (`Objects/longobject.c`).
+///
+/// Both operands are exact arbitrary-precision integers and `den` must be
+/// non-zero (the caller handles division by zero). Returns `None` when the
+/// magnitude of the correctly-rounded result exceeds `f64::MAX`, which the
+/// caller maps to `OverflowError` exactly as CPython does.
+///
+/// A naive `num.to_f64() / den.to_f64()` double-rounds (each operand is first
+/// rounded to a double, then divided), disagreeing with CPython by up to one ULP
+/// once an operand exceeds 2^53. This instead produces a single correctly-rounded
+/// result: it scales so the exact integer quotient retains `DBL_MANT_DIG + 2`
+/// significant bits plus a sticky bit derived from the exact remainder, then lets
+/// the hardware `u64 -> f64` conversion apply IEEE-754 round-half-to-even before
+/// scaling by the recorded power of two via `ldexp`.
+fn bigint_true_divide(num: &BigInt, den: &BigInt) -> Option<f64> {
+    // IEEE-754 binary64 parameters (mirrors C's float.h for the CPython port).
+    const DBL_MANT_DIG: i64 = 53;
+    const DBL_MAX_EXP: i64 = 1024;
+    const DBL_MIN_EXP: i64 = -1021;
+    // Quotient bits extracted beyond the 53-bit mantissa: one guard bit plus one
+    // sticky bit, matching CPython's `extra_bits = 2`.
+    const EXTRA_BITS: i64 = 2;
+
+    debug_assert!(!den.is_zero());
+    if num.is_zero() {
+        return Some(0.0);
+    }
+
+    let negate = (num.sign() == Sign::Minus) != (den.sign() == Sign::Minus);
+    // Work with non-negative magnitudes; the sign is reapplied at the end.
+    let a = BigInt::from(num.magnitude().clone());
+    let b = BigInt::from(den.magnitude().clone());
+    let a_bits = a.bits() as i64; // bit_length of |num| (>= 1)
+    let b_bits = b.bits() as i64; // bit_length of |den| (>= 1)
+
+    // `diff` brackets the result exponent: 2^(diff-1) <= |num|/|den| < 2^(diff+1).
+    let diff = a_bits - b_bits;
+    if diff > DBL_MAX_EXP {
+        return None; // certain overflow
+    }
+    if diff < DBL_MIN_EXP - DBL_MANT_DIG - 1 {
+        return Some(if negate { -0.0 } else { 0.0 }); // certain underflow to 0
+    }
+
+    // Scale so the integer quotient keeps DBL_MANT_DIG + EXTRA_BITS significant
+    // bits, clamped at the subnormal floor so we never demand more precision than
+    // a subnormal double provides.
+    let shift = std::cmp::max(diff, DBL_MIN_EXP) - DBL_MANT_DIG - EXTRA_BITS;
+
+    // q = floor(|num| / |den| * 2^-shift), with `inexact` set when a non-zero
+    // remainder was discarded. `shift <= 0` scales the numerator up; otherwise it
+    // scales the denominator up. All arithmetic is exact BigInt arithmetic.
+    let (mut quotient, inexact) = if shift <= 0 {
+        let scaled = &a << ((-shift) as u64);
+        let (q, r) = scaled.div_rem(&b);
+        (q, !r.is_zero())
+    } else {
+        let scaled_den = &b << (shift as u64);
+        let (q, r) = a.div_rem(&scaled_den);
+        (q, !r.is_zero())
+    };
+
+    // Fold the discarded remainder into the least-significant bit as a sticky bit
+    // so the hardware mantissa rounding sees "round up past a half" correctly
+    // (CPython's `if (inexact) x |= 1`). Only sets the bit when it is currently
+    // clear, preserving the value's parity for ties-to-even.
+    if inexact && !quotient.bit(0) {
+        quotient += 1;
+    }
+
+    // `quotient` has at most DBL_MANT_DIG + EXTRA_BITS + 1 = 56 bits, so it fits a
+    // u64. The `u64 -> f64` cast rounds half-to-even (IEEE-754 default), then
+    // `ldexp` scales by 2^shift without further rounding.
+    let q_u: u64 = quotient
+        .to_u64()
+        .expect("scaled true-divide quotient must fit in 56 bits");
+    let scaled = (q_u as f64) * (shift as f64).exp2();
+    if scaled.is_infinite() {
+        return None; // rounding pushed the result past f64::MAX
+    }
+    Some(if negate { -scaled } else { scaled })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1083,8 +1167,29 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
                 _ => {}
             }
         }
+        // Integer true division where at least one operand is a BigInt that does
+        // not fit i64 (the `to_i64` fast path above could not handle it). Python
+        // `int / int` always yields a correctly-rounded float; emit it via the
+        // CPython `long_true_divide` algorithm. Both operands must be integer
+        // (int / bool / BigInt); a non-numeric object falls through to dunder
+        // dispatch. Floats and complexes are already handled above, so `to_bigint`
+        // here only matches genuine integers.
         if bigint_ptr_from_bits(a).is_some() || bigint_ptr_from_bits(b).is_some() {
-            return raise_exception::<_>(_py, "OverflowError", "int too large to convert to float");
+            if let (Some(la), Some(lb)) = (to_bigint(lhs), to_bigint(rhs)) {
+                if lb.is_zero() {
+                    return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                }
+                match bigint_true_divide(&la, &lb) {
+                    Some(q) => return float_result_bits(_py, q),
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "OverflowError",
+                            "integer division result too large for a float",
+                        );
+                    }
+                }
+            }
         }
         unsafe {
             let div_name_bits = intern_static_name(
@@ -4080,6 +4185,71 @@ mod tests {
             assert_eq!(kind, "TypeError");
             assert_eq!(msg, "unsupported operand type(s) for <<: 'float' and 'int'");
         });
+    }
+
+    /// `bigint_true_divide` must produce the exact same IEEE-754 double as
+    /// CPython's `long_true_divide` (`int / int`), bit-for-bit. Reference bit
+    /// patterns were captured from CPython 3.12 via
+    /// `struct.pack('<d', a / b)`.
+    #[test]
+    fn bigint_true_divide_matches_cpython_bit_exact() {
+        // (numerator, denominator, expected f64 bits from CPython `a / b`).
+        let cases: &[(&str, &str, u64)] = &[
+            ("1152921504606846976", "2", 0x43a0_0000_0000_0000), // (1<<60)/2
+            ("1152921504606846976", "3", 0x4395_5555_5555_5555), // (1<<60)/3
+            ("1152921504606846977", "2", 0x43a0_0000_0000_0000), // ((1<<60)+1)/2 (ties-to-even)
+            ("1000000000000000000000000000000", "7", 0x45fc_d98a_8b00_a10b), // 10**30/7
+            ("-1180591620717411303424", "3", 0xc435_5555_5555_5555), // -(1<<70)/3
+            ("1", "3", 0x3fd5_5555_5555_5555),
+            (
+                "1267650600228229401496703205376", // 2**100
+                "1125899906842624",                // 2**50
+                0x4310_0000_0000_0000,
+            ),
+            ("1152921504606846976", "1", 0x43b0_0000_0000_0000), // (1<<60)/1
+            (
+                "-10000000000000000000000000000000000000000", // -(10**40)
+                "99991",
+                0xc733_42d3_0df6_e471,
+            ),
+            ("0", "5", 0x0000_0000_0000_0000), // 0/5 == +0.0
+            // 2**1000 / 3: large numerator near the top of the f64 range.
+            (
+                "10715086071862673209484250490600018105614048117055336074437503883703510511249361224931983788156958581275946729175531468251871452856923140435984577574698574803934567774824230985421074605062371141877954182153046474983581941267398767559165543946077062914571196477686542167660429831652624386837205668069376",
+                "3",
+                0x7e55_5555_5555_5555,
+            ),
+            // 3 / 2**1000: tiny quotient, exercises the subnormal-adjacent path.
+            (
+                "3",
+                "10715086071862673209484250490600018105614048117055336074437503883703510511249361224931983788156958581275946729175531468251871452856923140435984577574698574803934567774824230985421074605062371141877954182153046474983581941267398767559165543946077062914571196477686542167660429831652624386837205668069376",
+                0x0188_0000_0000_0000,
+            ),
+        ];
+        for (num_s, den_s, expected_bits) in cases {
+            let num: BigInt = num_s.parse().expect("numerator parses");
+            let den: BigInt = den_s.parse().expect("denominator parses");
+            let got = super::bigint_true_divide(&num, &den)
+                .unwrap_or_else(|| panic!("{num_s} / {den_s} unexpectedly overflowed f64"));
+            assert_eq!(
+                got.to_bits(),
+                *expected_bits,
+                "{num_s} / {den_s}: got {got:?} (0x{:016x}), expected 0x{expected_bits:016x}",
+                got.to_bits()
+            );
+        }
+    }
+
+    /// Magnitudes beyond `f64::MAX` must report overflow (mapped to
+    /// `OverflowError` by the caller), matching CPython.
+    #[test]
+    fn bigint_true_divide_overflows_past_f64_max() {
+        // 2**2000 / 1 far exceeds f64::MAX (~1.8e308).
+        let num: BigInt = BigInt::from(2).pow(2000);
+        let den: BigInt = BigInt::from(1);
+        assert!(super::bigint_true_divide(&num, &den).is_none());
+        // Negative direction overflows too.
+        assert!(super::bigint_true_divide(&(-num.clone()), &den).is_none());
     }
 }
 
