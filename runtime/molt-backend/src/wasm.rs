@@ -716,6 +716,51 @@ fn emit_box_bool_from_i32(func: &mut Function) {
     func.instruction(&Instruction::I64Or);
 }
 
+/// Push an `i32` boolean (`1` = truthy, `0` = falsy) for `cond_local` to be
+/// consumed by a control-flow branch (`br_if` / `if` / `loop_break_if_*`).
+///
+/// For a NaN-boxed **bool** this reads bit 0 directly; for everything else it
+/// falls back to the runtime `molt_is_truthy`.  This mirrors the native
+/// backend's `br_if` truthiness dispatch (which checks the bool tag and reads
+/// bit 0 inline) and is the load-bearing correctness fix for the exception
+/// break:
+///
+/// `molt_is_truthy` returns **false** whenever an exception is pending
+/// (CPython truthiness can never be evaluated with an exception in flight).
+/// The iterator-consumer exception break is gated on
+/// `box_bool(molt_exception_pending())`; routing that boxed bool through
+/// `is_truthy` while the very exception it checks is pending would make the
+/// break unconditionally not-taken — the loop would spin forever (OOM).
+/// Reading bit 0 of a boxed bool is exception-independent and value-exact
+/// (`True`→1, `False`→0), so the break fires correctly.  For non-bool
+/// conditions the behaviour is unchanged (the runtime helper is still called).
+fn emit_branch_truthiness_i32(
+    func: &mut Function,
+    cond_local: u32,
+    is_truthy_import: u32,
+    reloc_enabled: bool,
+) {
+    // is_boxed_bool = (cond & QNAN_TAG_MASK) == (QNAN | TAG_BOOL)
+    func.instruction(&Instruction::LocalGet(cond_local));
+    func.instruction(&Instruction::I64Const(QNAN_TAG_MASK_I64));
+    func.instruction(&Instruction::I64And);
+    func.instruction(&Instruction::I64Const((QNAN | TAG_BOOL) as i64));
+    func.instruction(&Instruction::I64Eq);
+    func.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+    // Boxed bool: truthiness is bit 0 (no GIL/exception dependence).
+    func.instruction(&Instruction::LocalGet(cond_local));
+    func.instruction(&Instruction::I32WrapI64);
+    func.instruction(&Instruction::I32Const(1));
+    func.instruction(&Instruction::I32And);
+    func.instruction(&Instruction::Else);
+    // Non-bool: defer to the runtime truthiness helper (`!= 0`).
+    func.instruction(&Instruction::LocalGet(cond_local));
+    emit_call(func, reloc_enabled, is_truthy_import);
+    func.instruction(&Instruction::I64Const(0));
+    func.instruction(&Instruction::I64Ne);
+    func.instruction(&Instruction::End);
+}
+
 /// Which NaN-box tags an integer scalar fast path can correctly consume on its
 /// raw (unboxed) lane. This is dictated by what the fast body *does* with the
 /// operand bits, not by the operand's Python type:
@@ -13750,10 +13795,12 @@ impl WasmBackend {
                             .unwrap_or_else(|| {
                                 panic!("br_if target {} missing label block", target)
                             });
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
+                        emit_branch_truthiness_i32(
+                            func,
+                            cond,
+                            import_ids["is_truthy"],
+                            reloc_enabled,
+                        );
                         func.instruction(&Instruction::BrIf(depth as u32));
                     }
                     "if" => {
@@ -13765,10 +13812,12 @@ impl WasmBackend {
                             } else {
                                 "is_truthy"
                             };
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids[truthy_import]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
+                        emit_branch_truthiness_i32(
+                            func,
+                            cond,
+                            import_ids[truthy_import],
+                            reloc_enabled,
+                        );
                         func.instruction(&Instruction::If(BlockType::Empty));
                         control_stack.push(ControlKind::If);
                     }
@@ -13815,10 +13864,12 @@ impl WasmBackend {
                     "loop_break_if_true" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Ne);
+                        emit_branch_truthiness_i32(
+                            func,
+                            cond,
+                            import_ids["is_truthy"],
+                            reloc_enabled,
+                        );
                         // Find depth to the enclosing Block that wraps the Loop.
                         let mut depth = 0u32;
                         let mut found_loop = false;
@@ -13837,10 +13888,14 @@ impl WasmBackend {
                     "loop_break_if_false" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
-                        func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                        func.instruction(&Instruction::I64Const(0));
-                        func.instruction(&Instruction::I64Eq);
+                        emit_branch_truthiness_i32(
+                            func,
+                            cond,
+                            import_ids["is_truthy"],
+                            reloc_enabled,
+                        );
+                        // Break when the condition is *falsy*: invert truthiness.
+                        func.instruction(&Instruction::I32Eqz);
                         // Find depth to the enclosing Block that wraps the Loop.
                         let mut depth = 0u32;
                         let mut found_loop = false;
@@ -14502,10 +14557,12 @@ impl WasmBackend {
                             } else {
                                 "is_truthy"
                             };
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids[truthy_import]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids[truthy_import],
+                                reloc_enabled,
+                            );
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(true_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -14579,10 +14636,12 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids["is_truthy"],
+                                reloc_enabled,
+                            );
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -14646,10 +14705,14 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Eq);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids["is_truthy"],
+                                reloc_enabled,
+                            );
+                            // Break when the condition is *falsy*: invert truthiness.
+                            func.instruction(&Instruction::I32Eqz);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -14745,10 +14808,12 @@ impl WasmBackend {
                                 );
                                 continue;
                             };
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids["is_truthy"],
+                                reloc_enabled,
+                            );
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(target_idx as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -15045,10 +15110,12 @@ impl WasmBackend {
                             } else {
                                 "is_truthy"
                             };
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids[truthy_import]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids[truthy_import],
+                                reloc_enabled,
+                            );
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(true_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -15122,10 +15189,12 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids["is_truthy"],
+                                reloc_enabled,
+                            );
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -15189,10 +15258,14 @@ impl WasmBackend {
                             };
                             let end_block = end_idx + 1;
                             let next_block = idx + 1;
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Eq);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids["is_truthy"],
+                                reloc_enabled,
+                            );
+                            // Break when the condition is *falsy*: invert truthiness.
+                            func.instruction(&Instruction::I32Eqz);
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(end_block as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
@@ -15299,10 +15372,12 @@ impl WasmBackend {
                                 );
                                 continue;
                             };
-                            func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
-                            func.instruction(&Instruction::I64Const(0));
-                            func.instruction(&Instruction::I64Ne);
+                            emit_branch_truthiness_i32(
+                                func,
+                                cond,
+                                import_ids["is_truthy"],
+                                reloc_enabled,
+                            );
                             func.instruction(&Instruction::If(BlockType::Empty));
                             func.instruction(&Instruction::I64Const(target_idx as i64));
                             func.instruction(&Instruction::LocalSet(state_local));
