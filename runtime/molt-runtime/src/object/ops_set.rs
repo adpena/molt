@@ -106,7 +106,17 @@ pub extern "C" fn molt_set_remove(set_bits: u64, key_bits: u64) -> u64 {
                     if set_del_in_place(_py, ptr, key_bits) {
                         return MoltObject::none().bits();
                     }
-                    return raise_exception::<_>(_py, "KeyError", "set.remove(x): x not in set");
+                    // set_del_in_place returns false both when the key is absent
+                    // and when ensure_hashable / set_find_entry already raised
+                    // (e.g. an unhashable key -> TypeError). Don't clobber a
+                    // pending exception with a (wrong) KeyError.
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    // CPython: set.remove(x) on a missing key raises KeyError(x)
+                    // with the missing key OBJECT as the sole arg (str(e) ==
+                    // repr(x)), not a descriptive string. Same on 3.12/3.13/3.14.
+                    return raise_key_error_with_key(_py, key_bits);
                 }
             }
         }
