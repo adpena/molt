@@ -62,6 +62,29 @@ pub extern "C" fn __molt_collections_raise_key_error_with_key(key_bits: u64) -> 
     crate::with_gil_entry_nopanic!(_py, { raise_key_error_with_key::<u64>(_py, key_bits) })
 }
 
+/// Returns 1 if `key_bits` is hashable, else 0 with a pending TypeError that is
+/// CPython-identical for the given context. `ctx_code`: 0 = bare
+/// (`unhashable type: 'X'`, used for element-counting paths like Counter(iter)
+/// and update(iter)); 2 = dict key (3.14 adds `cannot use 'X' as a dict key
+/// (...)`, used for direct key access / mapping pairs). Lets collections' Counter
+/// reject unhashable keys exactly like CPython — its custom obj_eq registry never
+/// hashes keys, so without this it silently accepted them.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_collections_ensure_key_hashable(key_bits: u64, ctx_code: u64) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx = match ctx_code {
+            2 => crate::object::ops_hash::HashContext::DictKey,
+            1 => crate::object::ops_hash::HashContext::SetElement,
+            _ => crate::object::ops_hash::HashContext::Bare,
+        };
+        if crate::object::ops_hash::ensure_hashable(_py, key_bits, ctx) {
+            1
+        } else {
+            0
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
