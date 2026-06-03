@@ -114,6 +114,7 @@ def _build_basic_blocks(
         "LOOP_BREAK",
         "LOOP_BREAK_IF_TRUE",
         "LOOP_BREAK_IF_FALSE",
+        "LOOP_BREAK_IF_EXCEPTION",
         "LOOP_CONTINUE",
         "TRY_START",
         "TRY_END",
@@ -253,7 +254,11 @@ def _compute_successors(
             exit_idx = None if end_idx is None else end_idx + 1
             add_succ(block_id, block_for_index(exit_idx))
             continue
-        if op.kind in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}:
+        if op.kind in {
+            "LOOP_BREAK_IF_TRUE",
+            "LOOP_BREAK_IF_FALSE",
+            "LOOP_BREAK_IF_EXCEPTION",
+        }:
             add_succ(block_id, next_block)
             owner = control.loop_owner.get(op_idx)
             end_idx = (

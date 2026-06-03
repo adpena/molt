@@ -283,6 +283,38 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         if role != super::blocks::LoopRole::LoopHeader {
             continue;
         }
+        // Skip structured-region reconstruction for loops that contain a
+        // `loop_break_if_exception` (now an `ExceptionPending`-conditioned
+        // CondBranch in the loop body).  The structured-region model's
+        // primary-break detection assumes a SINGLE non-raising loop-controlling
+        // CondBranch (the done-flag break); a second non-raising mid-body
+        // CondBranch (the exception-flag break emitted after ITER_NEXT in
+        // iterator-consumer loops without the function exception stack) is
+        // ambiguous to that detector and corrupts the reconstructed loop shape.
+        // The generic block-by-block lowering below emits each CondBranch as a
+        // proper `br_if`, preserving both breaks — correct on native (which
+        // consumes the generic form directly).  NOTE: the WASM backend's jumpful
+        // state machine does not yet number the generic exception-break edge
+        // correctly (its target state falls outside the per-function br_table),
+        // so the WASM/LLVM/Luau TIR-roundtripping paths still hang on this case;
+        // see the baton note.  Native (the primary OOM/hang fix) is correct.
+        let loop_has_exception_break = {
+            let end_bid = func.loop_pairs.get(bid).copied();
+            let header_idx = bid.0 as usize;
+            let end_idx = end_bid.map(|b| b.0 as usize).unwrap_or(header_idx);
+            (header_idx..=end_idx.max(header_idx)).any(|i| {
+                func.blocks
+                    .get(&BlockId(i as u32))
+                    .is_some_and(|blk| {
+                        blk.ops
+                            .iter()
+                            .any(|op| op.opcode == OpCode::ExceptionPending)
+                    })
+            })
+        };
+        if loop_has_exception_break {
+            continue;
+        }
         // Follow the chain from the LoopHeader to the CondBranch that
         // controls the loop body.  TIR may insert guard blocks (type
         // checks, bounds checks) with their own CondBranch terminators
@@ -1089,10 +1121,13 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                     filled_state = FilledState::Open;
                     current_block_started_at_live_label = false;
                 }
-                // loop_start, loop_break_if_false/true do not fill.
+                // loop_start, loop_break_if_false/true/exception do not fill:
+                // each has a fall-through path (the non-break edge continues the
+                // loop body), so they are control-flow markers, not block-fillers.
                 "loop_start"
                 | "loop_break_if_false"
                 | "loop_break_if_true"
+                | "loop_break_if_exception"
                 | "loop_index_start" => {
                     // These are control-flow markers that don't terminate blocks.
                     if kind == "loop_start" {
@@ -1599,6 +1634,15 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             args: None,
             out: out_var,
             value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::ExceptionPending => Some(OpIR {
+            // Reads the runtime exception-pending flag as a boolean value.
+            // No operands; produces the condition consumed by the
+            // `loop_break_if_exception` CondBranch.
+            kind: "exception_pending".to_string(),
+            args: None,
+            out: out_var,
             ..OpIR::default()
         }),
         OpCode::TryStart => Some(OpIR {

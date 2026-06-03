@@ -740,6 +740,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::NotIn
         | OpCode::Raise
         | OpCode::CheckException
+        | OpCode::ExceptionPending
         | OpCode::AllocTask
         | OpCode::Yield
         | OpCode::YieldFrom

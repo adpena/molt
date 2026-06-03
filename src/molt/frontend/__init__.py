@@ -2294,6 +2294,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LOOP_BREAK",
             "LOOP_BREAK_IF_TRUE",
             "LOOP_BREAK_IF_FALSE",
+            "LOOP_BREAK_IF_EXCEPTION",
             "LOOP_INDEX_START",
             "LOOP_INDEX_NEXT",
             "STATE_TRANSITION",
@@ -11569,7 +11570,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         pair = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="ITER_NEXT", args=[iter_obj], result=pair))
         if not self.try_end_labels:
-            self._emit_raise_if_pending(emit_exit=True)
+            if self.function_exception_label is not None:
+                # needs_exception_stack=True: route a pending exception to the
+                # function exception label (proven straight-line propagation).
+                self._emit_raise_if_pending(emit_exit=True)
+            else:
+                # needs_exception_stack=False: there is no exception label, so
+                # `_emit_raise_if_pending` would be a no-op and the hand-rolled
+                # consumption loop (driven off the done flag alone) would spin
+                # forever when ITER_NEXT raises mid-iteration — the producer
+                # returns the None sentinel and `done` never becomes truthy.
+                # Break the loop on a pending exception via a control op that
+                # lowers to the sacrosanct `molt_exception_pending_fast` read
+                # (never foldable, unlike a value-based None check); the still
+                # pending exception then rides up the lazy-return path.
+                self.emit(
+                    MoltOp(
+                        kind="LOOP_BREAK_IF_EXCEPTION",
+                        args=[],
+                        result=MoltValue("none"),
+                    )
+                )
         return pair
 
     def _emit_guarded_setattr(
@@ -32770,6 +32791,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "loop_index_next",
             "loop_break_if_true",
             "loop_break_if_false",
+            "loop_break_if_exception",
             "loop_break",
             "loop_continue",
             "loop_end",
@@ -35892,6 +35914,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 }:
                     _lbif_entry["type_hint"] = _lbif_cond.type_hint
                 json_ops.append(_lbif_entry)
+            elif op.kind == "LOOP_BREAK_IF_EXCEPTION":
+                # Control op (no value arg) that breaks the loop when a runtime
+                # exception is pending.  Lowers to the sacrosanct
+                # `molt_exception_pending_fast` flag read in every backend, so
+                # it can never be folded/copy-propagated away like a value op.
+                json_ops.append({"kind": "loop_break_if_exception"})
             elif op.kind == "LOOP_BREAK":
                 json_ops.append({"kind": "loop_break"})
             elif op.kind == "LOOP_CONTINUE":
@@ -37972,6 +38000,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LOOP_BREAK",
             "LOOP_BREAK_IF_TRUE",
             "LOOP_BREAK_IF_FALSE",
+            "LOOP_BREAK_IF_EXCEPTION",
             "LOOP_CONTINUE",
             "TRY_START",
             "TRY_END",
@@ -39697,6 +39726,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LOOP_BREAK",
             "LOOP_BREAK_IF_TRUE",
             "LOOP_BREAK_IF_FALSE",
+            "LOOP_BREAK_IF_EXCEPTION",
             "LOOP_CONTINUE",
             "TRY_START",
             "TRY_END",
@@ -40155,6 +40185,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "LOOP_BREAK",
                     "LOOP_BREAK_IF_TRUE",
                     "LOOP_BREAK_IF_FALSE",
+                    "LOOP_BREAK_IF_EXCEPTION",
                     "LOOP_CONTINUE",
                     "TRY_START",
                     "TRY_END",
@@ -41067,6 +41098,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "LOOP_BREAK",
             "LOOP_BREAK_IF_TRUE",
             "LOOP_BREAK_IF_FALSE",
+            "LOOP_BREAK_IF_EXCEPTION",
             "LOOP_CONTINUE",
             "TRY_START",
             "TRY_END",
@@ -41521,6 +41553,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     "LOOP_BREAK",
                     "LOOP_BREAK_IF_TRUE",
                     "LOOP_BREAK_IF_FALSE",
+                    "LOOP_BREAK_IF_EXCEPTION",
                     "LOOP_CONTINUE",
                 }
                 for idx in range(loop_start + 1, loop_end)
@@ -41931,6 +41964,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "LOOP_BREAK",
                 "LOOP_BREAK_IF_TRUE",
                 "LOOP_BREAK_IF_FALSE",
+                "LOOP_BREAK_IF_EXCEPTION",
                 "LOOP_CONTINUE",
             }:
                 if not any(open_kind == "LOOP_START" for open_kind, _ in control_stack):
