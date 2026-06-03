@@ -4443,7 +4443,22 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     return obj_bits;
                 }
                 if type_id == TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
+                    // CPython: `t[i] = x` / `t[i:j] = ...` raise TypeError via the
+                    // missing sq_ass_item slot. Previously a silent no-op (data
+                    // unmodified, no error) — a divergence. Version-stable
+                    // message across 3.12/3.13/3.14 for both index and slice.
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "'tuple' object does not support item assignment",
+                    );
+                }
+                if type_id == TYPE_ID_RANGE {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "'range' object does not support item assignment",
+                    );
                 }
                 if type_id == TYPE_ID_BYTEARRAY {
                     if let Some(slice_ptr) = key.as_ptr()
@@ -4875,6 +4890,28 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
                 }
                 let type_id = object_type_id(ptr);
+                if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_RANGE {
+                    // CPython: `del t[i]` / `del t[i:j]` raise TypeError. Previously
+                    // a silent no-op (no error). Wording asymmetry CPython applies
+                    // to both tuple and range, version-stable on 3.12/3.13/3.14:
+                    // index deletion (sq_ass_item slot) says "doesn't support item
+                    // deletion"; slice deletion (the subscript-del path) says "does
+                    // not support item deletion".
+                    let type_name = if type_id == TYPE_ID_TUPLE {
+                        "tuple"
+                    } else {
+                        "range"
+                    };
+                    let is_slice = key
+                        .as_ptr()
+                        .is_some_and(|p| object_type_id(p) == TYPE_ID_SLICE);
+                    let msg = if is_slice {
+                        format!("'{type_name}' object does not support item deletion")
+                    } else {
+                        format!("'{type_name}' object doesn't support item deletion")
+                    };
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
                 if type_id == TYPE_ID_LIST {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
