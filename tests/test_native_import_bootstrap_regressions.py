@@ -666,6 +666,76 @@ def test_native_try_metaclass_preserves_namespace_dict(tmp_path: Path) -> None:
     ]
 
 
+def test_native_module_metaclass_zero_arg_super_new(tmp_path: Path) -> None:
+    # Module-level metaclass: zero-arg ``super().__new__`` must resolve the
+    # ``__class__`` cell (the metaclass) and build the class.  Sibling of the
+    # function-local case to ensure the structural ``__class__``-cell fix keeps
+    # the module-level path correct (no asymmetry / regression).
+    run = _build_and_run(
+        tmp_path,
+        "class Meta(type):\n"
+        "    def __new__(mcls, name, bases, namespace):\n"
+        "        return super().__new__(mcls, name, bases, dict(namespace))\n"
+        "class Box(metaclass=Meta):\n"
+        "    value = 1\n"
+        "print('BOX_OK', Box.value, type(Box).__name__)\n",
+        "module_metaclass_zero_arg_super",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["BOX_OK 1 Meta"]
+
+
+def test_native_nested_class_zero_arg_super_method(tmp_path: Path) -> None:
+    # Plain (non-metaclass) function-local nested classes with zero-arg
+    # ``super()`` in an instance method.  Guards against over-fitting the
+    # ``__class__``-cell fix to metaclasses: any function-local class that uses
+    # zero-arg ``super()`` must read the class from its ``__class__`` closure
+    # cell rather than re-deriving it by module-attribute name.
+    run = _build_and_run(
+        tmp_path,
+        "def make():\n"
+        "    class Base:\n"
+        "        def label(self):\n"
+        "            return 'B'\n"
+        "    class Child(Base):\n"
+        "        def label(self):\n"
+        "            return 'C+' + super().label()\n"
+        "        def who(self):\n"
+        "            return __class__.__name__\n"
+        "    c = Child()\n"
+        "    return c.label(), c.who()\n"
+        "label, who = make()\n"
+        "print('NESTED', label, who)\n",
+        "nested_class_zero_arg_super",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["NESTED C+B Child"]
+
+
+def test_native_local_metaclass_super_with_captured_local(tmp_path: Path) -> None:
+    # Function-local metaclass whose ``__new__`` BOTH closes over an enclosing
+    # local (``prefix``) AND uses zero-arg ``super()``.  Proves the implicit
+    # ``__class__`` cell coexists with a real captured free variable in the same
+    # closure (consistent closure indices), not just standalone.
+    run = _build_and_run(
+        tmp_path,
+        "def f(prefix):\n"
+        "    class Meta(type):\n"
+        "        def __new__(mcls, name, bases, ns):\n"
+        "            ns = dict(ns)\n"
+        "            ns['tag'] = prefix + name\n"
+        "            return super().__new__(mcls, name, bases, ns)\n"
+        "    class Box(metaclass=Meta):\n"
+        "        pass\n"
+        "    return Box.tag, type(Box).__name__\n"
+        "tag, meta_name = f('PRE_')\n"
+        "print('CAP', tag, meta_name)\n",
+        "local_metaclass_super_captured_local",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["CAP PRE_Box Meta"]
+
+
 def test_native_types_prepare_class_honors_callable_metaclass_prepare(
     tmp_path: Path,
 ) -> None:
