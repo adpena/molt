@@ -7794,11 +7794,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.generic_visit(node)
 
             def visit_If(self, node: ast.If) -> None:
-                static_branch = outer._static_if_live_branch(node)
-                if static_branch is not None:
-                    for stmt in static_branch:
-                        self.visit(stmt)
-                    return None
+                # Binding analysis mirrors CPython's symbol table, which records
+                # every assignment target regardless of static reachability: a
+                # name bound only in a statically-dead branch (`if 0: x = 1`) is
+                # still a local of the enclosing scope, so reading it raises
+                # UnboundLocalError, not NameError. The static-if fold is a
+                # codegen/emission concern (drop dead-branch *code* and its
+                # const_str/intrinsic refs), handled in the emission `visit_If`
+                # via `_emit_static_if_live_branch`; pruning scope bindings here
+                # would diverge from CPython and is intentionally NOT done.
                 self.visit(node.test)
                 for stmt in node.body:
                     self.visit(stmt)
@@ -7897,11 +7901,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.generic_visit(node)
 
             def visit_If(self, node: ast.If) -> None:
-                static_branch = outer._static_if_live_branch(node)
-                if static_branch is not None:
-                    for stmt in static_branch:
-                        self.visit(stmt)
-                    return None
+                # Mirror CPython's symbol table (see `_collect_assigned_names`):
+                # a name bound only in a statically-dead branch is still a local,
+                # so this binding walk does NOT apply the static-if fold. The
+                # fold is emission-only (`_emit_static_if_live_branch`).
                 self.visit(node.test)
                 for stmt in node.body:
                     self.visit(stmt)
