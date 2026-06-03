@@ -10,8 +10,38 @@ use super::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use super::type_refine::{extract_type_map, refine_types};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
+use crate::representation_plan::Repr;
 
-pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
+/// The proven per-`ValueId` representation override (the value-keyed source of
+/// truth produced by `representation_plan::repr_by_value_for`). The WASM/LIR
+/// codegen path threads `Some(map)` so `LirRepr::I64` is assigned **only** to
+/// proven `RawI64Safe` integers; an unproven `int` (`MaybeBigInt`) lowers to
+/// `DynBox` and uses the boxed BigInt-correct runtime path (typed-IR Phase 1).
+pub type ReprOverride<'a> = Option<&'a HashMap<ValueId, Repr>>;
+
+/// Derive the backend-facing [`LirRepr`] for a value from the proven [`Repr`]
+/// override when present, falling back to the type floor [`LirRepr::for_type`]
+/// when no override is supplied or the value is absent from the map.
+///
+/// The ONLY behavior change versus a bare `for_type(ty)` is: a non-`RawI64Safe`
+/// `I64` value derives `DynBox` instead of `I64` — the Phase-1 fix that stops
+/// WASM treating an unproven (possibly heap-BigInt) `int` as a raw inline i64.
+/// `Bool`/`FloatUnboxed` are floored into `repr_by_value` by Phase 0's
+/// `default_for`, so they are present and map back to `Bool1`/`F64`.
+fn lir_repr_from_repr(repr: ReprOverride<'_>, id: ValueId, ty: &TirType) -> LirRepr {
+    match repr.and_then(|map| map.get(&id)) {
+        Some(Repr::RawI64Safe) => LirRepr::I64,
+        Some(Repr::Bool) => LirRepr::Bool1,
+        Some(Repr::FloatUnboxed) => LirRepr::F64,
+        // `MaybeBigInt` (unproven int), `DynBox`, `Never`: the universal NaN-box
+        // carrier — no raw machine op is sound, so it lowers to `DynBox` and the
+        // boxed runtime helpers (BigInt-correct) handle it.
+        Some(Repr::MaybeBigInt) | Some(Repr::DynBox) | Some(Repr::Never) => LirRepr::DynBox,
+        None => LirRepr::for_type(ty),
+    }
+}
+
+pub fn lower_function_to_lir(func: &TirFunction, repr: ReprOverride<'_>) -> LirFunction {
     let mut refined = func.clone();
     refine_types(&mut refined);
     canonicalize_non_executable_blocks(&mut refined);
@@ -27,7 +57,10 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
                 .blocks
                 .get(&bid)
                 .expect("sorted block id must exist");
-            (bid, lower_block(block, &refined, &type_map, &mut allocator))
+            (
+                bid,
+                lower_block(block, &refined, &type_map, &mut allocator, repr),
+            )
         })
         .collect();
     let entry_param_types = refined
@@ -96,12 +129,12 @@ fn lir_return_types(func: &TirFunction) -> Vec<TirType> {
     }
 }
 
-pub fn lower_block_args(args: &[TirValue]) -> Vec<LirValue> {
+pub fn lower_block_args(args: &[TirValue], repr: ReprOverride<'_>) -> Vec<LirValue> {
     args.iter()
         .map(|arg| LirValue {
             id: arg.id,
+            repr: lir_repr_from_repr(repr, arg.id, &arg.ty),
             ty: arg.ty.clone(),
-            repr: LirRepr::for_type(&arg.ty),
         })
         .collect()
 }
@@ -111,12 +144,13 @@ fn lower_block(
     func: &TirFunction,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
+    repr: ReprOverride<'_>,
 ) -> LirBlock {
-    let mut ops = lower_block_ops(block.ops.as_slice(), type_map, allocator);
-    let terminator = lower_terminator(&block.terminator, func, type_map, allocator, &mut ops);
+    let mut ops = lower_block_ops(block.ops.as_slice(), type_map, allocator, repr);
+    let terminator = lower_terminator(&block.terminator, func, type_map, allocator, &mut ops, repr);
     LirBlock {
         id: block.id,
-        args: lower_block_args(&block.args),
+        args: lower_block_args(&block.args, repr),
         ops,
         terminator,
     }
@@ -126,9 +160,10 @@ fn lower_block_ops(
     ops: &[TirOp],
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
+    repr: ReprOverride<'_>,
 ) -> Vec<LirOp> {
     ops.iter()
-        .map(|op| lower_op(op, type_map, allocator))
+        .map(|op| lower_op(op, type_map, allocator, repr))
         .collect()
 }
 
@@ -136,15 +171,16 @@ fn lower_op(
     op: &TirOp,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
+    repr: ReprOverride<'_>,
 ) -> LirOp {
-    if lowers_to_checked_i64_arithmetic(op, type_map) {
-        return lower_checked_i64_arithmetic(op, type_map, allocator);
+    if lowers_to_checked_i64_arithmetic(op, type_map, repr) {
+        return lower_checked_i64_arithmetic(op, type_map, allocator, repr);
     }
     if op.opcode == OpCode::BoxVal {
         return lower_box_op(op, type_map);
     }
     if op.opcode == OpCode::UnboxVal {
-        return lower_unbox_op(op, type_map);
+        return lower_unbox_op(op, type_map, repr);
     }
     if matches!(
         op.opcode,
@@ -158,26 +194,51 @@ fn lower_op(
         result_values: op
             .results
             .iter()
-            .map(|result_id| lir_value_from_type_map(*result_id, type_map))
+            .map(|result_id| lir_value_from_type_map(*result_id, type_map, repr))
             .collect(),
     }
 }
 
-fn lowers_to_checked_i64_arithmetic(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> bool {
-    matches!(op.opcode, OpCode::Add | OpCode::Sub | OpCode::Mul)
+fn lowers_to_checked_i64_arithmetic(
+    op: &TirOp,
+    type_map: &HashMap<ValueId, TirType>,
+    repr: ReprOverride<'_>,
+) -> bool {
+    let type_eligible = matches!(op.opcode, OpCode::Add | OpCode::Sub | OpCode::Mul)
         && op.results.len() == 1
         && op.operands.len() == 2
         && op
             .operands
             .iter()
             .all(|operand| matches!(type_map.get(operand), Some(TirType::I64)))
-        && matches!(type_map.get(&op.results[0]), Some(TirType::I64))
+        && matches!(type_map.get(&op.results[0]), Some(TirType::I64));
+    if !type_eligible {
+        return false;
+    }
+    // When a proven `Repr` override is supplied (WASM/LIR codegen path), the
+    // checked-i64 triple (raw `I64Add` + inline-bounds overflow box) is sound
+    // ONLY when every operand and the result is a proven `RawI64Safe` carrier.
+    // A `MaybeBigInt` operand (`TirType::I64`-typed but possibly a heap BigInt)
+    // must instead take the generic boxed path (`emit_lir_binary_arith`'s boxed
+    // arm), which dispatches through the BigInt-correct runtime helper. Without
+    // an override (fact extraction / native / tests) the gate stays type-only so
+    // those callers are byte-identical.
+    match repr {
+        None => true,
+        Some(map) => {
+            let proven_i64 = |id: &ValueId| {
+                matches!(map.get(id), Some(Repr::RawI64Safe))
+            };
+            op.operands.iter().all(proven_i64) && proven_i64(&op.results[0])
+        }
+    }
 }
 
 fn lower_checked_i64_arithmetic(
     op: &TirOp,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
+    repr: ReprOverride<'_>,
 ) -> LirOp {
     let mut tir_op = op.clone();
     let overflow_box = allocator.fresh();
@@ -187,7 +248,7 @@ fn lower_checked_i64_arithmetic(
         .attrs
         .insert("lir.checked_overflow".to_string(), AttrValue::Bool(true));
 
-    let mut result_values = vec![lir_value_from_type_map(op.results[0], type_map)];
+    let mut result_values = vec![lir_value_from_type_map(op.results[0], type_map, repr)];
     result_values.push(LirValue {
         id: overflow_box,
         ty: TirType::DynBox,
@@ -253,7 +314,11 @@ fn lower_box_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
     }
 }
 
-fn lower_unbox_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
+fn lower_unbox_op(
+    op: &TirOp,
+    type_map: &HashMap<ValueId, TirType>,
+    repr: ReprOverride<'_>,
+) -> LirOp {
     let operand_ty = op
         .operands
         .first()
@@ -274,17 +339,21 @@ fn lower_unbox_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
         tir_op: op.clone(),
         result_values: vec![LirValue {
             id: result_id,
-            repr: LirRepr::for_type(&result_ty),
+            repr: lir_repr_from_repr(repr, result_id, &result_ty),
             ty: result_ty,
         }],
     }
 }
 
-fn lir_value_from_type_map(id: ValueId, type_map: &HashMap<ValueId, TirType>) -> LirValue {
+fn lir_value_from_type_map(
+    id: ValueId,
+    type_map: &HashMap<ValueId, TirType>,
+    repr: ReprOverride<'_>,
+) -> LirValue {
     let ty = type_map.get(&id).cloned().unwrap_or(TirType::DynBox);
     LirValue {
         id,
-        repr: LirRepr::for_type(&ty),
+        repr: lir_repr_from_repr(repr, id, &ty),
         ty,
     }
 }
@@ -295,11 +364,12 @@ fn lower_terminator(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     ops: &mut Vec<LirOp>,
+    repr: ReprOverride<'_>,
 ) -> LirTerminator {
     match terminator {
         Terminator::Branch { target, args } => LirTerminator::Branch {
             target: *target,
-            args: lower_branch_args(*target, args, func, type_map, allocator, ops),
+            args: lower_branch_args(*target, args, func, type_map, allocator, ops, repr),
         },
         Terminator::CondBranch {
             cond,
@@ -310,9 +380,25 @@ fn lower_terminator(
         } => LirTerminator::CondBranch {
             cond: materialize_branch_condition(*cond, type_map, allocator, ops),
             then_block: *then_block,
-            then_args: lower_branch_args(*then_block, then_args, func, type_map, allocator, ops),
+            then_args: lower_branch_args(
+                *then_block,
+                then_args,
+                func,
+                type_map,
+                allocator,
+                ops,
+                repr,
+            ),
             else_block: *else_block,
-            else_args: lower_branch_args(*else_block, else_args, func, type_map, allocator, ops),
+            else_args: lower_branch_args(
+                *else_block,
+                else_args,
+                func,
+                type_map,
+                allocator,
+                ops,
+                repr,
+            ),
         },
         Terminator::Switch {
             value,
@@ -323,10 +409,18 @@ fn lower_terminator(
             value: *value,
             cases: cases.clone(),
             default: *default,
-            default_args: lower_branch_args(*default, default_args, func, type_map, allocator, ops),
+            default_args: lower_branch_args(
+                *default,
+                default_args,
+                func,
+                type_map,
+                allocator,
+                ops,
+                repr,
+            ),
         },
         Terminator::Return { values } => LirTerminator::Return {
-            values: lower_return_values(values, func, type_map, allocator, ops),
+            values: lower_return_values(values, func, type_map, allocator, ops, repr),
         },
         Terminator::Unreachable => LirTerminator::Unreachable,
     }
@@ -339,23 +433,40 @@ fn lower_branch_args(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     ops: &mut Vec<LirOp>,
+    repr: ReprOverride<'_>,
 ) -> Vec<ValueId> {
-    let expected_types = func
+    // The target block's arguments carry both their declared type and (under an
+    // override) their proven `Repr`; the materialize coercion compares the
+    // source's `LirRepr` against the *target block-arg's* `LirRepr` so a
+    // `MaybeBigInt`→`MaybeBigInt` phi edge (both `DynBox`) inserts no spurious
+    // box/unbox.
+    let expected: Vec<(TirType, Option<ValueId>)> = func
         .blocks
         .get(&target)
         .map(|block| {
             block
                 .args
                 .iter()
-                .map(|arg| arg.ty.clone())
+                .map(|arg| (arg.ty.clone(), Some(arg.id)))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     args.iter()
         .enumerate()
         .map(|(idx, value_id)| {
-            let expected_ty = expected_types.get(idx).cloned().unwrap_or(TirType::DynBox);
-            materialize_value_for_type(*value_id, expected_ty, type_map, allocator, ops)
+            let (expected_ty, expected_id) = expected
+                .get(idx)
+                .cloned()
+                .unwrap_or((TirType::DynBox, None));
+            materialize_value_for_type(
+                *value_id,
+                expected_ty,
+                expected_id,
+                type_map,
+                allocator,
+                ops,
+                repr,
+            )
         })
         .collect()
 }
@@ -366,7 +477,11 @@ fn lower_return_values(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     ops: &mut Vec<LirOp>,
+    repr: ReprOverride<'_>,
 ) -> Vec<ValueId> {
+    // The function return surface has no SSA `ValueId` for its slots, so the
+    // expected `LirRepr` is the type-floor of the return ABI type (`expected_id`
+    // is `None`). The actual operand's `Repr` still comes from the override.
     let expected_types = lir_return_types(func);
     if values.is_empty() && !expected_types.is_empty() {
         return expected_types
@@ -389,7 +504,15 @@ fn lower_return_values(
                         repr: LirRepr::DynBox,
                     }],
                 });
-                materialize_value_for_type(none_id, expected_ty, type_map, allocator, ops)
+                materialize_value_for_type(
+                    none_id,
+                    expected_ty,
+                    None,
+                    type_map,
+                    allocator,
+                    ops,
+                    repr,
+                )
             })
             .collect();
     }
@@ -398,7 +521,15 @@ fn lower_return_values(
         .enumerate()
         .map(|(idx, value_id)| {
             let expected_ty = expected_types.get(idx).cloned().unwrap_or(TirType::DynBox);
-            materialize_value_for_type(*value_id, expected_ty, type_map, allocator, ops)
+            materialize_value_for_type(
+                *value_id,
+                expected_ty,
+                None,
+                type_map,
+                allocator,
+                ops,
+                repr,
+            )
         })
         .collect()
 }
@@ -406,16 +537,23 @@ fn lower_return_values(
 fn materialize_value_for_type(
     value_id: ValueId,
     expected_ty: TirType,
+    expected_id: Option<ValueId>,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     ops: &mut Vec<LirOp>,
+    repr: ReprOverride<'_>,
 ) -> ValueId {
     let actual_ty = type_map.get(&value_id).cloned().unwrap_or(TirType::DynBox);
-    if expected_ty == actual_ty {
-        return value_id;
-    }
-    let expected_repr = LirRepr::for_type(&expected_ty);
-    let actual_repr = LirRepr::for_type(&actual_ty);
+    // The box/unbox decision is a *representation* coercion, so it must compare
+    // `LirRepr`, not `TirType`. Under an override, two `TirType::I64` values can
+    // carry different reprs (a proven `RawI64Safe`→`I64` source feeding an
+    // unproven `MaybeBigInt`→`DynBox` slot still needs a box), so the type
+    // short-circuit is only sound when the reprs also match.
+    let actual_repr = lir_repr_from_repr(repr, value_id, &actual_ty);
+    let expected_repr = match expected_id {
+        Some(id) => lir_repr_from_repr(repr, id, &expected_ty),
+        None => LirRepr::for_type(&expected_ty),
+    };
     if expected_repr == actual_repr {
         return value_id;
     }
@@ -438,6 +576,12 @@ fn materialize_value_for_type(
         });
         return boxed_id;
     }
+    // The reverse coercion (`DynBox` source → a non-`DynBox` slot, i.e. an
+    // unbox) cannot arise for a proven phi: `compute_overflow_safe_values` raises
+    // a block argument to `RawI64Safe` only when *every* incoming edge value is
+    // `RawI64Safe`, so a `DynBox` (`MaybeBigInt`) source never feeds an `I64`
+    // (`RawI64Safe`) slot. On the `None` path this preserves the prior behavior
+    // exactly (it never inserted an unbox here either).
     value_id
 }
 
@@ -564,7 +708,7 @@ mod tests {
             loop_cond_blocks: HashMap::new(),
         };
 
-        let lir = lower_function_to_lir(&func);
+        let lir = lower_function_to_lir(&func, None);
         let add = &lir.blocks[&entry].ops[2];
         assert_eq!(add.result_values.len(), 3);
         assert_eq!(
@@ -607,7 +751,7 @@ mod tests {
             loop_cond_blocks: HashMap::new(),
         };
 
-        let lir = lower_function_to_lir(&func);
+        let lir = lower_function_to_lir(&func, None);
         assert_eq!(lir.return_types, vec![TirType::None]);
         match &lir.blocks[&entry].terminator {
             LirTerminator::Return { values } => assert_eq!(values.len(), 1),
@@ -661,7 +805,7 @@ mod tests {
             loop_cond_blocks: HashMap::new(),
         };
 
-        let lir = lower_function_to_lir(&func);
+        let lir = lower_function_to_lir(&func, None);
         let alloc = &lir.blocks[&entry].ops[0];
         assert_eq!(
             alloc.result_values[0].ty,
@@ -717,7 +861,7 @@ mod tests {
             loop_cond_blocks: HashMap::new(),
         };
 
-        let lir = lower_function_to_lir(&func);
+        let lir = lower_function_to_lir(&func, None);
         let alloc = &lir.blocks[&entry].ops[0];
         assert_eq!(
             alloc.result_values[0].ty,
@@ -806,7 +950,7 @@ mod tests {
             loop_cond_blocks: HashMap::new(),
         };
 
-        let lir = lower_function_to_lir(&func);
+        let lir = lower_function_to_lir(&func, None);
         assert!(crate::tir::verify_lir::verify_lir_function(&lir).is_ok());
         assert!(matches!(
             lir.blocks[&dead_loop_end].terminator,

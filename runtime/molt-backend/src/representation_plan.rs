@@ -10,9 +10,9 @@ use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-#[cfg(feature = "llvm")]
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
 use crate::tir::blocks::{BlockId, Terminator};
-#[cfg(feature = "llvm")]
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
 use crate::tir::ops::OpCode;
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
@@ -75,7 +75,7 @@ pub(crate) struct ContainerStorageFact {
 /// but their *carrier* decisions still flow through the legacy
 /// `bool_primary`/`float_primary` sets until Phase 4 folds them in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Repr {
+pub enum Repr {
     /// ⊥ — unreachable value.
     Never,
     /// Bare `i64` register/Variable, interval- or OSC-proven non-wrapping in
@@ -305,46 +305,18 @@ impl LlvmReprFacts {
     /// TIR for that function).
     pub(crate) fn build(func_ir: &FunctionIR, tir_func: &TirFunction) -> Self {
         let plan = ScalarRepresentationPlan::for_function_ir(func_ir);
-        let overflow_safe_int_names = plan.int_carrier_names();
         let container_kind_by_name = plan
             .facts_by_name
             .iter()
             .filter_map(|(name, fact)| fact.container_kind().map(|kind| (name.clone(), kind)))
             .collect();
-        let names = SimpleValueNames::for_function(tir_func);
-        let mut name_by_value = HashMap::new();
-        for block in tir_func.blocks.values() {
-            for op in &block.ops {
-                for &result in &op.results {
-                    name_by_value.insert(result, names.value_name(result));
-                }
-            }
-            for arg in &block.args {
-                name_by_value.insert(arg.id, names.value_name(arg.id));
-            }
-        }
-        let overflow_safe_values =
-            compute_overflow_safe_values(tir_func, &overflow_safe_int_names, &name_by_value);
-        // Build the value-keyed representation map: type floor for every value we
-        // know a `ValueId` for, then raise the overflow-safe carriers to
-        // `RawI64Safe`. The floor makes `repr_by_value` a complete value->Repr
-        // map (consumed from Phase 1 onward); the `RawI64Safe` raises are exactly
-        // the old `overflow_safe_values` set, so `is_overflow_safe_int` is
-        // byte-identical.
-        let mut repr_by_value: HashMap<ValueId, Repr> = name_by_value
-            .keys()
-            .map(|&id| {
-                let repr = tir_func
-                    .value_types
-                    .get(&id)
-                    .map(Repr::default_for)
-                    .unwrap_or(Repr::DynBox);
-                (id, repr)
-            })
-            .collect();
-        for &id in &overflow_safe_values {
-            repr_by_value.insert(id, Repr::RawI64Safe);
-        }
+        let name_by_value = name_by_value_for(tir_func);
+        // The value-keyed representation map is the single source of truth shared
+        // with the WASM/LIR backend (Phase 1). `LlvmReprFacts` is a thin LLVM-
+        // specific wrapper over it plus the container-dispatch + name bridge;
+        // delegating to `repr_by_value_for` guarantees LLVM and WASM derive the
+        // *identical* `Repr` per `ValueId` (no second source of truth).
+        let repr_by_value = repr_by_value_for(func_ir, tir_func);
         Self {
             container_kind_by_name,
             name_by_value,
@@ -373,6 +345,68 @@ impl LlvmReprFacts {
     }
 }
 
+/// Build the `ValueId -> SimpleIR name` bridge for `tir_func` (every op result
+/// and every block argument). This is the name↔ValueId bridge consumed by both
+/// the LLVM facts and the overflow-safe propagation seed.
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+pub(crate) fn name_by_value_for(tir_func: &TirFunction) -> HashMap<ValueId, String> {
+    let names = SimpleValueNames::for_function(tir_func);
+    let mut name_by_value = HashMap::new();
+    for block in tir_func.blocks.values() {
+        for op in &block.ops {
+            for &result in &op.results {
+                name_by_value.insert(result, names.value_name(result));
+            }
+        }
+        for arg in &block.args {
+            name_by_value.insert(arg.id, names.value_name(arg.id));
+        }
+    }
+    name_by_value
+}
+
+/// The backend-neutral construction of the value-keyed representation lattice
+/// map — the **single source of truth** for the integer raw-carrier
+/// classification, consumed identically by the LLVM backend
+/// ([`LlvmReprFacts::build`]) and the WASM/LIR backend (Phase 1,
+/// `lower_function_to_lir`).
+///
+/// Every value we know a `ValueId` for floors to [`Repr::default_for`] of its
+/// refined `TirType`; values proven overflow-safe exact-i64 carriers are then
+/// raised to [`Repr::RawI64Safe`]. The floor makes this a complete value->Repr
+/// map; the `RawI64Safe` raises are exactly the interval-/OSC-proven, no-i64-wrap
+/// carrier subset propagated across `Copy` chains and block-argument phis by
+/// [`compute_overflow_safe_values`].
+///
+/// `func_ir` is the SimpleIR function the plan is keyed on; `tir_func` is the
+/// post-pipeline TIR the backend is lowering (their `_simple_out` names line up).
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+pub(crate) fn repr_by_value_for(
+    func_ir: &FunctionIR,
+    tir_func: &TirFunction,
+) -> HashMap<ValueId, Repr> {
+    let plan = ScalarRepresentationPlan::for_function_ir(func_ir);
+    let overflow_safe_int_names = plan.int_carrier_names();
+    let name_by_value = name_by_value_for(tir_func);
+    let overflow_safe_values =
+        compute_overflow_safe_values(tir_func, &overflow_safe_int_names, &name_by_value);
+    let mut repr_by_value: HashMap<ValueId, Repr> = name_by_value
+        .keys()
+        .map(|&id| {
+            let repr = tir_func
+                .value_types
+                .get(&id)
+                .map(Repr::default_for)
+                .unwrap_or(Repr::DynBox);
+            (id, repr)
+        })
+        .collect();
+    for &id in &overflow_safe_values {
+        repr_by_value.insert(id, Repr::RawI64Safe);
+    }
+    repr_by_value
+}
+
 /// Propagate overflow-safety across the TIR SSA graph to a fixpoint.
 ///
 /// A value is overflow-safe when the LLVM backend may carry it as a raw i64 and
@@ -387,7 +421,7 @@ impl LlvmReprFacts {
 /// Built upward from the seed (monotone — only ever adds safety), so the
 /// worklist terminates; back-edges resolve because a phi becomes safe only once
 /// all of its incomings are known safe.
-#[cfg(feature = "llvm")]
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
 fn compute_overflow_safe_values(
     tir_func: &TirFunction,
     overflow_safe_int_names: &BTreeSet<String>,
@@ -499,7 +533,10 @@ impl ScalarRepresentationPlan {
         let mut tir_func = lower_to_tir(func_ir);
         refine_types(&mut tir_func);
         let names = SimpleValueNames::for_function(&tir_func);
-        let lir_func = lower_function_to_lir(&tir_func);
+        // Fact extraction: the `None` (type-floor) repr is REQUIRED here. This
+        // call FEEDS `repr_by_value` (via `int_carrier_names`), so threading the
+        // proven repr would be circular AND would change the analysis input.
+        let lir_func = lower_function_to_lir(&tir_func, None);
 
         let mut plan = Self::default();
         plan.seed_container_storage_from_tir(&tir_func, &names);
@@ -628,9 +665,10 @@ impl ScalarRepresentationPlan {
     }
 
     /// The proven raw-i64 int carrier names — the `primary_names.int` view over
-    /// `repr_by_name`. Single source of truth for both the native int-primary
-    /// carrier set and the LLVM `overflow_safe_values` seed.
-    #[cfg(any(feature = "native-backend", feature = "llvm", test))]
+    /// `repr_by_name`. Single source of truth for the native int-primary carrier
+    /// set, the LLVM `overflow_safe_values` seed, and the WASM/LIR `RawI64Safe`
+    /// derivation (via [`repr_by_value_for`]). Unconditionally compiled because
+    /// [`repr_by_value_for`] consumes it on the backend-neutral path.
     pub(crate) fn int_carrier_names(&self) -> BTreeSet<String> {
         self.repr_by_name
             .iter()

@@ -38,7 +38,7 @@ use super::function::TirFunction;
 #[cfg(feature = "wasm-backend")]
 use super::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 #[cfg(feature = "wasm-backend")]
-use super::lower_to_lir::lower_function_to_lir;
+use super::lower_to_lir::{ReprOverride, lower_function_to_lir};
 #[cfg(feature = "wasm-backend")]
 use super::ops::{AttrValue, OpCode};
 #[cfg(feature = "wasm-backend")]
@@ -86,7 +86,11 @@ pub struct WasmFunctionOutput {
 /// Type-specialized: `I64` → `wasm i64`, `F64` → `wasm f64`, `DynBox` → runtime call.
 #[cfg(feature = "wasm-backend")]
 pub fn lower_tir_to_wasm(func: &TirFunction) -> WasmFunctionOutput {
-    let lir = lower_function_to_lir(func);
+    // The generic (non-boxed-ABI) path uses the type-floor repr. The proven
+    // `Repr` override is threaded only through the production boxed-i64 fast path
+    // (`lower_tir_to_wasm_boxed_i64_abi`), where the SimpleIR `func_ir` needed to
+    // build `repr_by_value` is available (wasm.rs).
+    let lir = lower_function_to_lir(func, None);
     lower_lir_to_wasm(&lir)
 }
 
@@ -318,8 +322,11 @@ pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmFunctionOutput {
 }
 
 #[cfg(feature = "wasm-backend")]
-pub fn lower_tir_to_wasm_boxed_i64_abi(func: &TirFunction) -> Option<WasmFunctionOutput> {
-    let lir = lower_function_to_lir(func);
+pub fn lower_tir_to_wasm_boxed_i64_abi(
+    func: &TirFunction,
+    repr: ReprOverride<'_>,
+) -> Option<WasmFunctionOutput> {
+    let lir = lower_function_to_lir(func, repr);
     lower_lir_to_wasm_boxed_i64_abi(&lir)
 }
 
@@ -575,9 +582,19 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::BitNot => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
-                ctx.emit_get(src);
-                ctx.instructions.push(Instruction::I64Const(-1));
-                ctx.instructions.push(Instruction::I64Xor);
+                // `~x` is a bare `x ^ -1` only when `x` is a proven raw i64; an
+                // unproven (`DynBox`/`MaybeBigInt`) operand must dispatch through
+                // the runtime helper (a raw `I64Xor` on a NaN-boxed word would be
+                // a miscompile). On the production fast path the resulting
+                // `Call(0)` bails to the guarded slow path.
+                if ctx.repr_of(src) == LirRepr::I64 {
+                    ctx.emit_get(src);
+                    ctx.instructions.push(Instruction::I64Const(-1));
+                    ctx.instructions.push(Instruction::I64Xor);
+                } else {
+                    emit_get_boxed_for_repr(ctx, src);
+                    ctx.instructions.push(Instruction::Call(0));
+                }
                 ctx.emit_set(result.id);
             }
         }
@@ -585,20 +602,28 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             if tir_op.operands.len() >= 2
                 && let Some(result) = op.result_values.first()
             {
-                ctx.emit_get(tir_op.operands[0]);
-                ctx.emit_get(tir_op.operands[1]);
-                ctx.instructions.push(Instruction::I64Shl);
-                ctx.emit_set(result.id);
+                let result_id = result.id;
+                emit_lir_i64_binary_or_boxed(
+                    ctx,
+                    tir_op.operands[0],
+                    tir_op.operands[1],
+                    result_id,
+                    Instruction::I64Shl,
+                );
             }
         }
         OpCode::Shr => {
             if tir_op.operands.len() >= 2
                 && let Some(result) = op.result_values.first()
             {
-                ctx.emit_get(tir_op.operands[0]);
-                ctx.emit_get(tir_op.operands[1]);
-                ctx.instructions.push(Instruction::I64ShrS);
-                ctx.emit_set(result.id);
+                let result_id = result.id;
+                emit_lir_i64_binary_or_boxed(
+                    ctx,
+                    tir_op.operands[0],
+                    tir_op.operands[1],
+                    result_id,
+                    Instruction::I64ShrS,
+                );
             }
         }
         OpCode::Not => {
@@ -787,59 +812,111 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
     }
     let lhs_repr = ctx.repr_of(lhs);
     let rhs_repr = ctx.repr_of(rhs);
-    ctx.emit_get(lhs);
-    ctx.emit_get(rhs);
+    // Phase 1 introduces *mixed* reprs (e.g. a proven `RawI64Safe` operand and an
+    // unproven `MaybeBigInt`/`DynBox` operand). The boxed fallthrough dispatches
+    // through the BigInt-correct runtime helper, which expects NaN-boxed
+    // operands — so operands must be pushed *per-arm*, raw only for the
+    // homogeneous unboxed arms and BOXED for the runtime-call arm. Pushing raw
+    // before the match (the pre-Phase-1 shape) would feed a raw i64 word to
+    // `molt_add` on the mixed case → a hard miscompile.
     match (lhs_repr, rhs_repr) {
-        (LirRepr::I64, LirRepr::I64) => ctx.instructions.push(match arith {
-            ArithOp::Add => Instruction::I64Add,
-            ArithOp::Sub => Instruction::I64Sub,
-            ArithOp::Mul => Instruction::I64Mul,
-            ArithOp::Div | ArithOp::FloorDiv => Instruction::I64DivS,
-            ArithOp::Mod => Instruction::I64RemS,
-        }),
-        (LirRepr::F64, LirRepr::F64) => match arith {
-            ArithOp::Add => ctx.instructions.push(Instruction::F64Add),
-            ArithOp::Sub => ctx.instructions.push(Instruction::F64Sub),
-            ArithOp::Mul => ctx.instructions.push(Instruction::F64Mul),
-            ArithOp::Div => ctx.instructions.push(Instruction::F64Div),
-            ArithOp::FloorDiv => {
-                // Python // on floats: floor(a / b)
-                ctx.instructions.push(Instruction::F64Div);
-                ctx.instructions.push(Instruction::F64Floor);
-                // Result already on stack, fall through to emit_set.
+        (LirRepr::I64, LirRepr::I64) => {
+            ctx.emit_get(lhs);
+            ctx.emit_get(rhs);
+            ctx.instructions.push(match arith {
+                ArithOp::Add => Instruction::I64Add,
+                ArithOp::Sub => Instruction::I64Sub,
+                ArithOp::Mul => Instruction::I64Mul,
+                ArithOp::Div | ArithOp::FloorDiv => Instruction::I64DivS,
+                ArithOp::Mod => Instruction::I64RemS,
+            });
+        }
+        (LirRepr::F64, LirRepr::F64) => {
+            ctx.emit_get(lhs);
+            ctx.emit_get(rhs);
+            match arith {
+                ArithOp::Add => ctx.instructions.push(Instruction::F64Add),
+                ArithOp::Sub => ctx.instructions.push(Instruction::F64Sub),
+                ArithOp::Mul => ctx.instructions.push(Instruction::F64Mul),
+                ArithOp::Div => ctx.instructions.push(Instruction::F64Div),
+                ArithOp::FloorDiv => {
+                    // Python // on floats: floor(a / b)
+                    ctx.instructions.push(Instruction::F64Div);
+                    ctx.instructions.push(Instruction::F64Floor);
+                    // Result already on stack, fall through to emit_set.
+                }
+                ArithOp::Mod => {
+                    // Python fmod: a - floor(a / b) * b
+                    // Stack: [lhs, rhs]. We need both values twice.
+                    // Allocate scratch locals for the operands.
+                    let scratch_a = ctx.next_local;
+                    ctx.next_local += 1;
+                    ctx.local_types.insert(scratch_a, ValType::F64);
+                    let scratch_b = ctx.next_local;
+                    ctx.next_local += 1;
+                    ctx.local_types.insert(scratch_b, ValType::F64);
+                    // Pop rhs, pop lhs into scratches.
+                    ctx.instructions.push(Instruction::LocalSet(scratch_b));
+                    ctx.instructions.push(Instruction::LocalSet(scratch_a));
+                    // Compute: a - floor(a / b) * b
+                    ctx.instructions.push(Instruction::LocalGet(scratch_a));
+                    ctx.instructions.push(Instruction::LocalGet(scratch_a));
+                    ctx.instructions.push(Instruction::LocalGet(scratch_b));
+                    ctx.instructions.push(Instruction::F64Div);
+                    ctx.instructions.push(Instruction::F64Floor);
+                    ctx.instructions.push(Instruction::LocalGet(scratch_b));
+                    ctx.instructions.push(Instruction::F64Mul);
+                    ctx.instructions.push(Instruction::F64Sub);
+                    // Result on stack, fall through to emit_set.
+                }
             }
-            ArithOp::Mod => {
-                // Python fmod: a - floor(a / b) * b
-                // Stack: [lhs, rhs]. We need both values twice.
-                // Allocate scratch locals for the operands.
-                let scratch_a = ctx.next_local;
-                ctx.next_local += 1;
-                ctx.local_types.insert(scratch_a, ValType::F64);
-                let scratch_b = ctx.next_local;
-                ctx.next_local += 1;
-                ctx.local_types.insert(scratch_b, ValType::F64);
-                // Pop rhs, pop lhs into scratches.
-                ctx.instructions.push(Instruction::LocalSet(scratch_b));
-                ctx.instructions.push(Instruction::LocalSet(scratch_a));
-                // Compute: a - floor(a / b) * b
-                ctx.instructions.push(Instruction::LocalGet(scratch_a));
-                ctx.instructions.push(Instruction::LocalGet(scratch_a));
-                ctx.instructions.push(Instruction::LocalGet(scratch_b));
-                ctx.instructions.push(Instruction::F64Div);
-                ctx.instructions.push(Instruction::F64Floor);
-                ctx.instructions.push(Instruction::LocalGet(scratch_b));
-                ctx.instructions.push(Instruction::F64Mul);
-                ctx.instructions.push(Instruction::F64Sub);
-                // Result on stack, fall through to emit_set.
-            }
-        },
+        }
         _ => {
+            // Heterogeneous / boxed operands: dispatch through the runtime helper
+            // with both operands NaN-boxed. A raw-i64-repr operand is boxed via
+            // the inline-int box; an already-boxed operand passes through.
+            emit_get_boxed_for_repr(ctx, lhs);
+            emit_get_boxed_for_repr(ctx, rhs);
             ctx.instructions.push(Instruction::Call(0));
             ctx.emit_set(dst);
             return;
         }
     }
     ctx.emit_set(dst);
+}
+
+/// Push operand `v` onto the WASM stack in **NaN-boxed** form, ready for a
+/// runtime helper call (`molt_add`/`molt_lt`/…). A raw-i64-repr (`RawI64Safe`)
+/// operand is boxed via the inline-int box (the same packing as the
+/// `lir.checked_overflow` boxed continuation); a `Bool1` is widened to a boxed
+/// bool; an `F64` is boxed via the runtime float-box; a `DynBox`/`Ref64` operand
+/// is already a NaN-box word and passes through unchanged.
+///
+/// This is the Phase-1 fix for `emit_lir_binary_arith`'s (and the comparison's)
+/// boxed fallthrough: before Phase 1 every int operand was `LirRepr::I64`, so the
+/// boxed arm only fired for homogeneous `DynBox`; now a proven `I64` operand can
+/// share an op with an unproven `DynBox` operand, and the raw one MUST be boxed
+/// before the call.
+#[cfg(feature = "wasm-backend")]
+fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
+    match ctx.repr_of(v) {
+        LirRepr::I64 => emit_box_inline_i64(ctx, v),
+        LirRepr::Bool1 => {
+            ctx.emit_get(v);
+            ctx.instructions.push(Instruction::I64ExtendI32U);
+            ctx.instructions.push(Instruction::I64Const(
+                QNAN | 0x0002_0000_0000_0000u64 as i64,
+            ));
+            ctx.instructions.push(Instruction::I64Or);
+        }
+        LirRepr::F64 => {
+            // Box the unboxed f64 via the runtime float-box helper (placeholder
+            // call index, resolved at link time like every other runtime call).
+            ctx.emit_get(v);
+            ctx.instructions.push(Instruction::Call(0));
+        }
+        LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_get(v),
+    }
 }
 
 #[cfg(feature = "wasm-backend")]
@@ -879,26 +956,38 @@ fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp) {
     let lhs = tir_op.operands[0];
     let rhs = tir_op.operands[1];
     let dst = op.result_values[0].id;
-    ctx.emit_get(lhs);
-    ctx.emit_get(rhs);
+    // Same per-arm operand push as `emit_lir_binary_arith` (finding #3): the
+    // homogeneous unboxed arms push raw operands; the boxed runtime-dispatch arm
+    // must push BOTH operands NaN-boxed, so a proven `RawI64Safe` operand sharing
+    // a compare with an unproven `DynBox` operand is boxed before the call.
     match (ctx.repr_of(lhs), ctx.repr_of(rhs)) {
-        (LirRepr::I64, LirRepr::I64) => ctx.instructions.push(match cmp {
-            CmpOp::Eq => Instruction::I64Eq,
-            CmpOp::Ne => Instruction::I64Ne,
-            CmpOp::Lt => Instruction::I64LtS,
-            CmpOp::Le => Instruction::I64LeS,
-            CmpOp::Gt => Instruction::I64GtS,
-            CmpOp::Ge => Instruction::I64GeS,
-        }),
-        (LirRepr::F64, LirRepr::F64) => ctx.instructions.push(match cmp {
-            CmpOp::Eq => Instruction::F64Eq,
-            CmpOp::Ne => Instruction::F64Ne,
-            CmpOp::Lt => Instruction::F64Lt,
-            CmpOp::Le => Instruction::F64Le,
-            CmpOp::Gt => Instruction::F64Gt,
-            CmpOp::Ge => Instruction::F64Ge,
-        }),
+        (LirRepr::I64, LirRepr::I64) => {
+            ctx.emit_get(lhs);
+            ctx.emit_get(rhs);
+            ctx.instructions.push(match cmp {
+                CmpOp::Eq => Instruction::I64Eq,
+                CmpOp::Ne => Instruction::I64Ne,
+                CmpOp::Lt => Instruction::I64LtS,
+                CmpOp::Le => Instruction::I64LeS,
+                CmpOp::Gt => Instruction::I64GtS,
+                CmpOp::Ge => Instruction::I64GeS,
+            });
+        }
+        (LirRepr::F64, LirRepr::F64) => {
+            ctx.emit_get(lhs);
+            ctx.emit_get(rhs);
+            ctx.instructions.push(match cmp {
+                CmpOp::Eq => Instruction::F64Eq,
+                CmpOp::Ne => Instruction::F64Ne,
+                CmpOp::Lt => Instruction::F64Lt,
+                CmpOp::Le => Instruction::F64Le,
+                CmpOp::Gt => Instruction::F64Gt,
+                CmpOp::Ge => Instruction::F64Ge,
+            });
+        }
         _ => {
+            emit_get_boxed_for_repr(ctx, lhs);
+            emit_get_boxed_for_repr(ctx, rhs);
             ctx.instructions.push(Instruction::Call(0));
             ctx.emit_set(dst);
             return;
@@ -913,14 +1002,45 @@ fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp) {
     if tir_op.operands.len() < 2 || op.result_values.is_empty() {
         return;
     }
-    ctx.emit_get(tir_op.operands[0]);
-    ctx.emit_get(tir_op.operands[1]);
-    ctx.instructions.push(match bw {
+    let instr = match bw {
         BitwiseOp::And => Instruction::I64And,
         BitwiseOp::Or => Instruction::I64Or,
         BitwiseOp::Xor => Instruction::I64Xor,
-    });
-    ctx.emit_set(op.result_values[0].id);
+    };
+    emit_lir_i64_binary_or_boxed(
+        ctx,
+        tir_op.operands[0],
+        tir_op.operands[1],
+        op.result_values[0].id,
+        instr,
+    );
+}
+
+/// Emit a bare two-operand `i64` machine instruction (`I64And`/`I64Shl`/…)
+/// **only** when both operands are proven raw-i64 carriers (`LirRepr::I64`).
+/// Otherwise — a `MaybeBigInt`/`DynBox` operand — dispatch through the runtime
+/// helper with both operands NaN-boxed (finding #3: a bare `I64*` on a NaN-boxed
+/// word is a miscompile). On the production fast path the runtime `Call(0)` bails
+/// to the IntFastLane-guarded slow path; on the generic path it is the resolved
+/// runtime dispatch.
+#[cfg(feature = "wasm-backend")]
+fn emit_lir_i64_binary_or_boxed(
+    ctx: &mut LirLowerCtx,
+    lhs: ValueId,
+    rhs: ValueId,
+    dst: ValueId,
+    bare_i64_instr: Instruction<'static>,
+) {
+    if ctx.repr_of(lhs) == LirRepr::I64 && ctx.repr_of(rhs) == LirRepr::I64 {
+        ctx.emit_get(lhs);
+        ctx.emit_get(rhs);
+        ctx.instructions.push(bare_i64_instr);
+    } else {
+        emit_get_boxed_for_repr(ctx, lhs);
+        emit_get_boxed_for_repr(ctx, rhs);
+        ctx.instructions.push(Instruction::Call(0));
+    }
+    ctx.emit_set(dst);
 }
 
 #[cfg(feature = "wasm-backend")]
@@ -1223,6 +1343,7 @@ fn peephole_set_get_to_tee(instructions: Vec<Instruction<'static>>) -> Vec<Instr
 #[cfg(feature = "wasm-backend")]
 mod tests {
     use super::*;
+    use crate::representation_plan::Repr;
     use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -1630,5 +1751,149 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1: mixed-repr integer arithmetic (the delicate correctness core)
+    // -----------------------------------------------------------------------
+
+    /// Build `f(a: int, b: int) -> int = a + b` with two i64-typed params and a
+    /// single Add. The caller supplies the `Repr` override.
+    fn make_add_two_params_func() -> TirFunction {
+        let mut func = TirFunction::new(
+            "add_two_params".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
+        let result_id = func.fresh_value(); // ValueId(2)
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+        func
+    }
+
+    /// Count occurrences of the inline-int NaN-box packing
+    /// (`emit_box_inline_i64`): `i64.const INT_MASK; i64.and; i64.const
+    /// (QNAN|TAG_INT); i64.or`. This is how a proven raw-i64 operand is boxed
+    /// before a runtime helper call in the mixed-repr boxed arm.
+    fn count_inline_int_boxes(instrs: &[Instruction<'static>]) -> usize {
+        instrs
+            .windows(4)
+            .filter(|w| {
+                matches!(w[0], Instruction::I64Const(m) if m == INT_MASK)
+                    && matches!(w[1], Instruction::I64And)
+                    && matches!(w[2], Instruction::I64Const(t) if t == (QNAN | TAG_INT))
+                    && matches!(w[3], Instruction::I64Or)
+            })
+            .count()
+    }
+
+    /// THE regression guard for finding #3: an integer `add` with one proven
+    /// `RawI64Safe` operand and one `MaybeBigInt` operand must NOT emit a bare
+    /// `i64.add` (the unsound op on a NaN-boxed word). Both operands must be
+    /// NaN-boxed before the runtime `Call` (`molt_add`): the proven operand via
+    /// the inline-int box, the unproven operand passed through already-boxed.
+    #[test]
+    fn mixed_repr_int_add_boxes_both_operands_no_bare_i64_add() {
+        let func = make_add_two_params_func();
+        // a (ValueId 0) is proven RawI64Safe; b (ValueId 1) is an unproven
+        // MaybeBigInt; the result (ValueId 2) is therefore MaybeBigInt too (it
+        // cannot be proven from an unproven operand). This forces the generic
+        // boxed path (NOT the checked-overflow triple, which requires all three
+        // to be RawI64Safe).
+        let repr: HashMap<ValueId, Repr> = HashMap::from([
+            (ValueId(0), Repr::RawI64Safe),
+            (ValueId(1), Repr::MaybeBigInt),
+            (ValueId(2), Repr::MaybeBigInt),
+        ]);
+        let lir = lower_function_to_lir(&func, Some(&repr));
+        let output = lower_lir_to_wasm(&lir);
+
+        // No bare i64.add: a raw machine add on a possibly-heap-BigInt operand is
+        // exactly the truncation bug-class this phase makes un-emittable.
+        assert!(
+            !output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::I64Add)),
+            "mixed-repr add must NOT emit bare i64.add (operand may be a heap BigInt)"
+        );
+        // Runtime dispatch through the boxed helper (placeholder Call(0)).
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Call(_))),
+            "mixed-repr add must dispatch through the boxed runtime helper"
+        );
+        // The proven RawI64Safe operand `a` is NaN-boxed (inline-int box) before
+        // the call. (`b` is already a DynBox word and passes through, so exactly
+        // one inline-int box is emitted for the operands of this add.)
+        assert!(
+            count_inline_int_boxes(&output.instructions) >= 1,
+            "the proven raw-i64 operand must be NaN-boxed before the runtime call"
+        );
+    }
+
+    /// The perf-preservation direction: when BOTH operands are proven
+    /// `RawI64Safe`, the fast `i64.add` is still emitted (the checked-overflow
+    /// triple), and no boxed runtime `Call` is needed for the add itself.
+    #[test]
+    fn proven_raw_i64_add_still_emits_native_i64_add() {
+        let func = make_add_two_params_func();
+        let repr: HashMap<ValueId, Repr> = HashMap::from([
+            (ValueId(0), Repr::RawI64Safe),
+            (ValueId(1), Repr::RawI64Safe),
+            (ValueId(2), Repr::RawI64Safe),
+        ]);
+        let lir = lower_function_to_lir(&func, Some(&repr));
+        let output = lower_lir_to_wasm(&lir);
+
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::I64Add)),
+            "proven raw-i64 add must emit native i64.add"
+        );
+    }
+
+    /// On the production boxed-i64 ABI path, a function whose integer params are
+    /// proven `RawI64Safe` keeps the fast path (entry args lower to `I64`); a
+    /// `MaybeBigInt` param forces the entry arg to `DynBox`, so the boxed-i64 ABI
+    /// (which requires all-`I64` entry args) bails to `None` — falling back to
+    /// the IntFastLane-guarded slow path. This is the structural gate that keeps
+    /// the unsound bare op un-emittable for unproven ints.
+    #[test]
+    fn boxed_i64_abi_bails_when_param_is_maybe_bigint() {
+        let func = make_add_two_params_func();
+        let proven: HashMap<ValueId, Repr> = HashMap::from([
+            (ValueId(0), Repr::RawI64Safe),
+            (ValueId(1), Repr::RawI64Safe),
+            (ValueId(2), Repr::RawI64Safe),
+        ]);
+        assert!(
+            lower_tir_to_wasm_boxed_i64_abi(&func, Some(&proven)).is_some(),
+            "all-proven raw-i64 params keep the boxed-i64 ABI fast path"
+        );
+
+        let unproven: HashMap<ValueId, Repr> = HashMap::from([
+            (ValueId(0), Repr::RawI64Safe),
+            (ValueId(1), Repr::MaybeBigInt),
+            (ValueId(2), Repr::MaybeBigInt),
+        ]);
+        assert!(
+            lower_tir_to_wasm_boxed_i64_abi(&func, Some(&unproven)).is_none(),
+            "a MaybeBigInt param must bail the boxed-i64 ABI (entry arg is DynBox)"
+        );
     }
 }
