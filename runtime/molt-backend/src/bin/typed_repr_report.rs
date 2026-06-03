@@ -64,7 +64,7 @@ fn run() -> Result<(Value, bool), String> {
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
         let pass_stats = molt_backend::tir::passes::run_pipeline(&mut tir_func);
         molt_backend::tir::type_refine::refine_types(&mut tir_func);
-        let lir_func = molt_backend::tir::lower_to_lir::lower_function_to_lir(&tir_func);
+        let lir_func = molt_backend::tir::lower_to_lir::lower_function_to_lir(&tir_func, None);
 
         let lir_errors = molt_backend::tir::verify_lir::verify_lir_function(&lir_func)
             .err()

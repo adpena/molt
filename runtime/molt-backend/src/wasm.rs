@@ -171,9 +171,19 @@ const DEFAULT_GPU_INTRINSIC_MANIFEST_NAMES: &[&str] = &[
 ];
 
 fn prepare_lir_wasm_fast_output(
+    func_ir: &FunctionIR,
     tir_func: &crate::tir::function::TirFunction,
 ) -> Option<crate::tir::lower_to_wasm::WasmFunctionOutput> {
-    let output = crate::tir::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi(tir_func)?;
+    // Drive the LIR carrier derivation from the PROVEN `repr_by_value` (the
+    // single source of truth shared with native/LLVM), so `LirRepr::I64` — and
+    // the bare `I64Add`/`I64*` ops gated on it — is assigned ONLY to proven
+    // `RawI64Safe` integers. An unproven `int` (`MaybeBigInt`) lowers to
+    // `DynBox`; its arithmetic emits the boxed runtime `Call(0)`, which is
+    // rejected below so the function falls back to the IntFastLane-guarded slow
+    // path (correctness preserved; the unsound bare op is un-emittable here).
+    let repr = crate::representation_plan::repr_by_value_for(func_ir, tir_func);
+    let output =
+        crate::tir::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi(tir_func, Some(&repr))?;
     let has_placeholder_call = output
         .instructions
         .iter()
@@ -2044,7 +2054,7 @@ impl WasmBackend {
                     let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                     crate::tir::type_refine::refine_types(&mut tir_func);
                     if is_production_lir_wasm_fast_path_name(&func_ir.name)
-                        && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
+                        && let Some(output) = prepare_lir_wasm_fast_output(func_ir, &tir_func)
                     {
                         lir_fast_outputs.insert(func_ir.name.clone(), output);
                     }
@@ -2066,11 +2076,6 @@ impl WasmBackend {
                         );
                     }
                 }
-                if is_production_lir_wasm_fast_path_name(&func_ir.name)
-                    && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
-                {
-                    lir_fast_outputs.insert(func_ir.name.clone(), output);
-                }
                 let optimized_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
                 assert!(
                     crate::tir::lower_to_simple::validate_labels(&optimized_ops),
@@ -2080,6 +2085,16 @@ impl WasmBackend {
                 let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
                 tir_cache.put(&content_hash, &serialized, vec![]);
                 func_ir.ops = optimized_ops;
+                // Compute the LIR fast output AFTER `func_ir.ops` is the
+                // round-tripped optimized SimpleIR, so the `repr_by_value`
+                // derivation (built from `func_ir`) lines up with the optimized
+                // `tir_func` — identical to the LLVM `LlvmReprFacts::build` call
+                // contract (post-pipeline SimpleIR + post-pipeline TIR).
+                if is_production_lir_wasm_fast_path_name(&func_ir.name)
+                    && let Some(output) = prepare_lir_wasm_fast_output(func_ir, &tir_func)
+                {
+                    lir_fast_outputs.insert(func_ir.name.clone(), output);
+                }
             }
             // Persist the updated cache index so future runs benefit.
             tir_cache.save_index();
