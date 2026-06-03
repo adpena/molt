@@ -168,7 +168,16 @@ pub(crate) unsafe fn dict_update_apply(
                         Err(DictSeqError::NotIterable) => {
                             dec_ref_bits(_py, pair_bits);
                             dec_ref_bits(_py, iter);
-                            let msg = "object is not iterable".to_string();
+                            // CPython 3.12/3.13 report the element index; 3.14
+                            // changed it to the generic "object is not iterable".
+                            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14)
+                            {
+                                "object is not iterable".to_string()
+                            } else {
+                                format!(
+                                    "cannot convert dictionary update sequence element #{elem_index} to a sequence"
+                                )
+                            };
                             return raise_exception::<_>(_py, "TypeError", &msg);
                         }
                         Err(DictSeqError::BadLen(len)) => {
@@ -330,7 +339,15 @@ pub(crate) unsafe fn dict_update_apply(
                 Err(DictSeqError::NotIterable) => {
                     dec_ref_bits(_py, pair_bits);
                     dec_ref_bits(_py, iter);
-                    let msg = "object is not iterable".to_string();
+                    // CPython 3.12/3.13 report the element index; 3.14 changed it
+                    // to the generic "object is not iterable".
+                    let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                        "object is not iterable".to_string()
+                    } else {
+                        format!(
+                            "cannot convert dictionary update sequence element #{elem_index} to a sequence"
+                        )
+                    };
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
                 Err(DictSeqError::BadLen(len)) => {

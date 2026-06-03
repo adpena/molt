@@ -198,11 +198,14 @@ pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
                     let mut idx = if index_obj.is_none() {
                         len - 1
                     } else {
-                        index_i64_from_obj(
-                            _py,
-                            index_bits,
-                            "list indices must be integers or have an __index__ method",
-                        )
+                        // CPython raises "'<type>' object cannot be interpreted as
+                        // an integer" (version-stable across 3.12/3.13/3.14) when
+                        // the pop index lacks a usable __index__.
+                        let pop_idx_msg = format!(
+                            "'{}' object cannot be interpreted as an integer",
+                            type_name(_py, index_obj)
+                        );
+                        index_i64_from_obj(_py, index_bits, &pop_idx_msg)
                     };
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -362,11 +365,14 @@ pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u6
                 promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let len = list_len(list_ptr) as i64;
-                    let mut idx = index_i64_from_obj(
-                        _py,
-                        index_bits,
-                        "list indices must be integers or have an __index__ method",
+                    // CPython raises "'<type>' object cannot be interpreted as an
+                    // integer" (version-stable across 3.12/3.13/3.14) when the
+                    // insert index lacks a usable __index__.
+                    let insert_idx_msg = format!(
+                        "'{}' object cannot be interpreted as an integer",
+                        type_name(_py, obj_from_bits(index_bits))
                     );
+                    let mut idx = index_i64_from_obj(_py, index_bits, &insert_idx_msg);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -1205,7 +1211,27 @@ pub extern "C" fn molt_list_index_range(
                             idx += 1;
                         }
                     }
-                    return raise_exception::<_>(_py, "ValueError", "list.index(x): x not in list");
+                    // CPython 3.12/3.13 raise ValueError("<repr(x)> is not in
+                    // list") and propagate any exception x.__repr__ raises; 3.14
+                    // reverted to the static "list.index(x): x not in list" and
+                    // does not call __repr__.
+                    if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "list.index(x): x not in list",
+                        );
+                    }
+                    let repr_bits = crate::molt_repr_from_obj(val_bits);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    let rendered =
+                        crate::object::ops_format::string_obj_to_owned(obj_from_bits(repr_bits))
+                            .unwrap_or_default();
+                    dec_ref_bits(_py, repr_bits);
+                    let msg = format!("{rendered} is not in list");
+                    return raise_exception::<_>(_py, "ValueError", &msg);
                 }
             }
         }

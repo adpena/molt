@@ -798,20 +798,22 @@ pub extern "C" fn molt_float_hex(self_bits: u64) -> u64 {
 pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let text_obj = obj_from_bits(text_bits);
+        // CPython's float.fromhex emits a generic, type-name-free message on all
+        // supported versions (3.12/3.13/3.14) for a non-str argument.
         let Some(text_ptr) = text_obj.as_ptr() else {
-            let msg = format!(
-                "fromhex() argument must be str, not {}",
-                type_name(_py, text_obj)
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "bad argument type for built-in operation",
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
         };
         unsafe {
             if object_type_id(text_ptr) != TYPE_ID_STRING {
-                let msg = format!(
-                    "fromhex() argument must be str, not {}",
-                    type_name(_py, text_obj)
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "bad argument type for built-in operation",
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             let bytes = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
             let text = match std::str::from_utf8(bytes) {

@@ -4084,11 +4084,18 @@ fn fromhex_nibble(b: u8) -> Option<u8> {
 }
 
 fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
+    // CPython permits ASCII whitespace only *between* byte pairs, never between the
+    // two nibbles of a single byte. The accepted set is Py_ISSPACE on ASCII:
+    // space, \t, \n, \r, \v (0x0b), \f (0x0c). Rust's is_ascii_whitespace() omits
+    // 0x0b, so match the byte explicitly for full parity.
+    fn is_fromhex_space(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+    }
     let mut out: Vec<u8> = Vec::new();
     let mut idx = 0usize;
     while idx < text.len() {
-        // Skip ASCII whitespace. CPython ignores whitespace between nibbles and bytes.
-        while idx < text.len() && text[idx].is_ascii_whitespace() {
+        // Skip whitespace between byte pairs.
+        while idx < text.len() && is_fromhex_space(text[idx]) {
             idx += 1;
         }
         if idx >= text.len() {
@@ -4099,11 +4106,17 @@ fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
             return Err(raise_exception::<_>(_py, "ValueError", &msg));
         };
         idx += 1;
-        while idx < text.len() && text[idx].is_ascii_whitespace() {
-            idx += 1;
-        }
+        // The low nibble must immediately follow the high nibble; whitespace is
+        // not permitted inside a byte pair.
         if idx >= text.len() {
-            let msg = format!("non-hexadecimal number found in fromhex() arg at position {idx}");
+            // The high nibble was the final character (no trailing whitespace).
+            // CPython 3.14 reports an even-length error here; 3.12/3.13 report the
+            // position immediately after the high nibble.
+            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                "fromhex() arg must contain an even number of hexadecimal digits".to_string()
+            } else {
+                format!("non-hexadecimal number found in fromhex() arg at position {idx}")
+            };
             return Err(raise_exception::<_>(_py, "ValueError", &msg));
         }
         let Some(lo) = fromhex_nibble(text[idx]) else {
