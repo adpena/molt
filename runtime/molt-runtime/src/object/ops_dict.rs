@@ -69,7 +69,7 @@ pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
-                    if !ensure_hashable(_py, item_bits) {
+                    if !ensure_hashable(_py, item_bits, HashContext::DictKey) {
                         return MoltObject::none().bits();
                     }
                     let order = dict_order(dict_ptr);
@@ -395,7 +395,7 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
             }
             let Some(real_dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
                 // Fallback: not a plain dict, use the general store path.
-                if !ensure_hashable(_py, key_bits) {
+                if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                     return MoltObject::none().bits();
                 }
                 return molt_store_index(dict_bits, key_bits, val_bits);
@@ -404,7 +404,7 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
                 return MoltObject::none().bits();
             };
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                if !ensure_hashable(_py, key_bits) {
+                if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                     return MoltObject::none().bits();
                 }
                 return molt_store_index(dict_bits, key_bits, val_bits);
@@ -453,7 +453,7 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.get expects dict");
             }
-            if !ensure_hashable(_py, key_bits) {
+            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                 return MoltObject::none().bits();
             }
             if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
@@ -565,7 +565,7 @@ pub extern "C" fn molt_dict_pop(
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.pop expects dict");
             }
-            if !ensure_hashable(_py, key_bits) {
+            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                 return MoltObject::none().bits();
             }
             let order = dict_order(dict_ptr);
@@ -614,7 +614,7 @@ pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bi
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
             }
-            if !ensure_hashable(_py, key_bits) {
+            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                 return MoltObject::none().bits();
             }
             if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
@@ -648,7 +648,7 @@ pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64)
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
             }
-            if !ensure_hashable(_py, key_bits) {
+            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                 return MoltObject::none().bits();
             }
             if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
@@ -1019,7 +1019,7 @@ pub extern "C" fn molt_dict_getitem_borrowed(dict_bits: u64, key_bits: u64) -> u
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return 0;
             }
-            if !ensure_hashable(_py, key_bits) {
+            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                 clear_exception(_py);
                 return 0;
             }

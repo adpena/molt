@@ -17,8 +17,8 @@ pub(crate) use crate::object::ops_format::{
 
 // Re-export hash functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_hash::{
-    HashSecret, ensure_hashable, fatal_hash_seed, hash_bits, hash_bits_signed, hash_int,
-    hash_pointer, hash_slice_bits, hash_string_bytes,
+    HashContext, HashSecret, ensure_hashable, fatal_hash_seed, hash_bits, hash_bits_signed,
+    hash_int, hash_pointer, hash_slice_bits, hash_string_bytes,
 };
 
 // Re-export encoding functions for backward compatibility with crate::object::ops::* paths
@@ -5181,7 +5181,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
-                    if !ensure_hashable(_py, item_bits) {
+                    if !ensure_hashable(_py, item_bits, HashContext::DictKey) {
                         return MoltObject::none().bits();
                     }
                     let order = dict_order(dict_ptr);
@@ -5307,7 +5307,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         return MoltObject::from_bool(false).bits();
                     }
                     TYPE_ID_SET | TYPE_ID_FROZENSET => {
-                        if !ensure_hashable(_py, item_bits) {
+                        if !ensure_hashable(_py, item_bits, HashContext::SetElement) {
                             return MoltObject::none().bits();
                         }
                         let order = set_order(ptr);
@@ -5997,7 +5997,7 @@ pub(crate) unsafe fn dict_inc_in_place(
     delta_bits: u64,
 ) -> bool {
     unsafe {
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
             return false;
         }
         let current_bits =
@@ -7056,7 +7056,7 @@ pub(crate) unsafe fn frozenset_from_iter_bits(_py: &PyToken<'_>, other_bits: u64
                 dec_ref_bits(_py, set_bits);
                 return None;
             }
-            set_add_in_place(_py, set_ptr, val_bits);
+            set_add_in_place(_py, set_ptr, val_bits, HashContext::SetElement);
             dec_ref_bits(_py, val_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, iter_bits);
@@ -9114,7 +9114,7 @@ pub(crate) unsafe fn dict_set_in_place(
             hash_bits(_py, key_bits)
         } else {
             // Heap-allocated key: need full hashability check.
-            if !ensure_hashable(_py, key_bits) {
+            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                 return;
             }
             hash_bits(_py, key_bits)
@@ -9296,7 +9296,7 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
 ) {
     unsafe {
         crate::gil_assert();
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
             return;
         }
         let pending_before = exception_pending(_py);
@@ -9386,10 +9386,15 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
     }
 }
 
-pub(crate) unsafe fn set_add_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) {
+pub(crate) unsafe fn set_add_in_place(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+    ctx: HashContext,
+) {
     unsafe {
         crate::gil_assert();
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, ctx) {
             return;
         }
         let hash = hash_bits(_py, key_bits);
@@ -9452,7 +9457,7 @@ pub(crate) unsafe fn dict_get_in_place(
                 std::ptr::read_volatile(string_bytes(key_ptr));
             }
         }
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
             return None;
         }
         let pending_before = exception_pending(_py);
@@ -9483,7 +9488,7 @@ pub(crate) unsafe fn dict_find_entry_kv_in_place(
     key_bits: u64,
 ) -> Option<(u64, u64)> {
     unsafe {
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
             return None;
         }
         let pending_before = exception_pending(_py);
@@ -9512,7 +9517,10 @@ pub(crate) unsafe fn dict_find_entry_kv_in_place(
 
 pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
     unsafe {
-        if !ensure_hashable(_py, key_bits) {
+        // discard / remove / difference_update probe the set with the candidate
+        // element; CPython reports these as a set-element insertion context on
+        // 3.14 (bare on 3.12/3.13).
+        if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
             return false;
         }
         let order = set_order(ptr);
@@ -9593,7 +9601,7 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
 
 pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
     unsafe {
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
             return false;
         }
         let order = dict_order(ptr);

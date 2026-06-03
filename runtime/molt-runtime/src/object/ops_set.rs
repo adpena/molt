@@ -19,7 +19,7 @@ pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 
         let container = obj_from_bits(container_bits);
         if let Some(ptr) = container.as_ptr() {
             unsafe {
-                if !ensure_hashable(_py, item_bits) {
+                if !ensure_hashable(_py, item_bits, HashContext::SetElement) {
                     return MoltObject::none().bits();
                 }
                 let order = set_order(ptr);
@@ -39,14 +39,45 @@ pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_add(set_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
             return MoltObject::none().bits();
         }
         let obj = obj_from_bits(set_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_SET {
-                    set_add_in_place(_py, ptr, key_bits);
+                    set_add_in_place(_py, ptr, key_bits, HashContext::SetElement);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// `set.add` for the temporary set built when realizing the *other* operand of a
+/// probe-only set operation (`intersection`/`intersection_update`/`issubset`).
+///
+/// CPython implements those by hashing each element of the iterable to probe the
+/// receiver — it never inserts into a fresh set — so an unhashable element is
+/// reported with the bare `unhashable type: 'X'` form on every version (no
+/// `set element` context, even on 3.14). molt realizes the operand into a real
+/// temporary set, so this entry point exists purely to preserve that bare
+/// context. Identical to [`molt_set_add`] except for [`HashContext::Bare`].
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_set_add_probe(set_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if !ensure_hashable(_py, key_bits, HashContext::Bare) {
+            return MoltObject::none().bits();
+        }
+        let obj = obj_from_bits(set_bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_SET {
+                    set_add_in_place(_py, ptr, key_bits, HashContext::Bare);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -61,14 +92,14 @@ pub extern "C" fn molt_set_add(set_bits: u64, key_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_add(set_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !ensure_hashable(_py, key_bits) {
+        if !ensure_hashable(_py, key_bits, HashContext::SetElement) {
             return MoltObject::none().bits();
         }
         let obj = obj_from_bits(set_bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_FROZENSET {
-                    set_add_in_place(_py, ptr, key_bits);
+                    set_add_in_place(_py, ptr, key_bits, HashContext::SetElement);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -204,7 +235,7 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
                     }
                     let entries = set_order(other_ptr);
                     for entry in entries.iter().copied() {
-                        set_add_in_place(_py, set_ptr, entry);
+                        set_add_in_place(_py, set_ptr, entry, HashContext::SetElement);
                     }
                     return MoltObject::none().bits();
                 }
@@ -218,7 +249,7 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
                     };
                     let entries = set_order(view_set_ptr);
                     for entry in entries.iter().copied() {
-                        set_add_in_place(_py, set_ptr, entry);
+                        set_add_in_place(_py, set_ptr, entry, HashContext::SetElement);
                     }
                     dec_ref_bits(_py, bits);
                     return MoltObject::none().bits();
@@ -246,7 +277,7 @@ pub extern "C" fn molt_set_update(set_bits: u64, other_bits: u64) -> u64 {
                     break;
                 }
                 let val_bits = pair_elems[0];
-                set_add_in_place(_py, set_ptr, val_bits);
+                set_add_in_place(_py, set_ptr, val_bits, HashContext::SetElement);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -311,7 +342,9 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                         dec_ref_bits(_py, bits);
                         return MoltObject::none().bits();
                     }
-                    let other_set_bits = set_from_iter_bits(_py, other_bits);
+                    // intersection_update probes self against the realized other;
+                    // CPython reports unhashable elements bare on every version.
+                    let other_set_bits = set_from_iter_bits(_py, other_bits, HashContext::Bare);
                     let Some(other_set_bits) = other_set_bits else {
                         return MoltObject::none().bits();
                     };
@@ -516,7 +549,11 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                         dec_ref_bits(_py, bits);
                         return MoltObject::none().bits();
                     }
-                    let other_set_bits = set_from_iter_bits(_py, other_bits);
+                    // symmetric_difference_update inserts the realized other into
+                    // the result; CPython reports unhashable elements with the
+                    // set-element context on 3.14.
+                    let other_set_bits =
+                        set_from_iter_bits(_py, other_bits, HashContext::SetElement);
                     let Some(other_set_bits) = other_set_bits else {
                         return MoltObject::none().bits();
                     };
@@ -729,7 +766,9 @@ pub extern "C" fn molt_set_union_multi(set_bits: u64, others_bits: u64) -> u64 {
                 return result_bits;
             }
             for &other_bits in seq_vec_ref(others_ptr).iter() {
-                let Some((other_ptr, drop_bits)) = set_like_ptr_from_bits(_py, other_bits) else {
+                let Some((other_ptr, drop_bits)) =
+                    set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
+                else {
                     dec_ref_bits(_py, result_bits);
                     return MoltObject::none().bits();
                 };
@@ -782,7 +821,11 @@ pub extern "C" fn molt_set_intersection_multi(set_bits: u64, others_bits: u64) -
                 return result_bits;
             }
             for &other_bits in seq_vec_ref(others_ptr).iter() {
-                let Some((other_ptr, drop_bits)) = set_like_ptr_from_bits(_py, other_bits) else {
+                // intersection probes the realized other; unhashable elements
+                // are reported bare on every version.
+                let Some((other_ptr, drop_bits)) =
+                    set_like_ptr_from_bits(_py, other_bits, HashContext::Bare)
+                else {
                     dec_ref_bits(_py, result_bits);
                     return MoltObject::none().bits();
                 };
@@ -835,7 +878,9 @@ pub extern "C" fn molt_set_difference_multi(set_bits: u64, others_bits: u64) -> 
                 return result_bits;
             }
             for &other_bits in seq_vec_ref(others_ptr).iter() {
-                let Some((other_ptr, drop_bits)) = set_like_ptr_from_bits(_py, other_bits) else {
+                let Some((other_ptr, drop_bits)) =
+                    set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
+                else {
                     dec_ref_bits(_py, result_bits);
                     return MoltObject::none().bits();
                 };
@@ -877,7 +922,9 @@ pub extern "C" fn molt_set_symmetric_difference(set_bits: u64, other_bits: u64) 
                 return MoltObject::none().bits();
             }
             let result_type_id = set_like_result_type_id(type_id);
-            let Some((other_ptr, drop_bits)) = set_like_ptr_from_bits(_py, other_bits) else {
+            let Some((other_ptr, drop_bits)) =
+                set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
+            else {
                 return MoltObject::none().bits();
             };
             let result_bits = set_like_symdiff(_py, ptr, other_ptr, result_type_id);
@@ -900,7 +947,9 @@ pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
             if !is_set_like_type(object_type_id(ptr)) {
                 return MoltObject::none().bits();
             }
-            let Some((other_ptr, drop_bits)) = set_like_ptr_from_bits(_py, other_bits) else {
+            let Some((other_ptr, drop_bits)) =
+                set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
+            else {
                 return MoltObject::none().bits();
             };
             let self_order = set_order(ptr);
@@ -943,7 +992,11 @@ pub extern "C" fn molt_set_issubset(set_bits: u64, other_bits: u64) -> u64 {
             if !is_set_like_type(object_type_id(ptr)) {
                 return MoltObject::none().bits();
             }
-            let Some((other_ptr, drop_bits)) = set_like_ptr_from_bits(_py, other_bits) else {
+            // issubset probes the realized other; unhashable elements are
+            // reported bare on every version.
+            let Some((other_ptr, drop_bits)) =
+                set_like_ptr_from_bits(_py, other_bits, HashContext::Bare)
+            else {
                 return MoltObject::none().bits();
             };
             let self_order = set_order(ptr);
@@ -982,7 +1035,9 @@ pub extern "C" fn molt_set_issuperset(set_bits: u64, other_bits: u64) -> u64 {
             if !is_set_like_type(object_type_id(ptr)) {
                 return MoltObject::none().bits();
             }
-            let Some((other_ptr, drop_bits)) = set_like_ptr_from_bits(_py, other_bits) else {
+            let Some((other_ptr, drop_bits)) =
+                set_like_ptr_from_bits(_py, other_bits, HashContext::SetElement)
+            else {
                 return MoltObject::none().bits();
             };
             let self_order = set_order(ptr);

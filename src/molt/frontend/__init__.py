@@ -11218,7 +11218,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="TUPLE_FROM_LIST", args=[items], result=res))
         return res
 
-    def _emit_set_from_iter(self, iterable: MoltValue) -> MoltValue:
+    def _emit_set_from_iter(
+        self, iterable: MoltValue, probe: bool = False
+    ) -> MoltValue:
+        # `probe=True` realizes the operand of a probe-only set operation
+        # (intersection/intersection_update/issubset). CPython hashes each
+        # element to probe the receiver without inserting into a fresh set, so an
+        # unhashable element raises the bare `unhashable type: 'X'` form on every
+        # version (no `set element` context, even on 3.14). The Bare-context
+        # add op (SET_ADD_PROBE -> molt_set_add_probe) preserves that while still
+        # materializing the temporary set molt's algorithm needs.
+        add_kind = "SET_ADD_PROBE" if probe else "SET_ADD"
         res = MoltValue(self.next_var(), type_hint="set")
         self.emit(MoltOp(kind="SET_NEW", args=[], result=res))
         iter_obj = self._emit_iter_new(iterable)
@@ -11235,7 +11245,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         item = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-        self.emit(MoltOp(kind="SET_ADD", args=[res, item], result=MoltValue("none")))
+        self.emit(MoltOp(kind=add_kind, args=[res, item], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         return res
@@ -19131,7 +19141,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if other is None:
                         raise NotImplementedError("Unsupported set operation input")
                     if other.type_hint not in {"set", "frozenset"}:
-                        other = self._emit_set_from_iter(other)
+                        # intersection probes the receiver (bare unhashable
+                        # context); difference inserts into a result set
+                        # (set-element context on 3.14).
+                        other = self._emit_set_from_iter(
+                            other, probe=(method == "intersection")
+                        )
                     op_kind = {
                         "intersection": "BIT_AND",
                         "difference": "SUB",
@@ -19178,7 +19193,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     if other.type_hint in {"set", "frozenset"} or method != "update":
                         if other.type_hint not in {"set", "frozenset"}:
-                            other = self._emit_set_from_iter(other)
+                            # intersection_update probes the receiver (bare
+                            # unhashable context); the other update-family ops
+                            # insert (set-element context on 3.14).
+                            other = self._emit_set_from_iter(
+                                other, probe=(method == "intersection_update")
+                            )
                         self.emit(
                             MoltOp(kind=op_kind, args=[receiver, other], result=res)
                         )
@@ -35624,6 +35644,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "set_add",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "SET_ADD_PROBE":
+                json_ops.append(
+                    {
+                        "kind": "set_add_probe",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

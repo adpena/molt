@@ -362,7 +362,7 @@ pub(crate) fn alloc_set_like_with_entries(
         *(ptr as *mut *mut Vec<u64>) = order_ptr;
         *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
         for &entry in entries {
-            set_add_in_place(_py, ptr, entry);
+            set_add_in_place(_py, ptr, entry, HashContext::SetElement);
         }
     }
     ptr

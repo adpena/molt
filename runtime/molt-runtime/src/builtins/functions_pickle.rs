@@ -3924,7 +3924,12 @@ pub extern "C" fn molt_pickle_loads_core(
                             Err(err_bits) => return err_bits,
                         };
                         unsafe {
-                            crate::set_add_in_place(_py, set_ptr, bits);
+                            crate::set_add_in_place(
+                                _py,
+                                set_ptr,
+                                bits,
+                                crate::HashContext::SetElement,
+                            );
                         }
                         if exception_pending(_py) {
                             return MoltObject::none().bits();

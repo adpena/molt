@@ -12,8 +12,9 @@ use crate::builtins::attr::{
 use crate::builtins::classes::builtin_classes;
 use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
-    TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    alloc_bytes, alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple,
+    HashContext, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
+    TYPE_ID_TUPLE, alloc_bytes, alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string,
+    alloc_tuple,
     call_callable0, call_callable1, call_callable2, call_function_obj_vec, class_mro_vec,
     class_name_for_error, clear_exception, dec_ref_bits, dict_del_in_place, dict_get_in_place,
     dict_order, dict_set_in_place, exception_pending, format_exception_with_traceback,
@@ -3492,7 +3493,7 @@ fn copyreg_add_constructor(_py: &PyToken<'_>, func_bits: u64) -> Result<(), u64>
         ));
     };
     unsafe {
-        set_add_in_place(_py, set_ptr, func_bits);
+        set_add_in_place(_py, set_ptr, func_bits, HashContext::SetElement);
     }
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());

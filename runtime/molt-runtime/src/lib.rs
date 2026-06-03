@@ -638,15 +638,15 @@ pub(crate) use crate::object::ops::HashSecret;
 pub use crate::object::ops::*;
 #[allow(unused_imports)]
 pub(crate) use crate::object::ops::{
-    DecodeTextError, class_break_cycles, decode_bytes_text, decode_string_list, decode_value_list,
-    dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place, dict_find_entry,
-    dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method,
-    dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method, dict_set_in_place,
-    dict_setdefault_method, dict_table_capacity, dict_update_method, dict_update_set_via_store,
-    dict_values_method, format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits,
-    is_truthy, list_from_iter_bits, obj_eq, set_add_in_place, set_del_in_place, set_find_entry,
-    set_replace_entries, set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits,
-    type_name,
+    DecodeTextError, HashContext, class_break_cycles, decode_bytes_text, decode_string_list,
+    decode_value_list, dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place,
+    dict_find_entry, dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place,
+    dict_get_method, dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method,
+    dict_set_in_place, dict_setdefault_method, dict_table_capacity, dict_update_method,
+    dict_update_set_via_store, dict_values_method, format_obj, format_obj_str,
+    frozenset_from_iter_bits, hash_slice_bits, is_truthy, list_from_iter_bits, obj_eq,
+    set_add_in_place, set_del_in_place, set_find_entry, set_replace_entries, set_table_capacity,
+    tuple_from_isize_slice, tuple_from_iter_bits, type_name,
 };
 pub use crate::object::ops_arith::*;
 pub use crate::object::ops_builtins::*;

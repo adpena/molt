@@ -8893,6 +8893,20 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "set_add_probe" => {
+                        let args = op.args.as_ref().unwrap();
+                        let set_bits = locals[&args[0]];
+                        let key = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(set_bits));
+                        func.instruction(&Instruction::LocalGet(key));
+                        emit_call(func, reloc_enabled, import_ids["set_add_probe"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "frozenset_add" => {
                         let args = op.args.as_ref().unwrap();
                         let set_bits = locals[&args[0]];
