@@ -4644,7 +4644,16 @@ unsafe fn bind_builtin_splitlines(_py: &PyToken<'_>, args: &CallArgs) -> Option<
         let name_obj = obj_from_bits(name_bits);
         let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
         if name_str != "keepends" {
-            let msg = format!("splitlines() got an unexpected keyword argument '{name_str}'");
+            // CPython 3.13 changed str/bytes/bytearray.splitlines' invalid-kwarg
+            // TypeError to the generic "got an unexpected keyword argument" form;
+            // 3.12 used the specific "is an invalid keyword argument for
+            // splitlines()" form. Gate on the configured target version so output
+            // matches the emulated CPython across 3.12/3.13/3.14 on every arch/OS.
+            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+                format!("splitlines() got an unexpected keyword argument '{name_str}'")
+            } else {
+                format!("'{name_str}' is an invalid keyword argument for splitlines()")
+            };
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
         if saw_keepends {
