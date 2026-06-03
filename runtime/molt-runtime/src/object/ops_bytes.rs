@@ -2877,6 +2877,23 @@ pub(crate) fn bytes_hex_from_bits(
     sep_bits: u64,
     bytes_per_sep_bits: u64,
 ) -> u64 {
+    // CPython converts bytes_per_sep (the second positional arg) during argument
+    // parsing, BEFORE the separator is validated, so a non-int bytes_per_sep
+    // raises "'X' object cannot be interpreted as an integer" first — e.g.
+    // b'abcd'.hex(123, 'x') reports the 'x' bytes_per_sep error, not the 123 sep
+    // error. (Verified against CPython 3.12/3.13/3.14.)
+    let bytes_per_sep = if bytes_per_sep_bits == missing_bits(_py) {
+        1
+    } else {
+        let bps_msg = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(bytes_per_sep_bits))
+        );
+        index_i64_from_obj(_py, bytes_per_sep_bits, &bps_msg)
+    };
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
     let sep_opt = if sep_bits == missing_bits(_py) {
         None
     } else {
@@ -2885,18 +2902,12 @@ pub(crate) fn bytes_hex_from_bits(
             Err(err_bits) => return err_bits,
         }
     };
-    let bytes_per_sep = if bytes_per_sep_bits == missing_bits(_py) {
-        1
-    } else {
-        index_i64_from_obj(_py, bytes_per_sep_bits, "bytes_per_sep must be int")
-    };
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    if bytes_per_sep == 0 {
-        return raise_exception::<_>(_py, "ValueError", "bytes_per_sep must not be 0");
-    }
-    let text = bytes_hex_string(bytes, sep_opt.as_deref(), bytes_per_sep);
+    // bytes_per_sep == 0 means "no grouping" in CPython: the (already validated)
+    // separator is unused and the plain ungrouped hex string is returned. Forcing
+    // sep to None routes bytes_hex_string through its no-separator fast path, which
+    // never consults bytes_per_sep, so a zero group can never divide by zero.
+    let sep_for_grouping = if bytes_per_sep == 0 { None } else { sep_opt };
+    let text = bytes_hex_string(bytes, sep_for_grouping.as_deref(), bytes_per_sep);
     let ptr = alloc_string(_py, text.as_bytes());
     if ptr.is_null() {
         return MoltObject::none().bits();
@@ -3212,6 +3223,9 @@ fn bytes_fill_byte_from_bits(_py: &PyToken<'_>, fill_bits: u64, method: &str) ->
         return Some(b' ');
     }
     let fill_obj = obj_from_bits(fill_bits);
+    // CPython accepts only bytes/bytearray fillchars (PyBytes_Check ||
+    // PyByteArray_Check); everything else (str, int, memoryview, ...) raises the
+    // short type error regardless of length. (Verified 3.12/3.13/3.14.)
     let Some(fill_ptr) = fill_obj.as_ptr() else {
         let msg = format!(
             "{method}() argument 2 must be a byte string of length 1, not {}",
@@ -3220,18 +3234,30 @@ fn bytes_fill_byte_from_bits(_py: &PyToken<'_>, fill_bits: u64, method: &str) ->
         return raise_exception::<_>(_py, "TypeError", &msg);
     };
     unsafe {
-        let Some(fill_slice) = bytes_like_slice(fill_ptr) else {
+        let type_id = object_type_id(fill_ptr);
+        if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
             let msg = format!(
                 "{method}() argument 2 must be a byte string of length 1, not {}",
                 type_name(_py, fill_obj)
             );
             return raise_exception::<_>(_py, "TypeError", &msg);
-        };
+        }
+        let fill_slice = bytes_like_slice(fill_ptr).unwrap_or(&[]);
         if fill_slice.len() != 1 {
-            let msg = format!(
-                "{method}(): argument 2 must be a byte string of length 1, not a bytes object of length {}",
-                fill_slice.len()
-            );
+            // 3.14 reports a long-form message naming the actual type
+            // (bytes/bytearray) and the length; 3.12/3.13 use the short form.
+            let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                format!(
+                    "{method}(): argument 2 must be a byte string of length 1, not a {} object of length {}",
+                    type_name(_py, fill_obj),
+                    fill_slice.len()
+                )
+            } else {
+                format!(
+                    "{method}() argument 2 must be a byte string of length 1, not {}",
+                    type_name(_py, fill_obj)
+                )
+            };
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
         Some(fill_slice[0])
