@@ -374,12 +374,12 @@ pub extern "C" fn molt_string_find_slice(
                 let needle_ptr = match needle.as_ptr() {
                     Some(ptr) => ptr,
                     None => {
-                        let msg = format!("must be str, not {}", type_name(_py, needle));
+                        let msg = str_sub_arg_type_msg(_py, "find", needle);
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
                 if object_type_id(needle_ptr) != TYPE_ID_STRING {
-                    let msg = format!("must be str, not {}", type_name(_py, needle));
+                    let msg = str_sub_arg_type_msg(_py, "find", needle);
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
                 let hay_len = string_len(hay_ptr);
@@ -469,12 +469,12 @@ pub extern "C" fn molt_string_rfind_slice(
                 let needle_ptr = match needle.as_ptr() {
                     Some(ptr) => ptr,
                     None => {
-                        let msg = format!("must be str, not {}", type_name(_py, needle));
+                        let msg = str_sub_arg_type_msg(_py, "rfind", needle);
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 };
                 if object_type_id(needle_ptr) != TYPE_ID_STRING {
-                    let msg = format!("must be str, not {}", type_name(_py, needle));
+                    let msg = str_sub_arg_type_msg(_py, "rfind", needle);
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
                 let hay_len = string_len(hay_ptr);
@@ -551,6 +551,17 @@ pub extern "C" fn molt_string_index_slice(
     has_end_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        // Validate the needle HERE so a non-str needle yields the "index()"-named
+        // TypeError; index delegates to find_slice, whose own check would
+        // otherwise report "find" (the message differs by method on 3.13+).
+        let needle = obj_from_bits(needle_bits);
+        let needle_is_str = needle
+            .as_ptr()
+            .map_or(false, |p| unsafe { object_type_id(p) == TYPE_ID_STRING });
+        if !needle_is_str {
+            let msg = str_sub_arg_type_msg(_py, "index", needle);
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
         let out_bits = molt_string_find_slice(
             hay_bits,
             needle_bits,
@@ -577,6 +588,17 @@ pub extern "C" fn molt_string_rindex_slice(
     has_end_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        // Validate the needle HERE so a non-str needle yields the "rindex()"-named
+        // TypeError; rindex delegates to rfind_slice, whose own check would
+        // otherwise report "rfind" (the message differs by method on 3.13+).
+        let needle = obj_from_bits(needle_bits);
+        let needle_is_str = needle
+            .as_ptr()
+            .map_or(false, |p| unsafe { object_type_id(p) == TYPE_ID_STRING });
+        if !needle_is_str {
+            let msg = str_sub_arg_type_msg(_py, "rindex", needle);
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
         let out_bits = molt_string_rfind_slice(
             hay_bits,
             needle_bits,
@@ -1000,16 +1022,29 @@ pub extern "C" fn molt_string_endswith_slice(
     })
 }
 
-/// str.count()'s argument-type TypeError message. CPython 3.13 prefixed the bare
-/// "must be str, not <type>" form with "count() argument 1 "; 3.12 used the bare
-/// form. Gated on the configured target version (default 3.12) so the message
-/// matches the emulated CPython across 3.12/3.13/3.14 on every arch/OS.
-fn str_count_arg_type_msg(_py: &PyToken<'_>, needle: MoltObject) -> String {
+/// Argument-type TypeError message shared by the str substring methods
+/// (count/find/index/rfind/rindex). CPython 3.13 prefixed the bare
+/// "must be str, not <type>" form with "<method>() argument 1 "; 3.12 used the
+/// bare form. Gated on the configured target version (default 3.12) so the
+/// message matches the emulated CPython across 3.12/3.13/3.14 on every arch/OS.
+fn str_sub_arg_type_msg(_py: &PyToken<'_>, method: &str, needle: MoltObject) -> String {
     if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
-        format!("count() argument 1 must be str, not {}", type_name(_py, needle))
+        // CPython 3.13+ renders None as the value "None" rather than the type
+        // name "NoneType" in this argument-type message; every other type uses
+        // its name. (3.12's bare form keeps the type name "NoneType".)
+        let rendered: String = if needle.is_none() {
+            "None".to_string()
+        } else {
+            type_name(_py, needle).into_owned()
+        };
+        format!("{method}() argument 1 must be str, not {rendered}")
     } else {
         format!("must be str, not {}", type_name(_py, needle))
     }
+}
+
+fn str_count_arg_type_msg(_py: &PyToken<'_>, needle: MoltObject) -> String {
+    str_sub_arg_type_msg(_py, "count", needle)
 }
 
 #[unsafe(no_mangle)]
