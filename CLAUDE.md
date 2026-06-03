@@ -104,6 +104,35 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
   so process cleanup and artifact deletion stay inside the canonical guard and
   allowlist.
 
+## Safe Execution (Non-Negotiable: never OOM or hang the host)
+
+**NEVER run a compiled molt binary (or any command that might infinite-loop /
+allocate unboundedly) directly.** Raw binaries carry no memory guard, and the
+harness memory guard only wraps `molt run`/`molt test`/`molt build` — not bare
+`./binary` execution. A single runaway loop can take the host to tens of GB of
+RSS (observed: 97GB before OOM-kill) and wedge the machine.
+
+Always route direct binary execution — smoke tests, bisecting, profiling,
+differential one-offs, repro reduction — through the watchdog wrapper:
+
+```bash
+# Hard wall-time + RSS caps; SIGKILLs the whole process group on violation.
+python3 tools/safe_run.py --rss-mb 2048 --timeout 15 -- ./my_binary [args]
+# exit 124 = TIMEOUT (hang), 137 = OOM (RSS cap hit), else the child's own code.
+# --json for machine-readable status; stdout is forwarded live (status -> stderr).
+```
+
+Rules:
+- Bisecting a suspected hang/OOM: `safe_run.py` with a SMALL `--rss-mb` (e.g.
+  512) and short `--timeout` (e.g. 8) so a runaway dies in <1s, not at 97GB.
+- Prefer `molt run`/`molt test` (guarded) over raw binaries whenever possible;
+  use `safe_run.py` for the cases where you must invoke the artifact directly.
+- `gtimeout`/`perl -e 'alarm'` bound wall-time but NOT memory — they do not stop
+  an OOM. Use `safe_run.py` for anything that could allocate unboundedly.
+- An infinite-loop / hang / OOM bug is the most severe class: fix it
+  structurally and add a differential regression. Do not work around it by only
+  capping the runner.
+
 ## Concurrent Development (MOLT_SESSION_ID)
 
 `MOLT_SESSION_ID` **must be set BEFORE any build command**. Every agent must export it at the start of every shell command:
