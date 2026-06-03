@@ -48,6 +48,91 @@ pub(crate) struct ContainerStorageFact {
     pub(crate) elem_ty: TirType,
 }
 
+/// The **representation lattice** — the second, orthogonal axis to `TirType`.
+///
+/// `TirType` answers *"what Python type is this value?"*; `Repr` answers *"what
+/// is the physical carrier, and which unbox / raw-machine ops are sound on it?"*.
+/// The trusted-unbox truncation bug-class (an `int`-*typed* value that is
+/// physically a heap `BigInt` behind `TAG_PTR`, fed to the `<<17 >>17` inline
+/// unbox) lives entirely on this second axis and is invisible to the first. See
+/// `tmp/design_typed_ir_convergence.md` §1.
+///
+/// This is a join-semilattice (least-upper-bound at control-flow merges; the
+/// `join` operation lands in Phase 1, where phi-edge derivation consumes it).
+/// Top is [`Repr::DynBox`] (the universal NaN-box carrier; every value may
+/// legally be `DynBox`, no raw op is sound on it). Bottom is [`Repr::Never`]
+/// (unreachable). Ordering from most-proven (most ops legal) to least:
+/// `RawI64Safe`/`Bool` < `InlineInt47` (Phase 2) < `MaybeBigInt` < `DynBox`, with
+/// `FloatUnboxed` a disjoint scalar family.
+///
+/// This enum grows by phase (each variant lands in the phase that *constructs*
+/// it, so no variant is ever dead): Phase 0 (this commit) reifies the integer
+/// raw-carrier classification — `RawI64Safe`/`MaybeBigInt` plus the floor
+/// neighbours `Bool`/`FloatUnboxed`/`DynBox`/`Never`. The target §1.2 lattice
+/// additionally has `InlineInt47` (the boxed-but-proven-inline operand at unbox
+/// sites — added by Phase 2 with its proof token) and `Ref64(class)` (a proven
+/// non-null class instance — added by Phase 4). `Bool`/`FloatUnboxed` floor here
+/// but their *carrier* decisions still flow through the legacy
+/// `bool_primary`/`float_primary` sets until Phase 4 folds them in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Repr {
+    /// ⊥ — unreachable value.
+    Never,
+    /// Bare `i64` register/Variable, interval- or OSC-proven non-wrapping in
+    /// `[-2^63, 2^63)`; physically **not** NaN-boxed. Native carries it via
+    /// `int_raw_value`/`use_var`; raw machine `add`/`sub`/`mul` are legal
+    /// (overflow→BigInt deferred to the escape boundary). This is exactly the
+    /// population of native `primary_names.int` / LLVM `overflow_safe_values`.
+    RawI64Safe,
+    /// Exactly `0` or `1`. Value-exact for integer arith/bitwise; NOT for the
+    /// bit-level eq/ne compare lowering (`True`/TAG_BOOL ≠ `1`/TAG_INT at the
+    /// bit level — see design §5.3). Phase 4 routes the bool carrier here.
+    Bool,
+    /// NaN-box that is **either** `TAG_INT` (inline) **or** `TAG_PTR` (heap
+    /// `BigInt`) — a Python `int` of unknown magnitude. **This is the
+    /// un-expressible state: the trusted unbox is illegal, raw machine ops are
+    /// illegal; only the boxed runtime helpers (`molt_add`…), which dispatch on
+    /// the tag and are BigInt-correct, are sound.** `TirType::I64` maps here by
+    /// default. The name carries the proof obligation (design §1.3).
+    MaybeBigInt,
+    /// Bare `f64` register (not NaN-boxed). Float lane.
+    FloatUnboxed,
+    /// ⊤ — NaN-box with fully unknown tag (could be int/float/str/ptr/None). No
+    /// raw op is sound; full runtime dispatch.
+    DynBox,
+}
+
+impl Repr {
+    /// The conservative representation *floor* for a semantic type (design §2.1
+    /// step 2). Every Python `int` starts [`Repr::MaybeBigInt`] (boxed,
+    /// BigInt-safe, the un-unboxable state) and is only ever *raised* to
+    /// [`Repr::RawI64Safe`] by a proof — never asserted raw from the type alone.
+    /// `UserClass` floors to `DynBox` in Phase 0 (no non-null proof yet); Phase 4
+    /// raises proven instances to `Ref64(class)`.
+    pub(crate) fn default_for(ty: &TirType) -> Repr {
+        match ty {
+            TirType::I64 | TirType::BigInt => Repr::MaybeBigInt,
+            TirType::Bool => Repr::Bool,
+            TirType::F64 => Repr::FloatUnboxed,
+            TirType::Never => Repr::Never,
+            // Str/Bytes/List/Dict/Set/Tuple/Iterator/Box/DynBox/UserClass/Func/
+            // Ptr/Union/None — the universal NaN-box carrier; no raw op sound.
+            _ => Repr::DynBox,
+        }
+    }
+
+    /// Whether this is a bare-i64 raw carrier (native `int_primary` / LLVM
+    /// `overflow_safe_values`): raw machine arithmetic is legal and the value is
+    /// not NaN-boxed. The strongest proven integer element. This is both the
+    /// `overflow_safe_values` view (design §3.2) and — in Phase 0, where the only
+    /// admitted int carrier is `RawI64Safe` — the `primary_names.int` view
+    /// (design §2.1). Phase 2 widens the `primary_names.int` view to also admit
+    /// the boxed-but-proven-inline `InlineInt47` operands.
+    pub(crate) fn is_raw_i64_safe(self) -> bool {
+        matches!(self, Repr::RawI64Safe)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct I64Interval {
     min: i64,
@@ -144,7 +229,21 @@ pub(crate) struct ScalarRepresentationPlan {
     container_storage_by_name: BTreeMap<String, ContainerStorageFact>,
     container_storage_conflicted_names: BTreeSet<String>,
     container_storage_ops: BTreeMap<usize, ContainerStorageFact>,
-    primary_names: ScalarPrimaryNameSets,
+    /// The representation lattice element per SimpleIR name — the single source
+    /// of truth for the integer raw-carrier classification (design §2.1). Every
+    /// scalar name floors to [`Repr::default_for`] of its `TirType`; names proven
+    /// to be raw-i64-safe int carriers are raised to [`Repr::RawI64Safe`]. The
+    /// native `primary_names.int` set is a *view* over this map
+    /// (`{name | repr.is_raw_i64_safe()}`); see [`Self::primary_name_sets`].
+    /// Phase 4 folds the bool/float carriers (below) in here as `Bool`/
+    /// `FloatUnboxed` raises.
+    repr_by_name: BTreeMap<String, Repr>,
+    /// Raw-bool carrier names — kept as an independent set until Phase 4 folds
+    /// the bool lane into `repr_by_name`.
+    bool_primary_names: BTreeSet<String>,
+    /// Raw-f64 carrier names — kept as an independent set until Phase 4 folds the
+    /// float lane into `repr_by_name`.
+    float_primary_names: BTreeSet<String>,
     scalar_slot_exclusion_unsafe: BTreeSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
@@ -180,18 +279,23 @@ pub(crate) struct LlvmReprFacts {
     /// LLVM backend's own post-pipeline TIR so names line up with the op
     /// `_simple_out` attributes the plan keys on.
     pub(crate) name_by_value: HashMap<ValueId, String>,
-    /// TIR `ValueId`s that are overflow-safe exact-i64 carriers.
+    /// The representation lattice element per TIR `ValueId` — the value-keyed
+    /// source of truth, the LLVM/`ValueId` mirror of the plan's name-keyed
+    /// `repr_by_name`. Every value floors to [`Repr::default_for`] of its refined
+    /// `TirType`; values proven overflow-safe exact-i64 carriers are raised to
+    /// [`Repr::RawI64Safe`].
     ///
-    /// Seeded from the plan's `primary_name_sets().int` (an interval-proven,
-    /// no-i64-wrap carrier subset, keyed by SimpleIR name) and then propagated
-    /// across the TIR SSA graph: through `Copy` chains and through block
-    /// arguments (phis) — a phi is overflow-safe only when *every* incoming
-    /// edge value is overflow-safe. Loop-carried block arguments have no stable
-    /// `_simple_out` name (they are canonical slot names), so a pure name
-    /// lookup cannot classify them; the dataflow propagation is what lets the
-    /// backend keep a non-overflow-safe accumulator phi boxed (DynBox) instead
-    /// of unboxing a runtime BigInt result back into a truncating raw i64.
-    pub(crate) overflow_safe_values: std::collections::HashSet<ValueId>,
+    /// The `RawI64Safe` set is seeded from the plan's `int_carrier_names()` (an
+    /// interval-proven, no-i64-wrap carrier subset, keyed by SimpleIR name) and
+    /// propagated across the TIR SSA graph: through `Copy` chains and through
+    /// block arguments (phis) — a phi is `RawI64Safe` only when *every* incoming
+    /// edge value is `RawI64Safe`. Loop-carried block arguments have no stable
+    /// `_simple_out` name (they are canonical slot names), so a pure name lookup
+    /// cannot classify them; the dataflow propagation is what lets the backend
+    /// keep a non-overflow-safe accumulator phi boxed (`MaybeBigInt`/`DynBox`)
+    /// instead of unboxing a runtime BigInt result back into a truncating raw
+    /// i64. [`Self::is_overflow_safe_int`] is the `{RawI64Safe}` view.
+    pub(crate) repr_by_value: HashMap<ValueId, Repr>,
 }
 
 #[cfg(feature = "llvm")]
@@ -201,7 +305,7 @@ impl LlvmReprFacts {
     /// TIR for that function).
     pub(crate) fn build(func_ir: &FunctionIR, tir_func: &TirFunction) -> Self {
         let plan = ScalarRepresentationPlan::for_function_ir(func_ir);
-        let overflow_safe_int_names = &plan.primary_names.int;
+        let overflow_safe_int_names = plan.int_carrier_names();
         let container_kind_by_name = plan
             .facts_by_name
             .iter()
@@ -220,11 +324,31 @@ impl LlvmReprFacts {
             }
         }
         let overflow_safe_values =
-            compute_overflow_safe_values(tir_func, overflow_safe_int_names, &name_by_value);
+            compute_overflow_safe_values(tir_func, &overflow_safe_int_names, &name_by_value);
+        // Build the value-keyed representation map: type floor for every value we
+        // know a `ValueId` for, then raise the overflow-safe carriers to
+        // `RawI64Safe`. The floor makes `repr_by_value` a complete value->Repr
+        // map (consumed from Phase 1 onward); the `RawI64Safe` raises are exactly
+        // the old `overflow_safe_values` set, so `is_overflow_safe_int` is
+        // byte-identical.
+        let mut repr_by_value: HashMap<ValueId, Repr> = name_by_value
+            .keys()
+            .map(|&id| {
+                let repr = tir_func
+                    .value_types
+                    .get(&id)
+                    .map(Repr::default_for)
+                    .unwrap_or(Repr::DynBox);
+                (id, repr)
+            })
+            .collect();
+        for &id in &overflow_safe_values {
+            repr_by_value.insert(id, Repr::RawI64Safe);
+        }
         Self {
             container_kind_by_name,
             name_by_value,
-            overflow_safe_values,
+            repr_by_value,
         }
     }
 
@@ -234,9 +358,12 @@ impl LlvmReprFacts {
     }
 
     /// Whether the value `id` is an overflow-safe exact-i64 carrier (may use raw
-    /// machine arithmetic and a raw i64 representation).
+    /// machine arithmetic and a raw i64 representation) — the `{RawI64Safe}` view
+    /// over `repr_by_value`.
     pub(crate) fn is_overflow_safe_int(&self, id: ValueId) -> bool {
-        self.overflow_safe_values.contains(&id)
+        self.repr_by_value
+            .get(&id)
+            .is_some_and(|repr| repr.is_raw_i64_safe())
     }
 
     /// Container dispatch kind for the value named by `id`, per the plan.
@@ -411,8 +538,36 @@ impl ScalarRepresentationPlan {
         plan.mark_container_storage_ops(func_ir);
         plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
         plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(func_ir);
-        plan.primary_names = plan.compute_primary_name_sets(func_ir);
+        plan.seed_repr_by_name(func_ir);
         plan
+    }
+
+    /// Compute the integer/bool/float raw-carrier sets (unchanged algorithm) and
+    /// translate the **integer** carrier into the `repr_by_name` source of truth:
+    /// every scalar name floors to [`Repr::default_for`] of its refined
+    /// `TirType`, then each proven raw-i64 int carrier is raised to
+    /// [`Repr::RawI64Safe`]. The bool/float carriers are stored as independent
+    /// sets pending the Phase-4 fold. This is the single point where the legacy
+    /// carrier analyses become the typed representation lattice.
+    fn seed_repr_by_name(&mut self, func_ir: &FunctionIR) {
+        let primary = self.compute_primary_name_sets(func_ir);
+        // Type floor for every scalar name we have a representation fact for.
+        let mut repr_by_name: BTreeMap<String, Repr> = self
+            .facts_by_name
+            .iter()
+            .map(|(name, fact)| (name.clone(), Repr::default_for(&fact.ty)))
+            .collect();
+        // Raise the proven raw-i64 int carriers. `primary.int` is exactly the
+        // interval-/OSC-proven, no-i64-wrap carrier subset; in the lattice these
+        // are `RawI64Safe` (bare i64, not NaN-boxed). The boxed-but-proven-inline
+        // unbox operands (the `InlineInt47` element) are a distinct Phase-2
+        // concept and are not produced here.
+        for name in &primary.int {
+            repr_by_name.insert(name.clone(), Repr::RawI64Safe);
+        }
+        self.repr_by_name = repr_by_name;
+        self.bool_primary_names = primary.bool_;
+        self.float_primary_names = primary.float;
     }
 
     pub(crate) fn scalar_name_sets(
@@ -457,9 +612,31 @@ impl ScalarRepresentationPlan {
         self.integer_family_names.clone()
     }
 
+    /// The raw-primary carrier sets, as a **view** over the representation
+    /// lattice. The integer set is reconstructed from `repr_by_name`
+    /// (`{name | repr.is_raw_i64_safe()}`); bool/float are the independent sets
+    /// pending the Phase-4 fold. Byte-identical to the legacy stored sets because
+    /// the int view is exactly the names raised to `RawI64Safe` in
+    /// [`Self::seed_repr_by_name`].
     #[cfg(any(feature = "native-backend", feature = "llvm", test))]
     pub(crate) fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
-        self.primary_names.clone()
+        ScalarPrimaryNameSets {
+            int: self.int_carrier_names(),
+            bool_: self.bool_primary_names.clone(),
+            float: self.float_primary_names.clone(),
+        }
+    }
+
+    /// The proven raw-i64 int carrier names — the `primary_names.int` view over
+    /// `repr_by_name`. Single source of truth for both the native int-primary
+    /// carrier set and the LLVM `overflow_safe_values` seed.
+    #[cfg(any(feature = "native-backend", feature = "llvm", test))]
+    pub(crate) fn int_carrier_names(&self) -> BTreeSet<String> {
+        self.repr_by_name
+            .iter()
+            .filter(|(_, repr)| repr.is_raw_i64_safe())
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     #[cfg(any(feature = "native-backend", test))]
@@ -2484,6 +2661,68 @@ mod tests {
             param_types: param_types.map(|types| types.into_iter().map(str::to_string).collect()),
             source_file: None,
             is_extern: false,
+        }
+    }
+
+    /// The representation floor (design §2.1 step 2): every Python `int` (and a
+    /// known `BigInt`) starts at the conservative, sound `MaybeBigInt` carrier —
+    /// the un-unboxable state — never `RawI64Safe`/`InlineInt47`. The floor can
+    /// only ever be *raised* by a proof, so an unproven int can never reach a
+    /// trusted-unbox-legal element. This is the soundness invariant of the whole
+    /// design expressed at the type-to-representation boundary.
+    #[test]
+    fn repr_default_for_floors_int_to_maybe_bigint() {
+        assert_eq!(Repr::default_for(&TirType::I64), Repr::MaybeBigInt);
+        assert_eq!(Repr::default_for(&TirType::BigInt), Repr::MaybeBigInt);
+        assert_eq!(Repr::default_for(&TirType::Bool), Repr::Bool);
+        assert_eq!(Repr::default_for(&TirType::F64), Repr::FloatUnboxed);
+        assert_eq!(Repr::default_for(&TirType::Never), Repr::Never);
+        // Non-scalar / reference / unknown types all floor to the universal
+        // NaN-box carrier (no raw op sound).
+        assert_eq!(Repr::default_for(&TirType::Str), Repr::DynBox);
+        assert_eq!(Repr::default_for(&TirType::None), Repr::DynBox);
+        assert_eq!(
+            Repr::default_for(&TirType::List(Box::new(TirType::I64))),
+            Repr::DynBox
+        );
+        assert_eq!(
+            Repr::default_for(&TirType::UserClass("m.Point".into())),
+            Repr::DynBox
+        );
+        assert_eq!(Repr::default_for(&TirType::DynBox), Repr::DynBox);
+        // The floor never mints the raw-i64 carrier element from a type alone —
+        // that requires a proof (interval/OSC), applied in `seed_repr_by_name`.
+        for ty in [
+            TirType::I64,
+            TirType::BigInt,
+            TirType::Str,
+            TirType::None,
+            TirType::DynBox,
+            TirType::UserClass("m.C".into()),
+        ] {
+            assert!(
+                !Repr::default_for(&ty).is_raw_i64_safe(),
+                "type {ty:?} must not floor to a raw i64 carrier"
+            );
+        }
+    }
+
+    /// The carrier-view predicate that re-expresses the legacy sets: only
+    /// `RawI64Safe` is `is_raw_i64_safe` (the `overflow_safe_values` view, and in
+    /// Phase 0 the `primary_names.int` view). The floor neighbours
+    /// `MaybeBigInt`/`Bool`/`FloatUnboxed`/`DynBox`/`Never` are never raw int
+    /// carriers, so the byte-identical view excludes them.
+    #[test]
+    fn repr_carrier_view_predicates() {
+        assert!(Repr::RawI64Safe.is_raw_i64_safe());
+        for repr in [
+            Repr::MaybeBigInt,
+            Repr::Bool,
+            Repr::FloatUnboxed,
+            Repr::DynBox,
+            Repr::Never,
+        ] {
+            assert!(!repr.is_raw_i64_safe(), "{repr:?} is not raw-i64-safe");
         }
     }
 
