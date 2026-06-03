@@ -103,11 +103,62 @@ impl ScheduleCtx {
     /// assigned a fresh globally-unique id on first encounter and memoized so all
     /// later references to the same node observe the same id.
     fn buf_id_for(&mut self, node: &Arc<LazyOp>) -> usize {
-        if let LazyOp::Buffer { buf, .. } = node.as_ref() {
-            return buf.id;
+        match node.as_ref() {
+            // A realized leaf contributes its own concrete buffer id — the key
+            // the runtime stores its bytes under. Two ops reading one leaf share
+            // it; a leaf read twice in one kernel collapses to a single binding.
+            LazyOp::Buffer { buf, .. } => buf.id,
+            // A compute op produces a NEW intermediate buffer: assign a fresh,
+            // globally-unique id, memoized per node so the producing kernel's
+            // output binding and every consuming kernel's input binding agree.
+            LazyOp::Unary { .. }
+            | LazyOp::Binary { .. }
+            | LazyOp::Ternary { .. }
+            | LazyOp::Reduce { .. } => {
+                let key = Arc::as_ptr(node) as usize;
+                *self
+                    .node_ids
+                    .entry(key)
+                    .or_insert_with(crate::lazy::alloc_buffer_id)
+            }
+            // Movement re-views its source's buffer (different strides/offset, no
+            // new data); Contiguous would materialize its source into a fresh
+            // contiguous buffer via a copy kernel. Binding either as a kernel
+            // operand needs more than an id: a Movement consumer must compose the
+            // movement's ShapeTracker into its input binding, and Contiguous must
+            // actually emit its copy kernel — neither of which the scheduler
+            // threads today (see `schedule_recursive`, which treats both as pure
+            // scheduling passthroughs and drops the movement view). Minting a
+            // fresh id here would bind the consumer to a buffer no kernel produces
+            // (silent zeros — the exact "realize computes on zeros" bug class this
+            // contract exists to kill), or, with a half-done view fix, a
+            // wrong-strided read (silent miscompile). Fail loud instead.
+            //
+            // These nodes are unreachable through the current realize FFI (no
+            // Movement/Contiguous constructor exists); this guard turns the gap
+            // into an immediate, actionable error the moment one is added rather
+            // than a silent miscompute. The exhaustive match (no `_`) also forces
+            // any future LazyOp variant to declare its buffer identity here.
+            //
+            // TODO(perf, owner:runtime, milestone:RT, priority:P2, status:missing):
+            // thread tinygrad-faithful movement views into consuming kernel
+            // bindings and emit a Contiguous materialization (copy) kernel, then
+            // bind Movement by source identity and Contiguous by a fresh copy id.
+            LazyOp::Movement { .. } => panic!(
+                "molt-gpu scheduler: cannot bind a Movement node as a kernel \
+                 operand yet — its ShapeTracker view is not threaded into the \
+                 consuming binding (tracked in ROADMAP). This DAG shape is \
+                 unreachable via the current realize FFI; constructing it is a \
+                 buffer-identity contract violation."
+            ),
+            LazyOp::Contiguous { .. } => panic!(
+                "molt-gpu scheduler: cannot bind a Contiguous node as a kernel \
+                 operand yet — its materialization (copy) kernel is unimplemented \
+                 (tracked in ROADMAP). This DAG shape is unreachable via the \
+                 current realize FFI; constructing it is a buffer-identity \
+                 contract violation."
+            ),
         }
-        let key = Arc::as_ptr(node) as usize;
-        *self.node_ids.entry(key).or_insert_with(crate::lazy::alloc_buffer_id)
     }
 }
 

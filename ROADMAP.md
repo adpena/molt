@@ -166,6 +166,15 @@ This file is forward-looking only.
   link-root selection, WASM import/export manifests, and intrinsic resolver
   generation from the same program reachability facts, not ad-hoc linker flag
   churn.
+- The molt-gpu scheduler cannot yet bind `Movement`/`Contiguous` DAG nodes as
+  kernel operands: a Movement consumer needs the movement's `ShapeTracker`
+  (strides/offset) threaded into its input binding, and `Contiguous` needs a
+  materialization (copy) kernel. Both are scheduling passthroughs today that
+  drop the view, so the path is fail-closed (`ScheduleCtx::buf_id_for` panics
+  rather than mint a fresh unproduced buffer id that would silently route the
+  consumer to zeros) and unreachable via the realize FFI until tinygrad-faithful
+  movement-view threading and a `Contiguous` copy kernel land.
+  TODO(perf, owner:runtime, milestone:RT, priority:P2, status:missing).
 
 ## Deferred By Policy
 
