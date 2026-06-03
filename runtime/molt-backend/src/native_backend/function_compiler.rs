@@ -36053,9 +36053,9 @@ mod tests {
         FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name, box_raw_bool_value,
         cleanup_roots_for_names, collect_slot_backed_join_names, def_var_from_boxed_transport,
         generic_list_int_lane_eligible, index_fallback_import_name, is_cold_module_chunk_function,
-        live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
-        preanalyze_function_ir, protect_cleanup_names, scan_loop_int_sum_reduction,
-        store_index_fallback_import_name, switch_to_block_materialized,
+        jump_block, live_exception_rebind_vars_for_op, mark_cleanup_root_once,
+        materialize_label_block, preanalyze_function_ir, protect_cleanup_names,
+        scan_loop_int_sum_reduction, store_index_fallback_import_name, switch_to_block_materialized,
         switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
@@ -37533,12 +37533,12 @@ mod tests {
 
         switch_to_block_materialized(&mut builder, then_block);
         builder.def_var(phi_var, then_val);
-        crate::jump_block(&mut builder, merge_block, &[then_val]);
+        jump_block(&mut builder, merge_block, &[then_val]);
         builder.seal_block(then_block);
 
         switch_to_block_materialized(&mut builder, else_block);
         builder.def_var(phi_var, else_val);
-        crate::jump_block(&mut builder, merge_block, &[else_val]);
+        jump_block(&mut builder, merge_block, &[else_val]);
         builder.seal_block(else_block);
 
         let mut is_block_filled = false;
@@ -37603,7 +37603,7 @@ mod tests {
         switch_to_block_materialized(&mut builder, entry);
         let stable = builder.ins().iconst(types::I64, 7);
         builder.def_var(stable_var, stable);
-        crate::jump_block(&mut builder, label_block, &[]);
+        jump_block(&mut builder, label_block, &[]);
         builder.seal_block(entry);
 
         let mut is_block_filled = false;
