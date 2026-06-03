@@ -1285,6 +1285,27 @@ fn fused_both_int_check(
     builder.ins().icmp_imm(IntCC::Equal, upper, 0)
 }
 
+/// Returns true (i8 `1`) iff `val` is an inline NaN-boxed integer (`TAG_INT`) or
+/// boolean (`TAG_BOOL`).
+///
+/// These are exactly the tags for which the trusted shift-unbox `(v << s) >> s`
+/// (`unbox_int`) recovers the operand's integer value (`False`→0, `True`→1).
+/// Crucially, this rejects heap pointers (`TAG_PTR`): a Python `int` whose
+/// magnitude exceeds the 47-bit inline range is a BigInt carried as a `TAG_PTR`
+/// NaN-box, and unboxing it would truncate the pointer to garbage. Callers use
+/// this to keep the raw-int fast path correct while still accepting `bool`
+/// operands (which are `int`-typed but tagged `TAG_BOOL`).
+#[cfg(feature = "native-backend")]
+fn fused_is_int_or_bool(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+    let masked = builder.ins().band(val, mask);
+    let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
+    let is_int = builder.ins().icmp(IntCC::Equal, masked, int_tag);
+    let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
+    let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
+    builder.ins().bor(is_int, is_bool)
+}
+
 /// Check whether a NaN-boxed value is a special tagged type (int/bool/none/ptr/pending)
 /// rather than a plain f64.
 ///
