@@ -1369,6 +1369,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.boxed_locals: dict[str, MoltValue] = {}
         self.closure_locals: set[str] = set()
         self.comp_shadow_locals: set[str] = set()
+        # Cell list (1-element list MoltValue) backing the implicit
+        # ``__class__`` closure variable of the class currently having its
+        # methods compiled.  Set by visit_ClassDef before the method
+        # compilation loop when any method references ``super()``/``__class__``
+        # (see `_function_needs_classcell`), and cleared afterwards.  Zero-arg
+        # ``super()`` and bare ``__class__`` loads read the class object from
+        # this cell — exactly mirroring CPython's ``__class__`` closure cell —
+        # rather than re-deriving the class by module-attribute name (which is
+        # wrong for function-local / nested classes that are not module
+        # globals).  The same cell is stored as ``__classcell__`` in the class
+        # namespace and filled with the finished class object after the
+        # metaclass call.
+        self._active_classcell_cell: MoltValue | None = None
         self._expr_col: tuple[int, int] | None = (
             None  # expression-level col_offset for traceback carets
         )
@@ -8129,6 +8142,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             collector.visit(stmt)
         used.update(nonlocal_decls)
         used.update(self._collect_nested_free_vars(node.body))
+        # Implicit ``__class__`` closure variable: a method/nested function
+        # that references zero-arg ``super()`` or ``__class__`` closes over the
+        # enclosing class's ``__class__`` cell exactly as CPython does.  The
+        # cell lives in ``self.boxed_locals['__class__']`` (pre-created by
+        # visit_ClassDef), so adding ``__class__`` here threads it through the
+        # closure and lets ``super()``/``__class__`` read the finished class
+        # object from the cell rather than re-deriving it by module name.
+        if self._active_classcell_cell is not None and self._function_needs_classcell(
+            node
+        ):
+            used.add("__class__")
         candidates = {
             name
             for name in used
@@ -15195,30 +15219,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             arg_nodes.extend(kwonly)
             if item.args.kwarg is not None:
                 arg_nodes.append(item.args.kwarg)
-            free_vars: list[str] = []
-            free_var_hints: dict[str, str] = {}
-            closure_val: MoltValue | None = None
-            has_closure = False
-            if self.current_func_name != "molt_main":
-                free_vars = self._collect_free_vars(item)
-                if free_vars:
-                    self.unbound_check_names.update(free_vars)
-                    for name in free_vars:
-                        self._box_local(name)
-                        self.closure_locals.add(name)
-                    for name in free_vars:
-                        hint = self.boxed_local_hints.get(name)
-                        if hint is None:
-                            value = self.locals.get(name)
-                            if value is not None and value.type_hint:
-                                hint = value.type_hint
-                        free_var_hints[name] = hint or "Any"
-                    closure_items = self._closure_cells_for(free_vars)
-                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                    )
-                    has_closure = True
+            free_vars, free_var_hints, closure_val, has_closure = (
+                self._compute_method_closure(item)
+            )
             has_return = self._function_contains_return(item)
             func_kind = "GenClosureFunc" if has_closure else "GenFunc"
             payload_slots = len(params) + (1 if has_closure else 0)
@@ -15508,30 +15511,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kwonly_names = [arg.arg for arg in kwonly]
             params = self._function_param_names(item.args)
             default_specs = self._default_specs_from_args(item.args)
-            free_vars: list[str] = []
-            free_var_hints: dict[str, str] = {}
-            closure_val: MoltValue | None = None
-            has_closure = False
-            if self.current_func_name != "molt_main":
-                free_vars = self._collect_free_vars(item)
-                if free_vars:
-                    self.unbound_check_names.update(free_vars)
-                    for name in free_vars:
-                        self._box_local(name)
-                        self.closure_locals.add(name)
-                    for name in free_vars:
-                        hint = self.boxed_local_hints.get(name)
-                        if hint is None:
-                            value = self.locals.get(name)
-                            if value is not None and value.type_hint:
-                                hint = value.type_hint
-                        free_var_hints[name] = hint or "Any"
-                    closure_items = self._closure_cells_for(free_vars)
-                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                    )
-                    has_closure = True
+            free_vars, free_var_hints, closure_val, has_closure = (
+                self._compute_method_closure(item)
+            )
 
             func_hint = f"Func:{method_symbol}"
             if has_closure:
@@ -15821,32 +15803,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if item.args.kwarg is not None:
                     arg_nodes.append(item.args.kwarg)
                 default_specs = self._default_specs_from_args(item.args)
-                free_vars: list[str] = []
-                free_var_hints: dict[str, str] = {}
-                closure_val: MoltValue | None = None
-                has_closure = False
-                if self.current_func_name != "molt_main":
-                    free_vars = self._collect_free_vars(item)
-                    if free_vars:
-                        self.unbound_check_names.update(free_vars)
-                        for name in free_vars:
-                            self._box_local(name)
-                            self.closure_locals.add(name)
-                        for name in free_vars:
-                            hint = self.boxed_local_hints.get(name)
-                            if hint is None:
-                                value = self.locals.get(name)
-                                if value is not None and value.type_hint:
-                                    hint = value.type_hint
-                            free_var_hints[name] = hint or "Any"
-                        closure_items = self._closure_cells_for(free_vars)
-                        closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                        self.emit(
-                            MoltOp(
-                                kind="TUPLE_NEW", args=closure_items, result=closure_val
-                            )
-                        )
-                        has_closure = True
+                free_vars, free_var_hints, closure_val, has_closure = (
+                    self._compute_method_closure(item)
+                )
                 has_return = self._function_contains_return(item)
 
                 prev_func = self.current_func_name
@@ -16166,30 +16125,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if item.args.kwarg is not None:
                 arg_nodes.append(item.args.kwarg)
             default_specs = self._default_specs_from_args(item.args)
-            free_vars: list[str] = []
-            free_var_hints: dict[str, str] = {}
-            closure_val: MoltValue | None = None
-            has_closure = False
-            if self.current_func_name != "molt_main":
-                free_vars = self._collect_free_vars(item)
-                if free_vars:
-                    self.unbound_check_names.update(free_vars)
-                    for name in free_vars:
-                        self._box_local(name)
-                        self.closure_locals.add(name)
-                    for name in free_vars:
-                        hint = self.boxed_local_hints.get(name)
-                        if hint is None:
-                            value = self.locals.get(name)
-                            if value is not None and value.type_hint:
-                                hint = value.type_hint
-                        free_var_hints[name] = hint or "Any"
-                    closure_items = self._closure_cells_for(free_vars)
-                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                    )
-                    has_closure = True
+            free_vars, free_var_hints, closure_val, has_closure = (
+                self._compute_method_closure(item)
+            )
             has_return = self._function_contains_return(item)
 
             prev_func = self.current_func_name
@@ -16411,6 +16349,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "property_update": property_update,
             }
 
+        # ``__class__`` cell — created BEFORE compiling methods so it can be
+        # threaded into each method's closure as the implicit ``__class__``
+        # free variable (CPython semantics).  A cell is a 1-element list whose
+        # slot is filled with the finished class object after the class is
+        # built (see the cell-fill emission on both the dynamic and outlined
+        # paths below).  Zero-arg ``super()`` and bare ``__class__`` loads read
+        # ``cell[0]`` from the closure, so they resolve correctly for
+        # function-local, nested, and module-level classes (including
+        # metaclasses) uniformly — instead of re-deriving the class by
+        # module-attribute name, which fails when the class is not a module
+        # global.
+        classcell_val: MoltValue | None = None
+        prev_active_classcell = self._active_classcell_cell
+        prev_classcell_boxed = self.boxed_locals.get("__class__")
+        prev_classcell_hint = self.boxed_local_hints.get("__class__")
+        prev_classcell_locals = self.locals.get("__class__")
+        if needs_classcell:
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            classcell_val = MoltValue(self.next_var(), type_hint="list")
+            self.emit(MoltOp(kind="LIST_NEW", args=[none_val], result=classcell_val))
+            self._active_classcell_cell = classcell_val
+            self.boxed_locals["__class__"] = classcell_val
+            self.boxed_local_hints["__class__"] = "type"
+            self.locals["__class__"] = classcell_val
+
         self._push_qualname(node.name, False)
         try:
             for item in node.body:
@@ -16431,6 +16395,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         methods[item.name] = method_info
         finally:
             self._pop_qualname()
+            # Restore the enclosing scope's view of ``__class__`` now that the
+            # methods have been compiled: ``__class__`` is only an implicit
+            # closure variable inside the class body, never a real local of the
+            # surrounding function.  The cell MoltValue (``classcell_val``)
+            # remains live and is filled with the finished class object below.
+            self._active_classcell_cell = prev_active_classcell
+            if prev_classcell_boxed is None:
+                self.boxed_locals.pop("__class__", None)
+            else:
+                self.boxed_locals["__class__"] = prev_classcell_boxed
+            if prev_classcell_hint is None:
+                self.boxed_local_hints.pop("__class__", None)
+            else:
+                self.boxed_local_hints["__class__"] = prev_classcell_hint
+            if prev_classcell_locals is None:
+                self.locals.pop("__class__", None)
+            else:
+                self.locals["__class__"] = prev_classcell_locals
 
         layout_version = self._class_layout_version(
             node.name, class_attrs, methods=methods
@@ -16457,7 +16439,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
 
         dynamic_namespace: MoltValue | None = None
-        classcell_val: MoltValue | None = None
+        # ``classcell_val`` is created earlier (before the method loop) when
+        # ``needs_classcell`` so it can be threaded into method closures; do not
+        # re-declare it here or the pre-created cell would be lost.
         dynamic_bases_tuple: MoltValue | None = None
         dynamic_meta: MoltValue | None = None
         dynamic_prepared_kwds: MoltValue | None = None
@@ -16650,13 +16634,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             dynamic_namespace = namespace_val
-            if needs_classcell:
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                classcell_val = MoltValue(self.next_var(), type_hint="list")
-                self.emit(
-                    MoltOp(kind="LIST_NEW", args=[none_val], result=classcell_val)
-                )
+            if needs_classcell and classcell_val is not None:
+                # Reuse the cell created before the method loop (the same cell
+                # threaded into method closures), and publish it under
+                # ``__classcell__`` so the metaclass's ``type.__new__`` fills it
+                # with the finished class — exactly as CPython does.
                 key_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
                     MoltOp(kind="CONST_STR", args=["__classcell__"], result=key_val)
@@ -17572,6 +17554,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
+        # Fill the ``__class__`` cell threaded into method closures with the
+        # freshly built class object.  The ``dynamic_build`` (metaclass) path
+        # fills it from the metaclass call's result earlier; here we cover the
+        # outlined / dynamic-layout non-metaclass paths.  CPython binds the
+        # ``__class__`` cell to the class produced by the class statement BEFORE
+        # any class decorators run, so this fill must precede decorator
+        # application below.
+        if not dynamic_build and needs_classcell and classcell_val is not None:
+            zero_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[classcell_val, zero_val, class_val],
+                    result=MoltValue("none"),
+                )
+            )
         if type_param_vals:
             self._emit_attach_type_params(class_val, type_param_vals)
             class_getitem = self._emit_module_attr_get_on(
@@ -17739,6 +17738,78 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ):
                 return True
         return False
+
+    def _method_needs_classcell_closure(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool:
+        """True when ``node`` (a class method body being compiled) must
+        receive the enclosing class's ``__class__`` cell as a closure free
+        variable.
+
+        This is the per-method companion to the class-level ``needs_classcell``
+        decision: a method participates in the ``__class__`` closure iff it
+        references zero-arg ``super()`` or ``__class__`` (directly or through a
+        nested function/comprehension/lambda) AND the enclosing class actually
+        created a ``__class__`` cell (``self._active_classcell_cell``).  When
+        true, the method is compiled as a closure even at module scope so the
+        cell — filled with the finished class object after the metaclass call —
+        is what ``super()``/``__class__`` reads, identical to CPython.
+        """
+        return (
+            self._active_classcell_cell is not None
+            and self._function_needs_classcell(node)
+        )
+
+    def _compute_method_closure(
+        self, item: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[list[str], dict[str, str], MoltValue | None, bool]:
+        """Compute the closure for a class method being compiled.
+
+        Returns ``(free_vars, free_var_hints, closure_val, has_closure)``.
+
+        Two cases produce a closure:
+
+        * The class body is itself nested inside a function (``current_func_name
+          != "molt_main"``): the method may close over enclosing-function locals
+          and, if it uses ``super()``/``__class__``, the injected ``__class__``
+          cell — both captured by ``_collect_free_vars``.
+        * The class body is at module scope (``molt_main``) but the method uses
+          ``super()``/``__class__``: module-level names resolve as globals (not
+          free vars), so the *only* closure variable is the implicit
+          ``__class__`` cell.  Capturing the general free-var set here would
+          wrongly demote module globals to free vars, so this case threads
+          exactly ``["__class__"]``.
+
+        Centralizing this here keeps the regular / generator / async / decorated
+        method-compilation paths byte-identical and avoids re-deriving the
+        ``molt_main`` vs nested decision four times.
+        """
+        free_vars: list[str] = []
+        if self.current_func_name != "molt_main":
+            free_vars = self._collect_free_vars(item)
+        elif self._method_needs_classcell_closure(item):
+            free_vars = ["__class__"]
+
+        free_var_hints: dict[str, str] = {}
+        closure_val: MoltValue | None = None
+        has_closure = False
+        if free_vars:
+            self.unbound_check_names.update(free_vars)
+            for name in free_vars:
+                self._box_local(name)
+                self.closure_locals.add(name)
+            for name in free_vars:
+                hint = self.boxed_local_hints.get(name)
+                if hint is None:
+                    value = self.locals.get(name)
+                    if value is not None and value.type_hint:
+                        hint = value.type_hint
+                free_var_hints[name] = hint or "Any"
+            closure_items = self._closure_cells_for(free_vars)
+            closure_val = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val))
+            has_closure = True
+        return free_vars, free_var_hints, closure_val, has_closure
 
     def _lower_statistics_slice_call(
         self, func_id: str, node: ast.Call
@@ -20828,11 +20899,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if node.keywords:
                     raise NotImplementedError("super does not support keywords")
                 if len(node.args) == 0:
+                    # Zero-arg ``super()`` reads the class object from the
+                    # implicit ``__class__`` closure cell (filled with the
+                    # finished class after the class is built) and binds it to
+                    # the method's first parameter — exactly mirroring CPython's
+                    # ``__build_class__`` / ``super.__init__`` zero-arg path.
+                    # Reading the cell rather than re-deriving the class by
+                    # module-attribute name makes ``super()`` correct for
+                    # function-local, nested, and module-level classes
+                    # (including metaclasses) alike.
+                    class_ref = (
+                        self._emit_free_var_load("__class__")
+                        if "__class__" in self.free_vars
+                        else None
+                    )
                     if (
-                        self.current_class is not None
+                        class_ref is not None
                         and self.current_method_first_param is not None
                     ):
-                        class_ref = self._emit_module_attr_get(self.current_class)
                         obj = self._load_local_value(self.current_method_first_param)
                         if (
                             obj is None
@@ -20843,7 +20927,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         if obj is None:
                             raise NotImplementedError("super() missing method receiver")
-                        super_hint = f"super:{self.current_class}"
+                        super_hint = (
+                            f"super:{self.current_class}"
+                            if self.current_class is not None
+                            else "super"
+                        )
                         res = MoltValue(self.next_var(), type_hint=super_hint)
                         self.emit(
                             MoltOp(kind="SUPER_NEW", args=[class_ref, obj], result=res)
