@@ -123,11 +123,15 @@ Step 2 (extract `molt-backend-native`) — measured boundary from `simple_backen
   `representation_plan`, `ir_rewrites`, `ir`, and a `cfg(llvm)` edge to `llvm_backend`.
 - No back-edge: only `main.rs` (the binary) + sibling `function_compiler.rs` reference
   `SimpleBackend` — so `native_backend/*` is extractable.
-- Therefore the clean two-crate cut is: **`molt-backend` (core)** keeps ir/tir/passes/
-  representation_plan/ir_rewrites/intrinsic_symbols/debug_artifacts/json_boundary + the
-  non-native backends (wasm/luau/rust/llvm); **`molt-backend-native`** = `native_backend/`
-  (SimpleBackend, function_compiler, native_backend_consts, vec_layout) depending on core.
-  The `cfg(llvm)` cross-edge stays satisfied because `llvm_backend` is in core.
+- CORRECTION (per the project taxonomy): **native = Cranelift + LLVM** (one codegen
+  family — `SimpleBackend` drives `llvm_backend::lowering`/`runtime_imports` under
+  `cfg(llvm)`); **wasm is its own backend**; **luau + rust are transpilers**. So the cut is:
+  **`molt-backend` (core)** keeps ir/tir/passes/representation_plan/ir_rewrites/
+  intrinsic_symbols/debug_artifacts/json_boundary; **`molt-backend-native`** = `native_backend/*`
+  (SimpleBackend, function_compiler, consts, vec_layout) **+ `llvm_backend`** (LLVM is part of
+  native, not core), depending on core; **wasm**, and the **luau/rust transpilers**, are their
+  own extractions (or stay in core until measured). This keeps the `SimpleBackend → llvm_backend`
+  edge intra-crate (no cross-crate cfg dance) and matches the native=Cranelift+LLVM model.
 - Honest caveat: native's heavy `tir` dependency means a `tir` edit still recompiles native
   (unavoidable — native depends on tir). The incremental win is the reverse: editing native
   codegen no longer recompiles tir/passes/the non-native backends. Pick this boundary (one
