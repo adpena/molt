@@ -221,15 +221,41 @@ pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
         let pair_bits = molt_iter_next(iter_bits);
         let pair_obj = obj_from_bits(pair_bits);
         let Some(pair_ptr) = pair_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            // A non-tuple (None) result means either the underlying __next__
+            // (or an internal allocation) raised -- propagate that exception
+            // unchanged -- or the object is simply not an iterator. CPython's
+            // next() rejects the latter with a type-qualified message *before*
+            // consulting any default, so this covers next(x) and next(x, d).
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let msg = format!(
+                "'{}' object is not an iterator",
+                type_name(_py, obj_from_bits(iter_bits))
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
         };
         unsafe {
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let msg = format!(
+                    "'{}' object is not an iterator",
+                    type_name(_py, obj_from_bits(iter_bits))
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             let elems = seq_vec_ref(pair_ptr);
             if elems.len() < 2 {
-                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let msg = format!(
+                    "'{}' object is not an iterator",
+                    type_name(_py, obj_from_bits(iter_bits))
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             let val_bits = elems[0];
             let done_bits = elems[1];
@@ -565,7 +591,11 @@ pub(crate) unsafe fn enumerate_new_impl(
                 is_int_like = object_type_id(ptr) == TYPE_ID_BIGINT;
             }
             if !is_int_like {
-                return raise_exception::<_>(_py, "TypeError", "enumerate() start must be an int");
+                let msg = format!(
+                    "'{}' object cannot be interpreted as an integer",
+                    type_name(_py, start_obj)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             start_bits
         } else {
@@ -1217,17 +1247,34 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         if done_flags.iter().all(|done| *done) {
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
+                        // CPython describes the contiguous run of arguments
+                        // preceding the offending one: singular "argument 1" when
+                        // only the first precedes, else the plural "arguments 1-N"
+                        // where N is the highest preceding 1-based argument number.
+                        let preceding_phrase = |last: usize| -> String {
+                            if last <= 1 {
+                                "argument 1".to_string()
+                            } else {
+                                format!("arguments 1-{last}")
+                            }
+                        };
                         if done_flags.first().copied().unwrap_or(false) {
                             if let Some(idx) = done_flags[1..].iter().position(|done| !*done) {
-                                let msg =
-                                    format!("zip() argument {} is longer than argument 1", idx + 2);
+                                let msg = format!(
+                                    "zip() argument {} is longer than {}",
+                                    idx + 2,
+                                    preceding_phrase(idx + 1)
+                                );
                                 return raise_exception::<_>(_py, "ValueError", &msg);
                             }
                             return generator_done_tuple(_py, MoltObject::none().bits());
                         }
                         if let Some(idx) = done_flags[1..].iter().position(|done| *done) {
-                            let msg =
-                                format!("zip() argument {} is shorter than argument 1", idx + 2);
+                            let msg = format!(
+                                "zip() argument {} is shorter than {}",
+                                idx + 2,
+                                preceding_phrase(idx + 1)
+                            );
                             return raise_exception::<_>(_py, "ValueError", &msg);
                         }
                     } else {
