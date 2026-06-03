@@ -3285,7 +3285,7 @@ pub(crate) fn parse_codec_arg(
     }
     let Some(text) = string_obj_to_owned(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, bits));
-        let msg = format!("{func_name}() argument '{arg_name}' must be str, not '{type_name}'");
+        let msg = format!("{func_name}() argument '{arg_name}' must be str, not {type_name}");
         return raise_exception::<_>(_py, "TypeError", &msg);
     };
     Some(text)
