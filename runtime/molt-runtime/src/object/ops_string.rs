@@ -734,26 +734,13 @@ pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64
                     );
                     return MoltObject::from_bool(hay_bytes.starts_with(needle_bytes)).bits();
                 }
-                if needle_type == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(needle_ptr);
-                    for &elem_bits in elems.iter() {
-                        let elem = obj_from_bits(elem_bits);
-                        if let Some(elem_ptr) = elem.as_ptr()
-                            && object_type_id(elem_ptr) == TYPE_ID_STRING
-                        {
-                            let elem_bytes = std::slice::from_raw_parts(
-                                string_bytes(elem_ptr),
-                                string_len(elem_ptr),
-                            );
-                            if hay_bytes.starts_with(elem_bytes) {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                        }
-                    }
-                    return MoltObject::from_bool(false).bits();
-                }
             }
-            // Non-str, non-tuple needle: delegate to slice path for error handling
+            // Tuple or non-str needle: delegate to the slice path, the single
+            // source of truth for tuple-element validation (CPython raises
+            // "tuple for startswith must only contain str, not <type>" on any
+            // non-str element) and the non-str-needle TypeError. The fast loop
+            // this replaced silently skipped non-str tuple elements, so
+            // `"hi".startswith(("x", 1))` returned False instead of raising.
             let none_bits = MoltObject::none().bits();
             let false_bits = MoltObject::from_bool(false).bits();
             molt_string_startswith_slice(
@@ -790,25 +777,13 @@ pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
                     );
                     return MoltObject::from_bool(hay_bytes.ends_with(needle_bytes)).bits();
                 }
-                if needle_type == TYPE_ID_TUPLE {
-                    let elems = seq_vec_ref(needle_ptr);
-                    for &elem_bits in elems.iter() {
-                        let elem = obj_from_bits(elem_bits);
-                        if let Some(elem_ptr) = elem.as_ptr()
-                            && object_type_id(elem_ptr) == TYPE_ID_STRING
-                        {
-                            let elem_bytes = std::slice::from_raw_parts(
-                                string_bytes(elem_ptr),
-                                string_len(elem_ptr),
-                            );
-                            if hay_bytes.ends_with(elem_bytes) {
-                                return MoltObject::from_bool(true).bits();
-                            }
-                        }
-                    }
-                    return MoltObject::from_bool(false).bits();
-                }
             }
+            // Tuple or non-str needle: delegate to the slice path, the single
+            // source of truth for tuple-element validation (CPython raises
+            // "tuple for endswith must only contain str, not <type>" on any
+            // non-str element) and the non-str-needle TypeError. The fast loop
+            // this replaced silently skipped non-str tuple elements, so
+            // `"hi".endswith(("x", 1))` returned False instead of raising.
             let none_bits = MoltObject::none().bits();
             let false_bits = MoltObject::from_bool(false).bits();
             molt_string_endswith_slice(
@@ -1025,6 +1000,18 @@ pub extern "C" fn molt_string_endswith_slice(
     })
 }
 
+/// str.count()'s argument-type TypeError message. CPython 3.13 prefixed the bare
+/// "must be str, not <type>" form with "count() argument 1 "; 3.12 used the bare
+/// form. Gated on the configured target version (default 3.12) so the message
+/// matches the emulated CPython across 3.12/3.13/3.14 on every arch/OS.
+fn str_count_arg_type_msg(_py: &PyToken<'_>, needle: MoltObject) -> String {
+    if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+        format!("count() argument 1 must be str, not {}", type_name(_py, needle))
+    } else {
+        format!("must be str, not {}", type_name(_py, needle))
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1040,19 +1027,19 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             let needle_ptr = match needle.as_ptr() {
                 Some(ptr) => ptr,
                 None => {
-                    let msg = format!(
-                        "count() argument 1 must be str, not {}",
-                        type_name(_py, needle)
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &str_count_arg_type_msg(_py, needle),
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
             if object_type_id(needle_ptr) != TYPE_ID_STRING {
-                let msg = format!(
-                    "count() argument 1 must be str, not {}",
-                    type_name(_py, needle)
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &str_count_arg_type_msg(_py, needle),
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let needle_bytes =
