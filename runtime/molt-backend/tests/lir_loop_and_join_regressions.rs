@@ -84,7 +84,7 @@ fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
     refine_types(&mut typed);
     verify_function(&typed).expect("typed TIR must verify");
     eprintln!("TYPED_TIR_DEBUG: {typed:#?}");
-    let lir_debug = molt_backend::tir::lower_to_lir::lower_function_to_lir(&typed);
+    let lir_debug = molt_backend::tir::lower_to_lir::lower_function_to_lir(&typed, None);
     eprintln!("LIR_DEBUG: {lir_debug:#?}");
     let round_tripped = lower_to_simple_ir(&typed);
     eprintln!("ROUNDTRIPPED_SIMPLE_DEBUG: {round_tripped:#?}");
