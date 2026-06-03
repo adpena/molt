@@ -1729,7 +1729,15 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
         let either_float = lhs.is_float() || rhs.is_float();
         if !either_float && let (Some(li), Some(ri)) = (to_i64(lhs), to_i64(rhs)) {
             if ri == 0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                // CPython 3.14 unified the integer/float divmod-by-zero text to
+                // "division by zero"; 3.12/3.13 use "integer division or modulo
+                // by zero" for the integer path.
+                let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                    "division by zero"
+                } else {
+                    "integer division or modulo by zero"
+                };
+                return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
             }
             let li128 = li as i128;
             let ri128 = ri as i128;
@@ -1748,7 +1756,12 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
         }
         if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             if r_big.is_zero() {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                    "division by zero"
+                } else {
+                    "integer division or modulo by zero"
+                };
+                return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
             }
             let quot = l_big.div_floor(&r_big);
             let rem = l_big.mod_floor(&r_big);
@@ -1770,7 +1783,14 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
         }
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
             if rf == 0.0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+                // CPython 3.12/3.13 use "float divmod()" for the float path;
+                // 3.14 unified it to "division by zero".
+                let zero_msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+                    "division by zero"
+                } else {
+                    "float divmod()"
+                };
+                return raise_exception::<_>(_py, "ZeroDivisionError", zero_msg);
             }
             let quot = (lf / rf).floor();
             let mut rem = lf % rf;
