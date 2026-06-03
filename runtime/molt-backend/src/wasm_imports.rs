@@ -334,6 +334,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("range_new", 5),
     ("reversed_builtin", 2),
     ("set_add", 3),
+    ("set_add_probe", 3),
     ("set_contains", 3),
     ("set_difference_update", 3),
     ("set_discard", 3),

@@ -6790,6 +6790,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "set_add_probe" => {
+                // Probe-only realization: bare unhashable context on every version.
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let func = self.ensure_runtime_i64_fn("molt_set_add_probe", 2);
+                let set_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let item_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(func, &[set_bits.into(), item_bits.into()], "set_add_probe")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "frozenset_add" => {
                 if op.operands.len() != 2 {
                     return false;
