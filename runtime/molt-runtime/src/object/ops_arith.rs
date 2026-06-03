@@ -2951,10 +2951,10 @@ pub(super) unsafe fn set_like_union(
             return MoltObject::none().bits();
         }
         for &entry in l_elems.iter() {
-            set_add_in_place(_py, res_ptr, entry);
+            set_add_in_place(_py, res_ptr, entry, HashContext::SetElement);
         }
         for &entry in r_elems.iter() {
-            set_add_in_place(_py, res_ptr, entry);
+            set_add_in_place(_py, res_ptr, entry, HashContext::SetElement);
         }
         res_bits
     }
@@ -2988,7 +2988,7 @@ pub(super) unsafe fn set_like_intersection(
                 return MoltObject::none().bits();
             }
             if found.is_some() {
-                set_add_in_place(_py, res_ptr, entry);
+                set_add_in_place(_py, res_ptr, entry, HashContext::SetElement);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, res_bits);
                     return MoltObject::none().bits();
@@ -3023,7 +3023,7 @@ pub(super) unsafe fn set_like_difference(
                 return MoltObject::none().bits();
             }
             if found.is_none() {
-                set_add_in_place(_py, res_ptr, entry);
+                set_add_in_place(_py, res_ptr, entry, HashContext::SetElement);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, res_bits);
                     return MoltObject::none().bits();
@@ -3059,7 +3059,7 @@ pub(super) unsafe fn set_like_symdiff(
                 return MoltObject::none().bits();
             }
             if found.is_none() {
-                set_add_in_place(_py, res_ptr, entry);
+                set_add_in_place(_py, res_ptr, entry, HashContext::SetElement);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, res_bits);
                     return MoltObject::none().bits();
@@ -3073,7 +3073,7 @@ pub(super) unsafe fn set_like_symdiff(
                 return MoltObject::none().bits();
             }
             if found.is_none() {
-                set_add_in_place(_py, res_ptr, entry);
+                set_add_in_place(_py, res_ptr, entry, HashContext::SetElement);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, res_bits);
                     return MoltObject::none().bits();
@@ -3099,7 +3099,7 @@ pub(super) unsafe fn set_like_copy_bits(
             return MoltObject::none().bits();
         }
         for &entry in elems.iter() {
-            set_add_in_place(_py, res_ptr, entry);
+            set_add_in_place(_py, res_ptr, entry, HashContext::SetElement);
             if exception_pending(_py) {
                 dec_ref_bits(_py, res_bits);
                 return MoltObject::none().bits();
@@ -3109,9 +3109,15 @@ pub(super) unsafe fn set_like_copy_bits(
     }
 }
 
+/// Realize `other_bits` as a set-like pointer. When the argument is not already
+/// a set/frozenset it is materialized into a temporary set, and `ctx` chooses
+/// the unhashable-element error context for that materialization: probe-only
+/// callers (`intersection`/`intersection_update`/`issubset`) pass
+/// [`HashContext::Bare`]; all inserting callers pass [`HashContext::SetElement`].
 pub(super) unsafe fn set_like_ptr_from_bits(
     _py: &PyToken<'_>,
     other_bits: u64,
+    ctx: HashContext,
 ) -> Option<(*mut u8, Option<u64>)> {
     unsafe {
         let obj = obj_from_bits(other_bits);
@@ -3121,13 +3127,19 @@ pub(super) unsafe fn set_like_ptr_from_bits(
                 return Some((ptr, None));
             }
         }
-        let set_bits = set_from_iter_bits(_py, other_bits)?;
+        let set_bits = set_from_iter_bits(_py, other_bits, ctx)?;
         let ptr = obj_from_bits(set_bits).as_ptr()?;
         Some((ptr, Some(set_bits)))
     }
 }
 
-pub(super) unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> Option<u64> {
+/// Materialize an iterable into a fresh set. `ctx` selects the
+/// unhashable-element error context (see [`set_like_ptr_from_bits`]).
+pub(super) unsafe fn set_from_iter_bits(
+    _py: &PyToken<'_>,
+    other_bits: u64,
+    ctx: HashContext,
+) -> Option<u64> {
     unsafe {
         let iter_bits = molt_iter(other_bits);
         if obj_from_bits(iter_bits).is_none() {
@@ -3151,7 +3163,7 @@ pub(super) unsafe fn set_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> O
                 break;
             }
             let val_bits = pair_elems[0];
-            set_add_in_place(_py, set_ptr, val_bits);
+            set_add_in_place(_py, set_ptr, val_bits, ctx);
             if exception_pending(_py) {
                 dec_ref_bits(_py, set_bits);
                 return None;

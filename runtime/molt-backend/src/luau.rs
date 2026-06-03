@@ -2618,7 +2618,10 @@ impl LuauBackend {
             // ================================================================
             // Set operations
             // ================================================================
-            "set_add" | "frozenset_add" => {
+            // `set_add_probe` is `set_add` for the temporary set realized when
+            // probing the operand of intersection/issubset; the Luau lane uses
+            // Lua-table keys (any value hashable) so it is identical to set_add.
+            "set_add" | "set_add_probe" | "frozenset_add" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);

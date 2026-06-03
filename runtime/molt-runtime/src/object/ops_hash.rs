@@ -1155,14 +1155,60 @@ pub(crate) fn hash_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
     hash_bits_signed(_py, bits) as u64
 }
 
-pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64) -> bool {
+/// Operation context for an unhashable-key `TypeError`.
+///
+/// CPython 3.14 added an operation-specific prefix to the `unhashable type`
+/// message: `cannot use 'X' as a set element (unhashable type: 'X')` when the
+/// value is inserted into a set, `... as a dict key (...)` for a dict key. The
+/// bare form is still emitted on 3.12/3.13 and for operations that merely probe
+/// (`set.intersection`/`intersection_update`/`issubset`) without inserting, even
+/// on 3.14. `Bare` selects that probe-only form on every version.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HashContext {
+    /// Bare `unhashable type: 'X'` on every version. Used for probe-only set ops
+    /// (`intersection`, `intersection_update`, `issubset`) and the `hash()`
+    /// builtin.
+    Bare,
+    /// `cannot use 'X' as a set element (...)` on 3.14; bare on 3.12/3.13.
+    SetElement,
+    /// `cannot use 'X' as a dict key (...)` on 3.14; bare on 3.12/3.13.
+    DictKey,
+}
+
+impl HashContext {
+    /// The 3.14 context word, or `None` for the bare form (every version).
+    #[inline]
+    fn word(self) -> Option<&'static str> {
+        match self {
+            HashContext::Bare => None,
+            HashContext::SetElement => Some("set element"),
+            HashContext::DictKey => Some("dict key"),
+        }
+    }
+}
+
+/// Render the unhashable-type `TypeError` message for `name`, honoring the
+/// operation context and the runtime CPython target version.
+#[cold]
+#[inline(never)]
+pub(crate) fn unhashable_type_message(_py: &PyToken<'_>, name: &str, ctx: HashContext) -> String {
+    if let Some(word) = ctx.word()
+        && crate::object::ops_sys::runtime_target_at_least(_py, 3, 14)
+    {
+        format!("cannot use '{name}' as a {word} (unhashable type: '{name}')")
+    } else {
+        format!("unhashable type: '{name}'")
+    }
+}
+
+pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext) -> bool {
     let obj = obj_from_bits(key_bits);
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             let type_id = object_type_id(ptr);
             if is_unhashable_type(type_id) {
                 let name = type_name(_py, obj);
-                let msg = format!("unhashable type: '{name}'");
+                let msg = unhashable_type_message(_py, &name, ctx);
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
