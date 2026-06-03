@@ -300,6 +300,46 @@ fn test_dce_movement_and_contiguous() {
     assert_eq!(dce::count_nodes(&contig), 3);
 }
 
+// --- Fail-closed scheduling guards for unbindable operands ---
+//
+// Movement/Contiguous nodes cannot yet be bound as kernel operands: the
+// scheduler does not thread a movement's ShapeTracker into consuming bindings,
+// and Contiguous has no materialization (copy) kernel. Binding one must fail
+// loud rather than mint a fresh buffer id no kernel produces — which would route
+// the consuming kernel to zeros (the historical "realize computes on zeros" bug
+// class) or, with a half-done view fix, a wrong-strided read. These DAG shapes
+// are unreachable via the current realize FFI (no Movement/Contiguous
+// constructor exists); the guards lock the contract until full support lands.
+
+#[test]
+#[should_panic(expected = "Movement node as a kernel operand")]
+fn test_schedule_rejects_movement_operand_fail_loud() {
+    let buf = make_buffer(0, 64);
+    let mov = Arc::new(LazyOp::Movement {
+        src: Arc::clone(&buf),
+        st: ShapeTracker::contiguous(&[64]),
+    });
+    let neg = Arc::new(LazyOp::Unary {
+        op: PrimitiveOp::Neg,
+        src: Arc::clone(&mov),
+    });
+    let _ = schedule(&neg, &[64]);
+}
+
+#[test]
+#[should_panic(expected = "Contiguous node as a kernel operand")]
+fn test_schedule_rejects_contiguous_operand_fail_loud() {
+    let buf = make_buffer(0, 64);
+    let contig = Arc::new(LazyOp::Contiguous {
+        src: Arc::clone(&buf),
+    });
+    let neg = Arc::new(LazyOp::Unary {
+        op: PrimitiveOp::Neg,
+        src: Arc::clone(&contig),
+    });
+    let _ = schedule(&neg, &[64]);
+}
+
 #[test]
 fn test_dce_eliminate_dead_nodes_preserves_order() {
     let buf_a = make_buffer(0, 64);
