@@ -386,6 +386,17 @@ pub fn obj_eq(_py: &CoreGilToken, lhs: MoltObject, rhs: MoltObject) -> bool {
     unsafe { __molt_collections_obj_eq(lhs.bits(), rhs.bits()) != 0 }
 }
 
+unsafe extern "C" {
+    fn __molt_collections_ensure_key_hashable(key_bits: u64, ctx_code: u64) -> i32;
+}
+
+/// Returns true if `key` is hashable; false (with a pending CPython-identical
+/// TypeError) otherwise. `ctx_code`: 0 = bare (element-counting paths), 2 = dict
+/// key (direct key access / mapping pairs; gets the 3.14 context message).
+pub fn ensure_key_hashable(_py: &CoreGilToken, key_bits: u64, ctx_code: u64) -> bool {
+    unsafe { __molt_collections_ensure_key_hashable(key_bits, ctx_code) != 0 }
+}
+
 // ---------------------------------------------------------------------------
 // Callable helpers
 // ---------------------------------------------------------------------------

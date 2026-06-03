@@ -20,7 +20,8 @@ use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
     attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, dec_ref_bits,
     dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_order_clone,
-    dict_set_in_place, exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy, obj_eq,
+    dict_set_in_place, ensure_key_hashable, exception_pending, inc_ref_bits,
+    index_i64_with_overflow, is_truthy, obj_eq,
     object_type_id, raise_exception, raise_key_error_with_key, seq_vec_ref, string_data,
     string_obj_to_owned, to_i64, type_name,
 };
@@ -2132,6 +2133,11 @@ pub extern "C" fn molt_counter_from_iterable(iterable_bits: u64) -> u64 {
         let elems = unsafe { seq_vec_ref(ptr) };
         let mut state = CounterState::new();
         for &elem_bits in elems.iter() {
+            // CPython hashes each element as a dict key; an unhashable element
+            // raises TypeError (bare message for the element-counting path).
+            if !ensure_key_hashable(_py, elem_bits, 0) {
+                return MoltObject::none().bits();
+            }
             state.add_count(_py, elem_bits, 1);
         }
         let id = next_counter_handle();
@@ -2175,6 +2181,9 @@ pub extern "C" fn molt_counter_from_mapping(mapping_bits: u64) -> u64 {
             let Some(count) = to_i64(count_obj) else {
                 return raise_exception::<_>(_py, "TypeError", "count must be an integer");
             };
+            if !ensure_key_hashable(_py, pair[0], 2) {
+                return MoltObject::none().bits();
+            }
             state.set_count_i64(_py, pair[0], count);
         }
         let id = next_counter_handle();
@@ -2196,6 +2205,12 @@ pub extern "C" fn molt_counter_getitem(handle_bits: u64, key_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
+        // CPython hashes the key (dict.__getitem__) even on an empty Counter, so
+        // an unhashable key raises TypeError (3.14 dict-key context) rather than
+        // the __missing__ default of 0.
+        if !ensure_key_hashable(_py, key_bits, 2) {
+            return MoltObject::none().bits();
+        }
         collections_state()
             .counter_registry
             .lock()
@@ -2214,6 +2229,9 @@ pub extern "C" fn molt_counter_setitem(handle_bits: u64, key_bits: u64, count_bi
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
+        if !ensure_key_hashable(_py, key_bits, 2) {
+            return MoltObject::none().bits();
+        }
         {
             let mut map = collections_state().counter_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
@@ -2231,6 +2249,10 @@ pub extern "C" fn molt_counter_delitem(handle_bits: u64, key_bits: u64) -> u64 {
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
+        // dict.__delitem__ hashes first, so unhashable -> TypeError before KeyError.
+        if !ensure_key_hashable(_py, key_bits, 2) {
+            return MoltObject::none().bits();
+        }
         let removed = collections_state()
             .counter_registry
             .lock()
@@ -2416,6 +2438,10 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
                 let Some(count) = to_i64(count_obj) else {
                     return raise_exception::<_>(_py, "TypeError", "count must be an integer");
                 };
+                // (key, count) pairs are a direct dict-key path -> dict-key context.
+                if !ensure_key_hashable(_py, pair[0], 2) {
+                    return MoltObject::none().bits();
+                }
                 deltas.push((pair[0], count));
             }
             {
@@ -2427,6 +2453,11 @@ pub extern "C" fn molt_counter_update(handle_bits: u64, source_bits: u64) -> u64
                 }
             }
         } else {
+            for &elem_bits in &elems {
+                if !ensure_key_hashable(_py, elem_bits, 0) {
+                    return MoltObject::none().bits();
+                }
+            }
             {
                 let mut map = collections_state().counter_registry.lock().unwrap();
                 if let Some(state) = map.get_mut(&id) {
@@ -2497,6 +2528,9 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
                 let Some(count) = to_i64(count_obj) else {
                     return raise_exception::<_>(_py, "TypeError", "count must be an integer");
                 };
+                if !ensure_key_hashable(_py, pair[0], 2) {
+                    return MoltObject::none().bits();
+                }
                 deltas.push((pair[0], count));
             }
             {
@@ -2508,6 +2542,11 @@ pub extern "C" fn molt_counter_subtract(handle_bits: u64, source_bits: u64) -> u
                 }
             }
         } else {
+            for &elem_bits in &elems {
+                if !ensure_key_hashable(_py, elem_bits, 0) {
+                    return MoltObject::none().bits();
+                }
+            }
             {
                 let mut map = collections_state().counter_registry.lock().unwrap();
                 if let Some(state) = map.get_mut(&id) {
@@ -2578,6 +2617,10 @@ pub extern "C" fn molt_counter_contains(handle_bits: u64, key_bits: u64) -> u64 
         let Some(id) = counter_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
+        // `key in counter` hashes the key (dict.__contains__) even when empty.
+        if !ensure_key_hashable(_py, key_bits, 2) {
+            return MoltObject::none().bits();
+        }
         let found = collections_state()
             .counter_registry
             .lock()
