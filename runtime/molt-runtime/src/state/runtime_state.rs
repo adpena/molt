@@ -653,10 +653,27 @@ fn trace_runtime_init_enabled() -> bool {
     )
 }
 
+thread_local! {
+    /// `(t0, t_prev)` captured at the first `enter` stage so each subsequent
+    /// `trace_runtime_init` call can report cumulative elapsed since init began
+    /// and the per-phase delta. Reset on every `enter` so a re-entrant init
+    /// attempt (the `already_initialized` fast path) times independently rather
+    /// than appearing to take the whole prior init's wall time.
+    static RUNTIME_INIT_CLOCK: Cell<Option<(Instant, Instant)>> = const { Cell::new(None) };
+}
+
 #[inline]
 fn trace_runtime_init(stage: &str) {
     if trace_runtime_init_enabled() {
-        eprintln!("[molt runtime_init] {stage}");
+        let now = Instant::now();
+        let (t0, t_prev) = RUNTIME_INIT_CLOCK.with(|c| match c.get() {
+            Some(v) if stage != "enter" => v,
+            _ => (now, now),
+        });
+        RUNTIME_INIT_CLOCK.with(|c| c.set(Some((t0, now))));
+        let total_us = now.duration_since(t0).as_micros();
+        let delta_us = now.duration_since(t_prev).as_micros();
+        eprintln!("[molt runtime_init] +{total_us:>6}us (d{delta_us:>5}us) {stage}");
     }
 }
 
