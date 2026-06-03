@@ -2699,10 +2699,6 @@ impl SimpleBackend {
                 && !op_prefers_integer_runtime_lane(op)
                 && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
         };
-        let one_raw_int_compare_operand_is_safe =
-            |lhs_raw: bool, rhs_raw: bool, lhs: &str, rhs: &str| {
-                (lhs_raw && name_is_integer_scalar(rhs)) || (rhs_raw && name_is_integer_scalar(lhs))
-            };
         let op_prefers_float_numeric_lane = |op: &OpIR| {
             if !scalar_fast_paths_enabled || op_prefers_integer_runtime_lane(op) {
                 return false;
@@ -3965,10 +3961,15 @@ impl SimpleBackend {
                             }
                             continue;
                         } else {
-                            // Proven-int path: op_prefers_int_lane guarantees both
-                            // operands are int-like. Skip tag check, unbox directly.
-                            // Overflow guard retained for BigInt fallback.
-                            // Propagate raw shadow so downstream ops skip unbox.
+                            // op_prefers_int_lane proves both operands are Python
+                            // `int`-typed, but that includes heap BigInts carried
+                            // as TAG_PTR NaN-boxes. The raw shift-unbox is only
+                            // value-exact for inline TAG_INT (and TAG_BOOL); a
+                            // BigInt pointer would be truncated to garbage. Guard
+                            // the raw lane on a runtime inline-int tag check and
+                            // route BigInt / float / mixed operands to the boxed
+                            // runtime helper, which is value-correct for all of
+                            // them. The 47-bit inline overflow guard is retained.
                             let lhs = var_get_boxed_overflow_safe(
                                 &mut self.module,
                                 &mut self.import_ids,
@@ -4003,8 +4004,12 @@ impl SimpleBackend {
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64); // boxed
                             builder.append_block_param(merge_block, types::I64); // raw shadow
-                            let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                            let (lhs_xored, lhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                            let (rhs_xored, rhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                            let both_int =
+                                fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let sum = builder.ins().iadd(lhs_val, rhs_val);
                             let fast_res = box_int_value_hoisted(
                                 &mut builder,
@@ -4013,9 +4018,10 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             );
                             let fits_inline = int_value_fits_inline(&mut builder, sum);
+                            let take_fast = builder.ins().band(both_int, fits_inline);
                             builder
                                 .ins()
-                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                                .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -4343,8 +4349,11 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64); // boxed
                         builder.append_block_param(merge_block, types::I64); // raw shadow
-                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                        let (lhs_xored, lhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                        let (rhs_xored, rhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(
                             &mut builder,
@@ -4353,9 +4362,10 @@ impl SimpleBackend {
                             box_int_tag_var,
                         );
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
+                        let take_fast = builder.ins().band(both_int, fits_inline);
                         builder
                             .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                            .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -5813,8 +5823,11 @@ impl SimpleBackend {
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64); // boxed
                             builder.append_block_param(merge_block, types::I64); // raw shadow
-                            let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                            let (lhs_xored, lhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                            let (rhs_xored, rhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let diff = builder.ins().isub(lhs_val, rhs_val);
                             let fast_res = box_int_value_hoisted(
                                 &mut builder,
@@ -5823,9 +5836,10 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             );
                             let fits_inline = int_value_fits_inline(&mut builder, diff);
+                            let take_fast = builder.ins().band(both_int, fits_inline);
                             builder
                                 .ins()
-                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                                .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -6072,8 +6086,11 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64); // boxed
                         builder.append_block_param(merge_block, types::I64); // raw shadow
-                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                        let (lhs_xored, lhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                        let (rhs_xored, rhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(
                             &mut builder,
@@ -6082,9 +6099,10 @@ impl SimpleBackend {
                             box_int_tag_var,
                         );
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
+                        let take_fast = builder.ins().band(both_int, fits_inline);
                         builder
                             .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                            .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -6342,8 +6360,11 @@ impl SimpleBackend {
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64); // boxed
                             builder.append_block_param(merge_block, types::I64); // raw shadow
-                            let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                            let (lhs_xored, lhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                            let (rhs_xored, rhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                             let fast_res = box_int_value_hoisted(
                                 &mut builder,
@@ -6351,7 +6372,8 @@ impl SimpleBackend {
                                 box_int_mask_var,
                                 box_int_tag_var,
                             );
-                            builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
+                            let take_fast = builder.ins().band(both_int, fits);
+                            builder.ins().brif(take_fast, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -6592,8 +6614,11 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64); // boxed
                         builder.append_block_param(merge_block, types::I64); // raw shadow
-                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                        let (lhs_xored, lhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                        let (rhs_xored, rhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(
                             &mut builder,
@@ -6601,7 +6626,8 @@ impl SimpleBackend {
                             box_int_mask_var,
                             box_int_tag_var,
                         );
-                        builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
+                        let take_fast = builder.ins().band(both_int, fits);
+                        builder.ins().brif(take_fast, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -7792,15 +7818,19 @@ impl SimpleBackend {
                             builder.append_block_param(merge_block, types::F64);
                         }
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        let (lhs_xored, lhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                        let (rhs_xored, rhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         // Check for zero divisor using the NaN-boxed representation.
                         // box_int(0) = QNAN | TAG_INT = 0x7ff9000000000000.
                         let boxed_zero = builder.ins().iconst(types::I64, box_int(0));
                         let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, *rhs, boxed_zero);
+                        let take_div = builder.ins().band(both_int, rhs_nonzero);
                         builder
                             .ins()
-                            .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+                            .brif(take_div, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -8086,14 +8116,18 @@ impl SimpleBackend {
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64);
 
-                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                            let (lhs_xored, lhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                            let (rhs_xored, rhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let zero = builder.ins().iconst(types::I64, 0);
                             let one = builder.ins().iconst(types::I64, 1);
                             let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                            let take_div = builder.ins().band(both_int, rhs_nonzero);
                             builder
                                 .ins()
-                                .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+                                .brif(take_div, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -8367,13 +8401,17 @@ impl SimpleBackend {
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64);
 
-                            let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                            let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                            let (lhs_xored, lhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                            let (rhs_xored, rhs_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let zero = builder.ins().iconst(types::I64, 0);
                             let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                            let take_div = builder.ins().band(both_int, rhs_nonzero);
                             builder
                                 .ins()
-                                .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+                                .brif(take_div, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -8560,13 +8598,17 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
 
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        let (lhs_xored, lhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                        let (rhs_xored, rhs_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                        let take_div = builder.ins().band(both_int, rhs_nonzero);
                         builder
                             .ins()
-                            .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
+                            .brif(take_div, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -8778,9 +8820,26 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
 
-                        let base_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let exp_val = unbox_int(&mut builder, *rhs, &nbc);
+                        // op_prefers_int_lane proves both operands are Python
+                        // `int`-typed, which includes heap BigInts (TAG_PTR). The
+                        // inline exp==0/1/2 fast path shift-unboxes base/exp and is
+                        // only value-exact for inline TAG_INT; a BigInt operand
+                        // would be truncated. Guard the inline path on a runtime
+                        // inline-int tag check and route BigInt / float / mixed
+                        // operands to the boxed `molt_pow` slow path.
+                        let (lhs_xored, base_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
+                        let (rhs_xored, exp_val) =
+                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let pow_inline_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_int, pow_inline_block, &[], slow_block, &[]);
 
+                        switch_to_block_materialized(&mut builder, pow_inline_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, pow_inline_block);
                         // Check exp == 0
                         let is_zero = builder.ins().icmp_imm(IntCC::Equal, exp_val, 0);
                         builder
@@ -18843,57 +18902,6 @@ impl SimpleBackend {
                         );
                         lt_raw_bool = Some(raw_bool);
                         result
-                    } else if one_raw_int_compare_operand_is_safe(
-                        lr.is_some(),
-                        rr.is_some(),
-                        &args[0],
-                        &args[1],
-                    ) {
-                        // One-operand: unbox only the non-raw side
-                        let lv = lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[0],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("LHS not found");
-                            unbox_int(&mut builder, *lhs, &nbc)
-                        });
-                        let rv = rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[1],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("RHS not found");
-                            unbox_int(&mut builder, *rhs, &nbc)
-                        });
-                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        lt_raw_bool = Some(raw_bool);
-                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -18932,47 +18940,6 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        lt_raw_bool = Some(raw_bool);
-                        result
-                    } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[0],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("LHS not found");
-                        let rhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[1],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("RHS not found");
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
                         let (result, raw_bool) = compare_bool_result_value(
                             &mut builder,
                             &bool_primary_vars,
@@ -19118,56 +19085,6 @@ impl SimpleBackend {
                         );
                         le_raw_bool = Some(raw_bool);
                         result
-                    } else if one_raw_int_compare_operand_is_safe(
-                        lr.is_some(),
-                        rr.is_some(),
-                        &args[0],
-                        &args[1],
-                    ) {
-                        let lv = lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[0],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("LHS not found");
-                            unbox_int(&mut builder, *lhs, &nbc)
-                        });
-                        let rv = rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[1],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("RHS not found");
-                            unbox_int(&mut builder, *rhs, &nbc)
-                        });
-                        let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        le_raw_bool = Some(raw_bool);
-                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -19206,50 +19123,6 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        le_raw_bool = Some(raw_bool);
-                        result
-                    } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[0],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("LHS not found");
-                        let rhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[1],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("RHS not found");
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val);
                         let (result, raw_bool) = compare_bool_result_value(
                             &mut builder,
                             &bool_primary_vars,
@@ -19400,57 +19273,6 @@ impl SimpleBackend {
                         );
                         gt_raw_bool = Some(raw_bool);
                         result
-                    } else if one_raw_int_compare_operand_is_safe(
-                        lhs_shadow.is_some(),
-                        rhs_shadow.is_some(),
-                        &args[0],
-                        &args[1],
-                    ) {
-                        // One operand raw, one boxed: unbox only the non-raw side.
-                        let lv = lhs_shadow.unwrap_or_else(|| {
-                            let lhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[0],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("LHS not found");
-                            unbox_int(&mut builder, *lhs, &nbc)
-                        });
-                        let rv = rhs_shadow.unwrap_or_else(|| {
-                            let rhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[1],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("RHS not found");
-                            unbox_int(&mut builder, *rhs, &nbc)
-                        });
-                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lv, rv);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        gt_raw_bool = Some(raw_bool);
-                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -19489,49 +19311,6 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        gt_raw_bool = Some(raw_bool);
-                        result
-                    } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[0],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("LHS not found");
-                        let rhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[1],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("RHS not found");
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp = builder
-                            .ins()
-                            .icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val);
                         let (result, raw_bool) = compare_bool_result_value(
                             &mut builder,
                             &bool_primary_vars,
@@ -19681,57 +19460,6 @@ impl SimpleBackend {
                         );
                         ge_raw_bool = Some(raw_bool);
                         result
-                    } else if one_raw_int_compare_operand_is_safe(
-                        lhs_shadow.is_some(),
-                        rhs_shadow.is_some(),
-                        &args[0],
-                        &args[1],
-                    ) {
-                        // One operand raw, one boxed: unbox only the non-raw side.
-                        let lv = lhs_shadow.unwrap_or_else(|| {
-                            let lhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[0],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("LHS not found");
-                            unbox_int(&mut builder, *lhs, &nbc)
-                        });
-                        let rv = rhs_shadow.unwrap_or_else(|| {
-                            let rhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[1],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("RHS not found");
-                            unbox_int(&mut builder, *rhs, &nbc)
-                        });
-                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lv, rv);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        ge_raw_bool = Some(raw_bool);
-                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -19770,50 +19498,6 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        ge_raw_bool = Some(raw_bool);
-                        result
-                    } else if op_prefers_int_lane(&op) {
-                        let lhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[0],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("LHS not found");
-                        let rhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[1],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("RHS not found");
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val);
                         let (result, raw_bool) = compare_bool_result_value(
                             &mut builder,
                             &bool_primary_vars,
@@ -19966,57 +19650,6 @@ impl SimpleBackend {
                         );
                         eq_raw_bool = Some(raw_bool);
                         result
-                    } else if one_raw_int_compare_operand_is_safe(
-                        eq_lr.is_some(),
-                        eq_rr.is_some(),
-                        &args[0],
-                        &args[1],
-                    ) {
-                        // One operand raw, one boxed: unbox only the non-raw side.
-                        let lv = eq_lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[0],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("LHS not found");
-                            unbox_int(&mut builder, *lhs, &nbc)
-                        });
-                        let rv = eq_rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[1],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("RHS not found");
-                            unbox_int(&mut builder, *rhs, &nbc)
-                        });
-                        let cmp = builder.ins().icmp(IntCC::Equal, lv, rv);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        eq_raw_bool = Some(raw_bool);
-                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -20055,48 +19688,6 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lf, rf);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        eq_raw_bool = Some(raw_bool);
-                        result
-                    } else if op_prefers_int_lane(&op) {
-                        // Proven-int path: skip tag check, direct unbox + compare.
-                        let lhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[0],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("LHS not found");
-                        let rhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[1],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("RHS not found");
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
                         let (result, raw_bool) = compare_bool_result_value(
                             &mut builder,
                             &bool_primary_vars,
@@ -20225,57 +19816,6 @@ impl SimpleBackend {
                         );
                         ne_raw_bool = Some(raw_bool);
                         result
-                    } else if one_raw_int_compare_operand_is_safe(
-                        ne_lr.is_some(),
-                        ne_rr.is_some(),
-                        &args[0],
-                        &args[1],
-                    ) {
-                        // One operand raw, one boxed.
-                        let lv = ne_lr.unwrap_or_else(|| {
-                            let lhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[0],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("LHS not found");
-                            unbox_int(&mut builder, *lhs, &nbc)
-                        });
-                        let rv = ne_rr.unwrap_or_else(|| {
-                            let rhs = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                &args[1],
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            )
-                            .expect("RHS not found");
-                            unbox_int(&mut builder, *rhs, &nbc)
-                        });
-                        let cmp = builder.ins().icmp(IntCC::NotEqual, lv, rv);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        ne_raw_bool = Some(raw_bool);
-                        result
                     } else if scalar_fast_paths_enabled
                         && float_like_vars.contains(&args[0])
                         && float_like_vars.contains(&args[1])
@@ -20314,48 +19854,6 @@ impl SimpleBackend {
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lf, rf);
-                        let (result, raw_bool) = compare_bool_result_value(
-                            &mut builder,
-                            &bool_primary_vars,
-                            op.out.as_ref(),
-                            cmp,
-                            &nbc,
-                        );
-                        ne_raw_bool = Some(raw_bool);
-                        result
-                    } else if op_prefers_int_lane(&op) {
-                        // Proven-int path: skip tag check, direct unbox + compare.
-                        let lhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[0],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("LHS not found");
-                        let rhs = var_get_boxed_overflow_safe(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            &mut sealed_blocks,
-                            &vars,
-                            &args[1],
-                            &int_primary_vars,
-                            &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        )
-                        .expect("RHS not found");
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
                         let (result, raw_bool) = compare_bool_result_value(
                             &mut builder,
                             &bool_primary_vars,
@@ -20682,13 +20180,22 @@ impl SimpleBackend {
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64);
 
-                            let int_val = unbox_int(&mut builder, *val, &nbc);
+                            // op_prefers_int_lane only proves Python-`int` type,
+                            // which includes heap BigInts (TAG_PTR). Guard the raw
+                            // negate on a runtime inline-int tag check so a BigInt
+                            // operand routes to `molt_neg` instead of being
+                            // truncated by the trusted unbox.
+                            let (val_xored, int_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *val, &nbc);
+                            let is_int =
+                                fused_both_int_check(&mut builder, val_xored, val_xored, &nbc);
                             let zero = builder.ins().iconst(types::I64, 0);
                             let negated = builder.ins().isub(zero, int_val);
                             let fits_inline = int_value_fits_inline(&mut builder, negated);
+                            let take_fast = builder.ins().band(is_int, fits_inline);
                             builder
                                 .ins()
-                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                                .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -20883,15 +20390,24 @@ impl SimpleBackend {
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64);
 
-                            let int_val = unbox_int(&mut builder, *val, &nbc);
+                            // op_prefers_int_lane only proves Python-`int` type,
+                            // which includes heap BigInts (TAG_PTR). Guard the raw
+                            // abs on a runtime inline-int tag check so a BigInt
+                            // operand routes to the runtime helper instead of being
+                            // truncated by the trusted unbox.
+                            let (val_xored, int_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *val, &nbc);
+                            let is_int =
+                                fused_both_int_check(&mut builder, val_xored, val_xored, &nbc);
                             let zero = builder.ins().iconst(types::I64, 0);
                             let is_neg = builder.ins().icmp(IntCC::SignedLessThan, int_val, zero);
                             let negated = builder.ins().isub(zero, int_val);
                             let abs_val = builder.ins().select(is_neg, negated, int_val);
                             let fits_inline = int_value_fits_inline(&mut builder, abs_val);
+                            let take_fast = builder.ins().band(is_int, fits_inline);
                             builder
                                 .ins()
-                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                                .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -20974,15 +20490,56 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             )
                             .expect("Value not found");
-                            let int_val = unbox_int(&mut builder, *val, &nbc);
+                            // op_prefers_int_lane only proves Python-`int` type,
+                            // which includes heap BigInts (TAG_PTR). Guard the raw
+                            // bitwise-not on a runtime inline-int tag check so a
+                            // BigInt operand routes to `molt_invert` instead of
+                            // being truncated by the trusted unbox. `~x` of an
+                            // inline int never overflows the inline range, so no
+                            // fits-inline check is needed on the fast path.
+                            let invert_callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_invert",
+                                &[types::I64],
+                                &[types::I64],
+                            );
+                            let invert_local_callee =
+                                self.module.declare_func_in_func(invert_callee, builder.func);
+                            let (val_xored, int_val) =
+                                fused_tag_check_and_unbox_int(&mut builder, *val, &nbc);
+                            let is_int =
+                                fused_both_int_check(&mut builder, val_xored, val_xored, &nbc);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
+                            builder
+                                .ins()
+                                .brif(is_int, fast_block, &[], slow_block, &[]);
+
+                            switch_to_block_materialized(&mut builder, fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                             let minus_one = builder.ins().iconst(types::I64, -1i64);
                             let inverted = builder.ins().bxor(int_val, minus_one);
-                            box_int_value_hoisted(
+                            let fast_res = box_int_value_hoisted(
                                 &mut builder,
                                 inverted,
                                 box_int_mask_var,
                                 box_int_tag_var,
-                            )
+                            );
+                            jump_block(&mut builder, merge_block, &[fast_res]);
+
+                            switch_to_block_materialized(&mut builder, slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(invert_local_callee, &[*val]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            switch_to_block_materialized(&mut builder, merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
                         }
                     } else {
                         let val = var_get_boxed_overflow_safe(
@@ -21027,30 +20584,47 @@ impl SimpleBackend {
                             box_bool_value(&mut builder, is_nonzero, &nbc),
                             Some(raw_val),
                         )
-                    } else if op_prefers_int_lane(&op) {
-                        // For known ints, bool(x) is simply x != 0.
-                        // Use raw shadow if available to skip unboxing.
-                        let int_val =
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                                .unwrap_or_else(|| {
-                                    let val = var_get_boxed_overflow_safe(
-                                        &mut self.module,
-                                        &mut self.import_ids,
-                                        &mut builder,
-                                        &mut import_refs,
-                                        &mut sealed_blocks,
-                                        &vars,
-                                        &args[0],
-                                        &int_primary_vars,
-                                        &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
-                                    )
-                                    .expect("Value not found");
-                                    unbox_int(&mut builder, *val, &nbc)
-                                });
+                    } else if let Some(raw_shadow) =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                    {
+                        // Proven raw i64 carrier: bool(x) is `x != 0`.
                         let zero = builder.ins().iconst(types::I64, 0);
-                        let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
+                        let is_nonzero = builder.ins().icmp(IntCC::NotEqual, raw_shadow, zero);
+                        let raw_bool = builder.ins().uextend(types::I64, is_nonzero);
+                        (
+                            box_bool_value(&mut builder, is_nonzero, &nbc),
+                            Some(raw_bool),
+                        )
+                    } else if op_prefers_int_lane(&op) {
+                        // op_prefers_int_lane only proves Python-`int` type, which
+                        // includes heap BigInts (TAG_PTR). The trusted unbox would
+                        // truncate a BigInt pointer (e.g. `bool(1 << 47)` has low 47
+                        // bits zero and would be wrongly False). Guard on a runtime
+                        // inline-int tag check: inline TAG_INT/TAG_BOOL use
+                        // `unbox != 0`; any heap int (BigInt) is non-zero by
+                        // construction, hence always truthy.
+                        let val = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("Value not found");
+                        let int_val = unbox_int_or_bool(&mut builder, *val, &nbc);
+                        let is_inline_int =
+                            fused_is_int_or_bool(&mut builder, *val, &nbc);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let inline_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
+                        let true_val = builder.ins().iconst(types::I8, 1);
+                        let is_nonzero =
+                            builder.ins().select(is_inline_int, inline_nonzero, true_val);
                         let raw_bool = builder.ins().uextend(types::I64, is_nonzero);
                         (
                             box_bool_value(&mut builder, is_nonzero, &nbc),
@@ -29136,29 +28710,42 @@ impl SimpleBackend {
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*cond, one);
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                    } else if let Some(raw_shadow) =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                    {
+                        // Proven raw i64 carrier: truthiness is `value != 0`.
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
                     } else if op_prefers_int_lane(&op) {
-                        // NaN-boxed int: unbox and check != 0.
-                        // If we have a raw shadow, use that directly.
-                        let raw_val =
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                                .unwrap_or_else(|| {
-                                    let cond = var_get_boxed_overflow_safe(
-                                        &mut self.module,
-                                        &mut self.import_ids,
-                                        &mut builder,
-                                        &mut import_refs,
-                                        &mut sealed_blocks,
-                                        &vars,
-                                        &args[0],
-                                        &int_primary_vars,
-                                        &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
-                                    )
-                                    .expect("Cond not found");
-                                    unbox_int(&mut builder, *cond, &nbc)
-                                });
-                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                        // op_prefers_int_lane only proves Python-`int` type, which
+                        // includes heap BigInts (TAG_PTR). The trusted unbox would
+                        // truncate a BigInt pointer, and e.g. `1 << 47` (low 47
+                        // bits zero) would be wrongly treated as falsy. Guard on a
+                        // runtime inline-int tag check: inline TAG_INT/TAG_BOOL use
+                        // `unbox != 0`; any heap int (BigInt) is non-zero by
+                        // construction, hence always truthy.
+                        let cond = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("Cond not found");
+                        let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
+                        let is_inline_int =
+                            fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                        let inline_truthy =
+                            builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                        let true_val = builder.ins().iconst(types::I8, 1);
+                        builder
+                            .ins()
+                            .select(is_inline_int, inline_truthy, true_val)
                     } else {
                         let cond = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -31467,29 +31054,42 @@ impl SimpleBackend {
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                        } else if let Some(raw_shadow) =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                        {
+                            // Proven raw i64 carrier: truthiness is `value != 0`.
+                            builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
                         } else if cond_is_int_typed {
-                            // NaN-boxed int: unbox and check != 0.
-                            // Inside loops, use Variable-only shadows (phi-correct).
-                            let raw_val =
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                                    .unwrap_or_else(|| {
-                                        let cond = var_get_boxed_overflow_safe(
-                                            &mut self.module,
-                                            &mut self.import_ids,
-                                            &mut builder,
-                                            &mut import_refs,
-                                            &mut sealed_blocks,
-                                            &vars,
-                                            &args[0],
-                                            &int_primary_vars,
-                                            &float_primary_vars,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
-                                        )
-                                        .expect("Loop break cond not found");
-                                        unbox_int(&mut builder, *cond, &nbc)
-                                    });
-                            builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                            // `cond_is_int_typed` only proves Python-`int` type,
+                            // which includes heap BigInts (TAG_PTR). The trusted
+                            // unbox would truncate a BigInt pointer (e.g. `1 << 47`
+                            // has low 47 bits zero and would be wrongly falsy).
+                            // Guard on a runtime inline-int tag check: inline
+                            // TAG_INT/TAG_BOOL use `unbox != 0`; any heap int
+                            // (BigInt) is non-zero by construction, hence truthy.
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                &args[0],
+                                &int_primary_vars,
+                                &float_primary_vars,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .expect("Loop break cond not found");
+                            let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
+                            let is_inline_int =
+                                fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                            let inline_truthy =
+                                builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                            let true_val = builder.ins().iconst(types::I8, 1);
+                            builder
+                                .ins()
+                                .select(is_inline_int, inline_truthy, true_val)
                         } else {
                             let cond = var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -31670,29 +31270,42 @@ impl SimpleBackend {
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                        } else if let Some(raw_shadow) =
+                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                        {
+                            // Proven raw i64 carrier: truthiness is `value != 0`.
+                            builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
                         } else if cond_is_int_typed {
-                            // NaN-boxed int: unbox and check != 0.
-                            // Inside loops, use Variable-only shadows (phi-correct).
-                            let raw_val =
-                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                                    .unwrap_or_else(|| {
-                                        let cond = var_get_boxed_overflow_safe(
-                                            &mut self.module,
-                                            &mut self.import_ids,
-                                            &mut builder,
-                                            &mut import_refs,
-                                            &mut sealed_blocks,
-                                            &vars,
-                                            &args[0],
-                                            &int_primary_vars,
-                                            &float_primary_vars,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
-                                        )
-                                        .expect("Loop break cond not found");
-                                        unbox_int(&mut builder, *cond, &nbc)
-                                    });
-                            builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                            // `cond_is_int_typed` only proves Python-`int` type,
+                            // which includes heap BigInts (TAG_PTR). The trusted
+                            // unbox would truncate a BigInt pointer (e.g. `1 << 47`
+                            // has low 47 bits zero and would be wrongly falsy).
+                            // Guard on a runtime inline-int tag check: inline
+                            // TAG_INT/TAG_BOOL use `unbox != 0`; any heap int
+                            // (BigInt) is non-zero by construction, hence truthy.
+                            let cond = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                &args[0],
+                                &int_primary_vars,
+                                &float_primary_vars,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .expect("Loop break cond not found");
+                            let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
+                            let is_inline_int =
+                                fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                            let inline_truthy =
+                                builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                            let true_val = builder.ins().iconst(types::I8, 1);
+                            builder
+                                .ins()
+                                .select(is_inline_int, inline_truthy, true_val)
                         } else {
                             let cond = var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -34948,28 +34561,41 @@ impl SimpleBackend {
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*cond, one);
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                    } else if let Some(raw_shadow) =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                    {
+                        // Proven raw i64 carrier: truthiness is `value != 0`.
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
                     } else if var_is_int(cond_name) {
-                        // NaN-boxed int: unbox and check != 0.
-                        let raw_val =
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
-                                .unwrap_or_else(|| {
-                                    let cond = var_get_boxed_overflow_safe(
-                                        &mut self.module,
-                                        &mut self.import_ids,
-                                        &mut builder,
-                                        &mut import_refs,
-                                        &mut sealed_blocks,
-                                        &vars,
-                                        &args[0],
-                                        &int_primary_vars,
-                                        &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
-                                    )
-                                    .expect("Cond not found");
-                                    unbox_int(&mut builder, *cond, &nbc)
-                                });
-                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                        // `var_is_int` only proves Python-`int` type, which includes
+                        // heap BigInts (TAG_PTR). The trusted unbox would truncate a
+                        // BigInt pointer (e.g. `1 << 47` has low 47 bits zero and
+                        // would be wrongly falsy). Guard on a runtime inline-int tag
+                        // check: inline TAG_INT/TAG_BOOL use `unbox != 0`; any heap
+                        // int (BigInt) is non-zero by construction, hence truthy.
+                        let cond = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("Cond not found");
+                        let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
+                        let is_inline_int =
+                            fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                        let inline_truthy =
+                            builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                        let true_val = builder.ins().iconst(types::I8, 1);
+                        builder
+                            .ins()
+                            .select(is_inline_int, inline_truthy, true_val)
                     } else {
                         let cond = var_get_boxed_overflow_safe(
                             &mut self.module,

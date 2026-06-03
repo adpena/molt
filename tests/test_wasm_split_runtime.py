@@ -1389,6 +1389,78 @@ def test_split_runtime_direct_indirect_call_uses_initialized_table_refs(
 
 
 @pytest.mark.slow
+def test_split_runtime_bigint_operand_scalar_fast_path_parity(
+    tmp_path: Path,
+) -> None:
+    """The WASM integer scalar fast path (arithmetic, bitwise, shift, comparison)
+    must produce CPython-exact results for BigInt operands that are merely
+    ``int``-typed. The trusted shift-unbox truncated a BigInt's heap pointer to
+    garbage; the fix guards each fast path on a runtime inline-int tag check and
+    routes BigInt operands to the boxed runtime helper. The ``1 << 47`` case is
+    load-bearing: its low 47 bits are all zero, so a truncating unbox would treat
+    it as 0."""
+    source = tmp_path / "bigint_fast_path.py"
+    source.write_text(
+        "def addi(a: int, b: int) -> int:\n"
+        "    return a + b\n"
+        "def subi(a: int, b: int) -> int:\n"
+        "    return a - b\n"
+        "def muli(a: int, b: int) -> int:\n"
+        "    return a * b\n"
+        "def fdiv(a: int, b: int) -> int:\n"
+        "    return a // b\n"
+        "def modi(a: int, b: int) -> int:\n"
+        "    return a % b\n"
+        "def andi(a: int, b: int) -> int:\n"
+        "    return a & b\n"
+        "def lsh(a: int, b: int) -> int:\n"
+        "    return a << b\n"
+        "def eqi(a: int, b: int) -> bool:\n"
+        "    return a == b\n"
+        "def nei(a: int, b: int) -> bool:\n"
+        "    return a != b\n"
+        "def lti(a: int, b: int) -> bool:\n"
+        "    return a < b\n"
+        "\n"
+        "BIG = 1 << 60\n"
+        "ZLOW = 1 << 47\n"
+        "print(addi(BIG, 7))\n"
+        "print(subi(BIG, 1))\n"
+        "print(muli(BIG, 2))\n"
+        "print(fdiv(BIG, 2))\n"
+        "print(modi(BIG, 1000))\n"
+        "print(andi(ZLOW, ZLOW))\n"
+        "print(lsh(1, 60))\n"
+        "print(eqi(BIG, BIG), eqi(BIG, BIG + 1))\n"
+        "print(nei(BIG, BIG), nei(BIG, BIG + 1))\n"
+        "print(lti(BIG, BIG + 1), lti(5, BIG))\n"
+        "print(eqi(True, 1))\n",
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    build = _build_split(source, out_dir)
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    run = _run_split_direct(out_dir, timeout=60)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "1152921504606846983",
+        "1152921504606846975",
+        "2305843009213693952",
+        "576460752303423488",
+        "976",
+        "140737488355328",
+        "1152921504606846976",
+        "True False",
+        "False True",
+        "True True",
+        "True",
+    ]
+
+
+@pytest.mark.slow
 def test_split_runtime_host_export_struct_unpack_from_reads_u64(
     tmp_path: Path,
 ) -> None:
