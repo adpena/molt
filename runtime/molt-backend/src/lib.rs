@@ -46,6 +46,12 @@ pub mod luau_lower;
 mod native_backend;
 mod passes;
 mod representation_plan;
+/// The representation lattice element (the orthogonal carrier axis to
+/// `TirType`). Re-exported publicly because it appears in the signature of the
+/// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR
+/// convergence), which the WASM/LIR codegen path drives with the proven
+/// `repr_by_value`.
+pub use crate::representation_plan::Repr;
 pub mod tir;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 #[cfg(feature = "native-backend")]
@@ -3393,8 +3399,11 @@ impl SimpleBackend {
                             crate::tir::type_refine::refine_types(&mut tir_func);
                             let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
                             crate::tir::type_refine::refine_types(&mut tir_func);
+                            // LIR verification path (not the native codegen
+                            // carrier, which consumes `ScalarRepresentationPlan`):
+                            // type-floor repr is correct here.
                             let lir_func =
-                                crate::tir::lower_to_lir::lower_function_to_lir(&tir_func);
+                                crate::tir::lower_to_lir::lower_function_to_lir(&tir_func, None);
                             if let Err(errors) =
                                 crate::tir::verify_lir::verify_lir_function(&lir_func)
                             {
@@ -5148,7 +5157,7 @@ mod tests {
         crate::tir::type_refine::refine_types(&mut tir);
         let _stats = crate::tir::passes::run_pipeline(&mut tir);
         crate::tir::type_refine::refine_types(&mut tir);
-        let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
+        let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir, None);
         if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir) {
             panic!("LIR verification failed after TIR optimization: {errors:#?}");
         }
