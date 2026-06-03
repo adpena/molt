@@ -104,7 +104,7 @@ clippy = "cargo clippy -p molt-backend --features native-backend -- -D warnings"
 security = "cargo deny check"
 build = "cargo build --profile release-fast --workspace"
 backend = "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
-compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider --tb=line -q"
+compliance = "{project_python} -m pytest tests/compliance/ -p no:cacheprovider -n auto --tb=line -q"
 clean-artifacts = "{project_python} tools/artifact_cleanup.py"
 bench-smoke = "{project_python} -m molt.cli bench -- --smoke --warmup 1 --json-out bench/results/dev-bench-smoke.json"
 subprocess-guard-audit = "{project_python} tools/check_subprocess_guard_coverage.py"
@@ -152,6 +152,7 @@ dev = [
     "py-spy>=0.4.1",
     "hypothesis>=6.100.0",
     "urllib3>=2.7.0",
+    "pytest-xdist>=3.8.0",
 ]
 demo = [
     "django>=6.0.5",
