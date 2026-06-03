@@ -1106,6 +1106,12 @@ pub fn compute_rc_coalesce_skips(
         "loop_end",
         "loop_break_if_true",
         "loop_break_if_false",
+        // Value-less conditional break gated on the runtime exception flag.  It
+        // is a real control-flow boundary (the loop may exit here on a pending
+        // exception), so inc_ref/dec_ref coalescing MUST NOT scan across it —
+        // otherwise a dec_ref placed after the break could be skipped on the
+        // exception-exit path, leaking the referenced object.
+        "loop_break_if_exception",
         "loop_continue",
     ];
     let cf_set: HashSet<&str> = CONTROL_FLOW.iter().copied().collect();
@@ -3727,6 +3733,23 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                 if let Some(frame) = loop_stack.last_mut() {
                     frame.break_if_falses.push(idx);
                 }
+            }
+            "loop_break_if_exception" => {
+                // `loop_break_if_exception` is emitted by the frontend ONLY in
+                // functions WITHOUT the exception stack (function_exception_label
+                // == None).  Generator/coroutine bodies — the only functions
+                // lowered to a yield state machine here — are always compiled
+                // with the exception stack (generator polls default to
+                // needs_exception_stack=True), so this op can never appear inside
+                // a yield-bearing loop.  Assert the invariant: if it is ever
+                // violated, the state-machine rewrite below would silently drop
+                // the exception break and re-introduce the infinite-loop/OOM bug.
+                debug_assert!(
+                    false,
+                    "loop_break_if_exception inside a yield state-machine loop \
+                     ({}@op{}) — generator polls must be needs_exception_stack=True",
+                    func_ir.name, idx
+                );
             }
             "loop_end" => {
                 if let Some(mut frame) = loop_stack.pop() {

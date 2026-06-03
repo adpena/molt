@@ -365,6 +365,13 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
             }
             "loop_continue" => stmts.push(LuauStmt::Continue),
 
+            // Value-less exception-flag break.  In the Luau backend Python
+            // exceptions are raised via Lua `error()`, which unwinds the stack
+            // out of the iterator-closure call immediately, so the consumption
+            // loop never spins on a None sentinel (unlike native/WASM) and this
+            // op has nothing to break: it is a no-op here.
+            "loop_break_if_exception" => {}
+
             "for_range" => {
                 let out = out_var(op);
                 let args = op_args(op);

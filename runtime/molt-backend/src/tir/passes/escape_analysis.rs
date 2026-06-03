@@ -488,6 +488,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::StateSwitch
                 | OpCode::ClosureLoad
                 | OpCode::CheckException
+                | OpCode::ExceptionPending
                 | OpCode::Deopt
                 | OpCode::WarnStderr
                 | OpCode::TryStart

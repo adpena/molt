@@ -1893,6 +1893,19 @@ impl LuauBackend {
                     self.emit_line(&format!("if {cond} then break end"));
                 }
             }
+            "loop_break_if_exception" => {
+                // Value-less exception-flag break.  On native/WASM the producer
+                // returns a None sentinel on a mid-iteration raise and this op
+                // breaks the consumption loop so it cannot spin forever.  In the
+                // Luau backend, Python exceptions are raised via Lua `error()`,
+                // which unwinds the call stack immediately out of the iterator
+                // closure call (`iter_var()` in the `iter_next` lowering) — the
+                // loop body after `iter_next` never executes, so there is no
+                // sentinel-driven spin to break.  The op is therefore a no-op
+                // here: the unwinding `error()` already exited the loop and is
+                // caught by the enclosing `pcall` for the active try/except.
+                self.emit_line("-- [loop_break_if_exception] no-op: Lua error() already unwinds");
+            }
             "loop_break_if_false" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond_raw) = args.first() {
@@ -5450,6 +5463,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                                 | "const_str"
                                 | "loop_break_if_true"
                                 | "loop_break_if_false"
+                                | "loop_break_if_exception"
                         )
                     {
                         body_start = j + 1;
@@ -5457,7 +5471,10 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                     // Track when we've passed the break check.
                     if matches!(
                         ops[j].kind.as_str(),
-                        "loop_break_if_true" | "loop_break_if_false" | "break"
+                        "loop_break_if_true"
+                            | "loop_break_if_false"
+                            | "loop_break_if_exception"
+                            | "break"
                     ) {
                         seen_break_check = true;
                     }

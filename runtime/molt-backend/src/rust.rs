@@ -2323,6 +2323,14 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                 let cond = arg0(op);
                 self.emit_line(&format!("if molt_bool(&{cond}) {{ break; }}"));
             }
+            "loop_break_if_exception" => {
+                // Value-less exception-flag break: exit an iterator-consumer loop
+                // when a runtime exception is pending (the producer returned the
+                // None sentinel on a mid-iteration raise).  Reads the same
+                // sacrosanct flag the runtime CHECK_EXCEPTION uses; the still
+                // pending exception then rides up the lazy-return path.
+                self.emit_line("if molt_exception_pending() != 0 { break; }");
+            }
             "loop_break" => {
                 self.emit_line("break;");
             }

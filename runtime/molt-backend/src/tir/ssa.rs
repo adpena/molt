@@ -206,13 +206,33 @@ impl<'a> SsaContext<'a> {
                     }
                 }
             }
+            if std::env::var("MOLT_DEBUG_ITER_FUSE").is_ok() {
+                eprintln!(
+                    "ITER_FUSE iter_next@{i} pair={pair_var} done_idx={done_idx:?} val_idx={val_idx:?}"
+                );
+            }
             if let (Some(di), Some(vi)) = (done_idx, val_idx) {
                 let done_var = ops[di].out.clone().unwrap_or_default();
                 let val_var = ops[vi].out.clone().unwrap_or_default();
                 self.iter_fuse_map.insert(i, (di, vi, done_var, val_var));
-                // Skip all ops between iter_next and the value index.
+                // Skip all ops between iter_next and the value index — EXCEPT a
+                // `loop_break_if_exception` control op.  That op is a second
+                // conditional loop break (gated on the runtime exception flag,
+                // emitted after ITER_NEXT in iterator-consumer loops compiled
+                // without the function exception stack) and MUST survive fusion:
+                // adding it to the skip set would silently drop it and
+                // re-introduce the infinite-loop/OOM bug on a mid-iteration
+                // raise.  It is `is_structural`, so it becomes a block
+                // terminator (CondBranch on the materialized `ExceptionPending`
+                // flag) rather than a fused body op — fully compatible with the
+                // fused `iter_next_unboxed` value/done extraction that precedes
+                // it.  Keeping fusion preserves the per-iteration tuple-alloc
+                // elision (the perf-critical fast path).
                 let skip_end = di.max(vi);
                 for skip in (i + 1)..=skip_end {
+                    if ops[skip].kind == "loop_break_if_exception" {
+                        continue;
+                    }
                     self.iter_fuse_skip.insert(skip);
                 }
             }
@@ -714,8 +734,11 @@ impl<'a> SsaContext<'a> {
                 tir_blocks[bid].ops.push(tir_op);
             }
 
-            // 3. Build terminator for this block.
-            let terminator = self.build_terminator(bid, &var_stacks);
+            // 3. Build terminator for this block.  `build_terminator` may
+            //    append a pre-terminator body op (e.g. the `ExceptionPending`
+            //    flag read consumed by a `loop_break_if_exception` CondBranch),
+            //    so it borrows the block's op list mutably.
+            let terminator = self.build_terminator(bid, &var_stacks, &mut tir_blocks[bid].ops);
             tir_blocks[bid].terminator = terminator;
 
             // Save the variable stacks snapshot for this block (used in
@@ -875,7 +898,8 @@ impl<'a> SsaContext<'a> {
                     tir_blocks[bid].ops.push(tir_op);
                 }
                 // Build terminator for this unreachable block.
-                let terminator = self.build_terminator(bid, &local_stacks);
+                let terminator =
+                    self.build_terminator(bid, &local_stacks, &mut tir_blocks[bid].ops);
                 tir_blocks[bid].terminator = terminator;
             }
         }
@@ -1293,6 +1317,7 @@ impl<'a> SsaContext<'a> {
         &mut self,
         bid: usize,
         var_stacks: &HashMap<String, Vec<ValueId>>,
+        block_ops: &mut Vec<TirOp>,
     ) -> Terminator {
         let bb = &self.cfg.blocks[bid];
         let last_op_idx = bb.end_op.saturating_sub(1);
@@ -1456,6 +1481,56 @@ impl<'a> SsaContext<'a> {
                         else_args,
                     }
                 } else if succs.len() == 1 {
+                    let target_bid = succs[0];
+                    let args = self.collect_branch_args(target_bid, var_stacks);
+                    Terminator::Branch {
+                        target: BlockId(target_bid as u32),
+                        args,
+                    }
+                } else {
+                    Terminator::Unreachable
+                }
+            }
+
+            "loop_break_if_exception" => {
+                // Conditional loop break gated on the runtime exception flag.
+                // Materialize a non-foldable `ExceptionPending` op into the
+                // block body to read the flag, then branch: TRUE (pending) →
+                // break target (loop exit), FALSE → fall-through (continue).
+                //
+                // Successor ordering matches `loop_break_if_true` (cfg.rs adds
+                // the break target FIRST, fall-through SECOND), so the TRUE edge
+                // is the non-fall-through successor.
+                if succs.len() >= 2 {
+                    let cond = self.fresh_value_typed();
+                    block_ops.push(TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ExceptionPending,
+                        operands: vec![],
+                        results: vec![cond],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    });
+                    let fall_through = bid + 1;
+                    // TRUE = break target (non-fall-through), FALSE = continue.
+                    let (then_bid, else_bid) = if succs[0] == fall_through {
+                        (succs[1], succs[0])
+                    } else {
+                        (succs[0], succs[1])
+                    };
+                    let then_args = self.collect_branch_args(then_bid, var_stacks);
+                    let else_args = self.collect_branch_args(else_bid, var_stacks);
+                    Terminator::CondBranch {
+                        cond,
+                        then_block: BlockId(then_bid as u32),
+                        then_args,
+                        else_block: BlockId(else_bid as u32),
+                        else_args,
+                    }
+                } else if succs.len() == 1 {
+                    // Degenerate: only one successor survived (e.g. the loop body
+                    // was proven to fall through).  Branch unconditionally; the
+                    // flag read would be dead, so it is intentionally omitted.
                     let target_bid = succs[0];
                     let args = self.collect_branch_args(target_bid, var_stacks);
                     Terminator::Branch {
@@ -1764,6 +1839,13 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "yield_from" => OpCode::YieldFrom,
         "raise" => OpCode::Raise,
         "check_exception" => OpCode::CheckException,
+        // Runtime exception-pending flag read.  Emitted directly by
+        // lower_to_simple when it materializes the `ExceptionPending` body op
+        // for a `loop_break_if_exception` CondBranch; this reverse mapping keeps
+        // the SimpleIR↔TIR round-trip idempotent (without it the op would fall
+        // to the `OpCode::Copy` fallback below and be dropped, re-opening the
+        // iterator-consumer infinite-loop bug on the TIR-roundtripping backends).
+        "exception_pending" => OpCode::ExceptionPending,
         "try_start" => OpCode::TryStart,
         "try_end" => OpCode::TryEnd,
         "state_block_start" => OpCode::StateBlockStart,

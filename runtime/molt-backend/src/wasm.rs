@@ -837,6 +837,7 @@ fn is_stateful_dispatch_terminator(kind: &str) -> bool {
             | "loop_index_start"
             | "loop_break_if_true"
             | "loop_break_if_false"
+            | "loop_break_if_exception"
             | "loop_break"
             | "loop_continue"
             | "loop_end"
@@ -861,6 +862,7 @@ fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
                 | "loop_index_start"
                 | "loop_break_if_true"
                 | "loop_break_if_false"
+                | "loop_break_if_exception"
                 | "loop_break"
                 | "loop_continue"
                 | "loop_end"
@@ -1003,7 +1005,10 @@ fn build_dispatch_control_maps(ops: &[OpIR], include_state_labels: bool) -> Disp
                     maps.loop_continue_target.insert(idx, frame.start_idx);
                 }
             }
-            "loop_break_if_true" | "loop_break_if_false" | "loop_break" => {
+            "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
+            | "loop_break" => {
                 if let Some(frame) = loop_stack.last_mut() {
                     frame.break_ops.push(idx);
                 }
@@ -7817,6 +7822,29 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "exception_pending" => {
+                        // Read the runtime exception-pending flag as a NaN-boxed
+                        // bool: `box_bool(molt_exception_pending() != 0)`.
+                        // Produced by the TIR `ExceptionPending` op (round-tripped
+                        // to SimpleIR by lower_to_simple when an iterator-consumer
+                        // loop carries a `loop_break_if_exception`); consumed as
+                        // the condition of the `br_if`/`if` that breaks the loop on
+                        // a mid-iteration raise.  Boxing to a proper bool (rather
+                        // than leaving the raw i64 0/1) is required because the
+                        // downstream `br_if`/`if` truthiness path calls
+                        // `is_truthy`, which interprets its operand as a NaN-boxed
+                        // value.  Non-foldable: it observes mutable runtime state.
+                        emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        emit_box_bool_from_i32(func);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "is" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
@@ -13814,6 +13842,38 @@ impl WasmBackend {
                         }
                         func.instruction(&Instruction::BrIf(depth));
                     }
+                    "loop_break_if_exception" => {
+                        // Value-less conditional break: exit the loop when a
+                        // runtime exception is pending.  Emitted after ITER_NEXT
+                        // in iterator-consumer loops compiled WITHOUT the function
+                        // exception stack, where the consumption loop is driven
+                        // off the done flag alone and would otherwise spin forever
+                        // (OOM) when the producer raises mid-iteration (it returns
+                        // the None sentinel, so `done` never becomes truthy).
+                        //
+                        // Reads the same sacrosanct `exception_pending` flag the
+                        // WASM `check_exception` lowering uses, compares `!= 0`,
+                        // and breaks to the enclosing Block that wraps the Loop —
+                        // identical depth resolution to `loop_break_if_true`.  The
+                        // still-pending exception then rides up the lazy-return
+                        // path to the caller's handler.
+                        emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        let mut depth = 0u32;
+                        let mut found_loop = false;
+                        for entry in control_stack.iter().rev() {
+                            match entry {
+                                ControlKind::Block if found_loop => break,
+                                ControlKind::Loop => {
+                                    found_loop = true;
+                                }
+                                _ => {}
+                            }
+                            depth += 1;
+                        }
+                        func.instruction(&Instruction::BrIf(depth));
+                    }
                     "loop_break" => {
                         // Find depth to the enclosing Block that wraps the Loop.
                         // The loop structure is Block { Loop { ... } }, so we
@@ -14520,6 +14580,41 @@ impl WasmBackend {
                             func.instruction(&Instruction::End);
                             block_terminated = true;
                         }
+                        "loop_break_if_exception" => {
+                            // Value-less exception-flag break in the jumpful
+                            // state-machine lowering.  Mirrors `loop_break_if_true`
+                            // but reads the sacrosanct `exception_pending` flag
+                            // (`!= 0`) instead of an is_truthy(cond) value: TRUE
+                            // (pending) -> jump to the loop-end state, FALSE ->
+                            // fall through to the next state.
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break_if_exception without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
+                            let end_block = end_idx + 1;
+                            let next_block = idx + 1;
+                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
                         "loop_break_if_false" => {
                             let args = op.args.as_ref().unwrap();
                             let cond = locals[&args[0]];
@@ -15015,6 +15110,41 @@ impl WasmBackend {
                             let next_block = idx + 1;
                             func.instruction(&Instruction::LocalGet(cond));
                             emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            func.instruction(&Instruction::I64Const(end_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(next_block as i64));
+                            func.instruction(&Instruction::LocalSet(state_local));
+                            func.instruction(&Instruction::Br(depth + 1));
+                            func.instruction(&Instruction::End);
+                            block_terminated = true;
+                        }
+                        "loop_break_if_exception" => {
+                            // Value-less exception-flag break in the jumpful
+                            // state-machine lowering.  Mirrors `loop_break_if_true`
+                            // but reads the sacrosanct `exception_pending` flag
+                            // (`!= 0`) instead of an is_truthy(cond) value: TRUE
+                            // (pending) -> jump to the loop-end state, FALSE ->
+                            // fall through to the next state.
+                            let Some(end_idx) = loop_break_target.get(&idx).copied() else {
+                                eprintln!(
+                                    "WASM lowering warning: loop_break_if_exception without loop in {} at op {}; falling through",
+                                    func_ir.name, idx
+                                );
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                                continue;
+                            };
+                            let end_block = end_idx + 1;
+                            let next_block = idx + 1;
+                            emit_call(func, reloc_enabled, import_ids["exception_pending"]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
