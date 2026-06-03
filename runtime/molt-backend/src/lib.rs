@@ -2085,6 +2085,7 @@ pub(crate) fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
                     | "loop_end"
                     | "loop_break_if_true"
                     | "loop_break_if_false"
+                    | "loop_break_if_exception"
                     | "loop_break"
                     | "loop_continue"
                     | "ret"

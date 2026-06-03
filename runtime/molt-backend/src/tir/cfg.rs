@@ -83,7 +83,11 @@ fn is_block_ender(kind: &str) -> bool {
 fn is_conditional_branch(kind: &str) -> bool {
     matches!(
         kind,
-        "br_if" | "if" | "loop_break_if_true" | "loop_break_if_false"
+        "br_if"
+            | "if"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
     )
 }
 
@@ -365,7 +369,13 @@ fn build_edges(
             }
 
             // Conditional loop break.
-            "loop_break_if_true" | "loop_break_if_false" => {
+            //
+            // `loop_break_if_exception` is a value-less conditional break gated
+            // on the runtime exception flag.  Its edge structure is identical to
+            // `loop_break_if_true` (break target FIRST, fall-through SECOND);
+            // the SSA terminator builder materializes the flag-read condition
+            // (`ExceptionPending`) and routes TRUE → break, FALSE → continue.
+            "loop_break_if_true" | "loop_break_if_false" | "loop_break_if_exception" => {
                 // IMPORTANT: successor ordering matters for SSA CondBranch
                 // construction — succs[0] = then_block (TRUE path),
                 // succs[1] = else_block (FALSE path).

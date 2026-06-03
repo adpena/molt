@@ -128,6 +128,13 @@ pub enum OpCode {
     // Exception
     Raise,
     CheckException,
+    /// Read the runtime "exception pending" flag as a boolean value
+    /// (`molt_exception_pending_fast() != 0`).  Side-effecting / non-foldable:
+    /// it observes mutable runtime state that no SSA/SCCP/GVN pass may prove
+    /// constant, so the value (and any branch derived from it) is preserved.
+    /// Used as the condition of the `loop_break_if_exception` CondBranch that
+    /// exits an iterator-consumer loop on a mid-iteration raise.
+    ExceptionPending,
     TryStart,
     TryEnd,
     StateBlockStart,

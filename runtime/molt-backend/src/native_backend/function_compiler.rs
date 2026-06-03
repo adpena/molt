@@ -293,6 +293,7 @@ fn scan_loop_int_sum_reduction(
             | "loop_continue"
             | "loop_break_if_true"
             | "loop_break_if_false"
+            | "loop_break_if_exception"
             | "loop_break"
             | "const"
             | "const_bool"
@@ -1498,6 +1499,7 @@ fn direct_field_store_control_boundary(kind: &str) -> bool {
             | "loop_end"
             | "loop_break_if_true"
             | "loop_break_if_false"
+            | "loop_break_if_exception"
             | "loop_break"
             | "loop_continue"
             | "ret"
@@ -3537,6 +3539,7 @@ impl SimpleBackend {
                         | "loop_index_next"
                         | "loop_break_if_true"
                         | "loop_break_if_false"
+                        | "loop_break_if_exception"
                         | "loop_break"
                         | "loop_continue"
                         | "loop_start"
@@ -19987,6 +19990,34 @@ impl SimpleBackend {
                         def_bool_result(&mut builder, &vars, &bool_primary_vars, &out__, res, None);
                     }
                 }
+                "exception_pending" => {
+                    // Read the runtime exception-pending flag as a boolean
+                    // value: `molt_exception_pending_fast() != 0`.  Produced by
+                    // the TIR `ExceptionPending` op (lowered from a
+                    // `loop_break_if_exception`); consumed as the condition of
+                    // the loop-exit `br_if` that breaks an iterator-consumer
+                    // loop on a mid-iteration raise.  Non-foldable: it observes
+                    // mutable runtime state, so the value is always recomputed.
+                    let cond_bool = emit_exception_pending_condition(
+                        &mut builder,
+                        local_exc_pending_fast,
+                        exc_flag_ptr_slot,
+                    );
+                    // `cond_bool` is an i8 (0/1) from icmp.  Extend to the raw
+                    // i64 bool lane and define the result on whichever lane the
+                    // consumer expects.
+                    let raw_bool = builder.ins().uextend(types::I64, cond_bool);
+                    if let Some(out__) = op.out {
+                        def_raw_bool_value(
+                            &mut builder,
+                            &vars,
+                            &bool_primary_vars,
+                            &out__,
+                            raw_bool,
+                            &nbc,
+                        );
+                    }
+                }
                 "is" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get_boxed_overflow_safe(
@@ -30994,6 +31025,149 @@ impl SimpleBackend {
                             );
                         }
                         loop_depth += 1;
+                    }
+                }
+                "loop_break_if_exception" => {
+                    // Control op (no value arg): break the loop when a runtime
+                    // exception is pending.  Emitted by the frontend after
+                    // ITER_NEXT in iterator-consumer loops compiled in a
+                    // function WITHOUT the exception stack (function_exception
+                    // _label == None), where the auto-CHECK_EXCEPTION machinery
+                    // is absent.  The consumption loop is driven off the done
+                    // flag alone; on a mid-iteration raise `molt_iter_next`
+                    // returns the None sentinel, `done` never becomes truthy,
+                    // and the loop would spin forever appending garbage (OOM).
+                    //
+                    // Gating the break on the sacrosanct
+                    // `molt_exception_pending_fast` flag (the same predicate
+                    // CHECK_EXCEPTION uses) makes the break un-foldable: no
+                    // SCCP/copy-prop can ever prove a constant for the runtime
+                    // exception flag, so the loop-exit edge always survives.
+                    // The still-pending exception then rides up the proven
+                    // lazy-return path to the caller's handler.
+                    //
+                    // Block bookkeeping mirrors `loop_break_if_true`: drain the
+                    // dead tracked temporaries on the current block, branch to a
+                    // cleanup block (which dec-refs them and jumps to the loop's
+                    // after_block) on a pending exception, else fall through to
+                    // the loop body.
+                    if loop_stack.is_empty() {
+                        is_block_filled = true;
+                    } else {
+                        let frame = loop_stack.last().unwrap();
+                        let current_block = builder
+                            .current_block()
+                            .expect("loop_break_if_exception requires an active block");
+                        let mut carry_obj_lb =
+                            block_tracked_obj.remove(&current_block).unwrap_or_default();
+                        let tracked_obj_snapshot = drain_cleanup_tracked_dedup(
+                            &mut carry_obj_lb,
+                            &last_use,
+                            &alias_roots,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
+                        let mut carry_ptr_lb =
+                            block_tracked_ptr.remove(&current_block).unwrap_or_default();
+                        let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(
+                            &mut carry_ptr_lb,
+                            &last_use,
+                            &alias_roots,
+                            op_idx,
+                            None,
+                            Some(&mut already_decrefed),
+                        );
+                        // Read the authoritative runtime exception-pending flag.
+                        // In needs-stack=False functions `exc_flag_ptr_slot` is
+                        // None, so this lowers to a `call molt_exception_pending
+                        // _fast` + `icmp != 0` — never a foldable value.
+                        let cond_bool = emit_exception_pending_condition(
+                            &mut builder,
+                            local_exc_pending_fast,
+                            exc_flag_ptr_slot,
+                        );
+                        let cleanup_block = builder.create_block();
+                        if debug_block_origins.is_some() {
+                            eprintln!(
+                                "BLOCK_ORIGIN {} op{} loop_break_if_exception cleanup={:?} body={:?} after={:?}",
+                                func_ir.name,
+                                op_idx,
+                                cleanup_block,
+                                frame.body_block,
+                                frame.after_block
+                            );
+                        }
+                        if let Some(current_block) = builder.current_block() {
+                            builder.insert_block_after(cleanup_block, current_block);
+                        }
+                        reachable_blocks.insert(cleanup_block);
+                        reachable_blocks.insert(frame.body_block);
+                        builder
+                            .ins()
+                            .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
+                        switch_to_block_with_rebind(
+                            &mut builder,
+                            cleanup_block,
+                            &mut is_block_filled,
+                            false,
+                        );
+                        if exception_label_ids.is_empty() && sealed_blocks.insert(cleanup_block) {
+                            maybe_debug_seal(
+                                "loop_break_exception_cleanup",
+                                op_idx,
+                                cleanup_block,
+                            );
+                            seal_block_once(&mut builder, &mut sealed_blocks, cleanup_block);
+                        }
+                        for name in tracked_obj_snapshot {
+                            let val =
+                                resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "Tracked obj var not found in {} op {}: {}",
+                                            func_ir.name, op_idx, name
+                                        )
+                                    });
+                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        }
+                        for name in tracked_ptr_snapshot {
+                            let val =
+                                resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "Tracked ptr var not found in {} op {}: {}",
+                                            func_ir.name, op_idx, name
+                                        )
+                                    });
+                            builder.ins().call(local_dec_ref_obj, &[val]);
+                        }
+                        reachable_blocks.insert(frame.after_block);
+                        ensure_block_in_layout(&mut builder, frame.after_block);
+                        jump_block(&mut builder, frame.after_block, &[]);
+                        switch_to_block_with_rebind(
+                            &mut builder,
+                            frame.body_block,
+                            &mut is_block_filled,
+                            false,
+                        );
+                        // Seal body_block now — its only predecessor is the brif above.
+                        if exception_label_ids.is_empty()
+                            && sealed_blocks.insert(frame.body_block)
+                        {
+                            maybe_debug_seal("loop_break_exception_body", op_idx, frame.body_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, frame.body_block);
+                        }
+                        propagate_tracked_to_branches(
+                            &mut block_tracked_obj,
+                            &[frame.body_block, frame.after_block],
+                            carry_obj_lb,
+                        );
+                        propagate_tracked_to_branches(
+                            &mut block_tracked_ptr,
+                            &[frame.body_block, frame.after_block],
+                            carry_ptr_lb,
+                        );
                     }
                 }
                 "loop_break_if_true" => {

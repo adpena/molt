@@ -148,6 +148,12 @@ fn opcode_is_side_effecting(opcode: OpCode) -> bool {
         // Control flow / exception handling.
         | OpCode::Raise
         | OpCode::CheckException
+        // ExceptionPending reads the mutable runtime exception-pending flag.
+        // It MUST re-read each iteration and must never be CSE'd / LICM-hoisted
+        // out of a loop or eliminated when its result looks unused — otherwise
+        // the `loop_break_if_exception` it feeds could be deleted, re-opening
+        // the iterator-consumer infinite-loop/OOM bug.
+        | OpCode::ExceptionPending
         | OpCode::TryStart
         | OpCode::TryEnd
         | OpCode::StateBlockStart
