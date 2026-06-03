@@ -110,3 +110,25 @@ per-agent for isolation; the *cache* is shared).
   roadmap goals.
 - Keep the perf contract intact: shipped artifacts retain fat LTO; only the dev
   iteration loop trades whole-program re-opt for parallelism + incrementality.
+
+## Addendum (2026-06-03): backend god-file split landed; crate-extraction boundary scoped
+
+Step 1 (module split) LANDED `34e3bddbf`: `runtime/molt-backend/src/lib.rs` 6,928→264 lines.
+`SimpleBackend` + native codegen now live in `native_backend/simple_backend.rs`.
+
+Step 2 (extract `molt-backend-native`) — measured boundary from `simple_backend.rs`:
+- Its cross-module edges: `crate::tir` ×29 (type_refine, lower_to_simple, lower_from_simple,
+  lower_to_lir, serialize, cache, verify_lir(_repr), passes, printer), `crate::passes` ×7
+  (compute_return_alias_summaries, compute_intrinsic_manifest), `crate::debug_artifacts` ×5,
+  `representation_plan`, `ir_rewrites`, `ir`, and a `cfg(llvm)` edge to `llvm_backend`.
+- No back-edge: only `main.rs` (the binary) + sibling `function_compiler.rs` reference
+  `SimpleBackend` — so `native_backend/*` is extractable.
+- Therefore the clean two-crate cut is: **`molt-backend` (core)** keeps ir/tir/passes/
+  representation_plan/ir_rewrites/intrinsic_symbols/debug_artifacts/json_boundary + the
+  non-native backends (wasm/luau/rust/llvm); **`molt-backend-native`** = `native_backend/`
+  (SimpleBackend, function_compiler, native_backend_consts, vec_layout) depending on core.
+  The `cfg(llvm)` cross-edge stays satisfied because `llvm_backend` is in core.
+- Honest caveat: native's heavy `tir` dependency means a `tir` edit still recompiles native
+  (unavoidable — native depends on tir). The incremental win is the reverse: editing native
+  codegen no longer recompiles tir/passes/the non-native backends. Pick this boundary (one
+  cut, low back-edge) over splitting `tir` further until measurement shows tir churn dominates.
