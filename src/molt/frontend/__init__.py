@@ -28064,8 +28064,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if acc_val is not None:
                     acc_const = self.const_ints.get(acc_val.name)
                 if start_const is not None and acc_const is not None:
-                    span = bound - start_const
-                    sum_val = span * (start_const + bound - 1) // 2
+                    # Guard the empty-loop case: when start_const >= bound the
+                    # loop runs zero times, so the accumulator is unchanged. The
+                    # arithmetic-series closed form below assumes >=1 iteration;
+                    # without this guard span goes negative and the fold emits a
+                    # silently-wrong sum (e.g. start=10,bound=5 -> -35 instead of
+                    # 0). Mirrors the already-correct const_inc fast path and the
+                    # final_index guard just below.
+                    if start_const < bound:
+                        span = bound - start_const
+                        sum_val = span * (start_const + bound - 1) // 2
+                    else:
+                        sum_val = 0
                     final_val = acc_const + sum_val
                     acc_res = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[final_val], result=acc_res))
