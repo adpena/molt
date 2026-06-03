@@ -32,7 +32,18 @@ def _ensure_src_on_path() -> None:
 
 
 def _ensure_pytest_process_scope() -> None:
-    os.environ.setdefault("MOLT_SESSION_ID", f"pytest-{os.getpid()}")
+    # Under pytest-xdist each worker is a separate process that inherits the
+    # master's environment. A plain ``setdefault`` would leave every worker
+    # sharing the master's ``MOLT_SESSION_ID``, collapsing their backend
+    # daemons, build state, and compile cache onto a single session — which
+    # serialises (and races) compilation and makes parallel runs fail. Give
+    # each xdist worker a distinct, stable session keyed on its worker id
+    # (``gw0``/``gw1``/…); fall back to the pid for serial (non-xdist) runs.
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker:
+        os.environ["MOLT_SESSION_ID"] = f"pytest-xdist-{worker}"
+    else:
+        os.environ.setdefault("MOLT_SESSION_ID", f"pytest-{os.getpid()}")
 
 
 def pytest_configure() -> None:
@@ -40,9 +51,36 @@ def pytest_configure() -> None:
     _ensure_pytest_process_scope()
 
 
+def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]
+    """True when this pytest invocation runs under pytest-xdist (parallel).
+
+    Detected in workers via ``PYTEST_XDIST_WORKER`` and in the controller via
+    the resolved ``-n`` value (``numprocesses``).
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return True
+    try:
+        return bool(session.config.option.numprocesses)
+    except AttributeError:
+        return False
+
+
 def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
     _ensure_src_on_path()
     _ensure_pytest_process_scope()
+    # The repo memory-guard sentinel drains (SIGTERMs) repo-scoped processes on
+    # exit, which is fundamentally incompatible with pytest-xdist: a per-worker
+    # sentinel SIGTERMs molt builds still running in OTHER workers when one
+    # worker finishes first ("Compilation failed: SIGTERM (-15); no RSS
+    # violation observed" → silently SKIPPED tests), and the controller-side
+    # drain races xdist's worker-channel teardown ("OSError: cannot send
+    # (already closed?)" in pytest_sessionfinish → nonzero exit even when every
+    # test passed). Under xdist, skip the session sentinel entirely: each
+    # compliance build is already bounded by the per-build memory guard in
+    # tests/compliance/process_guard.run_compliance_process, and the worker
+    # count caps aggregate concurrency. Serial runs keep the full sentinel.
+    if _is_xdist_run(session):
+        return
     from tools import harness_memory_guard
 
     sentinel = harness_memory_guard.repo_process_sentinel(
