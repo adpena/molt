@@ -41,8 +41,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
-use crate::tir::dominators::{build_pred_map, collect_loop_blocks, compute_idoms};
+use crate::tir::analysis::{AnalysisManager, DefMap, LoopForest};
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
@@ -92,7 +92,7 @@ fn find_preheader(
     }
 }
 
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "licm",
         ..Default::default()
@@ -120,23 +120,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // beyond the normal block-splitting that any structured
     // construct does.
 
-    // Find loop headers from loop_roles metadata. Sort by id so that
-    // tie-breaking in the post-order traversal below is deterministic
-    // regardless of the underlying HashMap iteration order.
-    let mut loop_headers: Vec<BlockId> = func
-        .loop_roles
-        .iter()
-        .filter_map(|(bid, role)| {
-            if matches!(role, LoopRole::LoopHeader) {
-                Some(*bid)
-            } else {
-                None
-            }
-        })
-        .collect();
-    loop_headers.sort_unstable_by_key(|b| b.0);
-
-    if loop_headers.is_empty() {
+    // The loop forest (headers from `loop_roles`, sorted by id for
+    // deterministic tie-breaking; bodies via dominator-based natural-loop
+    // construction) is shared with BCE through the analysis manager.
+    let forest = am.get::<LoopForest>(func).clone();
+    if forest.headers.is_empty() {
         return stats;
     }
 
@@ -144,18 +132,14 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // loop's body into the inner preheader become visible to the
     // enclosing loop and can be hoisted further out if invariant there.
     //
-    // Step 0: compute dominators once. Used both for natural-loop body
-    // construction (back-edge identification) and for cheaply ordering
-    // the loop forest.
-    let pred_map = build_pred_map(func);
-    let idoms = compute_idoms(func, &pred_map);
-
-    // Step 1: compute each loop's block set using dominator-based natural
-    // loop construction. Natural loops nest properly: an inner loop's body
-    // is a strict subset of its enclosing outer loop's body.
-    let loop_block_sets: Vec<(BlockId, HashSet<BlockId>)> = loop_headers
+    // Step 1: index each loop's natural-loop block set by header (headers are
+    // already in ascending-id order from the forest). Natural loops nest
+    // properly: an inner loop's body is a strict subset of its enclosing
+    // outer loop's body.
+    let loop_block_sets: Vec<(BlockId, HashSet<BlockId>)> = forest
+        .headers
         .iter()
-        .map(|&h| (h, collect_loop_blocks(func, &pred_map, &idoms, h)))
+        .map(|&h| (h, forest.bodies[&h].clone()))
         .collect();
 
     // Step 2: nesting depth = number of OTHER loops whose block set
@@ -177,23 +161,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     headers_with_depth.sort_by_key(|(_, depth)| std::cmp::Reverse(*depth));
     let loop_headers: Vec<BlockId> = headers_with_depth.into_iter().map(|(h, _)| h).collect();
 
-    // Build a set of all values defined in each block for quick lookup.
-    let mut value_def_block: HashMap<ValueId, BlockId> = HashMap::new();
-    for (&bid, block) in &func.blocks {
-        for arg in &block.args {
-            value_def_block.insert(arg.id, bid);
-        }
-        for op in &block.ops {
-            for &res in &op.results {
-                value_def_block.insert(res, bid);
-            }
-        }
-    }
-    // Function parameters are defined "before" the entry block.
-    for i in 0..func.param_types.len() {
-        let v = ValueId(i as u32);
-        value_def_block.entry(v).or_insert(func.entry_block);
-    }
+    // Value → defining-block map (block args, op results, and params at entry),
+    // shared with GVN through the analysis manager. Cloned because LICM mutates
+    // its local copy as it hoists ops (recording their new preheader def block);
+    // the cached analysis is not mutated.
+    let mut value_def_block = am.get::<DefMap>(func).clone();
 
     // Collect all values used as block arguments in terminators.
     // These participate in phi resolution and must not be hoisted.
@@ -446,7 +418,7 @@ mod tests {
         // Mark loop_header as a loop header.
         func.loop_roles.insert(loop_header, LoopRole::LoopHeader);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // The invariant Add(a, b) → sum_ab should have been hoisted.
         // The non-invariant Add(sum_ab, loop_var) → use_val should remain.
@@ -568,7 +540,7 @@ mod tests {
 
         func.loop_roles.insert(loop_header, LoopRole::LoopHeader);
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         assert!(
             func.blocks[&loop_body].ops.iter().any(|op| {
@@ -837,7 +809,7 @@ mod tests {
             nl.outer_h,
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // The inner body must NOT still contain the Add(a, b).
         let inner_body_ops = &func.blocks[&nl.inner_b].ops;
@@ -902,7 +874,7 @@ mod tests {
         }
         let _ = nl.outer_exit; // doc-only field
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let outer_ph_ops = &func.blocks[&nl.outer_ph].ops;
         let inner_ph_ops = &func.blocks[&nl.inner_ph].ops;
@@ -972,7 +944,7 @@ mod tests {
         }
         let _ = nl.outer_exit;
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // Op must leave the inner body.
         let inner_body_ops = &func.blocks[&nl.inner_b].ops;
@@ -1088,7 +1060,7 @@ mod tests {
 
         func.loop_roles.insert(loop_header, LoopRole::LoopHeader);
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // The Add uses loop_var (defined in loop header) — should NOT be hoisted.
         let body_ops = &func.blocks[&loop_body].ops;

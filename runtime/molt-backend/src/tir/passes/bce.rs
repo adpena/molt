@@ -47,8 +47,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
-use crate::tir::dominators::{build_pred_map, collect_loop_blocks, compute_idoms};
+use crate::tir::analysis::{AnalysisManager, LoopForest};
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
@@ -111,7 +111,7 @@ struct AddConst {
 ///
 /// Returns [`PassStats`] describing how many ops were annotated
 /// (`values_changed`).
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "bce",
         ..Default::default()
@@ -273,30 +273,18 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // iterator back through GetIter → CallBuiltin("range", N) to establish
     // that the produced element is in [0, N).
 
-    let loop_headers: Vec<BlockId> = func
-        .loop_roles
-        .iter()
-        .filter_map(|(bid, role)| {
-            if *role == LoopRole::LoopHeader {
-                Some(*bid)
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Loop forest (headers from `loop_roles`; bodies via dominator-based
+    // natural-loop construction). Shared with LICM through the analysis
+    // manager — this is the sound definition of a loop body that gates the
+    // Phase 2/3 `bce_safe` marking and so is correctness-critical.
+    let forest = am.get::<LoopForest>(func).clone();
+    let loop_headers: Vec<BlockId> = forest.headers.clone();
 
     // Set of blocks that belong to each loop (header → body blocks).
     let mut loop_body_blocks: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
 
-    // Dominator-based natural-loop construction (shared with LICM). This is the
-    // sound definition of a loop body; a prior id-ordering heuristic here could
-    // mis-attribute blocks to a loop after CFG-renumbering passes, which gates
-    // the Phase 2/3 `bce_safe` marking and so is correctness-critical.
-    let pred_map = build_pred_map(func);
-    let idoms = compute_idoms(func, &pred_map);
-
     for &header in &loop_headers {
-        let body_set = collect_loop_blocks(func, &pred_map, &idoms, header);
+        let body_set = forest.bodies[&header].clone();
         let body: Vec<BlockId> = body_set.iter().copied().collect();
 
         // Find IterNextUnboxed/ForIter ops in the loop header or body that
@@ -706,7 +694,7 @@ mod tests {
             values: vec![result],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         assert_eq!(stats.values_changed, 1);
         let index_op = func.blocks[&func.entry_block]
@@ -743,7 +731,7 @@ mod tests {
             values: vec![result],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.values_changed, 1);
         let index_op = func.blocks[&func.entry_block]
             .ops
@@ -775,7 +763,7 @@ mod tests {
             values: vec![result],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(
             stats.values_changed, 0,
             "Negative constant must not be marked bce_safe"
@@ -813,7 +801,7 @@ mod tests {
             values: vec![result],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.values_changed, 0);
         let index_op = func.blocks[&func.entry_block]
             .ops
@@ -830,7 +818,7 @@ mod tests {
     fn no_index_ops_no_changes() {
         let ops = vec![]; // empty body
         let mut func = func_with_ops(ops);
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.values_changed, 0);
     }
 
@@ -867,7 +855,7 @@ mod tests {
             values: vec![r0, r1, r2],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(
             stats.values_changed, 1,
             "Only one Index should be marked bce_safe"
@@ -1039,7 +1027,7 @@ mod tests {
         // for i in range(5): a[i]  → should be bce_safe
         let (mut func, _header, body_id, _exit) = build_range_loop_func(5, 5, false);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
@@ -1066,7 +1054,7 @@ mod tests {
         // for i in range(5): a[-1]  → must NOT be bce_safe
         let (mut func, _header, body_id, _exit) = build_range_loop_func(5, 5, true);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
@@ -1167,7 +1155,7 @@ mod tests {
         func.blocks.insert(exit_id, exit_block);
         func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
@@ -1190,7 +1178,7 @@ mod tests {
         // for i in range(5): a[i]  → container too small, must NOT be bce_safe
         let (mut func, _header, body_id, _exit) = build_range_loop_func(3, 5, false);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
@@ -1213,7 +1201,7 @@ mod tests {
         // for i in range(5): a[i]  → container is larger, should be bce_safe
         let (mut func, _header, body_id, _exit) = build_range_loop_func(10, 5, false);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
@@ -1312,7 +1300,7 @@ mod tests {
             func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
         }
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let store_op = func.blocks[&body_id]
             .ops
@@ -1410,7 +1398,7 @@ mod tests {
             func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
         }
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
@@ -1506,7 +1494,7 @@ mod tests {
             func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
         }
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
@@ -1610,7 +1598,7 @@ mod tests {
             func.loop_roles.insert(exit_id, LoopRole::LoopEnd);
         }
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let index_op = func.blocks[&body_id]
             .ops
