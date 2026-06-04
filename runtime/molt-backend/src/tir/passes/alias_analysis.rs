@@ -79,16 +79,17 @@ pub use super::escape_analysis::EscapeState;
 
 /// Abstract memory region a memory-touching op reads or writes. A TBAA-style
 /// partition: two ops can only alias if their regions *may* overlap
-/// ([`MemRegion::may_alias`]). The taxonomy is deliberately coarse for Phase 1
-/// (MemorySSA / fine-grained field disambiguation arrive in later phases); it is
-/// always sound to widen an op's region to [`MemRegion::GenericHeap`].
+/// ([`MemRegion::may_alias`]). It is always sound to widen an op's region to
+/// [`MemRegion::GenericHeap`]; every refinement below is a *proven* disjointness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemRegion {
     /// A specific typed field of a concrete user class at a fixed byte offset:
-    /// `obj.<offset>` where `obj`'s class is statically known and has no dunder
-    /// override. Two `TypedField`s disjoint-alias iff they differ in class id OR
-    /// offset (and the underlying objects are not proven-equal — Phase 1 stays
-    /// conservative on the object identity, see [`MemRegion::may_alias`]).
+    /// `obj.<offset>`, where the class is the one the field op's own guard proved
+    /// (the `_class` attr the frontend stamps on every offset-based field op —
+    /// see [`typed_slot_field`]). Two `TypedField`s disjoint-alias iff they differ
+    /// in class id OR offset. We do NOT track object identity, so two same-class,
+    /// same-offset fields of possibly-different objects STILL may-alias
+    /// (conservative-true; proof obligation (b), see [`MemRegion::may_alias`]).
     TypedField { class: String, offset: i64 },
     /// An element of a container (list/dict/set/tuple) reached through
     /// `Index` / `StoreIndex`. Opaque: may dispatch `__getitem__` / `__setitem__`.
@@ -111,17 +112,27 @@ impl MemRegion {
     /// regions *might* name overlapping memory — the analysis must assume they
     /// do. The only disjoint pairs are the ones we can *prove* cannot overlap.
     ///
-    /// Phase-1 conservatism: `TypedField`s are disjoint only when class id or
-    /// offset differs; same-class/same-offset fields may-alias (we do not yet
-    /// track object identity, that is the MemorySSA arc). A `ScalarRegister`
-    /// never aliases a heap region. Two distinct `StackObject` roots are
-    /// disjoint. Everything else falls back to "may alias".
+    /// * `TypedField`s are disjoint only when class id or offset differs;
+    ///   same-class/same-offset fields may-alias (object identity is untracked —
+    ///   proof obligation (b): two `p.x` reads on possibly-different `Point`s must
+    ///   still be treated as the same memory). Cross-class and cross-offset fields
+    ///   are provably disjoint: distinct concrete classes never share an object,
+    ///   and distinct offsets are distinct bytes of one instance layout.
+    /// * A `TypedField` is disjoint from a `ContainerElement` and from a
+    ///   `ModuleDict` slot: a class instance's fixed-layout slot is a different
+    ///   kind of memory from a container's element storage or a module object's
+    ///   attr dict (proof obligation (a)).
+    /// * A `ScalarRegister` never aliases a heap region. Two distinct
+    ///   `StackObject` roots are disjoint. Everything else falls back to "may
+    ///   alias" (notably `GenericHeap`, which an opaque call/raise/yield widens
+    ///   to — proof obligation (c)).
     pub fn may_alias(&self, other: &MemRegion) -> bool {
         use MemRegion::*;
         match (self, other) {
             // A scalar register has no heap footprint at all.
             (ScalarRegister, _) | (_, ScalarRegister) => false,
-            // Distinct typed fields (different class or offset) are disjoint.
+            // Distinct typed fields (different class or offset) are disjoint;
+            // same class+offset may-alias (object identity untracked, oblig. (b)).
             (
                 TypedField { class: c1, offset: o1 },
                 TypedField { class: c2, offset: o2 },
@@ -129,8 +140,8 @@ impl MemRegion {
             // Distinct stack objects never overlap; the same root does.
             (StackObject { root: r1 }, StackObject { root: r2 }) => r1 == r2,
             // A non-escaping stack object cannot be named by a generic-heap,
-            // container, module, or typed-field access of a *different* object.
-            // Phase-1 stays conservative: a StackObject only aliases itself.
+            // container, module, or typed-field access of a *different* object:
+            // a proven-non-escaping object is unreachable through any of those.
             (StackObject { .. }, _) | (_, StackObject { .. }) => false,
             // TypedField vs ContainerElement / ModuleDict / GenericHeap: a typed
             // class slot is a distinct kind of memory from a container element
@@ -292,6 +303,10 @@ fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueI
 
 /// `Some(offset)` when this op is a `store` / `store_init` against a typed-class
 /// instance slot at a known integer offset. Mirrors `dead_store_elim::store_offset`.
+///
+/// Scoped to the PLAIN raw-offset store forms (operands `[obj, val]`); the
+/// `guarded_field_set` / `guarded_field_init` forms carry a different operand
+/// ABI and are handled by [`typed_slot_field`].
 fn store_offset(op: &TirOp) -> Option<i64> {
     if op.opcode != OpCode::StoreAttr {
         return None;
@@ -309,13 +324,74 @@ fn store_offset(op: &TirOp) -> Option<i64> {
     }
 }
 
-/// `Some((target, offset))` for the narrow typed-class slot store contract.
-/// Mirrors `dead_store_elim::typed_slot_store`.
+/// `Some((target, offset))` for the narrow PLAIN typed-class slot store contract
+/// (`store` / `store_init`, operands `[obj, val]`). Mirrors
+/// `dead_store_elim::typed_slot_store`; that overwrite contract is restricted to
+/// the two-operand form, so this helper stays scoped to it. The wider
+/// region-classification set is [`typed_slot_field`].
 fn typed_slot_store(op: &TirOp) -> Option<(ValueId, i64)> {
     if op.operands.len() != 2 {
         return None;
     }
     Some((op.operands[0], store_offset(op)?))
+}
+
+/// The `_original_kind` spellings of every offset-based typed-slot field op the
+/// frontend emits **exclusively** for a proven fixed-layout concrete-class field
+/// — partitioned by load vs store. Each is emitted only when the object's class
+/// is proven at the op (a preceding runtime version-guard for the
+/// `guarded_field_*` forms, static type inference for the plain `store`/`load`
+/// forms) AND the attribute resolves to a fixed instance-layout byte offset (the
+/// `offset is None` fallback in the frontend routes a `__dict__` /
+/// exception-subclass / metaclass attribute to a generic `get_attr*` / `set_attr*`
+/// spelling that classifies as `GenericHeap`). Discharges proof obligation (a):
+/// a typed-slot field op can never name a container element or a module-dict slot.
+fn typed_slot_field_kind(op: &TirOp) -> Option<&'static str> {
+    let original = match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(s)) => s.as_str(),
+        _ => return None,
+    };
+    match op.opcode {
+        OpCode::LoadAttr => match original {
+            "load" | "guarded_field_get" => Some("load"),
+            _ => None,
+        },
+        OpCode::StoreAttr => match original {
+            "store" | "store_init" | "guarded_field_set" | "guarded_field_init" => Some("store"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `Some((obj_root_operand, offset))` for ANY typed-slot field op (load or store,
+/// plain or guarded), WITHOUT requiring the class identity. `obj` is always
+/// operand[0] across both ABIs (plain `[obj, val]` / `[obj]`; guarded
+/// `[obj, class_bits, expected_version, (val)]`). This is the object+offset
+/// identity a `StackObject` region needs — a proven-non-escaping object's slot is
+/// keyed by the allocation root alone, so it stays precise even when the op
+/// carries no `_class` attr (a cached pre-S5-1.5 TIR artifact).
+fn typed_slot_obj_offset(op: &TirOp) -> Option<(ValueId, i64)> {
+    typed_slot_field_kind(op)?;
+    let obj = *op.operands.first()?;
+    let offset = match op.attrs.get("value") {
+        Some(AttrValue::Int(v)) => *v,
+        _ => return None,
+    };
+    Some((obj, offset))
+}
+
+/// The concrete class the frontend proved at this typed-slot field op (its
+/// `_class` attr — the class whose layout authored the op's `offset`). FAIL-CLOSED:
+/// `None` when the op is not a typed-slot field op OR carries no `_class` proof
+/// (a cached pre-S5-1.5 artifact, or a future spelling that dropped the attr) — in
+/// which case the region stays `GenericHeap`.
+fn typed_slot_class(op: &TirOp) -> Option<String> {
+    typed_slot_field_kind(op)?;
+    match op.attrs.get("_class") {
+        Some(AttrValue::Str(s)) => Some(s.clone()),
+        _ => None,
+    }
 }
 
 // ===========================================================================
@@ -555,31 +631,32 @@ impl AliasAnalysisResult {
     }
 
     /// The memory region a memory-touching op reads or writes, used for
-    /// may-alias disambiguation. Phase-1 taxonomy (see [`MemRegion`]).
+    /// may-alias disambiguation (see [`MemRegion`]).
     pub fn region_of(&self, op: &TirOp) -> MemRegion {
         match op.opcode {
             OpCode::LoadAttr | OpCode::StoreAttr => {
-                // A typed-slot access against a known class+offset is a
-                // `TypedField`; an opaque attribute spelling is GenericHeap.
-                if let Some((target, offset)) = typed_slot_store(op) {
+                // A typed-slot field op (`store`/`store_init`/`load`/
+                // `guarded_field_*`) names one fixed byte `offset` of one object's
+                // own instance layout. An opaque attribute spelling (`get_attr*`,
+                // `set_attr*`, or any op missing the offset proof) stays
+                // `GenericHeap`.
+                if let Some((target, offset)) = typed_slot_obj_offset(op) {
                     let root = self.aliases.root(target);
+                    // A proven-non-escaping object's slots get a per-object
+                    // `StackObject` region (strictly more precise than a
+                    // class-shared `TypedField`: distinct stack objects never
+                    // alias even at the same class+offset). This needs only the
+                    // allocation root, NOT the class identity.
                     if self.is_stack_object(root) {
                         return MemRegion::StackObject { root };
                     }
-                    if let Some(class) = self.class_of(root) {
-                        return MemRegion::TypedField { class, offset };
-                    }
-                }
-                if op.opcode == OpCode::LoadAttr
-                    && load_attr_is_typed_slot(&op.attrs)
-                    && let (Some(&obj), Some(offset)) =
-                        (op.operands.first(), load_attr_offset(&op.attrs))
-                {
-                    let root = self.aliases.root(obj);
-                    if self.is_stack_object(root) {
-                        return MemRegion::StackObject { root };
-                    }
-                    if let Some(class) = self.class_of(root) {
+                    // Otherwise, if the op carries its own proven class identity
+                    // (the `_class` attr the frontend stamps — a runtime
+                    // version-guard for `guarded_field_*`, static type inference
+                    // for the plain forms), it names a `TypedField` region
+                    // disjoint from every OTHER class+offset, from container
+                    // elements, and from module-dict slots (S5-1.5).
+                    if let Some(class) = typed_slot_class(op) {
                         return MemRegion::TypedField { class, offset };
                     }
                 }
@@ -619,23 +696,6 @@ impl AliasAnalysisResult {
             self.escape.get(&root),
             Some(EscapeState::NoEscape) | Some(EscapeState::ArgEscape)
         )
-    }
-
-    /// The statically-known concrete class id of `root`, if the function's type
-    /// map proves one. Phase-1 returns `None` (class tracking is layered in a
-    /// later phase); the `TypedField` region therefore degrades to
-    /// `GenericHeap`, which is sound.
-    fn class_of(&self, _root: ValueId) -> Option<String> {
-        None
-    }
-}
-
-/// `Some(offset)` for a typed-slot `LoadAttr` (`guarded_field_get` / `load`)
-/// carrying a `value` offset attr.
-fn load_attr_offset(attrs: &AttrDict) -> Option<i64> {
-    match attrs.get("value") {
-        Some(AttrValue::Int(v)) => Some(*v),
-        _ => None,
     }
 }
 
@@ -1149,5 +1209,202 @@ mod tests {
         assert_eq!(res.region_of(&idx), MemRegion::ContainerElement);
         let mcg = op(OpCode::ModuleGetGlobal, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
         assert_eq!(res.region_of(&mcg), MemRegion::ModuleDict);
+    }
+
+    // ── region_of: class-aware TypedField regions (S5-1.5) ─────────────────
+
+    /// Set the offset + class attrs on a typed-slot field op.
+    fn with_field_attrs(mut o: TirOp, offset: i64, class: Option<&str>) -> TirOp {
+        o.attrs.insert("value".into(), AttrValue::Int(offset));
+        if let Some(c) = class {
+            o.attrs.insert("_class".into(), AttrValue::Str(c.into()));
+        }
+        o
+    }
+
+    fn empty_res() -> AliasAnalysisResult {
+        AliasAnalysisResult {
+            aliases: AliasUnionFind::default(),
+            escape: HashMap::new(),
+            alloc_roots: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn plain_load_store_classify_as_typed_field_from_class_attr() {
+        let res = empty_res();
+        // `load obj.<8>` of class Point  (operands [obj], offset 8).
+        let load = with_field_attrs(
+            op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+            8,
+            Some("Point"),
+        );
+        assert_eq!(
+            res.region_of(&load),
+            MemRegion::TypedField { class: "Point".into(), offset: 8 }
+        );
+        // `store obj.<16> = val` of class Line (operands [obj, val], offset 16).
+        let store = with_field_attrs(
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "store"),
+            16,
+            Some("Line"),
+        );
+        assert_eq!(
+            res.region_of(&store),
+            MemRegion::TypedField { class: "Line".into(), offset: 16 }
+        );
+        // `store_init` is also a typed-slot store.
+        let init = with_field_attrs(
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "store_init"),
+            0,
+            Some("Point"),
+        );
+        assert_eq!(
+            res.region_of(&init),
+            MemRegion::TypedField { class: "Point".into(), offset: 0 }
+        );
+    }
+
+    #[test]
+    fn guarded_field_get_3operand_abi_classifies_as_typed_field() {
+        // `guarded_field_get` ABI: operands [obj, class_bits, expected_version],
+        // offset in `value`, class in `_class`. obj is operand[0].
+        let res = empty_res();
+        let get = with_field_attrs(
+            op_kind(
+                OpCode::LoadAttr,
+                vec![ValueId(0), ValueId(1), ValueId(2)], // obj, class_bits, version
+                vec![ValueId(3)],
+                "guarded_field_get",
+            ),
+            24,
+            Some("Account"),
+        );
+        assert_eq!(
+            res.region_of(&get),
+            MemRegion::TypedField { class: "Account".into(), offset: 24 }
+        );
+    }
+
+    #[test]
+    fn guarded_field_set_4operand_abi_classifies_as_typed_field() {
+        // `guarded_field_set` ABI: operands [obj, class_bits, expected_version,
+        // val], offset in `value`, class in `_class`. obj is operand[0].
+        let res = empty_res();
+        for kind in ["guarded_field_set", "guarded_field_init"] {
+            let set = with_field_attrs(
+                op_kind(
+                    OpCode::StoreAttr,
+                    vec![ValueId(0), ValueId(1), ValueId(2), ValueId(3)],
+                    vec![],
+                    kind,
+                ),
+                32,
+                Some("Account"),
+            );
+            assert_eq!(
+                res.region_of(&set),
+                MemRegion::TypedField { class: "Account".into(), offset: 32 },
+                "{kind} on operand[0]=obj is a TypedField"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_slot_without_class_attr_fails_closed_to_generic_heap() {
+        // FAIL-CLOSED: a typed-slot kind with offset but NO `_class` proof stays
+        // GenericHeap (a pre-S5-1.5 cached artifact, or a dropped attr).
+        let res = empty_res();
+        let load = with_field_attrs(
+            op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+            8,
+            None,
+        );
+        assert_eq!(res.region_of(&load), MemRegion::GenericHeap);
+        let store = with_field_attrs(
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "store"),
+            8,
+            None,
+        );
+        assert_eq!(res.region_of(&store), MemRegion::GenericHeap);
+    }
+
+    #[test]
+    fn opaque_attr_spelling_is_generic_heap_even_with_class_attr() {
+        // A generic `get_attr` / `set_attr` spelling is NOT a typed-slot op (it
+        // may dispatch a dunder), so it is GenericHeap regardless of any stray
+        // attrs. (The frontend never stamps `_class` on these, but assert the
+        // classification is robust to it.)
+        let res = empty_res();
+        let ga = with_field_attrs(
+            op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "get_attr"),
+            8,
+            Some("Point"),
+        );
+        assert_eq!(res.region_of(&ga), MemRegion::GenericHeap);
+        let sa = with_field_attrs(
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "set_attr_generic_ptr"),
+            8,
+            Some("Point"),
+        );
+        assert_eq!(res.region_of(&sa), MemRegion::GenericHeap);
+    }
+
+    #[test]
+    fn non_escaping_object_field_is_stack_object_even_without_class() {
+        // A field op on a proven-non-escaping object root gets the per-object
+        // `StackObject` region — derived from the allocation root ALONE, so it
+        // stays precise even when the op carries no `_class` attr.
+        let root = ValueId(0);
+        let mut escape = HashMap::new();
+        escape.insert(root, EscapeState::NoEscape);
+        let res = AliasAnalysisResult {
+            aliases: AliasUnionFind::default(),
+            escape,
+            alloc_roots: [root].into_iter().collect(),
+        };
+        // No `_class` attr, but the root is non-escaping ⇒ StackObject.
+        let load = with_field_attrs(
+            op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
+            8,
+            None,
+        );
+        assert_eq!(res.region_of(&load), MemRegion::StackObject { root });
+        // With a class attr too, StackObject still wins (more precise than the
+        // class-shared TypedField).
+        let load_c = with_field_attrs(
+            op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
+            8,
+            Some("Point"),
+        );
+        assert_eq!(res.region_of(&load_c), MemRegion::StackObject { root });
+    }
+
+    // ── may_alias matrix: TypedField vs every region ───────────────────────
+
+    #[test]
+    fn typed_field_may_alias_matrix() {
+        let pt0 = MemRegion::TypedField { class: "Point".into(), offset: 0 };
+        let pt8 = MemRegion::TypedField { class: "Point".into(), offset: 8 };
+        let ln0 = MemRegion::TypedField { class: "Line".into(), offset: 0 };
+        // Same class+offset ⇒ may-alias (object identity untracked, oblig. (b)).
+        assert!(pt0.may_alias(&pt0.clone()));
+        // Different offset ⇒ disjoint.
+        assert!(!pt0.may_alias(&pt8));
+        // Different class ⇒ disjoint (oblig. (a): distinct classes never share).
+        assert!(!pt0.may_alias(&ln0));
+        // TypedField vs ContainerElement ⇒ disjoint (oblig. (a)).
+        assert!(!pt0.may_alias(&MemRegion::ContainerElement));
+        assert!(!MemRegion::ContainerElement.may_alias(&pt0));
+        // TypedField vs ModuleDict ⇒ disjoint (oblig. (a)).
+        assert!(!pt0.may_alias(&MemRegion::ModuleDict));
+        assert!(!MemRegion::ModuleDict.may_alias(&pt0));
+        // TypedField vs GenericHeap ⇒ may-alias (oblig. (c): opaque clobbers).
+        assert!(pt0.may_alias(&MemRegion::GenericHeap));
+        assert!(MemRegion::GenericHeap.may_alias(&pt0));
+        // TypedField vs ScalarRegister ⇒ disjoint (no heap footprint).
+        assert!(!pt0.may_alias(&MemRegion::ScalarRegister));
+        // TypedField vs a distinct StackObject ⇒ disjoint (different object).
+        assert!(!pt0.may_alias(&MemRegion::StackObject { root: ValueId(9) }));
     }
 }

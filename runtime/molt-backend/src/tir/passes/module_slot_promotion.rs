@@ -1558,4 +1558,41 @@ mod tests {
         assert!(changed.is_empty(), "opaque call in loop => refusal");
         assert_eq!(stats.slots_promoted, 0);
     }
+
+    #[test]
+    fn typed_field_store_in_loop_does_not_refuse_promotion() {
+        // A `guarded_field_set` (TypedField region) writes a class instance's
+        // own fixed-layout slot — it can NEVER mutate a module-dict slot, so it
+        // must NOT disqualify promotion of the module-dict slots in the loop.
+        // (Pre-S5-1.5 this op was GenericHeap and aliased ModuleDict, wrongly
+        // refusing the loop.) Object identity for the field op is irrelevant; we
+        // use a fresh value as the instance.
+        let mut f = module_loop_func();
+        let body = BlockId(2);
+        let inst = f.fresh_value();
+        let val = f.fresh_value();
+        // guarded_field_set: operands [obj, class_bits, version, val]; the alias
+        // oracle only reads operand[0]=obj, offset (`value`), class (`_class`).
+        let cbits = f.fresh_value();
+        let ver = f.fresh_value();
+        let mut fset = op(
+            OpCode::StoreAttr,
+            vec![inst, cbits, ver, val],
+            vec![],
+        );
+        fset.attrs
+            .insert("_original_kind".into(), AttrValue::Str("guarded_field_set".into()));
+        fset.attrs.insert("value".into(), AttrValue::Int(0));
+        fset.attrs
+            .insert("_class".into(), AttrValue::Str("Counter".into()));
+        f.blocks.get_mut(&body).unwrap().ops.insert(0, fset);
+        let mut module = TirModule { name: "m".into(), functions: vec![f] };
+        let (stats, changed) = run_module_slot_promotion(&mut module);
+        assert_eq!(
+            changed,
+            vec!["chunk".to_string()],
+            "a TypedField store does not alias ModuleDict; promotion proceeds"
+        );
+        assert_eq!(stats.slots_promoted, 3);
+    }
 }

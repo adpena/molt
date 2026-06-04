@@ -171,11 +171,181 @@ pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAn
     // exposes must reflect the merged program.
     let call_graph = CallGraph::build(module);
     let summaries = ModuleSummaries::compute(module, &call_graph);
+
+    // S5-1.5 producer-effect instrument: how many functions now have a
+    // MemGVN-forwardable typed-slot load pair (two loads with the same reaching
+    // memory version, object root, and field offset). Gated on
+    // `MOLT_MEMGVN_REPORT=1` so it never costs a production build.
+    if std::env::var("MOLT_MEMGVN_REPORT").as_deref() == Ok("1") {
+        report_memgvn_producer_effect(module);
+    }
+
     ModuleAnalysis {
         call_graph,
         summaries,
         changed_functions,
     }
+}
+
+/// Count, per module, how many functions have at least one MemGVN-forwardable
+/// typed-slot load PAIR: two `LoadAttr` uses sharing the same reaching memory
+/// version, the same object root (alias-canonicalized), and the same field
+/// offset. Such a pair is exactly what MemGVN (S5-2b) would dedup — so the count
+/// is the direct producer effect of the class-aware `TypedField` regions.
+///
+/// Also reports the denominator (functions with ≥2 typed-slot loads at all) so a
+/// zero numerator is diagnosable. Writes to stderr (the `MOLT_INLINE_STATS`
+/// channel convention).
+fn report_memgvn_producer_effect(module: &TirModule) {
+    use crate::tir::function::TirFunction;
+    use crate::tir::ops::{AttrValue, OpCode};
+    use crate::tir::passes::alias_analysis::{AliasAnalysisResult, MemRegion};
+    use crate::tir::passes::memory_ssa::{compute_standalone, MemAccess};
+
+    // BASELINE mode (`MOLT_MEMGVN_REPORT_BASELINE=1`): strip the `_class` attr
+    // from every op before analysis, so every typed-slot field op fails closed
+    // to `GenericHeap` — exactly the pre-S5-1.5 behavior. Running the report once
+    // with and once without this flag, over the SAME frontend IR, isolates the
+    // producer effect of the class-aware regions (controlling for any frontend
+    // version skew).
+    let baseline = std::env::var("MOLT_MEMGVN_REPORT_BASELINE").as_deref() == Ok("1");
+    let strip_class = |func: &TirFunction| -> TirFunction {
+        if !baseline {
+            return func.clone();
+        }
+        let mut f = func.clone();
+        for block in f.blocks.values_mut() {
+            for op in &mut block.ops {
+                op.attrs.remove("_class");
+            }
+        }
+        f
+    };
+
+    let mut funcs_with_two_loads = 0usize;
+    let mut funcs_with_forwardable_pair = 0usize;
+    let mut total_forwardable_pairs = 0usize;
+    // The backend runs as a daemon whose stderr does not surface through the CLI
+    // on a successful build, so the per-function lines are collected and written
+    // to the debug-artifact channel as well (the module_slot_promotion pattern).
+    let mut report_lines: Vec<String> = Vec::new();
+
+    // Raw diagnostics (denominator sanity): how many typed-slot LoadAttr ops
+    // exist at all, and how many carry a `_class` attr / classify as TypedField.
+    {
+        let mut raw_loads = 0usize;
+        let mut raw_loads_with_class = 0usize;
+        let mut raw_typedfield_loads = 0usize;
+        for func in &module.functions {
+            let func = &strip_class(func);
+            let alias = AliasAnalysisResult::compute(func);
+            for block in func.blocks.values() {
+                for op in &block.ops {
+                    if op.opcode != OpCode::LoadAttr {
+                        continue;
+                    }
+                    let kind = match op.attrs.get("_original_kind") {
+                        Some(AttrValue::Str(s)) => s.as_str(),
+                        _ => "",
+                    };
+                    if !matches!(kind, "load" | "guarded_field_get") {
+                        continue;
+                    }
+                    raw_loads += 1;
+                    if matches!(op.attrs.get("_class"), Some(AttrValue::Str(_))) {
+                        raw_loads_with_class += 1;
+                    }
+                    if matches!(
+                        alias.region_of(op),
+                        crate::tir::passes::alias_analysis::MemRegion::TypedField { .. }
+                            | crate::tir::passes::alias_analysis::MemRegion::StackObject { .. }
+                    ) {
+                        raw_typedfield_loads += 1;
+                    }
+                }
+            }
+        }
+        let line = format!(
+            "[S5-1.5] module '{}': raw typed-slot loads={raw_loads} (with _class={raw_loads_with_class}, classify TypedField/StackObject={raw_typedfield_loads})",
+            module.name
+        );
+        eprintln!("{line}");
+        report_lines.push(line);
+    }
+
+    for func in &module.functions {
+        let func = &strip_class(func);
+        let alias = AliasAnalysisResult::compute(func);
+        let mem = compute_standalone(func, &alias);
+
+        // Key a typed-slot load by (reaching def version, object root, field
+        // offset). Two loads with the same key are a forwardable pair (MemGVN
+        // would dedup the second into a copy of the first). Only loads whose
+        // region is precise (TypedField / StackObject — i.e. class-aware) can
+        // form such a pair; a GenericHeap load is clobbered by any preceding
+        // GenericHeap def and never shares a precise version.
+        let mut keyed: std::collections::HashMap<(u32, u32, i64), usize> =
+            std::collections::HashMap::new();
+        let mut typed_load_count = 0usize;
+
+        for (&(block, op_idx), access) in &mem.uses {
+            let MemAccess::Use { def_ver, region, .. } = access else {
+                continue;
+            };
+            if !matches!(
+                region,
+                MemRegion::TypedField { .. } | MemRegion::StackObject { .. }
+            ) {
+                continue;
+            }
+            let op = &func.blocks[&block].ops[op_idx];
+            if op.opcode != OpCode::LoadAttr {
+                continue;
+            }
+            let Some(&obj) = op.operands.first() else {
+                continue;
+            };
+            let root = alias.root(obj);
+            let offset = match op.attrs.get("value") {
+                Some(AttrValue::Int(v)) => *v,
+                _ => continue,
+            };
+            typed_load_count += 1;
+            *keyed.entry((def_ver.0, root.0, offset)).or_insert(0) += 1;
+        }
+
+        if typed_load_count >= 2 {
+            funcs_with_two_loads += 1;
+        }
+        let pairs: usize = keyed.values().filter(|&&c| c >= 2).map(|&c| c - 1).sum();
+        if pairs > 0 {
+            funcs_with_forwardable_pair += 1;
+            total_forwardable_pairs += pairs;
+            let line = format!(
+                "[S5-1.5] {}::{} — {} forwardable typed-slot load pair(s)",
+                module.name, func.name, pairs
+            );
+            eprintln!("{line}");
+            report_lines.push(line);
+        }
+    }
+
+    let summary = format!(
+        "[S5-1.5] module '{}': {}/{} functions (with >=2 typed-slot loads) have a MemGVN-forwardable typed-slot load pair ({} pairs total)",
+        module.name, funcs_with_forwardable_pair, funcs_with_two_loads, total_forwardable_pairs
+    );
+    eprintln!("{summary}");
+    report_lines.push(summary);
+
+    let sanitized: String = module
+        .name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    let _ = crate::debug_artifacts::write_debug_artifact(
+        format!("memgvn_report/{sanitized}.txt"),
+        report_lines.join("\n") + "\n",
+    );
 }
 
 #[cfg(test)]
