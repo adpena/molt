@@ -901,11 +901,11 @@ pub fn run_inliner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+    use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::{TirFunction, TirModule};
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use crate::tir::values::{TirValue, ValueId};
+    use crate::tir::values::ValueId;
 
     /// A callee `fn f(a, b) -> a + b` (single block, two params, one add,
     /// returns the sum).
