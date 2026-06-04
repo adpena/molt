@@ -96,6 +96,11 @@ pub struct InlinerStats {
     /// Number of caller functions that had at least one site inlined (and were
     /// therefore re-optimized by the per-function pipeline).
     pub functions_changed: usize,
+    /// Names of the caller functions that had at least one site inlined (and so
+    /// whose body now differs from its pre-inline form). Production codegen
+    /// back-converts ONLY these functions' TIR to SimpleIR, leaving every
+    /// unchanged function byte-identical (no second TIR roundtrip).
+    pub changed_functions: Vec<String>,
 }
 
 /// The product of cloning a callee body into a caller: the block id the call's
@@ -1062,6 +1067,15 @@ pub fn run_inliner(
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
 ) -> InlinerStats {
+    // Rollback lever (production codegen): `MOLT_DISABLE_INLINING=1` makes the
+    // inliner a no-op, so a regression can be bisected/disabled with a single env
+    // var (no rebuild). The module pipeline still runs (producing a correct leaf
+    // set); it just inlines nothing. The legacy SimpleIR inliner's identical guard
+    // (passes.rs) is retired with it, so this is the canonical lever.
+    if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
+        return InlinerStats::default();
+    }
+
     let mut stats = InlinerStats::default();
 
     // The set of callee names that are inlinable (computed once over the
@@ -1156,6 +1170,7 @@ pub fn run_inliner(
 
             if changed_this_fn {
                 stats.functions_changed += 1;
+                stats.changed_functions.push(caller_name.clone());
                 // Re-run the per-function pipeline on the merged caller so the
                 // inlined body is optimized jointly. A fresh PassManager (no
                 // stale AnalysisManager cache) — run_pipeline builds one anew.

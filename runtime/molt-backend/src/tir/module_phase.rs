@@ -76,6 +76,11 @@ pub struct ModuleAnalysis {
     /// Bottom-up function summaries (leaf / op-count / return-type), one per
     /// function in the module.
     pub summaries: ModuleSummaries,
+    /// Names of the functions the inliner CHANGED (had ≥1 callee spliced in).
+    /// Production codegen back-converts ONLY these functions' (post-inline) TIR
+    /// to SimpleIR; every other function keeps its byte-identical per-function
+    /// pipeline output (no redundant second TIR roundtrip).
+    pub changed_functions: Vec<String>,
 }
 
 impl ModuleAnalysis {
@@ -112,7 +117,18 @@ pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAn
     let summaries = ModuleSummaries::compute(module, &call_graph);
 
     // E1: inline (a module transform — mutates bodies across functions).
-    let _inline_stats = super::passes::inliner::run_inliner(module, &call_graph, &summaries, tti);
+    let inline_stats = super::passes::inliner::run_inliner(module, &call_graph, &summaries, tti);
+    // Observability (mirrors TIR_OPT_STATS): the per-module inliner outcome, so
+    // an unexpectedly-inert activation is visible instead of silently zero.
+    if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
+        eprintln!(
+            "[E1] module '{}': {} call sites inlined into {} functions {:?}",
+            module.name,
+            inline_stats.sites_inlined,
+            inline_stats.functions_changed,
+            inline_stats.changed_functions,
+        );
+    }
 
     // Rebuild over the post-inline module: inlining removed `Call` ops and grew
     // caller bodies, so the leaf set / edges / op counts the returned analysis
@@ -122,6 +138,7 @@ pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAn
     ModuleAnalysis {
         call_graph,
         summaries,
+        changed_functions: inline_stats.changed_functions,
     }
 }
 

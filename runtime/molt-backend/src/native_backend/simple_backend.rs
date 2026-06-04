@@ -99,7 +99,6 @@ struct NativeBackendIrAnalysis {
     closure_functions: BTreeSet<String>,
     task_kinds: BTreeMap<String, TrampolineKind>,
     task_closure_sizes: BTreeMap<String, i64>,
-    needs_inlining: bool,
     /// Functions that contain no user-level calls (call, call_guarded,
     /// call_func, call_internal, call_indirect, call_bind, invoke_ffi).
     /// These can skip the recursion guard on direct calls.
@@ -143,10 +142,10 @@ impl NativeBackendModuleContext {
 ///
 /// `compute_leaves` gates the whole-program TIR call-graph leaf-set computation
 /// (Tier-0 S4): it is a relatively heavy whole-program lift, so the callers that
-/// only need `task_kinds` / `task_closure_sizes` / `needs_inlining` (the
-/// pre-megafunction-split task-annotation capture) pass `false` and leave
-/// `leaf_functions` empty, while the callers that actually consume the leaf set
-/// (the post-split analysis and the module-context builder) pass `true`.
+/// only need `task_kinds` / `task_closure_sizes` (the pre-megafunction-split
+/// task-annotation capture) pass `false` and leave `leaf_functions` empty, while
+/// the callers that actually consume the leaf set (the post-split analysis and
+/// the module-context builder) pass `true`.
 #[cfg(feature = "native-backend")]
 fn analyze_native_backend_functions(
     functions: &[FunctionIR],
@@ -160,13 +159,11 @@ fn analyze_native_backend_functions(
     let mut closure_functions: BTreeSet<String> = BTreeSet::new();
     let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
     let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
-    let mut needs_inlining = false;
     let mut has_task_attrs = false;
 
     for func_ir in functions {
         for op in &func_ir.ops {
             match op.kind.as_str() {
-                "call_internal" => needs_inlining = true,
                 "func_new_closure" => {
                     if let Some(name) = op.s_value.as_ref() {
                         closure_functions.insert(name.clone());
@@ -308,7 +305,6 @@ fn analyze_native_backend_functions(
         closure_functions,
         task_kinds,
         task_closure_sizes,
-        needs_inlining,
         leaf_functions,
     }
 }
@@ -327,18 +323,14 @@ fn analyze_native_backend_ir(ir: &SimpleIR, compute_leaves: bool) -> NativeBacke
 ///
 /// ## Why this builds the call graph directly, NOT via `run_module_pipeline`
 ///
-/// `run_module_pipeline` now runs the **E1 inliner**, which is a body transform.
-/// This native codegen path does *not* compile the inlined `TirModule` — it
-/// compiles the original `FunctionIR`s per-function (with the SimpleIR inliner,
-/// `passes::inline_functions`, making the production inlining decisions until E1
-/// phase e retires it). The leaf set gates the recursion-guard skip at call
-/// sites in the *emitted* code, so it MUST describe the program codegen actually
-/// produces — the **pre-inline** call graph — not the post-inline TIR module the
-/// E1 transform would yield (whose inlining choices need not match the
-/// SimpleIR inliner's). Building the call graph directly here keeps the leaf set
-/// sound for this codegen path; the E1 inliner remains wired into
-/// `run_module_pipeline` for the future codegen path that consumes the inlined
-/// module (phase e).
+/// `run_module_pipeline` runs the **E1 inliner** (a body transform) and already
+/// ran earlier in `compile` — the `FunctionIR`s analyzed HERE are the
+/// post-inline, post-`split_megafunctions` program. The leaf set gates the
+/// recursion-guard skip at call sites in the *emitted* code, so it must
+/// describe exactly this final function set (megafunction chunk functions
+/// included), which the pre-split `ModuleAnalysis` cannot. Re-running the full
+/// module pipeline here would re-inline; a plain `CallGraph::build` over the
+/// final bodies is the sound leaf authority.
 ///
 /// Extern functions (bodies in `stdlib_shared.o`) carry no ops here; they lift
 /// to call-free TIR and would appear "leaf", but the leaf set only gates the
@@ -2615,19 +2607,56 @@ impl SimpleBackend {
         let pre_split_task_kinds: BTreeMap<String, TrampolineKind>;
         let pre_split_task_closure_sizes: BTreeMap<String, i64>;
         {
-            // This pre-split capture only reads task annotations + the inlining
-            // flag; the leaf set is recomputed post-split below, so skip the
-            // (heavier) whole-program leaf analysis here.
+            // This pre-split capture only reads task annotations; the leaf set is
+            // recomputed post-split below, so skip the (heavier) whole-program
+            // leaf analysis here.
             let analysis = analyze_native_backend_ir(&ir, /* compute_leaves */ false);
             pre_split_task_kinds = analysis.task_kinds;
             pre_split_task_closure_sizes = analysis.task_closure_sizes;
-            if analysis.needs_inlining && !self.skip_ir_passes {
-                inline_functions(
-                    &mut ir,
-                    &crate::tir::target_info::TargetInfo::native_from_simd_caps(
-                        crate::tir::target_info::SimdCaps::detect_host(),
-                    ),
+            // The module phase runs UNCONDITIONALLY (gated only on
+            // skip_ir_passes). The deleted `needs_inlining` heuristic keyed on
+            // `kind == "call_internal"`, but the TIR roundtrip's back-conversion
+            // re-emits every call as `kind: "call"` — so the flag was always
+            // false for TIR-processed functions and had silently disabled
+            // production inlining (for the legacy SimpleIR inliner too). The
+            // call graph itself is the authority on whether anything is
+            // inlinable; an inline-free module just runs a cheap analysis.
+            if !self.skip_ir_passes {
+                // E1 ACTIVATION: the TIR function inliner (tir/passes/inliner.rs,
+                // via run_module_pipeline) is now the production inliner — SSA-based,
+                // exception-label-safe, call-graph bottom-up, cost-model-gated, and
+                // it re-optimizes each merged caller through the per-function
+                // pipeline. It replaces the legacy SimpleIR `inline_functions`
+                // (string-rename, no SSA, no cost model — retired in e-4). Lift every
+                // non-extern function's per-function-optimized SimpleIR to TIR, run
+                // the module phase, then back-convert ONLY the inliner-changed
+                // functions; every unchanged function keeps its byte-identical
+                // per-function output (no redundant second TIR roundtrip).
+                // Rollback: MOLT_DISABLE_INLINING=1 (guard in run_inliner).
+                let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
+                    crate::tir::target_info::SimdCaps::detect_host(),
                 );
+                let (mut tir_module, idx_map) =
+                    crate::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
+                let module_analysis =
+                    crate::tir::run_module_pipeline(&mut tir_module, &native_tti);
+                let changed: std::collections::HashSet<&str> = module_analysis
+                    .changed_functions
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                for (pos, &orig_idx) in idx_map.iter().enumerate() {
+                    let tir_func = &tir_module.functions[pos];
+                    if changed.contains(tir_func.name.as_str()) {
+                        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(tir_func);
+                        debug_assert!(
+                            crate::tir::lower_to_simple::validate_labels(&ops),
+                            "E1: inlined back-conversion emitted invalid labels for '{}'",
+                            tir_func.name
+                        );
+                        ir.functions[orig_idx].ops = ops;
+                    }
+                }
             }
         }
         // Dead function elimination: remove functions that are unreachable from
@@ -4417,7 +4446,6 @@ mod tests {
 
         let analysis = analyze_native_backend_ir(&ir, true);
 
-        assert!(!analysis.needs_inlining);
         assert!(analysis.defined_functions.contains("molt_main"));
     }
 

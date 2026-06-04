@@ -9,10 +9,40 @@ use crate::ir::FunctionIR;
 
 use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::cfg::CFG;
-use super::function::TirFunction;
+use super::function::{TirFunction, TirModule};
 use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
 use super::types::TirType;
 use super::values::ValueId;
+
+/// Lift every **non-extern** `FunctionIR` in `functions` to TIR and assemble a
+/// [`TirModule`] for the whole-program module phase (the E1 inliner). Returns the
+/// module plus an `idx_map` aligning each module position to its original index
+/// in `functions` — externs are skipped (their bodies live in `stdlib_shared.o`
+/// and carry no inlinable ops), so module positions are NOT equal to source
+/// indices. The caller back-converts each post-inline `TirFunction` at module
+/// position `p` into `functions[idx_map[p]]`.
+///
+/// Mirrors the extern filter the legacy `compute_leaf_functions_via_call_graph`
+/// used (`.filter(|f| !f.is_extern)`), so the call graph the inliner builds over
+/// this module sees exactly the local function bodies.
+pub fn lower_functions_to_tir_module(functions: &[FunctionIR]) -> (TirModule, Vec<usize>) {
+    let mut tir_functions = Vec::new();
+    let mut idx_map = Vec::new();
+    for (i, f) in functions.iter().enumerate() {
+        if f.is_extern {
+            continue;
+        }
+        tir_functions.push(lower_to_tir(f));
+        idx_map.push(i);
+    }
+    (
+        TirModule {
+            name: "native_module".to_string(),
+            functions: tir_functions,
+        },
+        idx_map,
+    )
+}
 
 /// Convert a SimpleIR function into a fully-constructed TIR function.
 ///
@@ -825,6 +855,24 @@ mod tests {
             source_file: None,
             is_extern: false,
         }
+    }
+
+    #[test]
+    fn lower_functions_to_tir_module_skips_externs_and_aligns_idx() {
+        // [non-extern "a", extern "ext", non-extern "b"] → module has {a, b}
+        // (extern skipped), idx_map aligns module position → original index.
+        let mut ext = make_func("ext", &[], vec![op("ret_void")]);
+        ext.is_extern = true;
+        let funcs = vec![
+            make_func("a", &[], vec![op("ret_void")]),
+            ext,
+            make_func("b", &[], vec![op("ret_void")]),
+        ];
+        let (module, idx_map) = lower_functions_to_tir_module(&funcs);
+        assert_eq!(module.functions.len(), 2, "externs are skipped");
+        assert_eq!(idx_map, vec![0, 2], "module position maps to source index");
+        assert_eq!(module.functions[0].name, "a");
+        assert_eq!(module.functions[1].name, "b");
     }
 
     /// Helper to create an `OpIR` with just a `kind`.
