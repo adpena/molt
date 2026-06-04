@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod blocks;
 pub mod bolt;
 pub mod cache;
+pub mod call_graph;
 pub mod cfg;
 pub mod deopt;
 pub mod dominators;
@@ -13,6 +14,7 @@ pub mod lower_to_lir;
 pub mod lower_to_simple;
 pub mod lower_to_wasm;
 pub mod mlir_compat;
+pub mod module_phase;
 pub mod ops;
 pub mod parallel;
 pub mod passes;
@@ -70,7 +72,9 @@ pub(crate) fn is_structural(kind: &str) -> bool {
 
 // Re-export primary types for convenience.
 pub use self::blocks::{BlockId, Terminator, TirBlock};
+pub use self::call_graph::{CallEdge, CallGraph};
 pub use self::function::{TirFunction, TirModule};
+pub use self::module_phase::{run_module_pipeline, ModuleAnalysis};
 pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 pub use self::target_info::{BuildProfile, ProfileData, SimdCaps, TargetInfo, TargetKind};
