@@ -312,11 +312,14 @@ impl LlvmReprFacts {
             .collect();
         let name_by_value = name_by_value_for(tir_func);
         // The value-keyed representation map is the single source of truth shared
-        // with the WASM/LIR backend (Phase 1). `LlvmReprFacts` is a thin LLVM-
-        // specific wrapper over it plus the container-dispatch + name bridge;
-        // delegating to `repr_by_value_for` guarantees LLVM and WASM derive the
-        // *identical* `Repr` per `ValueId` (no second source of truth).
-        let repr_by_value = repr_by_value_for(func_ir, tir_func);
+        // with the WASM/LIR backend. `LlvmReprFacts` is a thin LLVM-specific
+        // wrapper over it plus the container-dispatch + name bridge; delegating
+        // to `repr_by_value_for` with the value-range computed on this exact
+        // `tir_func` guarantees LLVM and WASM derive the *identical* `Repr` per
+        // `ValueId` from the *same* proof source (no second source of truth, so
+        // the native-vs-wasm trusted-unbox divergence cannot recur).
+        let vr = value_range_for(tir_func);
+        let repr_by_value = repr_by_value_for(func_ir, tir_func, Some(&vr));
         Self {
             container_kind_by_name,
             name_by_value,
@@ -372,24 +375,39 @@ pub(crate) fn name_by_value_for(tir_func: &TirFunction) -> HashMap<ValueId, Stri
 /// `lower_function_to_lir`).
 ///
 /// Every value we know a `ValueId` for floors to [`Repr::default_for`] of its
-/// refined `TirType`; values proven overflow-safe exact-i64 carriers are then
-/// raised to [`Repr::RawI64Safe`]. The floor makes this a complete value->Repr
-/// map; the `RawI64Safe` raises are exactly the interval-/OSC-proven, no-i64-wrap
-/// carrier subset propagated across `Copy` chains and block-argument phis by
-/// [`compute_overflow_safe_values`].
+/// refined `TirType`; values proven exact-i64 carriers are then raised to
+/// [`Repr::RawI64Safe`]. The floor makes this a complete value->Repr map.
 ///
-/// `func_ir` is the SimpleIR function the plan is keyed on; `tir_func` is the
-/// post-pipeline TIR the backend is lowering (their `_simple_out` names line up).
+/// The `RawI64Safe` raise is sourced from the **value-range analysis** (S6)
+/// when a [`ValueRangeResult`] is supplied (`vr` = `Some`): a `ValueId` is
+/// `RawI64Safe` exactly when [`ValueRangeResult::fits_inline_int47`] proves its
+/// entire range lies in `[-2^46, 2^46 - 1]` — strictly inside the i64 domain,
+/// so the bare-i64 carrier and raw machine arithmetic are sound. This is the
+/// SOLE proof source for the value-keyed (WASM/LLVM) backends and replaces the
+/// legacy name-keyed interval chain (`int_carrier_names()`) here; it is a
+/// **strict subset** of the legacy proof set, so it can only ever *refuse* a
+/// promotion — never falsely promote a value that is physically a heap BigInt
+/// (the 2bf51b730 trusted-unbox truncation bug-class is un-creatable by
+/// construction). The GPU thread/block-id intrinsics — which the value-range
+/// analysis has no model for — are pre-seeded `RawI64Safe` (their results are
+/// hardware lane/grid indices, structurally in `[0, 2^20)`), preserving GPU
+/// kernel codegen.
+///
+/// When no value-range is supplied (`vr` = `None`) — a pre-TIR / unanalysed
+/// path — NO value is raised: every int floors to `MaybeBigInt` (conservative,
+/// boxed, BigInt-correct; never a miscompile, at worst a perf bail).
+///
+/// `func_ir` is the SimpleIR function the plan is keyed on (used only for the
+/// container-dispatch facts carried by [`LlvmReprFacts`]); `tir_func` is the
+/// post-pipeline TIR the backend is lowering, and `vr` (when present) MUST have
+/// been computed on that same `tir_func` so its `ValueId`s line up.
 #[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
 pub(crate) fn repr_by_value_for(
-    func_ir: &FunctionIR,
+    _func_ir: &FunctionIR,
     tir_func: &TirFunction,
+    vr: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> HashMap<ValueId, Repr> {
-    let plan = ScalarRepresentationPlan::for_function_ir(func_ir);
-    let overflow_safe_int_names = plan.int_carrier_names();
     let name_by_value = name_by_value_for(tir_func);
-    let overflow_safe_values =
-        compute_overflow_safe_values(tir_func, &overflow_safe_int_names, &name_by_value);
     let mut repr_by_value: HashMap<ValueId, Repr> = name_by_value
         .keys()
         .map(|&id| {
@@ -401,31 +419,132 @@ pub(crate) fn repr_by_value_for(
             (id, repr)
         })
         .collect();
+    // No value-range supplied → the conservative floor stands. Every int is
+    // `MaybeBigInt` (boxed, BigInt-safe); no raw-i64 carrier is minted.
+    let Some(vr) = vr else {
+        return repr_by_value;
+    };
+    // Seed the raw-i64-safe set from the value-range proof + the GPU-intrinsic
+    // pre-seed, then propagate it across value-preserving SSA edges (`Copy`
+    // chains and phis) so loop-carried induction variables — whose phi has no
+    // direct `fits_inline_int47` fact but whose every incoming value is proven —
+    // inherit the carrier.
+    let mut seed = raw_i64_safe_value_seed(tir_func, vr);
+    seed.extend(gpu_intrinsic_raw_i64_values(tir_func));
+    let overflow_safe_values = propagate_raw_i64_safe_values(tir_func, seed);
     for &id in &overflow_safe_values {
         repr_by_value.insert(id, Repr::RawI64Safe);
     }
     repr_by_value
 }
 
-/// Propagate overflow-safety across the TIR SSA graph to a fixpoint.
+/// Compute the value-range analysis for `tir_func` — the proof source for the
+/// value-keyed (WASM/LLVM) `RawI64Safe` promotion. Computed on the SAME TIR the
+/// backend lowers so its `ValueId`s line up with [`repr_by_value_for`].
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+pub(crate) fn value_range_for(
+    tir_func: &TirFunction,
+) -> crate::tir::passes::value_range::ValueRangeResult {
+    let scev = crate::tir::passes::scev::compute_scev(tir_func);
+    crate::tir::passes::value_range::compute_value_range(tir_func, &scev)
+}
+
+/// Seed the raw-i64-safe set from the value-range proof: an **op-result**
+/// `ValueId` is in the seed exactly when its entire proven range fits the signed
+/// inline-int47 window `[-2^46, 2^46 - 1]`. This is a strict subset of the i64
+/// domain, so the raw carrier is sound and overflow into a heap BigInt is
+/// structurally impossible.
 ///
-/// A value is overflow-safe when the LLVM backend may carry it as a raw i64 and
-/// emit raw machine arithmetic for it. The seed is the plan's interval-proven
-/// int carrier subset (`overflow_safe_int_names`, keyed by SimpleIR
-/// `_simple_out` name). Safety then flows along value-preserving edges:
+/// **Block arguments (phis) are deliberately excluded from the direct seed.** A
+/// phi is raised to `RawI64Safe` only by [`propagate_raw_i64_safe_values`]'s
+/// all-incomings-raw rule. This is a hard soundness requirement of the LIR
+/// lowering (`lower_to_lir`): a `RawI64Safe` (`I64`) phi slot must never be fed a
+/// `MaybeBigInt`/`DynBox` incoming, or the lowering would emit an unsound unbox
+/// of a possible heap BigInt. Seeding a phi directly from its own proven range
+/// would bypass that check (the phi can be range-proven while a back-edge
+/// incoming is not yet/never proven, e.g. an ambiguous multi-latch loop whose
+/// update value is unrecognised). For the canonical induction variable the
+/// range analysis ranges *both* the start constant and the back-edge update
+/// value, so the IV phi is still raised — but only through the structurally safe
+/// all-incomings path. Excluding phis here loses no real promotion: the only
+/// phis the range analysis proves are AddRec IVs, whose incomings it also
+/// proves.
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+fn raw_i64_safe_value_seed(
+    tir_func: &TirFunction,
+    vr: &crate::tir::passes::value_range::ValueRangeResult,
+) -> std::collections::HashSet<ValueId> {
+    let mut seed = std::collections::HashSet::new();
+    for block in tir_func.blocks.values() {
+        for op in &block.ops {
+            for &result in &op.results {
+                if vr.fits_inline_int47(result) {
+                    seed.insert(result);
+                }
+            }
+        }
+    }
+    seed
+}
+
+/// The result `ValueId`s of GPU thread/block-id intrinsic calls — hardware lane,
+/// block, and grid indices that are structurally bounded in `[0, 2^20)` and so
+/// always fit a raw i64 carrier. The value-range analysis has no model for these
+/// `Call` results, so they are pre-seeded here to preserve GPU kernel codegen
+/// (the legacy name-keyed chain marked them unconditionally raw-safe; this
+/// reproduces exactly that population, and only that population — bounded GPU
+/// index intrinsics, never an arbitrary runtime call).
+#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::HashSet<ValueId> {
+    let mut values = std::collections::HashSet::new();
+    for block in tir_func.blocks.values() {
+        for op in &block.ops {
+            if op.opcode != OpCode::Call {
+                continue;
+            }
+            let is_gpu_index_intrinsic = matches!(
+                op.attrs.get("s_value"),
+                Some(AttrValue::Str(name))
+                    if matches!(
+                        name.as_str(),
+                        "molt_gpu_thread_id"
+                            | "molt_gpu_block_id"
+                            | "molt_gpu_block_dim"
+                            | "molt_gpu_grid_dim"
+                    )
+            );
+            if is_gpu_index_intrinsic {
+                for &result in &op.results {
+                    values.insert(result);
+                }
+            }
+        }
+    }
+    values
+}
+
+/// Propagate raw-i64-safety across the TIR SSA graph to a fixpoint, starting
+/// from `seed` (the value-range-proven inline-int47 carriers plus the
+/// GPU-intrinsic pre-seed).
 ///
-/// - A `Copy` result is overflow-safe iff its source operand is.
-/// - A block argument (phi) is overflow-safe iff *every* value passed to it on
-///   every incoming branch edge is overflow-safe.
+/// A value is raw-i64-safe when the backend may carry it as a bare i64 and emit
+/// raw machine arithmetic for it. Beyond the seed, safety flows along
+/// value-preserving edges:
+///
+/// - A `Copy` result is safe iff its source operand is.
+/// - A block argument (phi) is safe iff *every* value passed to it on every
+///   incoming branch edge is safe.
 ///
 /// Built upward from the seed (monotone — only ever adds safety), so the
 /// worklist terminates; back-edges resolve because a phi becomes safe only once
-/// all of its incomings are known safe.
+/// all of its incomings are known safe. Because the seed is itself a strict
+/// subset of the values that genuinely fit i64 (each proven by value-range or a
+/// structurally-bounded GPU index), propagating across value-identity edges
+/// cannot introduce an unsound carrier.
 #[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-fn compute_overflow_safe_values(
+fn propagate_raw_i64_safe_values(
     tir_func: &TirFunction,
-    overflow_safe_int_names: &BTreeSet<String>,
-    name_by_value: &HashMap<ValueId, String>,
+    seed: std::collections::HashSet<ValueId>,
 ) -> std::collections::HashSet<ValueId> {
     use std::collections::HashSet;
 
@@ -489,18 +608,7 @@ fn compute_overflow_safe_values(
         }
     }
 
-    let name_seeded = |id: ValueId| -> bool {
-        name_by_value
-            .get(&id)
-            .is_some_and(|name| overflow_safe_int_names.contains(name))
-    };
-
-    let mut safe: HashSet<ValueId> = HashSet::new();
-    for &id in &all_value_ids {
-        if name_seeded(id) {
-            safe.insert(id);
-        }
-    }
+    let mut safe: HashSet<ValueId> = seed;
     let mut changed = true;
     while changed {
         changed = false;
@@ -3565,5 +3673,365 @@ mod tests {
         assert!(primary.int.is_empty());
         assert!(primary.bool_.is_empty());
         assert!(primary.float.is_empty());
+    }
+
+    // ======================================================================
+    // Value-keyed RawI64Safe promotion via the value-range analysis (S6).
+    //
+    // These exercise the SOLE proof source for the WASM/LLVM backends:
+    // `repr_by_value_for(.., Some(&value_range))`. They directly assert the
+    // soundness invariant (no false RawI64Safe → no heap-BigInt truncation)
+    // and the perf invariant (range-loop IVs stay RawI64Safe), and that WASM
+    // and LLVM derive an identical map from the same `ValueRange` (single
+    // source of truth — a divergence would re-create the native-vs-wasm
+    // trusted-unbox bug, 2bf51b730).
+    // ======================================================================
+
+    use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
+    use crate::tir::function::TirFunction;
+    use crate::tir::ops::{AttrDict, AttrValue as TirAttrValue, Dialect, OpCode as TirOpCode, TirOp};
+    use crate::tir::types::TirType;
+    use crate::tir::values::TirValue;
+
+    fn tir_op(opcode: TirOpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results,
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+    fn tir_op_nsw(opcode: TirOpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+        let mut o = tir_op(opcode, operands, results);
+        o.attrs
+            .insert("no_signed_wrap".into(), TirAttrValue::Bool(true));
+        o
+    }
+    fn tir_cint(result: ValueId, value: i64) -> TirOp {
+        let mut o = tir_op(TirOpCode::ConstInt, vec![], vec![result]);
+        o.attrs.insert("value".into(), TirAttrValue::Int(value));
+        o
+    }
+
+    /// Build the canonical post-range_devirt `for i in range(stop): i + 1`
+    /// loop in TIR: a header block-arg IV with a `no_signed_wrap` increment,
+    /// the shape SCEV recognises as an `AddRec` and value-range turns into a
+    /// proven `[start, last]` range.
+    fn range_loop_tir(start_v: i64, stop: i64) -> (TirFunction, ValueId, ValueId) {
+        let mut func = TirFunction::new("rl".into(), vec![], TirType::None);
+        let startc = func.fresh_value();
+        let stopc = func.fresh_value();
+        let stepc = func.fresh_value();
+        let iv = func.fresh_value();
+        let cond = func.fresh_value();
+        let body_val = func.fresh_value();
+        let one = func.fresh_value();
+        let next = func.fresh_value();
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![
+                tir_cint(startc, start_v),
+                tir_cint(stopc, stop),
+                tir_cint(stepc, 1),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![startc],
+            };
+        }
+        // Type every integer value as I64 (faithful to real lowered TIR, where
+        // `type_refine` types every int) so the representation floor maps them to
+        // `MaybeBigInt` rather than the unknown-type `DynBox`.
+        for v in [startc, stopc, stepc, iv, body_val, one, next] {
+            func.value_types.insert(v, TirType::I64);
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: iv,
+                    ty: TirType::I64,
+                }],
+                ops: vec![tir_op(TirOpCode::Lt, vec![iv, stopc], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    tir_cint(one, 1),
+                    tir_op(TirOpCode::Add, vec![iv, one], vec![body_val]),
+                    tir_op_nsw(TirOpCode::Add, vec![iv, stepc], vec![next]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(exit, LoopRole::LoopEnd);
+        (func, iv, next)
+    }
+
+    fn empty_func_ir() -> FunctionIR {
+        function("rl", &[], None, vec![])
+    }
+
+    fn is_raw(map: &HashMap<ValueId, Repr>, id: ValueId) -> bool {
+        map.get(&id) == Some(&Repr::RawI64Safe)
+    }
+
+    /// PERF + SOUNDNESS: a bounded `for i in range(10)` induction variable is
+    /// proven `RawI64Safe` (so the loop keeps the bare-i64 lane and beats
+    /// CPython), AND that proof flows to its `no_signed_wrap` back-edge update.
+    #[test]
+    fn range_loop_iv_is_raw_i64_safe_from_value_range() {
+        let (func, iv, next) = range_loop_tir(0, 10);
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        assert!(
+            is_raw(&repr, iv),
+            "range(10) IV must be RawI64Safe (range [0,9] ⊂ inline-int47)"
+        );
+        assert!(
+            is_raw(&repr, next),
+            "the no_signed_wrap IV update must inherit RawI64Safe (propagated phi)"
+        );
+    }
+
+    /// SOUNDNESS (the 2bf51b760 truncation bug-class): an induction variable
+    /// whose proven range exceeds 2^46 must NOT be RawI64Safe — it could be a
+    /// heap BigInt, so it stays `MaybeBigInt` and uses the boxed path. This is
+    /// the `apply(1<<60, 7) == 1152921504606846983` invariant expressed at the
+    /// representation boundary: a > 2^46 value is never trusted-unboxed.
+    #[test]
+    fn above_inline_int47_iv_is_not_raw_i64_safe() {
+        // start at 2^46 so even iteration 0 is at the inline-int47 ceiling and
+        // the very next value (2^46) is outside the window.
+        let huge_start = 1i64 << 46;
+        let (func, iv, _next) = range_loop_tir(huge_start, huge_start + 10);
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        assert!(
+            !is_raw(&repr, iv),
+            "an IV reaching/exceeding 2^46 must stay MaybeBigInt (no trusted unbox of a possible heap BigInt)"
+        );
+        assert_eq!(
+            repr.get(&iv),
+            Some(&Repr::MaybeBigInt),
+            "the unproven int floors to the boxed BigInt-safe carrier"
+        );
+    }
+
+    /// SOUNDNESS: with NO value-range supplied (`None`), nothing is promoted —
+    /// every int floors to `MaybeBigInt`. This is the conservative pre-TIR /
+    /// unanalysed path that can never miscompile.
+    #[test]
+    fn no_value_range_leaves_everything_maybe_bigint() {
+        let (func, iv, next) = range_loop_tir(0, 10);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, None);
+        assert_eq!(repr.get(&iv), Some(&Repr::MaybeBigInt));
+        assert_eq!(repr.get(&next), Some(&Repr::MaybeBigInt));
+        assert!(
+            repr.values().all(|r| !r.is_raw_i64_safe()),
+            "None means no RawI64Safe raise anywhere"
+        );
+    }
+
+    /// SOUNDNESS: an unbounded accumulator (`total = total + i`, a degree-2
+    /// recurrence) is classified `Unknown` by SCEV → no value-range proof →
+    /// stays `MaybeBigInt`. This is the loop-IV OOM hazard the strict-subset
+    /// property guards against: a wrapping/unbounded accumulator must never be
+    /// carried as a raw i64.
+    #[test]
+    fn unbounded_accumulator_stays_maybe_bigint() {
+        // for i in range(10): total = total + i  — `total` is a 2nd phi whose
+        // step is the IV itself (not a constant), so it has no proven range.
+        let mut func = TirFunction::new("acc".into(), vec![], TirType::None);
+        let startc = func.fresh_value();
+        let stopc = func.fresh_value();
+        let stepc = func.fresh_value();
+        let total0 = func.fresh_value();
+        let iv = func.fresh_value();
+        let total = func.fresh_value();
+        let cond = func.fresh_value();
+        let total_next = func.fresh_value();
+        let next = func.fresh_value();
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![
+                tir_cint(startc, 0),
+                tir_cint(stopc, 10),
+                tir_cint(stepc, 1),
+                tir_cint(total0, 0),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![startc, total0],
+            };
+        }
+        func.value_types.insert(iv, TirType::I64);
+        func.value_types.insert(total, TirType::I64);
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![
+                    TirValue {
+                        id: iv,
+                        ty: TirType::I64,
+                    },
+                    TirValue {
+                        id: total,
+                        ty: TirType::I64,
+                    },
+                ],
+                ops: vec![tir_op(TirOpCode::Lt, vec![iv, stopc], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    tir_op(TirOpCode::Add, vec![total, iv], vec![total_next]),
+                    tir_op_nsw(TirOpCode::Add, vec![iv, stepc], vec![next]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![next, total_next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(exit, LoopRole::LoopEnd);
+
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        // The counted IV is fine; the unbounded accumulator must NOT be raw.
+        assert!(is_raw(&repr, iv), "the counted IV is still proven raw");
+        assert!(
+            !is_raw(&repr, total),
+            "the unbounded accumulator phi must stay MaybeBigInt (degree-2 recurrence → Unknown range)"
+        );
+        assert!(
+            !is_raw(&repr, total_next),
+            "the accumulator update must stay MaybeBigInt"
+        );
+    }
+
+    /// PERF: GPU thread/block-id intrinsics are pre-seeded RawI64Safe even
+    /// though the value-range analysis has no model for them — their results
+    /// are hardware lane indices, structurally bounded. Without this seed a GPU
+    /// kernel's index arithmetic would regress to the boxed runtime path.
+    #[test]
+    fn gpu_index_intrinsics_are_pre_seeded_raw_i64_safe() {
+        let mut func = TirFunction::new("k".into(), vec![], TirType::None);
+        let tid = func.fresh_value();
+        func.value_types.insert(tid, TirType::I64);
+        let mut call = tir_op(TirOpCode::Call, vec![], vec![tid]);
+        call.attrs.insert(
+            "s_value".into(),
+            TirAttrValue::Str("molt_gpu_thread_id".into()),
+        );
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![call];
+            entry.terminator = Terminator::Return { values: vec![tid] };
+        }
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        assert!(
+            is_raw(&repr, tid),
+            "molt_gpu_thread_id result must be pre-seeded RawI64Safe"
+        );
+
+        // A non-GPU runtime call result is NOT pre-seeded — only the bounded
+        // GPU index intrinsics are.
+        let mut func2 = TirFunction::new("k2".into(), vec![], TirType::None);
+        let r = func2.fresh_value();
+        func2.value_types.insert(r, TirType::I64);
+        let mut other = tir_op(TirOpCode::Call, vec![], vec![r]);
+        other
+            .attrs
+            .insert("s_value".into(), TirAttrValue::Str("molt_some_runtime".into()));
+        {
+            let entry = func2.blocks.get_mut(&func2.entry_block).unwrap();
+            entry.ops = vec![other];
+            entry.terminator = Terminator::Return { values: vec![r] };
+        }
+        let vr2 = value_range_for(&func2);
+        let repr2 = repr_by_value_for(&empty_func_ir(), &func2, Some(&vr2));
+        assert!(
+            !is_raw(&repr2, r),
+            "an arbitrary runtime-call result must NOT be pre-seeded raw (only bounded GPU index intrinsics are)"
+        );
+    }
+
+    /// CROSS-BACKEND SINGLE SOURCE OF TRUTH: the WASM path (`repr_by_value_for`)
+    /// and the LLVM path (`LlvmReprFacts::build` → same `repr_by_value_for` with
+    /// the same `ValueRange`) derive the IDENTICAL `Repr` per `ValueId`. A
+    /// divergence here is the native-vs-wasm trusted-unbox bug; this test is the
+    /// firewall against it.
+    #[test]
+    #[cfg(feature = "llvm")]
+    fn wasm_and_llvm_derive_identical_repr_from_one_value_range() {
+        let (func, _iv, _next) = range_loop_tir(0, 10);
+        let func_ir = empty_func_ir();
+        let vr = value_range_for(&func);
+        let wasm_map = repr_by_value_for(&func_ir, &func, Some(&vr));
+        let llvm_facts = LlvmReprFacts::build(&func_ir, &func);
+        assert_eq!(
+            wasm_map, llvm_facts.repr_by_value,
+            "WASM and LLVM must derive the same Repr per ValueId from the same ValueRange"
+        );
     }
 }

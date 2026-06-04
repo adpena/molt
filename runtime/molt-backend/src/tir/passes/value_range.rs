@@ -369,8 +369,9 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
             let (Some(s0), Some(k)) = (start.as_constant(), step.as_constant()) else {
                 continue;
             };
+            let trip = scev.trip_count(header);
             // Compute the IV's range over the body from start, step, trip count.
-            let iv_range = match iv_range_from_recurrence(s0, k, &scev.trip_count(header)) {
+            let iv_range = match iv_range_from_recurrence(s0, k, &trip) {
                 Some(r) => r,
                 None => continue,
             };
@@ -386,6 +387,38 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
                     .copied()
                     .unwrap_or(IntRange::FULL_I64);
                 result.block_range.insert((b, iv), existing.meet(iv_range));
+            }
+            // Also range the **back-edge update value** `next = iv + k` (the
+            // value carried across the latch into the IV phi). It takes the IV's
+            // values one step later — `{s0 + k, +, k}` — so its range is the same
+            // recurrence shifted by one step. Ranging it is what lets a consumer
+            // prove the *phi's incoming* fits the inline window (e.g. the
+            // representation plan's `RawI64Safe` carrier requires every phi
+            // incoming proven, not just the phi). Without this the loop-carried
+            // update would be unproven and force the IV phi back to the boxed
+            // carrier — a perf cliff on the canonical `for i in range(n)` loop.
+            // All arithmetic saturates in i128; an `s0 + k` that would overflow
+            // simply yields no fact (sound: the value stays unproven).
+            if let Some(next_val) = back_edge_update_value(func, header, iv, body)
+                && let Some(s0_next) = s0.checked_add(k)
+                && let Some(next_range) = iv_range_from_recurrence(s0_next, k, &trip)
+            {
+                // `next_val = iv + k` takes exactly the recurrence's values one
+                // step later, so `next_range` is its precise range. Store it on
+                // the **canonical** (copy-resolved) value, matching how queries
+                // (`fits_inline_int47`, `range_of`) resolve through plain copies,
+                // and meet with any existing fact (never widen). This lets a
+                // value-keyed consumer prove the IV phi's loop-carried incoming
+                // fits the inline window.
+                let next_canon = result.resolve(next_val);
+                let existing = result
+                    .global_range
+                    .get(&next_canon)
+                    .copied()
+                    .unwrap_or(IntRange::FULL_I64);
+                result
+                    .global_range
+                    .insert(next_canon, existing.meet(next_range));
             }
         }
     }
@@ -545,6 +578,71 @@ fn build_loop_bodies(func: &TirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
         }
     }
     bodies
+}
+
+/// The value carried on the loop's back-edge into the header phi `iv` — i.e.
+/// the IV's next-iteration value. `iv` is a header block-argument; this returns
+/// the argument passed at `iv`'s index by the (single) body block whose
+/// terminator branches back to `header`. Returns `None` when the structure is
+/// not the canonical single-latch shape (multiple back-edges with differing
+/// values, or a missing arg), in which case the next-value range is left
+/// unproven (sound: a conservative omission, never a false fact).
+fn back_edge_update_value(
+    func: &TirFunction,
+    header: BlockId,
+    iv: ValueId,
+    body: &HashSet<BlockId>,
+) -> Option<ValueId> {
+    // The IV's positional index among the header block arguments.
+    let header_block = func.blocks.get(&header)?;
+    let arg_index = header_block.args.iter().position(|a| a.id == iv)?;
+
+    let mut found: Option<ValueId> = None;
+    for &bid in body {
+        let Some(block) = func.blocks.get(&bid) else {
+            continue;
+        };
+        // Collect every (target, args) edge from this body block.
+        let edges: &[(BlockId, &Vec<ValueId>)] = &match &block.terminator {
+            Terminator::Branch { target, args } => vec![(*target, args)],
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => vec![(*then_block, then_args), (*else_block, else_args)],
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            } => {
+                let mut v: Vec<(BlockId, &Vec<ValueId>)> =
+                    cases.iter().map(|(_, t, a)| (*t, a)).collect();
+                v.push((*default, default_args));
+                v
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => continue,
+        };
+        for (target, args) in edges {
+            if *target != header {
+                continue;
+            }
+            let Some(&val) = args.get(arg_index) else {
+                // A back-edge that does not pass this arg → malformed; refuse.
+                return None;
+            };
+            match found {
+                None => found = Some(val),
+                // Multiple back-edges carrying *different* values → ambiguous;
+                // do not assign a (possibly wrong) range.
+                Some(prev) if prev != val => return None,
+                Some(_) => {}
+            }
+        }
+    }
+    found
 }
 
 /// The range an induction variable `{s0, +, k}` takes over a loop body.
