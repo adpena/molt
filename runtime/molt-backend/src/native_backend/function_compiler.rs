@@ -26916,7 +26916,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[*name_bits]);
                 }
-                "module_get_attr" => {
+                "module_get_attr" | "module_import_from" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits = var_get_boxed_overflow_safe(
                         &mut self.module,
@@ -26975,10 +26975,19 @@ impl SimpleBackend {
                             )
                         })
                     };
+                    // `from M import name` routes to molt_module_import_from
+                    // (CPython IMPORT_FROM semantics: ImportError on miss with a
+                    // sys.modules submodule fallback); plain `M.name` reads use
+                    // molt_module_get_attr (AttributeError on miss).
+                    let runtime_symbol = if op.kind == "module_import_from" {
+                        "molt_module_import_from"
+                    } else {
+                        "molt_module_get_attr"
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_module_get_attr",
+                        runtime_symbol,
                         &[types::I64, types::I64],
                         &[types::I64],
                     );

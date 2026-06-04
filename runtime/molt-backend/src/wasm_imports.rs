@@ -34,6 +34,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("module_del_global", 3),
     ("module_del_global_if_present", 3),
     ("module_get_attr", 3),
+    ("module_import_from", 3),
     ("module_get_global", 3),
     ("module_get_name", 3),
     ("module_import", 2),
@@ -1118,6 +1119,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ),
     ("module_get_global", &["module_get_global"]),
     ("module_get_name", &["module_get_name"]),
+    ("module_import_from", &["module_import_from"]),
     ("module_import", &["module_import"]),
     ("module_import_star", &["module_import_star"]),
     // ── On-demand: code objects and tracing ──

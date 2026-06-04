@@ -4594,6 +4594,145 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
     })
 }
 
+/// Look up `name` in `sys.modules`, returning a fresh (inc-ref'd) reference to
+/// the cached module on hit. Used by [`molt_module_import_from`] for CPython's
+/// circular-import recovery path. Returns `None` on a clean miss; if building
+/// the lookup key fails it leaves a `MemoryError` pending (the caller observes
+/// it via `exception_pending`).
+unsafe fn import_from_sys_modules_lookup(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    unsafe {
+        let sys_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let guard = cache.lock().unwrap();
+            guard.get("sys").copied()
+        }?;
+        let modules_ptr = sys_modules_dict_ptr(_py, sys_bits)?;
+        let key_ptr = alloc_string(_py, name.as_bytes());
+        if key_ptr.is_null() {
+            raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return None;
+        }
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        let found = dict_get_in_place(_py, modules_ptr, key_bits);
+        dec_ref_bits(_py, key_bits);
+        let bits = found?;
+        if obj_from_bits(bits).is_none() {
+            return None;
+        }
+        inc_ref_bits(_py, bits);
+        Some(bits)
+    }
+}
+
+/// Best-effort module file origin for an `ImportError` message, mirroring the
+/// `(origin)` suffix CPython's `import_from` derives from a module's file
+/// origin. Returns `None` — rendered as `"unknown location"` — for modules with
+/// no file origin (builtins, frozen, synthetic).
+unsafe fn module_file_origin(_py: &PyToken<'_>, module_ptr: *mut u8) -> Option<String> {
+    unsafe {
+        let dict_bits = module_dict_bits(module_ptr);
+        let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return None;
+        }
+        let file_key = intern_static_name(_py, &modules_state(_py).module_file_name, b"__file__");
+        let file_bits = dict_get_in_place(_py, dict_ptr, file_key)?;
+        string_obj_to_owned(obj_from_bits(file_bits))
+    }
+}
+
+/// `from MODULE import name` attribute binding.
+///
+/// Mirrors CPython's `IMPORT_FROM` opcode (`import_from` in ceval): it performs
+/// the module attribute lookup and, on a *missing* attribute, applies the
+/// import-specific recovery+failure semantics that distinguish it from a plain
+/// `module.attr` access ([`molt_module_get_attr`]):
+///
+///   1. `getattr(module, name)` — including PEP 562 module `__getattr__`.
+///   2. On `AttributeError` (a clean miss, or `__getattr__` raising
+///      `AttributeError`): retry as `sys.modules["{module}.{name}"]`, which
+///      recovers a circularly-imported submodule not yet bound as an attribute.
+///   3. On miss, raise `ImportError("cannot import name '{name}' from
+///      '{module}' ({origin})")`.
+///
+/// A non-`AttributeError` raised by the lookup (e.g. a module `__getattr__`
+/// raising `ValueError`) propagates unchanged, exactly as CPython does.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_module_import_from(module_bits: u64, attr_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let module_obj = obj_from_bits(module_bits);
+        let Some(module_ptr) = module_obj.as_ptr() else {
+            // Mirror molt_module_get_attr: a None/pending module operand on an
+            // exception-handler continuation path propagates the pending state
+            // rather than overwriting it.
+            if module_obj.is_none() || exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
+            let msg = format!(
+                "module attribute access expects module, got non-pointer (bits=0x{:x}) for attr '{}'",
+                module_bits, attr_name
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+        unsafe {
+            if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                    .unwrap_or_else(|| "<attr>".to_string());
+                let type_id = object_type_id(module_ptr);
+                let msg = format!(
+                    "module attribute access expects module, got type_id={} (bits=0x{:x}) for attr '{}'",
+                    type_id, module_bits, attr_name
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            // Step 1: module-aware attribute lookup (resolves PEP 562
+            // module-level `__getattr__` identically to molt_module_get_attr).
+            if let Some(val) = module_attr_lookup(_py, module_ptr, attr_bits) {
+                return val;
+            }
+            // module_attr_lookup returned None: a clean miss, or the lookup
+            // raised. CPython's IMPORT_FROM converts an `AttributeError` into
+            // the submodule-fallback + `ImportError`, but lets any other
+            // exception propagate. `clear_attribute_error_if_pending` clears a
+            // pending AttributeError (cases: clean miss / AttributeError →
+            // nothing left pending → fall through); a still-pending exception
+            // afterward is a non-AttributeError that must propagate.
+            clear_attribute_error_if_pending(_py);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
+                .unwrap_or_default();
+            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
+            // Step 2: circular-import recovery via sys.modules["{module}.{name}"].
+            let full_name = format!("{module_name}.{attr_name}");
+            if let Some(submodule_bits) = import_from_sys_modules_lookup(_py, &full_name) {
+                return submodule_bits;
+            }
+            if exception_pending(_py) {
+                // Building the sys.modules lookup key failed — propagate.
+                return MoltObject::none().bits();
+            }
+            // Step 3: raise ImportError with CPython's origin suffix.
+            let msg = match module_file_origin(_py, module_ptr) {
+                Some(path) => {
+                    format!("cannot import name '{attr_name}' from '{module_name}' ({path})")
+                }
+                None => format!(
+                    "cannot import name '{attr_name}' from '{module_name}' (unknown location)"
+                ),
+            };
+            raise_exception::<_>(_py, "ImportError", &msg)
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {

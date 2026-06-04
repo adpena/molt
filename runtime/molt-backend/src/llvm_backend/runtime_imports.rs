@@ -564,6 +564,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         for name in &[
             "molt_module_cache_set",
             "molt_module_get_attr",
+            "molt_module_import_from",
             "molt_module_get_global",
             "molt_module_get_name",
             "molt_module_del_global",
@@ -901,6 +902,7 @@ mod tests {
             ("molt_module_cache_del", 1),
             ("molt_module_cache_set", 2),
             ("molt_module_get_attr", 2),
+            ("molt_module_import_from", 2),
             ("molt_module_get_global", 2),
             ("molt_module_get_name", 2),
             ("molt_module_del_global", 2),

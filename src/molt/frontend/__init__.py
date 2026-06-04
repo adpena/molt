@@ -2229,6 +2229,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "GETATTR_SPECIAL_OBJ",
             "GUARDED_GETATTR",
             "MODULE_GET_ATTR",
+            "MODULE_IMPORT_FROM",
             "MODULE_GET_GLOBAL",
             "SETATTR_GENERIC_OBJ",
             "SETATTR_GENERIC_PTR",
@@ -31970,9 +31971,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(
                     MoltOp(kind="CONST_STR", args=[attr_name], result=attr_name_val)
                 )
+                # `from MODULE import name` has CPython IMPORT_FROM semantics: a
+                # missing attribute raises ImportError ("cannot import name ...")
+                # after a sys.modules submodule fallback, NOT the AttributeError
+                # that a plain `MODULE.name` (MODULE_GET_ATTR) read raises.
                 self.emit(
                     MoltOp(
-                        kind="MODULE_GET_ATTR",
+                        kind="MODULE_IMPORT_FROM",
                         args=[module_val, attr_name_val],
                         result=attr_val,
                     )
@@ -34193,6 +34198,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if isinstance(effect_proof, str) and effect_proof:
                         entry["effect_proof"] = effect_proof
                 json_ops.append(entry)
+            elif op.kind == "MODULE_IMPORT_FROM":
+                json_ops.append(
+                    {
+                        "kind": "module_import_from",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "MODULE_GET_GLOBAL":
                 json_ops.append(
                     {

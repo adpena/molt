@@ -307,6 +307,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::ModuleCacheSet => "module_cache_set",
         OpCode::ModuleCacheDel => "module_cache_del",
         OpCode::ModuleGetAttr => "module_get_attr",
+        OpCode::ModuleImportFrom => "module_import_from",
         OpCode::ModuleGetGlobal => "module_get_global",
         OpCode::ModuleGetName => "module_get_name",
         OpCode::ModuleSetAttr => "module_set_attr",
