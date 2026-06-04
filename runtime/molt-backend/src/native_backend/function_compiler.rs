@@ -23996,11 +23996,22 @@ impl SimpleBackend {
                     // When the target is a defined function in this module (not a closure),
                     // emit a direct Cranelift call with a lightweight recursion guard.
                     // This avoids: arg spill/reload, match-on-arity dispatch, indirect call.
+                    //
+                    // The caller's exception-handling state (`has_exc_handling`) does NOT
+                    // gate the direct call: the direct dispatch is semantically identical
+                    // regardless of whether the caller carries a function-level exception
+                    // label.  Post-call exception routing is handled by the separate
+                    // CHECK_EXCEPTION op the frontend inserts after the call (lowered to a
+                    // pending-flag test + branch to the handler), and the recursion-limit
+                    // path inside this fast path already returns early to propagate a
+                    // pending RecursionError.  Gating on `has_exc_handling` would disable
+                    // the fast path for *every* call now that all functions carry an
+                    // exception label (foundation C2), which is the exact perf regression
+                    // this exclusion exists to avoid.
                     let use_direct_call = (module_known_functions.contains(target_name)
                         || matches!(linkage, Linkage::Import))
                         && !closure_functions.contains(target_name.as_str())
                         && args.len() == sig_arity
-                        && !has_exc_handling
                         && !emit_traces;
 
                     if std::env::var("MOLT_DEBUG_DIRECT_CALL").is_ok() {
