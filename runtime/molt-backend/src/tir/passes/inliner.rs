@@ -735,11 +735,12 @@ fn build_label_remap(callee: &TirFunction, caller: &TirFunction) -> HashMap<i64,
     }
     let caller_max = function_label_ids(caller).iter().copied().max();
     // Start strictly above the caller's max (or at 0 if the caller has no labels).
-    let mut next = caller_max.map(|m| m + 1).unwrap_or(0);
+    let start = caller_max.map(|m| m + 1).unwrap_or(0);
     let mut remap = HashMap::with_capacity(callee_labels.len());
-    for label in callee_labels {
+    // Callee labels are processed in ascending order; each gets the next id
+    // counting up from `start` (the `start..` range supplies the counter).
+    for (label, next) in callee_labels.into_iter().zip(start..) {
         remap.insert(label, next);
-        next += 1;
     }
     remap
 }
@@ -844,10 +845,11 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
     let call_wants_value = call_result.is_some();
     if call_wants_value {
         for (bid, block) in &callee.blocks {
-            if let Terminator::Return { values } = &block.terminator {
-                if normal_reachable.contains(bid) && values.is_empty() {
-                    return false;
-                }
+            if let Terminator::Return { values } = &block.terminator
+                && normal_reachable.contains(bid)
+                && values.is_empty()
+            {
+                return false;
             }
         }
     }
@@ -1033,12 +1035,11 @@ fn dead_placeholder_const(ty: &TirType, result: ValueId) -> TirOp {
 /// value_types (best-effort, for annotating the continuation block arg).
 fn callee_return_value_type(callee: &TirFunction) -> Option<super::super::types::TirType> {
     for block in callee.blocks.values() {
-        if let Terminator::Return { values } = &block.terminator {
-            if let Some(v) = values.first() {
-                if let Some(ty) = callee.value_types.get(v) {
-                    return Some(ty.clone());
-                }
-            }
+        if let Terminator::Return { values } = &block.terminator
+            && let Some(v) = values.first()
+            && let Some(ty) = callee.value_types.get(v)
+        {
+            return Some(ty.clone());
         }
     }
     if callee.return_type != super::super::types::TirType::None {
