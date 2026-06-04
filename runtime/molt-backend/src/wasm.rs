@@ -2156,10 +2156,60 @@ impl WasmBackend {
             tir_cache.save_index();
         }
 
-        crate::inline_functions(
-            &mut ir,
-            &crate::tir::target_info::TargetInfo::wasm_release_fast(),
-        );
+        // E1 ACTIVATION (WASM): the TIR function inliner (tir/passes/inliner.rs,
+        // via run_module_pipeline) is the production inliner — SSA-based,
+        // exception-label-safe, call-graph bottom-up, cost-model-gated; it
+        // re-optimizes each merged caller through the per-function pipeline.
+        // Mirrors the native path: lift every non-extern function's
+        // per-function-optimized SimpleIR to TIR, run the module phase, then
+        // back-convert ONLY the inliner-changed functions (every unchanged
+        // function keeps its byte-identical per-function output). The legacy
+        // SimpleIR `inline_functions` (string-rename, no SSA, no cost model) is
+        // deleted with this activation. Rollback: MOLT_DISABLE_INLINING=1
+        // (guard in run_inliner).
+        {
+            let wasm_tti = crate::tir::target_info::TargetInfo::wasm_release_fast();
+            let (mut tir_module, idx_map) =
+                crate::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
+            let module_analysis = crate::tir::run_module_pipeline(&mut tir_module, &wasm_tti);
+            let changed: std::collections::HashSet<&str> = module_analysis
+                .changed_functions
+                .iter()
+                .map(String::as_str)
+                .collect();
+            for (pos, &orig_idx) in idx_map.iter().enumerate() {
+                let tir_func = &tir_module.functions[pos];
+                if !changed.contains(tir_func.name.as_str()) {
+                    continue;
+                }
+                let ops = crate::tir::lower_to_simple::lower_to_simple_ir(tir_func);
+                debug_assert!(
+                    crate::tir::lower_to_simple::validate_labels(&ops),
+                    "E1: inlined back-conversion emitted invalid labels for '{}' (WASM)",
+                    tir_func.name
+                );
+                ir.functions[orig_idx].ops = ops;
+                // The LIR fast-path output was computed per-function PRE-inline
+                // (the cache loop above). An inlined-into allowlist function's
+                // body changed, so recompute its output from the post-inline
+                // pair — the same post-pipeline SimpleIR + post-pipeline TIR
+                // contract the per-function path honors. `run_inliner` returned
+                // this body fully type-refined, so `tir_func` is the
+                // post-pipeline TIR. A fast path that no longer applies is
+                // removed (the generic emission path takes over — sound).
+                let func_ir = &ir.functions[orig_idx];
+                if is_production_lir_wasm_fast_path_name(&func_ir.name) {
+                    match prepare_lir_wasm_fast_output(func_ir, tir_func) {
+                        Some(output) => {
+                            lir_fast_outputs.insert(func_ir.name.clone(), output);
+                        }
+                        None => {
+                            lir_fast_outputs.remove(&func_ir.name);
+                        }
+                    }
+                }
+            }
+        }
 
         // Megafunction splitting is only sound on the current wasm path for
         // straight-line functions. Non-linear control is lowered into a
