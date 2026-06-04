@@ -329,6 +329,16 @@ fn opcode_effects(opcode: OpCode) -> OpEffects {
         // dominance, NOT safe to hoist above a guard.
         OpCode::Div | OpCode::FloorDiv | OpCode::Mod | OpCode::Pow => OpEffects::PURE_MAY_THROW,
 
+        // CheckedAdd is semantically pure (deterministic raw-i64 sum +
+        // overflow flag, no memory, never throws) but is deliberately
+        // classified IMPURE for hoist/CSE purposes: it is a 2-result op, and
+        // neither GVN's value-numbering (keyed on a single result) nor LICM's
+        // hoist machinery has been verified for multi-result ops. DCE may
+        // still drop it when both results are dead (it is in neither
+        // `opcode_is_side_effecting` nor `opcode_may_throw`), which is
+        // correct. Revisit only with explicit multi-result GVN/LICM support.
+        OpCode::CheckedAdd => OpEffects::IMPURE,
+
         // ── Type assertion: a no-op value-carrier checked elsewhere. Pure. ──
         OpCode::TypeGuard => OpEffects::PURE,
 
@@ -652,7 +662,7 @@ mod tests {
     fn assert_opcode_is_listed(op: OpCode) {
         use OpCode::*;
         match op {
-            Add | Sub | Mul | InplaceAdd | InplaceSub | InplaceMul | Div | FloorDiv | Mod | Pow
+            Add | CheckedAdd | Sub | Mul | InplaceAdd | InplaceSub | InplaceMul | Div | FloorDiv | Mod | Pow
             | Neg | Pos | Eq | Ne | Lt | Le | Gt | Ge | Is | IsNot | In | NotIn | BitAnd | BitOr
             | BitXor | BitNot | Shl | Shr | And | Or | Not | Bool | Alloc | StackAlloc
             | ObjectNewBound | ObjectNewBoundStack | Free | LoadAttr | StoreAttr | DelAttr
@@ -675,6 +685,7 @@ mod tests {
         use OpCode::*;
         [
             Add,
+            CheckedAdd,
             Sub,
             Mul,
             InplaceAdd,

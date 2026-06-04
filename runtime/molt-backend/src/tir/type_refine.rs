@@ -1036,6 +1036,14 @@ fn infer_result_types_with_attrs(
         };
         return vec![elem_ty, Some(TirType::Bool)];
     }
+    // CheckedAdd result types are intrinsic to the opcode: results[0] is the
+    // wrapping i64 sum, results[1] the signed-overflow flag. This must hold
+    // through the module phase's SimpleIR re-lift — the WASM/LIR lowering
+    // derives local types from these, and an untyped flag would fail wasm
+    // validation.
+    if matches!(opcode, OpCode::CheckedAdd) && result_count == 2 {
+        return vec![Some(TirType::I64), Some(TirType::Bool)];
+    }
     if result_count != 1 {
         return vec![None; result_count];
     }

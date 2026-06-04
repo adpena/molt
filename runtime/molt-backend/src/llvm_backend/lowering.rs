@@ -1012,6 +1012,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // ── Arithmetic (type-specialized) ──
             OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, "add"),
+            OpCode::CheckedAdd => self.emit_checked_add(op),
             OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, "sub"),
             OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, "mul"),
             OpCode::Div => self.emit_binary_arith(op, "div"),
@@ -4131,6 +4132,71 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpCode::StateBlockStart | OpCode::StateBlockEnd => {}
         }
+    }
+
+    // ── CheckedAdd: hardware-exact signed-overflow add (overflow_peel) ──
+    //
+    // `(sum, flag) = llvm.sadd.with.overflow.i64` — LLVM's canonical
+    // checked-arithmetic intrinsic. The sum is the wrapping i64 result,
+    // observable ONLY on the flag=0 branch (the peel's CFG enforces this;
+    // the overflow bridge is seeded from the PRE-add operands). The flag is
+    // an i1, consumed directly by CondBranch's `TirType::Bool` path.
+    //
+    // Operands MUST be raw i64 carriers — the peel seeds `Repr::RawI64Safe`
+    // on the fast-loop phi. Anything else reaching this arm is a
+    // repr-seeding bug: fail loudly at compile time rather than emit a raw
+    // add on a NaN-boxed word (the silent-integer-miscompile class).
+    fn emit_checked_add(&mut self, op: &crate::tir::ops::TirOp) {
+        let sum_id = op.results[0];
+        let flag_id = op.results[1];
+        let lhs_id = op.operands[0];
+        let rhs_id = op.operands[1];
+        let lhs_ty = self
+            .value_types
+            .get(&lhs_id)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        let rhs_ty = self
+            .value_types
+            .get(&rhs_id)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        assert!(
+            matches!(lhs_ty, TirType::I64) && matches!(rhs_ty, TirType::I64),
+            "checked_add operands must be raw i64 carriers (repr seeding bug): {lhs_ty:?} + {rhs_ty:?}"
+        );
+        let lhs = self.resolve(lhs_id).into_int_value();
+        let rhs = self.resolve(rhs_id).into_int_value();
+        let i64_ty = self.backend.context.i64_type();
+        let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.sadd.with.overflow")
+            .expect("llvm.sadd.with.overflow intrinsic must exist");
+        let decl = intrinsic
+            .get_declaration(&self.backend.module, &[i64_ty.into()])
+            .expect("llvm.sadd.with.overflow.i64 declaration must succeed");
+        let pair = self
+            .backend
+            .builder
+            .build_call(decl, &[lhs.into(), rhs.into()], "checked_add")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_struct_value();
+        let sum = self
+            .backend
+            .builder
+            .build_extract_value(pair, 0, "ca_sum")
+            .unwrap();
+        let flag = self
+            .backend
+            .builder
+            .build_extract_value(pair, 1, "ca_of")
+            .unwrap();
+        self.values.insert(sum_id, sum);
+        self.value_types.insert(sum_id, TirType::I64);
+        self.values.insert(flag_id, flag);
+        // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
+        // branch condition (no truthiness call, no NaN-box round-trip).
+        self.value_types.insert(flag_id, TirType::Bool);
     }
 
     // ── Type-specialized binary arithmetic ──

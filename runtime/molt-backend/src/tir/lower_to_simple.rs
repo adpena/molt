@@ -3402,6 +3402,98 @@ mod tests {
         );
     }
 
+    /// The module phase re-lifts every function from post-pipeline SimpleIR
+    /// on each build, and the TIR content cache re-lifts on cache hits. An op
+    /// that doesn't round-trip falls to the `OpCode::Copy` fallback and
+    /// silently vanishes (the iterator-consumer bug class — see the
+    /// `exception_pending` precedent in ssa.rs). This pins the full
+    /// lift → type-refine → re-emit cycle for the 2-result `CheckedAdd`.
+    #[test]
+    fn checked_add_two_result_round_trip_survives_relift() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+        use crate::tir::type_refine;
+
+        // SimpleIR transport shape (the IterNextUnboxed convention):
+        // var = wrapping sum (results[0]), out = overflow flag (results[1]).
+        // Both results stay live: the flag feeds a br_if, the sum a ret.
+        let func_ir = FunctionIR {
+            name: "checked_add_roundtrip".into(),
+            params: vec!["a".into(), "b".into()],
+            ops: vec![
+                OpIR {
+                    kind: "checked_add".into(),
+                    args: Some(vec!["a".into(), "b".into()]),
+                    var: Some("sum0".into()),
+                    out: Some("of0".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "br_if".into(),
+                    args: Some(vec!["of0".into()]),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("sum0".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("a".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        // Lift (the module-phase path): the opcode must survive — NOT fall
+        // to the Copy fallback (which would delete the overflow check).
+        let mut tir_func = lower_to_tir(&func_ir);
+        let ca_op = tir_func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .find(|op| op.opcode == OpCode::CheckedAdd)
+            .expect("checked_add must lift to OpCode::CheckedAdd, not Copy")
+            .clone();
+        assert_eq!(ca_op.operands.len(), 2, "both operands must survive");
+        assert_eq!(ca_op.results.len(), 2, "both results must survive");
+
+        // Result types are intrinsic to the opcode (I64 sum, Bool flag) —
+        // the WASM/LIR local types derive from these after every re-lift.
+        type_refine::refine_types(&mut tir_func);
+        assert_eq!(
+            tir_func.value_types.get(&ca_op.results[0]),
+            Some(&TirType::I64),
+            "sum must refine to I64"
+        );
+        assert_eq!(
+            tir_func.value_types.get(&ca_op.results[1]),
+            Some(&TirType::Bool),
+            "overflow flag must refine to Bool"
+        );
+
+        // Re-emit: same kind, same var/out convention, distinct outputs.
+        let round_tripped = lower_to_simple_ir(&tir_func);
+        let ca = round_tripped
+            .iter()
+            .find(|op| op.kind == "checked_add")
+            .expect("re-emit must preserve checked_add");
+        assert_eq!(ca.args.as_ref().map(Vec::len), Some(2));
+        let sum_var = ca.var.as_deref().expect("sum must round-trip in var");
+        let flag_var = ca.out.as_deref().expect("flag must round-trip in out");
+        assert_ne!(sum_var, flag_var, "the two outputs must stay distinct");
+    }
+
     #[test]
     fn linearize_emits_add_op() {
         let func = add_function();
