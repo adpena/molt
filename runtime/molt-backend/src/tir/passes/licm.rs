@@ -44,50 +44,22 @@ use super::PassStats;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::dominators::{build_pred_map, collect_loop_blocks, compute_idoms};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
 
 /// Returns `true` if the op is pure and safe to hoist out of a loop.
+///
+/// The opcode-level purity decision is delegated to the single source of truth
+/// in `effects::opcode_is_pure_movable` (deterministic + side-effect-free +
+/// never-throwing). LICM additionally permits a structural SSA value copy,
+/// which is a property of the op *instance* (its operand/result arity and empty
+/// attrs), not of the opcode, so that check stays here.
+///
+/// Hoisting requires the FULL pure-movable property (including `nothrow`):
+/// moving an op above the loop guard changes whether/when it would raise, so a
+/// may-throw op (e.g. `Div`) must not be hoisted even though it is CSE-safe.
 fn is_hoistable(op: &TirOp) -> bool {
-    matches!(
-        op.opcode,
-        OpCode::Add
-            | OpCode::Sub
-            | OpCode::Mul
-            | OpCode::InplaceAdd
-            | OpCode::InplaceSub
-            | OpCode::InplaceMul
-            | OpCode::Neg
-            | OpCode::Pos
-            | OpCode::Eq
-            | OpCode::Ne
-            | OpCode::Lt
-            | OpCode::Le
-            | OpCode::Gt
-            | OpCode::Ge
-            | OpCode::Is
-            | OpCode::IsNot
-            | OpCode::BitAnd
-            | OpCode::BitOr
-            | OpCode::BitXor
-            | OpCode::BitNot
-            | OpCode::Shl
-            | OpCode::Shr
-            | OpCode::And
-            | OpCode::Or
-            | OpCode::Not
-            | OpCode::Bool
-            | OpCode::ConstInt
-            | OpCode::ConstFloat
-            | OpCode::ConstStr
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstBytes
-            | OpCode::BoxVal
-            | OpCode::UnboxVal
-            | OpCode::TypeGuard
-            | OpCode::BuildSlice
-    ) || op.is_plain_value_copy()
+    super::effects::opcode_is_pure_movable(op.opcode) || op.is_plain_value_copy()
 }
 
 /// Find the preheader block for a loop header.

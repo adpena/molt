@@ -69,41 +69,21 @@ fn is_const_opcode(opcode: OpCode) -> bool {
 }
 
 /// Returns `true` if the opcode is numberable when operands are proven typed.
+///
+/// The opcode-level purity decision is delegated to the single source of truth
+/// in `effects::opcode_is_type_gated_numberable`: a deterministic,
+/// side-effect-free computation whose purity is conditional on its operands
+/// being primitive types. The *type* precondition itself (operands proven
+/// primitive) is enforced separately at the call site via `is_primitive_type`,
+/// because it depends on the per-value type map rather than the opcode.
+///
+/// Note this family includes `Div`/`FloorDiv`/`Mod`/`Pow`, which may raise
+/// `ZeroDivisionError`. CSE is still sound for them: GVN only replaces a
+/// duplicate that is *dominated* by its leader, so if the leader raises, the
+/// replaced op is never reached — the throw is preserved. (This is why GVN can
+/// number a may-throw op that LICM must not hoist.)
 fn is_typed_numberable(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Add
-            | OpCode::Sub
-            | OpCode::Mul
-            | OpCode::InplaceAdd
-            | OpCode::InplaceSub
-            | OpCode::InplaceMul
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::Pow
-            | OpCode::Neg
-            | OpCode::Pos
-            | OpCode::Eq
-            | OpCode::Ne
-            | OpCode::Lt
-            | OpCode::Le
-            | OpCode::Gt
-            | OpCode::Ge
-            | OpCode::Is
-            | OpCode::IsNot
-            | OpCode::BitAnd
-            | OpCode::BitOr
-            | OpCode::BitXor
-            | OpCode::BitNot
-            | OpCode::Shl
-            | OpCode::Shr
-            | OpCode::And
-            | OpCode::Or
-            | OpCode::Not
-            | OpCode::Bool
-            | OpCode::TypeGuard
-    )
+    super::effects::opcode_is_type_gated_numberable(opcode)
 }
 
 /// A type is "primitive" when arithmetic on it is provably side-effect-free.
