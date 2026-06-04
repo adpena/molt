@@ -320,11 +320,11 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("refcount_elim", OpsOnly, |f, am, _tti| {
             passes::refcount_elim::run(f, am)
         }),
-        pass("reuse_analysis", ReadOnly, |f, _am, _tti| {
-            passes::reuse_analysis::run(f)
+        pass("reuse_analysis", ReadOnly, |f, am, _tti| {
+            passes::reuse_analysis::run(f, am)
         }),
-        pass("dead_store_elim", OpsOnly, |f, _am, _tti| {
-            passes::dead_store_elim::run(f)
+        pass("dead_store_elim", OpsOnly, |f, am, _tti| {
+            passes::dead_store_elim::run(f, am)
         }),
         // ── Value optimization ──────────────────────────────────────
         pass("type_guard_hoist", Cfg, |f, am, _tti| {
@@ -400,6 +400,7 @@ fn assert_analyses_fresh(func: &TirFunction, am: &mut AnalysisManager, after_pas
                 check!(super::passes::scev::ScalarEvolution)
             }
             AnalysisId::ValueRange => check!(super::passes::value_range::ValueRange),
+            AnalysisId::AliasAnalysis => check!(super::passes::alias_analysis::AliasAnalysis),
         }
     }
 }

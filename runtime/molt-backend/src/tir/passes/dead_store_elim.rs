@@ -63,10 +63,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::Terminator;
 use crate::tir::blocks::TirBlock;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult, AliasUnionFind};
 use crate::tir::values::ValueId;
 
 use super::PassStats;
@@ -102,48 +104,6 @@ fn typed_slot_store(op: &TirOp) -> Option<(ValueId, i64)> {
     Some((op.operands[0], store_offset(op)?))
 }
 
-fn copy_is_known_local_alias(op: &TirOp) -> bool {
-    match op.attrs.get("_original_kind") {
-        None => true,
-        Some(AttrValue::Str(kind)) => matches!(
-            kind.as_str(),
-            "copy" | "copy_var" | "store_var" | "load_var" | "identity_alias"
-        ),
-        Some(_) => false,
-    }
-}
-
-fn transparent_alias_root(op: &TirOp, aliases: &AliasState) -> Option<ValueId> {
-    if op.results.is_empty() {
-        return None;
-    }
-
-    match op.opcode {
-        OpCode::TypeGuard => {
-            if op.attrs.contains_key("_original_kind") || op.operands.len() != 1 {
-                return None;
-            }
-            Some(aliases.root(op.operands[0]))
-        }
-        OpCode::Copy => {
-            if !copy_is_known_local_alias(op) || op.operands.is_empty() {
-                return None;
-            }
-            let root = aliases.root(op.operands[0]);
-            if op
-                .operands
-                .iter()
-                .all(|operand| aliases.root(*operand) == root)
-            {
-                Some(root)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
 fn stack_object_alloc_result(op: &TirOp) -> Option<ValueId> {
     if op.opcode != OpCode::ObjectNewBoundStack {
         return None;
@@ -157,86 +117,7 @@ fn stack_object_alloc_result(op: &TirOp) -> Option<ValueId> {
     Some(op.results[0])
 }
 
-#[derive(Default)]
-struct AliasState {
-    parent: HashMap<ValueId, ValueId>,
-}
-
-impl AliasState {
-    fn root(&self, value: ValueId) -> ValueId {
-        let mut root = value;
-        while let Some(next) = self.parent.get(&root).copied() {
-            if next == root {
-                break;
-            }
-            root = next;
-        }
-        root
-    }
-
-    fn operand_aliases_root(&self, op: &TirOp, root: ValueId) -> bool {
-        op.operands
-            .iter()
-            .any(|operand| self.root(*operand) == root)
-    }
-
-    fn record_transparent_aliases(&mut self, op: &TirOp) {
-        let Some(root) = transparent_alias_root(op, self) else {
-            return;
-        };
-        for result in &op.results {
-            self.parent.insert(*result, root);
-        }
-    }
-}
-
-/// Returns `true` when the op may observe the slot value of `obj`
-/// (i.e. read it, escape it, or trigger a side effect that could).
-///
-/// This is the conservative side: any op that takes `obj` as an
-/// operand AND is not in the "pure local consumer" allow-list is
-/// treated as a possible observer, blocking dead-store elim. `root`
-/// is an alias root, not necessarily the original SSA value used by
-/// the pending store.
-fn may_observe_slot(op: &TirOp, root: ValueId, aliases: &AliasState) -> bool {
-    if !aliases.operand_aliases_root(op, root) {
-        return false;
-    }
-    match op.opcode {
-        // Reads of the slot - direct observation.
-        OpCode::LoadAttr | OpCode::Index => true,
-        // Recognized typed-slot stores to the same object root are not
-        // observers; they are handled as possible overwrites below.
-        // Unknown StoreAttr variants and stores where `root` appears as
-        // the stored value are observers.
-        OpCode::StoreAttr => match typed_slot_store(op) {
-            Some((target, _)) => aliases.root(target) != root,
-            None => true,
-        },
-        OpCode::StoreIndex => true,
-        // Calls / raises / returns let the slot be observed externally.
-        OpCode::Call
-        | OpCode::CallMethod
-        | OpCode::CallBuiltin
-        | OpCode::Raise
-        | OpCode::Yield
-        | OpCode::YieldFrom => true,
-        // Building a container with `obj` as an element captures it.
-        OpCode::BuildList
-        | OpCode::BuildDict
-        | OpCode::BuildSet
-        | OpCode::BuildTuple
-        | OpCode::BuildSlice
-        | OpCode::AllocTask => true,
-        // Transparent aliases and ref ops do not read slot values.
-        OpCode::Copy | OpCode::TypeGuard if transparent_alias_root(op, aliases).is_some() => false,
-        OpCode::IncRef | OpCode::DecRef | OpCode::CheckException => false,
-        // Default: conservative - treat any other use as observation.
-        _ => true,
-    }
-}
-
-fn terminator_uses_root(terminator: &Terminator, root: ValueId, aliases: &AliasState) -> bool {
+fn terminator_uses_root(terminator: &Terminator, root: ValueId, aliases: &AliasUnionFind) -> bool {
     let mut uses_root = |value: &ValueId| aliases.root(*value) == root;
     match terminator {
         Terminator::Branch { args, .. } => args.iter().any(&mut uses_root),
@@ -269,7 +150,22 @@ fn terminator_uses_root(terminator: &Terminator, root: ValueId, aliases: &AliasS
 
 /// Run dead-store elimination on a single block.  Returns the number
 /// of ops removed.
-fn run_block(block: &mut TirBlock) -> usize {
+///
+/// The slot-observation barrier ("could this op read/escape the slot of object
+/// `root`?") and the transparent-SSA-copy alias roots are now answered by the
+/// first-class alias analysis ([`AliasAnalysisResult::may_observe_slot`] /
+/// [`AliasUnionFind`]) — the single source of truth that replaces the former
+/// inline `AliasState` union-find and `may_observe_slot` list (Tier-0 S5 phase 1).
+///
+/// SOUNDNESS NOTE: the alias union-find here is computed over the *whole
+/// function* in a single forward scan, whereas the former code rebuilt it
+/// incrementally as it walked this block. In valid SSA every value is defined
+/// before use, so the whole-function union-find is a **superset** of the
+/// former incremental one at every program point. A superset of alias edges can
+/// only make `operand_aliases_root` MORE often true → MORE pending stores
+/// invalidated (observers detected) → strictly more conservative. We therefore
+/// never eliminate a store the old code would have kept live.
+fn run_block(block: &mut TirBlock, alias: &AliasAnalysisResult) -> usize {
     // Walk forward.  For each store at (obj, offset), record (idx, obj,
     // offset).  When we see a later store at the same (obj, offset)
     // with no intervening observer, mark the earlier one for removal.
@@ -279,7 +175,6 @@ fn run_block(block: &mut TirBlock) -> usize {
     //   killed (added to dead_indices).
     let mut pending: HashMap<(ValueId, i64), usize> = HashMap::new();
     let mut dead_indices: Vec<usize> = Vec::new();
-    let mut aliases = AliasState::default();
     let mut stack_object_roots: HashSet<ValueId> = HashSet::new();
 
     for (idx, op) in block.ops.iter().enumerate() {
@@ -288,7 +183,7 @@ fn run_block(block: &mut TirBlock) -> usize {
         // a load-then-store sequence doesn't kill the load's witness.
         let mut invalidated_keys: Vec<(ValueId, i64)> = Vec::new();
         for &(obj, offset) in pending.keys() {
-            if may_observe_slot(op, obj, &aliases) {
+            if alias.may_observe_slot(op, obj) {
                 invalidated_keys.push((obj, offset));
             }
         }
@@ -296,14 +191,13 @@ fn run_block(block: &mut TirBlock) -> usize {
             pending.remove(key);
         }
 
-        aliases.record_transparent_aliases(op);
         if let Some(result) = stack_object_alloc_result(op) {
-            stack_object_roots.insert(aliases.root(result));
+            stack_object_roots.insert(alias.root(result));
         }
 
         // Now handle the store, if this is one.
         if let Some((target, offset)) = typed_slot_store(op) {
-            let key = (aliases.root(target), offset);
+            let key = (alias.root(target), offset);
             if let Some(prev_idx) = pending.insert(key, idx) {
                 // The previous store at this (obj, offset) is dead.
                 dead_indices.push(prev_idx);
@@ -313,7 +207,7 @@ fn run_block(block: &mut TirBlock) -> usize {
 
     for (&(root, _offset), &idx) in &pending {
         if stack_object_roots.contains(&root)
-            && !terminator_uses_root(&block.terminator, root, &aliases)
+            && !terminator_uses_root(&block.terminator, root, &alias.aliases)
         {
             dead_indices.push(idx);
         }
@@ -335,10 +229,11 @@ fn run_block(block: &mut TirBlock) -> usize {
 }
 
 /// Public entry point - run dead-store elimination on every block.
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+    let alias = am.get::<AliasAnalysis>(func).clone();
     let mut total_removed = 0usize;
     for block in func.blocks.values_mut() {
-        total_removed += run_block(block);
+        total_removed += run_block(block, &alias);
     }
     PassStats {
         name: "dead_store_elim",
@@ -366,6 +261,13 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         }
+    }
+
+    /// Run the pass against a freshly-computed alias analysis (the S5 oracle
+    /// that supplies the slot-observation barrier + alias roots).
+    fn run_fresh(func: &mut TirFunction) -> PassStats {
+        let mut am = AnalysisManager::new();
+        run(func, &mut am)
     }
 
     fn make_store(operands: Vec<ValueId>, offset: i64, original_kind: &str) -> TirOp {
@@ -401,7 +303,7 @@ mod tests {
         entry.ops.push(make_store(vec![obj, val1], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.ops_removed, 1);
         let entry = &func.blocks[&func.entry_block];
         assert_eq!(entry.ops.len(), 1);
@@ -421,7 +323,7 @@ mod tests {
         entry.ops.push(make_store(vec![obj, v1], 8, "store_init"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 2);
     }
@@ -443,7 +345,7 @@ mod tests {
         entry.ops.push(make_store(vec![obj, v1], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 0,
             "load between stores must keep the first store live"
@@ -468,7 +370,7 @@ mod tests {
         entry.ops.push(make_store(vec![obj, v1], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 0,
             "call could escape obj - must keep store live"
@@ -487,7 +389,7 @@ mod tests {
         entry.ops.push(make_store(vec![obj_b, v], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.ops_removed, 0);
     }
 
@@ -511,7 +413,7 @@ mod tests {
             .push(make_store(vec![obj, replacement], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 0,
             "unrecognized StoreAttr variants may observe or mutate obj"
@@ -539,7 +441,7 @@ mod tests {
             .push(make_store(vec![obj, replacement], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 0,
             "using obj as the stored value escapes it before replacement"
@@ -568,7 +470,7 @@ mod tests {
             .push(make_store(vec![obj, replacement], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 0,
             "StoreIndex is not a proven typed-slot overwrite"
@@ -599,7 +501,7 @@ mod tests {
             .push(make_store(vec![obj, replacement], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 0,
             "uses through a transparent alias must observe the object root"
@@ -626,7 +528,7 @@ mod tests {
             .push(make_store(vec![alias, replacement], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.ops_removed, 1);
         let entry = &func.blocks[&func.entry_block];
         assert_eq!(entry.ops.len(), 2);
@@ -652,7 +554,7 @@ mod tests {
         entry.ops.push(make_store(vec![obj, v2], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
         assert_eq!(
@@ -690,7 +592,7 @@ mod tests {
         entry.ops.push(make_store(vec![inst, i_plus_1], 8, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 2,
             "both store_init ops should be eliminated - they are \
@@ -720,7 +622,7 @@ mod tests {
         entry.ops.push(make_store(vec![inst, y], 8, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 2,
             "final stores to a noescape stack object with no block live-out are dead"
@@ -760,7 +662,7 @@ mod tests {
         entry.ops.push(make_store(vec![inst, i_plus_1], 8, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 4,
             "both overwritten init stores and final local stores are dead"
@@ -808,7 +710,7 @@ mod tests {
             .push(make_store(vec![alias, i_plus_1], 8, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(
             stats.ops_removed, 4,
             "duplicate-operand local copy must remain a transparent alias so all stack-local stores die"
@@ -839,7 +741,7 @@ mod tests {
         entry.ops.push(make_store(vec![inst, x], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.ops_removed, 0);
         assert!(
             func.blocks[&func.entry_block]
@@ -866,7 +768,7 @@ mod tests {
         entry.ops.push(make_store(vec![inst, x], 0, "store"));
         entry.terminator = Terminator::Return { values: vec![inst] };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.ops_removed, 0);
         assert!(
             func.blocks[&func.entry_block]

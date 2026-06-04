@@ -171,12 +171,30 @@ fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
 }
 
 /// Returns `true` if this opcode is an allocation site whose result we
-/// want to track for escape state.  Currently `Alloc` (generic heap
-/// blocks) and `ObjectNewBound` (class-instance allocation from the
-/// frontend's class-instantiation fold).
+/// want to track for escape state.
+///
+/// * `Alloc` — generic heap blocks.
+/// * `ObjectNewBound` — class-instance allocation from the frontend's
+///   class-instantiation fold.
+/// * `BuildList` / `BuildDict` / `BuildTuple` / `BuildSet` / `AllocTask` —
+///   container / task allocation sites (S5 phase 1). Tracking these as escape
+///   roots lets the alias analysis classify a freshly-built container's escape
+///   state; it is sound because `apply` only ever *rewrites* `Alloc` /
+///   `ObjectNewBound` opcodes (never the `Build*` family), so adding these
+///   roots can only refine the escape map, never change which ops get
+///   stack-promoted.
 #[inline]
 fn is_alloc_site(opcode: OpCode) -> bool {
-    matches!(opcode, OpCode::Alloc | OpCode::ObjectNewBound)
+    matches!(
+        opcode,
+        OpCode::Alloc
+            | OpCode::ObjectNewBound
+            | OpCode::BuildList
+            | OpCode::BuildDict
+            | OpCode::BuildTuple
+            | OpCode::BuildSet
+            | OpCode::AllocTask
+    )
 }
 
 /// Return the operand that carries the stored value for StoreAttr-family ops.
@@ -329,6 +347,18 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
         let _ = terminator_values; // used above for Return check
     }
 
+    // Monotone escalation to a lattice point: never lowers an existing state
+    // (the lattice order is NoEscape < ArgEscape < GlobalEscape, encoded by the
+    // derived `Ord`). Fail-closed: a value only ever moves UP the lattice.
+    let escalate = |escapes: &mut HashMap<ValueId, EscapeState>,
+                    val: ValueId,
+                    to: EscapeState| {
+        let cur = escapes.get(&val).copied().unwrap_or(EscapeState::NoEscape);
+        if to > cur {
+            escapes.insert(val, to);
+        }
+    };
+
     // Step 3: Classify each use.
     for (&val, uses) in &use_map {
         for use_info in uses {
@@ -350,7 +380,15 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 OpCode::CallBuiltin => {
                     let name = attr_str(&use_info.attrs, "name");
                     let borrows = name.is_some_and(is_borrowing_builtin);
-                    if !borrows {
+                    if borrows {
+                        // The callee provably only borrows (reads) the value; it
+                        // crossed a call boundary but was NOT captured. Record
+                        // that boundary crossing as `ArgEscape` — the value does
+                        // not escape the *function* (still stack-promotable), but
+                        // it is no longer purely frame-local. This realizes the
+                        // ArgEscape lattice point.
+                        escalate(&mut escapes, val, EscapeState::ArgEscape);
+                    } else {
                         // Before escalating to GlobalEscape, check if the
                         // callee is effect_free. An effect_free function
                         // cannot store its arguments (storing is a side
@@ -360,11 +398,13 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                         let callee_effect_free = name
                             .and_then(effects::builtin_effects)
                             .is_some_and(|fx| fx.effect_free);
-                        if !callee_effect_free {
+                        if callee_effect_free {
+                            // Effect-free callee borrows without capture: record
+                            // the call-boundary crossing as ArgEscape.
+                            escalate(&mut escapes, val, EscapeState::ArgEscape);
+                        } else {
                             escapes.insert(val, EscapeState::GlobalEscape);
                         }
-                        // else: effect_free callee doesn't store references.
-                        // ArgEscape → NoEscape (or stays NoEscape). Don't escalate.
                     }
                 }
                 // CallMethod: check if the method is known non-storing.
@@ -372,7 +412,11 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 // frozenset) never capture their receiver or arguments.
                 OpCode::CallMethod => {
                     let borrows = is_borrowing_method_call(&use_info.attrs);
-                    if !borrows {
+                    if borrows {
+                        // Borrowing method: arg crossed a call boundary without
+                        // capture → ArgEscape (still stack-promotable).
+                        escalate(&mut escapes, val, EscapeState::ArgEscape);
+                    } else {
                         escapes.insert(val, EscapeState::GlobalEscape);
                     }
                 }
@@ -585,8 +629,61 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     escapes
 }
 
-/// Apply escape analysis results: rewrite `NoEscape` `Alloc` ops to `StackAlloc`,
-/// and remove `IncRef`/`DecRef` on `NoEscape` values.
+/// The set of values that are results of, or transparent-move aliases of, a
+/// *rewritable* allocation site (`Alloc` / `ObjectNewBound`). These are the only
+/// values eligible for stack promotion + RC removal in [`apply`]. Container /
+/// task allocation sites (`Build*` / `AllocTask`) are tracked by the escape
+/// analysis for region classification but are deliberately excluded here:
+/// rewriting or RC-stripping them is not this pass's responsibility.
+///
+/// Mirrors `analyze`'s Step 1b move-alias propagation so a `tmp = move alloc`
+/// chain is promoted exactly when `alloc` is.
+fn rewritable_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
+    let mut roots: HashSet<ValueId> = HashSet::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if matches!(op.opcode, OpCode::Alloc | OpCode::ObjectNewBound) {
+                for &result in &op.results {
+                    roots.insert(result);
+                }
+            }
+        }
+    }
+    if roots.is_empty() {
+        return roots;
+    }
+    // Propagate through pure SSA-move copies to a fixpoint.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode != OpCode::Copy || !is_pure_move_copy(&op.attrs) {
+                    continue;
+                }
+                let (Some(&src), Some(&dst)) = (op.operands.first(), op.results.first()) else {
+                    continue;
+                };
+                if roots.contains(&src) && roots.insert(dst) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    roots
+}
+
+/// Apply escape analysis results: rewrite non-escaping `Alloc` ops to
+/// `StackAlloc`, and remove `IncRef`/`DecRef` on non-escaping values.
+///
+/// A value is "non-escaping the function" — and therefore stack-promotable —
+/// iff its state is `NoEscape` or `ArgEscape`. `ArgEscape` means the value was
+/// passed to a callee that provably only *borrows* it (an effect-free / pure
+/// builtin or method) and never captures it: it crossed a call boundary but does
+/// not outlive the frame, so it is exactly as promotable as a purely frame-local
+/// `NoEscape` value. Only `GlobalEscape` (stored to heap/global or returned)
+/// forces heap allocation. This preserves the pre-S5 behavior, under which
+/// borrowing-call arguments were left at `NoEscape` and promoted.
 pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) -> PassStats {
     let mut stats = PassStats {
         name: "escape_analysis",
@@ -595,10 +692,25 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
         ops_added: 0,
     };
 
-    // Collect NoEscape values.
+    // The escape map now tracks container / task allocation sites too (so the
+    // alias analysis can classify their escape state). But stack-promotion and
+    // RC removal here apply ONLY to the originally-rewritable allocation roots
+    // (`Alloc` / `ObjectNewBound`) and their transparent-move aliases. Touching a
+    // `BuildList` / `AllocTask` result's refcount would be unsound (its RC
+    // balance is the runtime's, not this pass's, to manage — dropping it risks a
+    // leak or use-after-free). Restrict the promotable set accordingly; this
+    // exactly preserves the pre-S5 contract.
+    let rewritable_roots = rewritable_alloc_roots(func);
+
+    // Collect non-escaping (NoEscape ∪ ArgEscape) values that are rewritable
+    // allocation roots — those that do not escape the function and are therefore
+    // safe to stack-promote / drop RC on. `ArgEscape` (borrowed-but-not-captured)
+    // is as promotable as `NoEscape`.
     let no_escape: HashSet<ValueId> = escapes
         .iter()
-        .filter(|&(_, state)| *state == EscapeState::NoEscape)
+        .filter(|&(vid, state)| {
+            *state != EscapeState::GlobalEscape && rewritable_roots.contains(vid)
+        })
         .map(|(&vid, _)| vid)
         .collect();
 
@@ -1164,10 +1276,19 @@ mod tests {
         };
 
         let escapes = analyze(&func);
+        // `len()` borrows its argument across a call boundary without capturing
+        // it: the value does not escape the function (still stack-promotable) but
+        // is now precisely classified `ArgEscape` rather than `NoEscape` (the S5
+        // realization of the ArgEscape lattice point).
         assert_eq!(
             escapes[&alloc_val],
-            EscapeState::NoEscape,
-            "len() only borrows — alloc should not escape"
+            EscapeState::ArgEscape,
+            "len() only borrows — arg crosses a call boundary uncaptured (ArgEscape)"
+        );
+        assert_ne!(
+            escapes[&alloc_val],
+            EscapeState::GlobalEscape,
+            "borrowed arg must remain non-escaping (stack-promotable)"
         );
     }
 
@@ -1307,13 +1428,15 @@ mod tests {
         };
 
         let escapes = analyze(&func);
+        // `str.upper` (effect-free immutable-receiver method) borrows without
+        // capture: non-escaping, now precisely `ArgEscape`.
         assert_eq!(
             escapes[&alloc_val],
-            EscapeState::NoEscape,
-            "str.upper in canonical BoundMethod: form should be \
-             classified as borrowing (effect_free) — alloc stays \
-             at NoEscape"
+            EscapeState::ArgEscape,
+            "str.upper in canonical BoundMethod: form is borrowing (effect_free) — \
+             alloc crosses the call boundary uncaptured (ArgEscape, non-escaping)"
         );
+        assert_ne!(escapes[&alloc_val], EscapeState::GlobalEscape);
     }
 
     /// Malformed `BoundMethod:` strings (empty receiver, empty
@@ -1386,11 +1509,14 @@ mod tests {
         };
 
         let escapes = analyze(&func);
+        // `print` borrows its argument for I/O without capturing it: non-escaping,
+        // now precisely `ArgEscape`.
         assert_eq!(
             escapes[&alloc_val],
-            EscapeState::NoEscape,
-            "print() borrows its argument for I/O — alloc should not escape"
+            EscapeState::ArgEscape,
+            "print() borrows its argument for I/O — non-escaping (ArgEscape)"
         );
+        assert_ne!(escapes[&alloc_val], EscapeState::GlobalEscape);
     }
 
     /// Test 4: Alloc passed to Call → GlobalEscape (conservative).
@@ -1635,10 +1761,19 @@ mod tests {
         };
 
         let escapes = analyze(&func);
+        // An effect-free callee cannot store its argument, so the value does not
+        // escape the function — but it did cross a call boundary, so it is
+        // precisely `ArgEscape` (non-escaping, the key invariant: never
+        // GlobalEscape).
         assert_eq!(
             escapes[&alloc_val],
-            EscapeState::NoEscape,
-            "effect_free builtin (sorted) should not escalate escape state"
+            EscapeState::ArgEscape,
+            "effect_free builtin (sorted) borrows without capture → ArgEscape"
+        );
+        assert_ne!(
+            escapes[&alloc_val],
+            EscapeState::GlobalEscape,
+            "effect_free builtin must not escalate to GlobalEscape"
         );
     }
 }
