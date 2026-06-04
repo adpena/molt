@@ -689,8 +689,18 @@ fn opcode_touches_memory(opcode: OpCode) -> bool {
             | OpCode::ConstBytes
             // Slice from primitive bounds.
             | OpCode::BuildSlice
-            // Runtime-flag read (no heap footprint, but side-effecting elsewhere).
+            // Runtime-flag reads (no heap footprint, but side-effecting
+            // elsewhere). `CheckException` reads the pending-exception flag and
+            // conditionally transfers to a handler — it never writes heap
+            // memory. Its control-flow effect is modeled by the CFG's exception
+            // edges (which MemorySSA's phi placement follows), and
+            // `may_observe_slot` already returns `false` for it. Classifying it
+            // as memory-touching made it a spurious `GenericHeap` clobber that
+            // bumped the memory version between every adjacent field access in
+            // exception-bearing bodies (it is emitted after nearly every op),
+            // starving store-to-load forwarding for no soundness gain.
             | OpCode::ExceptionPending
+            | OpCode::CheckException
     )
 }
 

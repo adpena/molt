@@ -777,6 +777,51 @@ mod tests {
         assert!(mem.is_direct_def_of_use(store_ver, func.entry_block, 1));
     }
 
+    // ── CheckException is not a clobber ─────────────────────────────────────
+
+    #[test]
+    fn check_exception_between_store_and_load_does_not_clobber() {
+        // store(obj, val, 0); check_exception; r = load(obj, 0)
+        //
+        // `CheckException` reads the pending-exception flag — it never writes
+        // heap memory (its handler-edge control flow is modeled by the CFG, and
+        // `may_observe_slot` is false for it). It must NOT bump the memory
+        // version between the store and the load: it is emitted after nearly
+        // every op in exception-bearing bodies, so classifying it as a
+        // GenericHeap def starves store-to-load forwarding function-wide.
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let obj = ValueId(0);
+        let val = ValueId(1);
+        let r = func.fresh_value();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(store(obj, val, 0));
+            entry.ops.push(op(OpCode::CheckException, vec![], vec![]));
+            entry.ops.push(load(obj, 0, r));
+            entry.terminator = Terminator::Return { values: vec![r] };
+        }
+        let mem = run(&func);
+        let store_ver = mem
+            .def_at(func.entry_block, 0)
+            .expect("store defines a version");
+        assert!(
+            mem.def_at(func.entry_block, 1).is_none(),
+            "CheckException must not be a MemoryDef"
+        );
+        let reaching = mem
+            .reaching_def_for_use(func.entry_block, 2)
+            .expect("load is a tracked use");
+        assert_eq!(
+            reaching, store_ver,
+            "the load must still read the store's version across CheckException"
+        );
+        assert!(mem.is_direct_def_of_use(store_ver, func.entry_block, 2));
+    }
+
     // ── AnalysisManager registration ────────────────────────────────────────
 
     #[test]
