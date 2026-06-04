@@ -540,3 +540,56 @@ Tasks:
 **On the unrolled body's `CheckException` ops:** The current `unroll_candidate` function at `loop_unroll.rs:517` clones body ops verbatim (lines 596-614) via `op.attrs.clone()`. The `value: AttrValue::Int(label)` attribute on `CheckException` ops is preserved in the clone. This is correct: all clones point at the same handler label, which resolves to the same handler block outside the loop. No remapping needed.
 
 **On Phase 3 IV-SR and Mutates::Cfg:** Adding block arguments to the loop header changes the block structure (block args are part of the block definition), so the pass is `Mutates::Cfg`. The `AnalysisManager::invalidate_cfg` will be called after it runs, clearing LoopForest, PredMap, ImmediateDoms, etc. This is correct — the loop structure is preserved but the AnalysisManager treats the function as potentially restructured.
+
+---
+
+## CORRECTION — empirically verified 2026-06-04 (native codegen, `MOLT_DUMP_IR`)
+
+**The L4 gate fix is correct and sound but COMPLETELY INERT on real code. The
+three passes fire 0 times BEFORE and AFTER `has_exception_handling →
+has_exception_handlers()`. The premise (here and in the baton) that "the
+exception gate is THE blocker disabling these passes on real code" is
+INCOMPLETE — the passes were already inert for reasons INDEPENDENT of, and
+predating, the exception gate.** This was found by implementing the full gate fix
+(+ `TerminatorOnlyPredMap`), confirming 889 lib tests + 0 warnings, then dumping
+real probes and measuring per-pass stats — all `(0,0,0)`. The implementation was
+reverted (not landed) because shipping an inert prod-codegen change that implies
+"loop opts re-enabled" would be false, and the block_versioning/type_guard_hoist
+observation path is untested (nothing makes them fire).
+
+Root causes, independent of the gate (these are the REAL L4 prerequisites):
+
+1. **block_versioning + type_guard_hoist: NO `TypeGuard` ops are generated.** A
+   polymorphic loop (`for x in items: total += x.value`) produces **zero**
+   `TypeGuard` ops in the TIR (`grep TypeGuard` = 0, pre and post pipeline).
+   Both passes exist solely to specialize/hoist `TypeGuard` ops; with none
+   emitted by `type_refine` for real polymorphic-dispatch patterns, they have no
+   candidates regardless of the gate. **Real prerequisite: emit `TypeGuard` ops
+   for polymorphic attribute/method/operator dispatch** (in `type_refine` or the
+   frontend lowering), so SBBV/guard-hoist have something to specialize.
+
+2. **loop_unroll: TOTAL shape mismatch.** The detector requires a *canonical*
+   loop — a **1-arg header** (the IV only) whose **terminator is the `CondBranch`
+   with the comparison in the header**. Real `for i in range(N)` lowers to the
+   OPPOSITE: a **multi-arg header** (IV + every loop-carried value, e.g. an
+   accumulator `acc`) ending in a plain `Branch` to a **separate cond block** that
+   holds the `Lt`. `range_devirt` does NOT canonicalize this — it only converts
+   *iterator* loops (`IterNextUnboxed`), and the frontend already emits a
+   **counted** loop (no `IterNextUnboxed`/`ForIter`/`GetIter` to match), so
+   `range_devirt = (0,0,0)`. loop_unroll therefore fires on ~no real counted loop.
+   (Both the integrated-program "swap iter_devirt before range_devirt" and this
+   blueprint's "match `ForIter`" hypotheses are wrong: there is no iterator op in
+   the loop at all.) **Real prerequisite: loop-shape canonicalization** (rewrite
+   the frontend's `multi-arg-header → Branch → separate-cond-block` counted loop
+   into the `1-arg-header + comparison-in-header` form) **AND generalize the
+   detector to multi-arg headers** (thread loop-carried values through each
+   unrolled iteration). This is a real, miscompile-sensitive structural arc, not
+   a gate flip.
+
+**Corrected L4 dependency order:** (a) `TypeGuard`-op generation for polymorphic
+dispatch → unblocks block_versioning + type_guard_hoist; (b) loop-shape
+canonicalization + multi-arg-header unroll generalization → unblocks loop_unroll;
+(c) THEN the `has_exception_handlers()` gate fix + `TerminatorOnlyPredMap`, landed
+WITH (a)/(b) so the passes are non-inert and the observation path is exercised by
+real differential tests (the exception-mid-loop soundness case). The gate fix is a
+~30-line change trivially re-applied as the last step of (c).
