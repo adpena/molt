@@ -20,6 +20,7 @@ pub mod ip_summary;
 pub mod iter_devirt;
 pub mod licm;
 pub mod loop_unroll;
+pub mod memory_ssa;
 pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
