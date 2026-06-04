@@ -702,6 +702,8 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         "call",
         "call_internal",
         "call_method",
+        "call_method_ic",
+        "call_super_method_ic",
         "call_function_ex",
         "call_intrinsic",
         "store_global",
@@ -1492,6 +1494,394 @@ pub fn canonicalize_direct_raise_edges(func_ir: &mut FunctionIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
+/// Count every textual use of a value name across an op's `args`, `var`, and
+/// (deliberately excluded) `out`.  Used by `fuse_method_dispatch` to prove a
+/// getattr / callargs temporary is single-use before fusing it away.
+fn fuse_count_value_reads(ops: &[OpIR], name: &str) -> usize {
+    let mut n = 0usize;
+    for op in ops {
+        if let Some(args) = &op.args {
+            for a in args {
+                if a == name {
+                    n += 1;
+                }
+            }
+        }
+        if op.var.as_deref() == Some(name) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Fuse the `obj.method(args...)` dispatch idiom into a single `call_method_ic`
+/// op (the CPython `LOAD_METHOD`/`CALL_METHOD` optimisation).
+///
+/// The frontend lowers a user-method call on a same-module instance to:
+///
+/// ```text
+/// get_attr_generic_ptr  out=T   args=[recv]  s_value=<method>   # alloc bound method
+/// (check_exception/line/nop ...)
+/// callargs_new          out=CA                                  # alloc callargs
+/// callargs_push_pos     out=_   args=[CA, a0]
+/// callargs_push_pos     out=_   args=[CA, a1] ...
+/// call_bind             out=R   args=[T, CA]                    # generic dispatch
+/// ```
+///
+/// Both `get_attr_generic_ptr` (bound-method alloc) and `callargs_new`
+/// (callargs alloc) recur every call.  This pass rewrites the quartet to:
+///
+/// ```text
+/// call_method_ic        out=R   args=[recv, a0, a1, ...]  s_value=<method>
+/// ```
+///
+/// which lowers to a single allocation-free runtime call (`molt_call_method_icN`).
+///
+/// SOUNDNESS (each is required before fusing; otherwise the site is left as-is):
+///   * `T` (the getattr result) is referenced by EXACTLY this `call_bind` and
+///     nowhere else — proven by a whole-function read count.
+///   * `CA` (the callargs) is referenced ONLY by its `callargs_push_pos` chain
+///     and this `call_bind` — no `callargs_push_kw`, no escape.
+///   * Every `callargs_push_pos` for `CA` lies between `callargs_new` and
+///     `call_bind` with no intervening control-flow boundary (label/jump/br_if/
+///     loop_*/ret/raise), so positional order is preserved.
+///   * The `get_attr_generic_ptr` has a single recv arg and an `s_value` method
+///     name (it is a method getattr, not a field/dunder access shape).
+///
+/// The runtime op reproduces getattr+call semantics including all descriptor /
+/// instance-shadow / `__getattribute__` fallbacks, so behaviour is preserved.
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+pub fn fuse_method_dispatch(func_ir: &mut FunctionIR) {
+    if std::env::var("MOLT_DISABLE_METHOD_FUSION").is_ok() {
+        return;
+    }
+    let len = func_ir.ops.len();
+    if len < 3 {
+        return;
+    }
+
+    fn is_control_boundary(kind: &str) -> bool {
+        matches!(
+            kind,
+            "label"
+                | "state_label"
+                | "jump"
+                | "br_if"
+                | "if"
+                | "else"
+                | "end_if"
+                | "phi"
+                | "loop_start"
+                | "loop_end"
+                | "loop_continue"
+                | "loop_break"
+                | "loop_break_if_true"
+                | "loop_break_if_false"
+                | "loop_break_if_exception"
+                | "ret"
+                | "raise"
+        )
+    }
+
+    // Map each value name to the op index that defines it (its `out`).
+    let mut def_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, op) in func_ir.ops.iter().enumerate() {
+        if let Some(out) = &op.out
+            && out != "none"
+        {
+            def_idx.insert(out.clone(), i);
+        }
+    }
+
+    // remove[i]=true => drop op i; replace[i]=Some(op) => substitute op i.
+    let mut remove = vec![false; len];
+    let mut replacement: Vec<Option<OpIR>> = (0..len).map(|_| None).collect();
+
+    for idx in 0..len {
+        if func_ir.ops[idx].kind != "call_bind" {
+            continue;
+        }
+        let call = &func_ir.ops[idx];
+        let Some(call_args) = call.args.as_ref() else {
+            continue;
+        };
+        if call_args.len() != 2 {
+            continue;
+        }
+        let callee_name = call_args[0].clone();
+        let callargs_name = call_args[1].clone();
+
+        // The callee must be defined by a method `get_attr_generic_ptr`.
+        let Some(&getattr_idx) = def_idx.get(&callee_name) else {
+            continue;
+        };
+        let getattr = &func_ir.ops[getattr_idx];
+        if getattr.kind != "get_attr_generic_ptr" {
+            continue;
+        }
+        let Some(getattr_args) = getattr.args.as_ref() else {
+            continue;
+        };
+        if getattr_args.len() != 1 {
+            continue;
+        }
+        let Some(method_name) = getattr.s_value.clone() else {
+            continue;
+        };
+        let recv_name = getattr_args[0].clone();
+
+        // The callargs must be defined by a `callargs_new`.
+        let Some(&callargs_new_idx) = def_idx.get(&callargs_name) else {
+            continue;
+        };
+        if func_ir.ops[callargs_new_idx].kind != "callargs_new" {
+            continue;
+        }
+        if callargs_new_idx >= idx || getattr_idx >= idx {
+            continue;
+        }
+
+        // The callee temporary must be single-use (this call_bind only).
+        if fuse_count_value_reads(&func_ir.ops, &callee_name) != 1 {
+            continue;
+        }
+
+        // Collect the positional pushes for this callargs builder, in order,
+        // and confirm the builder is used ONLY by its pushes and this call.
+        let mut arg_names: Vec<String> = Vec::new();
+        let mut push_indices: Vec<usize> = Vec::new();
+        let mut callargs_extra_use = false;
+        let mut ok = true;
+        for (j, op) in func_ir.ops.iter().enumerate() {
+            if j == callargs_new_idx || j == idx {
+                continue;
+            }
+            let uses_ca = op
+                .args
+                .as_ref()
+                .is_some_and(|a| a.iter().any(|x| x == &callargs_name))
+                || op.var.as_deref() == Some(&callargs_name);
+            if !uses_ca {
+                continue;
+            }
+            if op.kind == "callargs_push_pos" {
+                // Must be inside the new..call window so order is preserved.
+                if j <= callargs_new_idx || j >= idx {
+                    ok = false;
+                    break;
+                }
+                let a = op.args.as_ref().unwrap();
+                if a.len() != 2 || a[0] != callargs_name {
+                    ok = false;
+                    break;
+                }
+                push_indices.push(j);
+                arg_names.push(a[1].clone());
+            } else {
+                // Any other consumer (push_kw, expand_star, escape) => bail.
+                callargs_extra_use = true;
+                break;
+            }
+        }
+        if !ok || callargs_extra_use {
+            continue;
+        }
+        // No control-flow boundary may sit between callargs_new and call_bind,
+        // or positional ordering could differ at runtime.
+        if (callargs_new_idx + 1..idx).any(|k| is_control_boundary(func_ir.ops[k].kind.as_str())) {
+            continue;
+        }
+        // The fast path family covers 0..=4 positional args; higher arity keeps
+        // the legacy lowering (no regression).
+        if arg_names.len() > 4 {
+            continue;
+        }
+
+        // Build the fused op: args = [recv, a0, a1, ...].
+        let mut fused_args = Vec::with_capacity(1 + arg_names.len());
+        fused_args.push(recv_name);
+        fused_args.extend(arg_names);
+        let mut fused = OpIR {
+            kind: "call_method_ic".to_string(),
+            ..Default::default()
+        };
+        fused.out = func_ir.ops[idx].out.clone();
+        fused.args = Some(fused_args);
+        fused.s_value = Some(method_name);
+        // Preserve traceback span from the original call_bind.
+        fused.col_offset = func_ir.ops[idx].col_offset;
+        fused.end_col_offset = func_ir.ops[idx].end_col_offset;
+
+        replacement[idx] = Some(fused);
+        remove[getattr_idx] = true;
+        remove[callargs_new_idx] = true;
+        for p in push_indices {
+            remove[p] = true;
+        }
+    }
+
+    // ── super().method(args) — fuse super_new + get_attr_generic_obj +
+    //    callargs + call_indirect into a single `call_super_method_ic`. ──
+    for idx in 0..len {
+        if remove[idx] || replacement[idx].is_some() {
+            continue;
+        }
+        if func_ir.ops[idx].kind != "call_indirect" {
+            continue;
+        }
+        let call = &func_ir.ops[idx];
+        let Some(call_args) = call.args.as_ref() else {
+            continue;
+        };
+        if call_args.len() != 2 {
+            continue;
+        }
+        let callee_name = call_args[0].clone();
+        let callargs_name = call_args[1].clone();
+
+        // Callee must be `get_attr_generic_obj(super_obj)` with a method name.
+        let Some(&getattr_idx) = def_idx.get(&callee_name) else {
+            continue;
+        };
+        if remove[getattr_idx] {
+            continue;
+        }
+        let getattr = &func_ir.ops[getattr_idx];
+        if getattr.kind != "get_attr_generic_obj" {
+            continue;
+        }
+        let Some(getattr_args) = getattr.args.as_ref() else {
+            continue;
+        };
+        if getattr_args.len() != 1 {
+            continue;
+        }
+        let Some(method_name) = getattr.s_value.clone() else {
+            continue;
+        };
+        let super_name = getattr_args[0].clone();
+
+        // The super object must come from `super_new(class, self)`.
+        let Some(&super_idx) = def_idx.get(&super_name) else {
+            continue;
+        };
+        if remove[super_idx] {
+            continue;
+        }
+        let super_op = &func_ir.ops[super_idx];
+        if super_op.kind != "super_new" {
+            continue;
+        }
+        let Some(super_args) = super_op.args.as_ref() else {
+            continue;
+        };
+        if super_args.len() != 2 {
+            continue;
+        }
+        let class_name = super_args[0].clone();
+        let self_name = super_args[1].clone();
+
+        // Callargs must come from a callargs_new and be used only by its pushes.
+        let Some(&callargs_new_idx) = def_idx.get(&callargs_name) else {
+            continue;
+        };
+        if remove[callargs_new_idx] || func_ir.ops[callargs_new_idx].kind != "callargs_new" {
+            continue;
+        }
+        if super_idx >= idx || getattr_idx >= idx || callargs_new_idx >= idx {
+            continue;
+        }
+
+        // The getattr result AND the super object must each be single-use.
+        if fuse_count_value_reads(&func_ir.ops, &callee_name) != 1 {
+            continue;
+        }
+        if fuse_count_value_reads(&func_ir.ops, &super_name) != 1 {
+            continue;
+        }
+
+        let mut arg_names: Vec<String> = Vec::new();
+        let mut push_indices: Vec<usize> = Vec::new();
+        let mut bail = false;
+        for (j, op) in func_ir.ops.iter().enumerate() {
+            if j == callargs_new_idx || j == idx {
+                continue;
+            }
+            let uses_ca = op
+                .args
+                .as_ref()
+                .is_some_and(|a| a.iter().any(|x| x == &callargs_name))
+                || op.var.as_deref() == Some(&callargs_name);
+            if !uses_ca {
+                continue;
+            }
+            if op.kind == "callargs_push_pos" {
+                if j <= callargs_new_idx || j >= idx {
+                    bail = true;
+                    break;
+                }
+                let a = op.args.as_ref().unwrap();
+                if a.len() != 2 || a[0] != callargs_name {
+                    bail = true;
+                    break;
+                }
+                push_indices.push(j);
+                arg_names.push(a[1].clone());
+            } else {
+                bail = true;
+                break;
+            }
+        }
+        if bail || arg_names.len() > 4 {
+            continue;
+        }
+        if (callargs_new_idx + 1..idx).any(|k| is_control_boundary(func_ir.ops[k].kind.as_str())) {
+            continue;
+        }
+
+        // Build: call_super_method_ic  args=[class, self, a0, ...]  s_value=M.
+        let mut fused_args = Vec::with_capacity(2 + arg_names.len());
+        fused_args.push(class_name);
+        fused_args.push(self_name);
+        fused_args.extend(arg_names);
+        let mut fused = OpIR {
+            kind: "call_super_method_ic".to_string(),
+            ..Default::default()
+        };
+        fused.out = func_ir.ops[idx].out.clone();
+        fused.args = Some(fused_args);
+        fused.s_value = Some(method_name);
+        fused.col_offset = func_ir.ops[idx].col_offset;
+        fused.end_col_offset = func_ir.ops[idx].end_col_offset;
+
+        replacement[idx] = Some(fused);
+        remove[super_idx] = true;
+        remove[getattr_idx] = true;
+        remove[callargs_new_idx] = true;
+        for p in push_indices {
+            remove[p] = true;
+        }
+    }
+
+    if remove.iter().any(|&r| r) || replacement.iter().any(|r| r.is_some()) {
+        let mut new_ops = Vec::with_capacity(len);
+        for (i, op) in func_ir.ops.drain(..).enumerate() {
+            if remove[i] {
+                continue;
+            }
+            if let Some(rep) = replacement[i].take() {
+                new_ops.push(rep);
+            } else {
+                new_ops.push(op);
+            }
+        }
+        func_ir.ops = new_ops;
+    }
+}
+
 pub fn eliminate_redundant_guard_tags(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_GUARD_ELIM").is_ok() {
         return;
@@ -5290,6 +5680,149 @@ mod tests {
         match previous {
             Some(value) => unsafe { std::env::set_var("MOLT_MAX_FUNCTION_OPS", value) },
             None => unsafe { std::env::remove_var("MOLT_MAX_FUNCTION_OPS") },
+        }
+    }
+
+    fn op_with(
+        kind: &str,
+        out: Option<&str>,
+        s_value: Option<&str>,
+        args: &[&str],
+    ) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            out: out.map(str::to_string),
+            s_value: s_value.map(str::to_string),
+            args: if args.is_empty() {
+                None
+            } else {
+                Some(args.iter().map(|a| a.to_string()).collect())
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fuse_method_dispatch_rewrites_getattr_call_idiom() {
+        // get_attr_generic_ptr(recv, "compute") -> callargs -> call_bind
+        // must collapse to a single call_method_ic(recv, x) op.
+        let mut func = FunctionIR {
+            name: "f".to_string(),
+            params: vec!["recv".to_string(), "x".to_string()],
+            ops: vec![
+                op_with("get_attr_generic_ptr", Some("t"), Some("compute"), &["recv"]),
+                op_with("check_exception", None, None, &[]),
+                op_with("callargs_new", Some("ca"), None, &[]),
+                op_with("callargs_push_pos", Some("_p"), None, &["ca", "x"]),
+                op_with("call_bind", Some("r"), None, &["t", "ca"]),
+                op_with("ret", None, None, &["r"]),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        fuse_method_dispatch(&mut func);
+        // The getattr / callargs_new / callargs_push_pos / call_bind quartet
+        // collapses to a single call_method_ic; check_exception + ret survive.
+        let fused: Vec<&str> = func.ops.iter().map(|o| o.kind.as_str()).collect();
+        assert_eq!(fused, vec!["check_exception", "call_method_ic", "ret"]);
+        let ic = func
+            .ops
+            .iter()
+            .find(|o| o.kind == "call_method_ic")
+            .unwrap();
+        assert_eq!(ic.out.as_deref(), Some("r"));
+        assert_eq!(ic.s_value.as_deref(), Some("compute"));
+        assert_eq!(
+            ic.args.as_ref().unwrap(),
+            &vec!["recv".to_string(), "x".to_string()]
+        );
+    }
+
+    #[test]
+    fn fuse_method_dispatch_skips_multi_use_getattr() {
+        // If the getattr result is used by something other than the call_bind
+        // callee (here a second store_var), fusion must NOT fire (the bound
+        // method escapes and its identity may be observed).
+        let mut func = FunctionIR {
+            name: "f".to_string(),
+            params: vec!["recv".to_string(), "x".to_string()],
+            ops: vec![
+                op_with("get_attr_generic_ptr", Some("t"), Some("compute"), &["recv"]),
+                op_with("store_var", Some("_s"), None, &["t"]),
+                op_with("callargs_new", Some("ca"), None, &[]),
+                op_with("callargs_push_pos", Some("_p"), None, &["ca", "x"]),
+                op_with("call_bind", Some("r"), None, &["t", "ca"]),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let before: Vec<String> = func.ops.iter().map(|o| o.kind.clone()).collect();
+        fuse_method_dispatch(&mut func);
+        let after: Vec<String> = func.ops.iter().map(|o| o.kind.clone()).collect();
+        assert_eq!(before, after, "multi-use getattr must not be fused");
+    }
+
+    #[test]
+    fn fuse_method_dispatch_rewrites_super_idiom() {
+        // super_new(class, self) -> get_attr_generic_obj -> callargs ->
+        // call_indirect must collapse to call_super_method_ic(class, self, x).
+        let mut func = FunctionIR {
+            name: "m".to_string(),
+            params: vec!["self".to_string(), "x".to_string()],
+            ops: vec![
+                op_with("super_new", Some("sup"), None, &["cls", "self"]),
+                op_with("get_attr_generic_obj", Some("t"), Some("compute"), &["sup"]),
+                op_with("callargs_new", Some("ca"), None, &[]),
+                op_with("callargs_push_pos", Some("_p"), None, &["ca", "x"]),
+                op_with("call_indirect", Some("r"), None, &["t", "ca"]),
+                op_with("ret", None, None, &["r"]),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        fuse_method_dispatch(&mut func);
+        let kinds: Vec<&str> = func.ops.iter().map(|o| o.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["call_super_method_ic", "ret"]);
+        let ic = func
+            .ops
+            .iter()
+            .find(|o| o.kind == "call_super_method_ic")
+            .unwrap();
+        assert_eq!(ic.s_value.as_deref(), Some("compute"));
+        assert_eq!(
+            ic.args.as_ref().unwrap(),
+            &vec!["cls".to_string(), "self".to_string(), "x".to_string()]
+        );
+    }
+
+    #[test]
+    fn fuse_method_dispatch_disabled_by_env() {
+        let prev = std::env::var("MOLT_DISABLE_METHOD_FUSION").ok();
+        unsafe { std::env::set_var("MOLT_DISABLE_METHOD_FUSION", "1") };
+        let mut func = FunctionIR {
+            name: "f".to_string(),
+            params: vec!["recv".to_string(), "x".to_string()],
+            ops: vec![
+                op_with("get_attr_generic_ptr", Some("t"), Some("compute"), &["recv"]),
+                op_with("callargs_new", Some("ca"), None, &[]),
+                op_with("callargs_push_pos", Some("_p"), None, &["ca", "x"]),
+                op_with("call_bind", Some("r"), None, &["t", "ca"]),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        fuse_method_dispatch(&mut func);
+        assert!(
+            func.ops.iter().all(|o| o.kind != "call_method_ic"),
+            "fusion must be a no-op when disabled by env"
+        );
+        match prev {
+            Some(v) => unsafe { std::env::set_var("MOLT_DISABLE_METHOD_FUSION", v) },
+            None => unsafe { std::env::remove_var("MOLT_DISABLE_METHOD_FUSION") },
         }
     }
 }

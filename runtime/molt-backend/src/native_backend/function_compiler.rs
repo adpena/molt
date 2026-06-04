@@ -25577,6 +25577,211 @@ impl SimpleBackend {
                         &mut block_tracked_ptr,
                     );
                 }
+                "call_method_ic" => {
+                    // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
+                    //   args = [recv, a0, a1, ...]  s_value = <method name>
+                    // Lowers to a single `molt_call_method_icN(site, recv, name,
+                    // name_len, a0..)` call — no bound-method/callargs alloc on
+                    // the fast path, identical legacy behaviour on the slow path.
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let recv_bits = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args_names[0],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("call_method_ic receiver not found");
+                    let mut extra_args = Vec::new();
+                    for name in &args_names[1..] {
+                        extra_args.push(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                name,
+                                &int_primary_vars,
+                                &float_primary_vars,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .expect("call_method_ic arg not found"),
+                        );
+                    }
+                    let method_name = op
+                        .s_value
+                        .as_ref()
+                        .expect("call_method_ic missing method name");
+                    // Emit the method name as a private data symbol (same shape
+                    // as get_attr_generic_ptr) and pass (ptr, len).
+                    let data_id = self
+                        .module
+                        .declare_data(
+                            &format!("mname_{}_{}", func_ir.name, op_idx),
+                            Linkage::Local,
+                            false,
+                            false,
+                        )
+                        .unwrap();
+                    let mut data_ctx = DataDescription::new();
+                    data_ctx.define(method_name.as_bytes().to_vec().into_boxed_slice());
+                    self.module.define_data(data_id, &data_ctx).unwrap();
+                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                    let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                    let name_len = builder
+                        .ins()
+                        .iconst(types::I64, method_name.len() as i64);
+                    let site_bits = builder.ins().iconst(
+                        types::I64,
+                        box_int(stable_ic_site_id(
+                            func_ir.name.as_str(),
+                            op_idx,
+                            "call_method_ic",
+                        )),
+                    );
+                    let symbol = match extra_args.len() {
+                        0 => "molt_call_method_ic0",
+                        1 => "molt_call_method_ic1",
+                        2 => "molt_call_method_ic2",
+                        3 => "molt_call_method_ic3",
+                        _ => "molt_call_method_ic4",
+                    };
+                    // site + recv + name_ptr + name_len + one I64 per extra arg.
+                    let sig_params = vec![types::I64; 4 + extra_args.len()];
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        symbol,
+                        &sig_params,
+                        &[types::I64],
+                    );
+                    let local = self.module.declare_func_in_func(callee, builder.func);
+                    let mut call_args = vec![site_bits, *recv_bits, name_ptr, name_len];
+                    call_args.extend_from_slice(&extra_args);
+                    let call = builder.ins().call(local, &call_args);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
+                "call_super_method_ic" => {
+                    // Fused `super().method(args)` dispatch (no super-object /
+                    // bound-method / callargs allocation on the fast path):
+                    //   args = [class, self, a0, a1, ...]  s_value = <method>
+                    // Lowers to `molt_call_super_method_icN(site, class, self,
+                    // name, name_len, a0..)`.
+                    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let class_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args_names[0],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("call_super_method_ic class not found");
+                    let self_bits = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args_names[1],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("call_super_method_ic self not found");
+                    let mut extra_args = Vec::new();
+                    for name in &args_names[2..] {
+                        extra_args.push(
+                            *var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                name,
+                                &int_primary_vars,
+                                &float_primary_vars,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .expect("call_super_method_ic arg not found"),
+                        );
+                    }
+                    let method_name = op
+                        .s_value
+                        .as_ref()
+                        .expect("call_super_method_ic missing method name");
+                    let data_id = self
+                        .module
+                        .declare_data(
+                            &format!("smname_{}_{}", func_ir.name, op_idx),
+                            Linkage::Local,
+                            false,
+                            false,
+                        )
+                        .unwrap();
+                    let mut data_ctx = DataDescription::new();
+                    data_ctx.define(method_name.as_bytes().to_vec().into_boxed_slice());
+                    self.module.define_data(data_id, &data_ctx).unwrap();
+                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                    let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                    let name_len = builder
+                        .ins()
+                        .iconst(types::I64, method_name.len() as i64);
+                    let site_bits = builder.ins().iconst(
+                        types::I64,
+                        box_int(stable_ic_site_id(
+                            func_ir.name.as_str(),
+                            op_idx,
+                            "call_super_method_ic",
+                        )),
+                    );
+                    let symbol = match extra_args.len() {
+                        0 => "molt_call_super_method_ic0",
+                        1 => "molt_call_super_method_ic1",
+                        2 => "molt_call_super_method_ic2",
+                        3 => "molt_call_super_method_ic3",
+                        _ => "molt_call_super_method_ic4",
+                    };
+                    // site + class + self + name_ptr + name_len + one per arg.
+                    let sig_params = vec![types::I64; 5 + extra_args.len()];
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        symbol,
+                        &sig_params,
+                        &[types::I64],
+                    );
+                    let local = self.module.declare_func_in_func(callee, builder.func);
+                    let mut call_args =
+                        vec![site_bits, class_bits, self_bits, name_ptr, name_len];
+                    call_args.extend_from_slice(&extra_args);
+                    let call = builder.ins().call(local, &call_args);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "call_method" => {
                     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let method_bits = var_get_boxed_overflow_safe(

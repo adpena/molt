@@ -2991,8 +2991,15 @@ impl SimpleBackend {
         let progress_interval = (func_count / 20).clamp(1, 50);
         let mut last_progress = std::time::Instant::now();
 
-        for func_ir in ir.functions {
+        for mut func_ir in ir.functions {
             let func_name = func_ir.name.clone();
+            // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs +
+            // call_bind) into a single allocation-free `call_method_ic` op
+            // (CPython LOAD_METHOD/CALL_METHOD optimisation).  Run as the LAST
+            // transformation before codegen: `call_method_ic` is a backend-only
+            // op with no TIR opcode, so it must not re-enter the TIR roundtrip
+            // or the whole-program leaf/alias analyses (all already complete).
+            fuse_method_dispatch(&mut func_ir);
             let func_start = std::time::Instant::now();
             self.compile_func(
                 func_ir,
