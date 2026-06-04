@@ -2961,22 +2961,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return False
 
     @staticmethod
-    def _function_needs_exception_stack(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> bool:
-        """Return True if the function body contains try/except/with statements.
+    def _body_has_exception_handlers(body: list[ast.stmt]) -> bool:
+        """Return True if the body contains try/with handler constructs.
 
-        Functions without these constructs do not need the exception stack
-        bookkeeping (EXCEPTION_STACK_ENTER/DEPTH/EXIT, CHECK_EXCEPTION after
-        every op, raise-if-pending at return points).  Skipping this overhead
-        saves 8+ ops per function call.
+        This gates ONLY the exception-STACK depth bookkeeping
+        (EXCEPTION_STACK_ENTER/DEPTH/SET_DEPTH/EXIT), which is needed solely
+        when the function pushes/pops the runtime exception-handler stack — i.e.
+        it contains ``try``/``with`` (and their async/star variants).
+
+        It does NOT gate exception OBSERVATION: every function unconditionally
+        carries a function-level exception label and the per-may-raise-op
+        CHECK_EXCEPTION routing, so a raising callee's pending exception is
+        always observed.  Decoupling these two concerns is the C2 fix — the old
+        ``_function_needs_exception_stack`` conflated them and (by opting a
+        function out of *observation*) caused silent-wrong exception
+        propagation.  A bare ``raise`` does NOT require depth bookkeeping: it
+        sets the pending flag and jumps to the function label, whose handler's
+        depth-restore is a no-op when no handler stack was ever pushed.
         """
-        stack: list[ast.AST] = list(node.body)
+        stack: list[ast.AST] = list(body)
         while stack:
             current = stack.pop()
-            if isinstance(
-                current, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith, ast.Raise)
-            ):
+            if isinstance(current, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)):
                 return True
             if isinstance(
                 current,
@@ -3164,7 +3170,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         param_types: list[str] | None = None,
         type_facts_name: str | None = None,
         needs_return_slot: bool = False,
-        needs_exception_stack: bool = True,
+        has_exception_handlers: bool = True,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
@@ -3219,8 +3225,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_scopes = []
         self.try_suppress_depth = None
         self.try_handler_scopes = []
-        if needs_exception_stack:
-            self.function_exception_label = self.next_label()
+        # ── Exception model (C2): two decoupled concerns ──────────────────
+        # 1. OBSERVATION — every function unconditionally carries a
+        #    function-level exception label.  `emit()` auto-routes a pending
+        #    exception to this label after every may-raise op (the redundant
+        #    checks are removed later by the oracle-driven `check_exception_elim`
+        #    TIR pass).  A raising callee sets the runtime exception-pending flag
+        #    regardless of the caller's syntactic shape, so there is NO sound way
+        #    to opt a function out of observation without re-opening the
+        #    silent-wrong-propagation bug class (a lambda that calls
+        #    `int("x")` returning None instead of raising).  Hence the label is
+        #    ALWAYS created.
+        #
+        # 2. STACK-DEPTH bookkeeping (EXCEPTION_STACK_ENTER/DEPTH and the
+        #    matching SET_DEPTH/EXIT at returns) — needed ONLY when the function
+        #    pushes/pops the runtime exception-handler stack, i.e. it contains a
+        #    `try`/`with` handler.  A function without handlers never changes the
+        #    depth, so the ENTER/DEPTH baselines (and their per-return restore)
+        #    are pure overhead.  Gating them on `has_exception_handlers` keeps a
+        #    trivial leaf like `lambda x: x + 1` cheap (label + post-op check
+        #    only) — the same cost CPython pays — while preserving full
+        #    correctness for handler-bearing functions.
+        self.function_exception_label = self.next_label()
+        if has_exception_handlers:
             self.exception_stack_prev_baseline = MoltValue(
                 self.next_var(), type_hint="int"
             )
@@ -3242,7 +3269,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
         else:
-            self.function_exception_label = None
             self.exception_stack_prev_baseline = None
             self.exception_stack_depth_baseline = None
         self.return_unwind_depth = 0
@@ -11580,27 +11606,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         pair = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="ITER_NEXT", args=[iter_obj], result=pair))
         if not self.try_end_labels:
-            if self.function_exception_label is not None:
-                # needs_exception_stack=True: route a pending exception to the
-                # function exception label (proven straight-line propagation).
-                self._emit_raise_if_pending(emit_exit=True)
-            else:
-                # needs_exception_stack=False: there is no exception label, so
-                # `_emit_raise_if_pending` would be a no-op and the hand-rolled
-                # consumption loop (driven off the done flag alone) would spin
-                # forever when ITER_NEXT raises mid-iteration — the producer
-                # returns the None sentinel and `done` never becomes truthy.
-                # Break the loop on a pending exception via a control op that
-                # lowers to the sacrosanct `molt_exception_pending_fast` read
-                # (never foldable, unlike a value-based None check); the still
-                # pending exception then rides up the lazy-return path.
-                self.emit(
-                    MoltOp(
-                        kind="LOOP_BREAK_IF_EXCEPTION",
-                        args=[],
-                        result=MoltValue("none"),
-                    )
-                )
+            # Every function now carries a function-level exception label
+            # (needs_exception_stack defaults to True), so a pending exception
+            # from ITER_NEXT always routes to the function handler via
+            # `_emit_raise_if_pending`.  The former `else` branch — which
+            # emitted LOOP_BREAK_IF_EXCEPTION for label-less functions — is
+            # unreachable and has been removed.  (The LOOP_BREAK_IF_EXCEPTION
+            # opcode itself is retained for other emission sites.)
+            assert self.function_exception_label is not None, (
+                "every function must carry a function-level exception label"
+            )
+            self._emit_raise_if_pending(emit_exit=True)
         return pair
 
     def _emit_guarded_setattr(
@@ -15619,6 +15635,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 params=method_params,
                 type_facts_name=f"{node.name}.{method_name}",
                 needs_return_slot=False,
+                has_exception_handlers=self._body_has_exception_handlers(item.body),
             )
             if has_closure:
                 self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
@@ -30765,7 +30782,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         is_generator = self._function_contains_yield(node)
         needs_locals_cache = self._function_contains_locals_call(node)
         has_return = self._function_contains_return(node)
-        needs_exc_stack = self._function_needs_exception_stack(node)
         func_name = node.name
         qualname = self._qualname_for_def(func_name)
         if is_generator:
@@ -31193,8 +31209,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             params=func_params,
             param_types=_param_type_hints if _param_type_hints else None,
             type_facts_name=func_name,
-            needs_return_slot=has_return and needs_exc_stack,
-            needs_exception_stack=needs_exc_stack,
+            needs_return_slot=has_return,
+            has_exception_handlers=self._body_has_exception_handlers(node.body),
         )
         prev_gpu_kernel_context = self.current_gpu_kernel_context
         self.current_gpu_kernel_context = is_gpu_kernel
@@ -31681,7 +31697,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             func_symbol,
             params=func_params,
             type_facts_name=func_symbol,
-            needs_exception_stack=False,
+            # A lambda body is a single expression and can never contain a
+            # try/with statement, so it never pushes the exception-handler
+            # stack — only the (always-present) function exception label and
+            # post-may-raise checks are needed.
+            has_exception_handlers=False,
         )
         self.current_method_first_param = params[0] if params else None
         if has_closure:
@@ -31746,7 +31766,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if val is None:
             val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-        self.emit(MoltOp(kind="ret", args=[val], result=MoltValue("none")))
+        # Mirror the non-generator `visit_Return` tail: the lambda body is a
+        # single expression whose evaluation may have left a pending exception
+        # (e.g. `lambda: int("x")`).  With every function now carrying an
+        # exception label (needs_exception_stack=True), route any pending
+        # exception to the function handler before returning the value, so the
+        # silent-None-return bug class is un-expressible.  A lambda body never
+        # contains try/with scopes, so `return_unwind_depth == 0` and there are
+        # no `try_scopes` to unwind.
+        self._emit_exception_handler_exit_cleanup()
+        _has_exc_stack = self.exception_stack_prev_baseline is not None
+        if _has_exc_stack:
+            self._emit_raise_if_pending(emit_exit=True)
+            self._emit_restore_exception_stack_depth(exit_baseline=False)
+            self._emit_raise_if_pending()
+        self._emit_return_value(val)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
         self.current_method_first_param = prev_first_param
