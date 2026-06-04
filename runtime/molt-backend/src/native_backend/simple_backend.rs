@@ -318,12 +318,27 @@ fn analyze_native_backend_ir(ir: &SimpleIR, compute_leaves: bool) -> NativeBacke
     analyze_native_backend_functions(&ir.functions, compute_leaves)
 }
 
-/// Compute the leaf-function set via the whole-program TIR module phase
-/// (Tier-0 S4). Lifts the SimpleIR `functions` to a [`crate::tir::TirModule`],
-/// runs [`crate::tir::run_module_pipeline`] to build the call graph, and returns
-/// its leaf set. The transient `TirModule` is dropped as soon as the leaf set is
-/// extracted, so peak additional memory is one whole-program TIR lift (the same
-/// function set already held as `FunctionIR`), not a retained copy.
+/// Compute the leaf-function set over the whole-program TIR call graph
+/// (Tier-0 S4). Lifts the SimpleIR `functions` to a [`crate::tir::TirModule`]
+/// and returns the leaf set of its [`crate::tir::CallGraph`]. The transient
+/// `TirModule` is dropped as soon as the leaf set is extracted, so peak
+/// additional memory is one whole-program TIR lift (the same function set
+/// already held as `FunctionIR`), not a retained copy.
+///
+/// ## Why this builds the call graph directly, NOT via `run_module_pipeline`
+///
+/// `run_module_pipeline` now runs the **E1 inliner**, which is a body transform.
+/// This native codegen path does *not* compile the inlined `TirModule` — it
+/// compiles the original `FunctionIR`s per-function (with the SimpleIR inliner,
+/// `passes::inline_functions`, making the production inlining decisions until E1
+/// phase e retires it). The leaf set gates the recursion-guard skip at call
+/// sites in the *emitted* code, so it MUST describe the program codegen actually
+/// produces — the **pre-inline** call graph — not the post-inline TIR module the
+/// E1 transform would yield (whose inlining choices need not match the
+/// SimpleIR inliner's). Building the call graph directly here keeps the leaf set
+/// sound for this codegen path; the E1 inliner remains wired into
+/// `run_module_pipeline` for the future codegen path that consumes the inlined
+/// module (phase e).
 ///
 /// Extern functions (bodies in `stdlib_shared.o`) carry no ops here; they lift
 /// to call-free TIR and would appear "leaf", but the leaf set only gates the
@@ -341,14 +356,7 @@ fn compute_leaf_functions_via_call_graph(functions: &[FunctionIR]) -> BTreeSet<S
         name: "native_leaf_analysis".to_string(),
         functions: tir_functions,
     };
-    // Analysis-only; the cost model is unused by the call-graph build but is the
-    // stable signature of the module phase (S2 threading).
-    let tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
-        crate::tir::target_info::SimdCaps::detect_host(),
-    );
-    let mut module = module;
-    let analysis = crate::tir::run_module_pipeline(&mut module, &tti);
-    analysis.leaf_functions()
+    crate::tir::CallGraph::build(&module).leaf_functions()
 }
 
 #[cfg(feature = "native-backend")]
