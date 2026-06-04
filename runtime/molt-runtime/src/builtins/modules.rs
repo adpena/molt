@@ -906,7 +906,7 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
                     // internal payload type to user code.
                     dec_ref_bits(_py, module_bits);
                     let msg = format!("No module named '{name}'");
-                    break 'result raise_exception::<_>(_py, "ImportError", &msg);
+                    break 'result raise_exception::<_>(_py, "ModuleNotFoundError", &msg);
                 }
 
                 // Keep sys.modules synchronized with successful runtime imports so
@@ -931,7 +931,7 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
             }
             if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
                 let msg = format!("No module named '{name}'");
-                break 'result raise_exception::<_>(_py, "ImportError", &msg);
+                break 'result raise_exception::<_>(_py, "ModuleNotFoundError", &msg);
             }
             module_bits
         };
@@ -1702,7 +1702,7 @@ unsafe fn runpy_restricted_import_stmt(
             if obj_from_bits(imported_bits).is_none() {
                 if !exception_pending(_py) {
                     let message = format!("No module named '{module_name}'");
-                    return Err(raise_exception::<_>(_py, "ImportError", &message));
+                    return Err(raise_exception::<_>(_py, "ModuleNotFoundError", &message));
                 }
                 return Err(MoltObject::none().bits());
             }
@@ -1756,7 +1756,7 @@ unsafe fn runpy_restricted_from_import_stmt(
         if obj_from_bits(module_bits).is_none() {
             if !exception_pending(_py) {
                 let message = format!("No module named '{module_name}'");
-                return Err(raise_exception::<_>(_py, "ImportError", &message));
+                return Err(raise_exception::<_>(_py, "ModuleNotFoundError", &message));
             }
             return Err(MoltObject::none().bits());
         }
@@ -3071,7 +3071,7 @@ pub extern "C" fn molt_runpy_run_module(
         };
         if obj_from_bits(module_bits).is_none() && !exception_pending(_py) {
             let msg = format!("No module named '{mod_name}'");
-            return raise_exception::<_>(_py, "ImportError", &msg);
+            return raise_exception::<_>(_py, "ModuleNotFoundError", &msg);
         }
         if obj_from_bits(module_bits).is_none() {
             return MoltObject::none().bits();
@@ -3092,7 +3092,7 @@ pub extern "C" fn molt_runpy_run_module(
                 runpy_resolve_module_source(&mod_name, &sys_path)
             else {
                 let msg = format!("No module named '{mod_name}'");
-                return raise_exception::<_>(_py, "ImportError", &msg);
+                return raise_exception::<_>(_py, "ModuleNotFoundError", &msg);
             };
             return unsafe {
                 runpy_run_module_from_resolved_source(
