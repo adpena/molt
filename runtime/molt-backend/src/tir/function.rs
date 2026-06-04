@@ -129,6 +129,41 @@ impl TirFunction {
         self.next_block += 1;
         id
     }
+
+    /// True iff the function contains real exception **handler** regions —
+    /// `TryStart`/`TryEnd` (a `try`/`except`) or `StateBlockStart`/
+    /// `StateBlockEnd` (a generator/async state region).
+    ///
+    /// This is deliberately narrower than the [`has_exception_handling`] flag,
+    /// which is *also* set by [`CheckException`](super::ops::OpCode::CheckException)
+    /// observation ops. A `CheckException` in a function with no handler merely
+    /// propagates a pending exception to the function's exception EXIT (a
+    /// return-with-pending); it is not a handler. After the frontend's universal
+    /// exception-observation change (`430e09793`) virtually every real function
+    /// carries `CheckException`, so `has_exception_handling` is almost always
+    /// true — too coarse for passes whose only hazard is a true handler region.
+    ///
+    /// Passes that are unsafe **only** around handler regions (the TIR inliner:
+    /// splicing across a `try` boundary needs handler-label remapping that this
+    /// arc does not perform) gate on this predicate. Passes that must stay
+    /// conservative around *any* exception edge (e.g. the augmented-CFG
+    /// predecessor consumers) keep using `has_exception_handling`.
+    ///
+    /// [`has_exception_handling`]: TirFunction::has_exception_handling
+    pub fn has_exception_handlers(&self) -> bool {
+        use super::ops::OpCode;
+        self.blocks.values().any(|block| {
+            block.ops.iter().any(|op| {
+                matches!(
+                    op.opcode,
+                    OpCode::TryStart
+                        | OpCode::TryEnd
+                        | OpCode::StateBlockStart
+                        | OpCode::StateBlockEnd
+                )
+            })
+        })
+    }
 }
 
 /// A module: a collection of TIR functions.

@@ -29,14 +29,25 @@
 //!   binds the returned value to the original call-result `ValueId`), and deletes
 //!   the `Call`. [`run_inliner`] drives this across the module.
 //!
-//! Phases c (exception-bearing callees), d (cost / multi-site / fixed-point),
-//! and e (retire the SimpleIR inliner) are SEPARATE later arcs. This arc is a
-//! complete structural piece: [`is_inlineable`] conservatively refuses any
-//! callee with `has_exception_handling` (phase c), any recursive-SCC member, any
-//! callee over the cost-model op budget, and any callee containing a
-//! generator/async op. Refusing exception-bearing callees is *conservative-
-//! correct*, not interim: it never miscompiles, it only forgoes an optimization
-//! the later arc unlocks.
+//! Phase c (this arc) extends inlining to **observation-only** callees:
+//! functions that carry `CheckException` propagation ops but no real exception
+//! HANDLER region (no `try`/`except` `TryStart`/`TryEnd`, no generator/async
+//! `StateBlock`). Every callee exit — the normal `Return` AND the exception-exit
+//! `Return` (the `ret_void` reached only via `CheckException` edges) — is routed
+//! to the continuation block `B_cont`, whose first op is the caller's own
+//! post-call `CheckException`; that re-observes the pending flag and routes to
+//! the caller's handler exactly as the un-inlined call/return/check sequence did.
+//! The clone remaps the callee's per-function exception labels to fresh caller
+//! ids (no namespace collision) and pads a void exception-exit's branch into the
+//! value-carrying continuation with a representation-matched dead placeholder.
+//!
+//! Phases d (cost / multi-site / fixed-point) and e (retire the SimpleIR inliner)
+//! are SEPARATE later arcs. [`is_inlineable`] still conservatively refuses any
+//! callee with a true exception HANDLER region ([`TirFunction::has_exception_handlers`]),
+//! any recursive-SCC member, any callee over the cost-model op budget, and any
+//! callee containing a generator/async op. Refusing handler-bearing callees is
+//! *conservative-correct*, not interim: it never miscompiles, it only forgoes an
+//! optimization a later handler-aware arc unlocks.
 //!
 //! ## The three correctness invariants (each a miscompile if violated)
 //!
@@ -68,9 +79,11 @@ use std::collections::HashMap;
 
 use super::super::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
 use super::super::call_graph::CallGraph;
+use super::super::dominators::{reachable_blocks_with, CfgEdgePolicy};
 use super::super::function::{TirFunction, TirModule};
-use super::super::ops::{AttrDict, AttrValue, OpCode, TirOp};
+use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::target_info::TargetInfo;
+use super::super::types::TirType;
 use super::super::values::{TirValue, ValueId};
 use super::ip_summary::ModuleSummaries;
 
@@ -96,6 +109,11 @@ struct ClonedCallee {
     entry: BlockId,
     /// Every fresh block id introduced by the clone, in deterministic order.
     cloned_blocks: Vec<BlockId>,
+    /// The callee `BlockId` → cloned `BlockId` map. The splicer uses it to carry
+    /// the callee-side classification of each `Return` block (normal-return vs
+    /// exception-exit, computed on the callee's terminator-only CFG) onto the
+    /// cloned blocks when rewriting `Return`s into continuation branches.
+    block_map: HashMap<BlockId, BlockId>,
 }
 
 /// Read an op's `s_value` string attribute, if present.
@@ -181,7 +199,11 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 ///   [`ModuleSummaries`](super::ip_summary::ModuleSummaries) records.
 /// * **generator / async** — the body contains a state-machine opcode
 ///   ([`is_generator_or_async_op`]).
-/// * **exception-bearing** — `has_exception_handling` (phase c handles these).
+/// * **exception HANDLER region** — [`TirFunction::has_exception_handlers`]
+///   (`try`/`except` or generator/async state regions). Observation-only callees
+///   (`CheckException` with no handler) are NOT excluded — they inline correctly
+///   via exception-label remapping + exit routing through the caller's post-call
+///   `CheckException`.
 /// * **entry block has predecessors** — the splice binds parameters *directly*
 ///   to the call arguments and clones the callee entry as an argument-less
 ///   block. That is only SSA-valid when no branch targets the entry (i.e. the
@@ -198,13 +220,26 @@ pub fn is_inlineable(
     if call_graph.recursive_set().contains(&callee.name) {
         return false;
     }
-    if callee.has_exception_handling {
-        // Phase c. Conservative-correct exclusion this arc.
+    if callee.has_exception_handlers() {
+        // Real exception HANDLER regions (try/except via TryStart/TryEnd, or a
+        // generator/async StateBlock region): splicing across a handler boundary
+        // needs handler-label remapping + handler-edge re-targeting this arc does
+        // not perform. Conservative-correct exclusion.
+        //
+        // Observation-only callees (CheckException with NO handler — the common
+        // case after the universal exception-observation change) ARE inlinable:
+        // their CheckException ops merely propagate a pending exception to the
+        // function exit, and the splice routes every callee exit (normal Return
+        // AND exception-exit Return) through the caller's post-call CheckException
+        // (`B_cont`'s first op), re-observing the pending flag exactly as the
+        // un-inlined call/return/check sequence did. The clone remaps the callee's
+        // per-function exception labels to fresh ids so they cannot collide with
+        // the caller's label namespace (see `clone_function_body_with_fresh_ids`).
         return false;
     }
     // Defensive re-scan: never inline a body that carries a state-machine op
-    // even if `has_exception_handling` did not catch it (e.g. a bare `Yield`
-    // without a TryStart). Cheap and fail-closed.
+    // even if `has_exception_handlers` did not catch it (e.g. a bare `Yield`
+    // without a StateBlock). Cheap and fail-closed.
     if callee
         .blocks
         .values()
@@ -331,11 +366,27 @@ fn call_site_has_arg_incref(block: &TirBlock, call_op_index: usize, call_args: &
 ///   survive into the merged function.
 /// * All loop metadata (`label_id_map` + `loop_roles` + `loop_pairs` +
 ///   `loop_break_kinds` + `loop_cond_blocks`) transfer with remapped keys.
+/// * **Exception labels** are remapped to fresh caller ids. SimpleIR label ids
+///   are per-function (`next_label()` resets per function), so the callee's
+///   labels routinely collide numerically with the caller's. Both the cloned
+///   `CheckException`/`TryStart`/`TryEnd` `"value"` attrs (the handler-label
+///   reference read by [`dominators::exception_successors`] and `lower_to_simple`)
+///   AND the cloned blocks' `label_id_map` entries are remapped through one
+///   [`build_label_remap`] table so the merged function's exception edges resolve
+///   to the cloned exit block (not a colliding caller block) and `lower_to_simple`
+///   emits no duplicate `label N` ops.
 fn clone_function_body_with_fresh_ids(
     callee: &TirFunction,
     caller: &mut TirFunction,
     arg_values: &[ValueId],
 ) -> ClonedCallee {
+    // Fresh exception/label remap for this clone. Allocated ABOVE the caller's
+    // current max label so it cannot collide with any caller label (including the
+    // fresh labels of callees already inlined into this caller — `caller` is
+    // re-scanned each clone, and each clone's fresh labels were inserted into
+    // `caller.label_id_map` by `transfer_loop_metadata`).
+    let label_remap = build_label_remap(callee, caller);
+
     // Value remap: callee ValueId -> caller ValueId. Pre-seed the parameters to
     // bind directly to the call's argument values.
     let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
@@ -432,17 +483,24 @@ fn clone_function_body_with_fresh_ids(
         // annotations are dropped (see `clone_attrs_without_simple_names`): they
         // are function-local name strings with no id to remap, so a verbatim copy
         // would carry the callee's names into the caller and collide with caller
-        // values of the same name.
+        // values of the same name. Exception ops additionally have their handler
+        // `"value"` label remapped (see `remap_exception_label_attr`) so the
+        // cloned exception edge resolves to the cloned exit block, not a caller
+        // block that happens to share the callee's original (per-function) label.
         let new_ops: Vec<TirOp> = src
             .ops
             .iter()
-            .map(|op| TirOp {
-                dialect: op.dialect,
-                opcode: op.opcode,
-                operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
-                results: op.results.iter().map(|v| remap(*v, &value_map)).collect(),
-                attrs: clone_attrs_without_simple_names(&op.attrs),
-                source_span: op.source_span,
+            .map(|op| {
+                let mut attrs = clone_attrs_without_simple_names(&op.attrs);
+                remap_exception_label_attr(op.opcode, &mut attrs, &label_remap);
+                TirOp {
+                    dialect: op.dialect,
+                    opcode: op.opcode,
+                    operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
+                    results: op.results.iter().map(|v| remap(*v, &value_map)).collect(),
+                    attrs,
+                    source_span: op.source_span,
+                }
             })
             .collect();
 
@@ -478,12 +536,15 @@ fn clone_function_body_with_fresh_ids(
     // Transfer loop metadata — ALL FOUR maps plus label_id_map — with remapped
     // keys (and remapped values where the value is itself a block id). Missing
     // any of these mis-describes the merged loops to LICM / BCE / the structured
-    // back-conversion.
-    transfer_loop_metadata(callee, caller, &block_map);
+    // back-conversion. `label_id_map` LABEL VALUES are remapped through
+    // `label_remap` (matching the exception-op `"value"` attr remap above) so the
+    // cloned blocks carry collision-free labels.
+    transfer_loop_metadata(callee, caller, &block_map, &label_remap);
 
     ClonedCallee {
         entry: remap_block(callee.entry_block),
         cloned_blocks: callee_block_ids.iter().map(|b| remap_block(*b)).collect(),
+        block_map,
     }
 }
 
@@ -553,18 +614,24 @@ fn clone_terminator(
 
 /// Transfer `label_id_map` + `loop_roles` + `loop_pairs` + `loop_break_kinds` +
 /// `loop_cond_blocks` from the callee into the caller, remapping every block-id
-/// key (and any block-id-valued entry) through `block_map`.
+/// key (and any block-id-valued entry) through `block_map`. `label_id_map` LABEL
+/// VALUES are additionally remapped through `label_remap` (the same table that
+/// rewrote the cloned exception ops' `"value"` attrs), so a cloned block's label
+/// matches the cloned exception edge that targets it and cannot collide with a
+/// caller label that shared the callee's original per-function label id.
 fn transfer_loop_metadata(
     callee: &TirFunction,
     caller: &mut TirFunction,
     block_map: &HashMap<BlockId, BlockId>,
+    label_remap: &HashMap<i64, i64>,
 ) {
     // label_id_map is keyed by BlockId.0 (a raw u32). Remap the key through the
-    // block map so the cloned exception/jump targets resolve to the original
-    // label ids in the merged function.
+    // block map AND the label value through `label_remap` so the cloned
+    // exception/jump targets carry collision-free labels in the merged function.
     for (old_block_u32, label_val) in &callee.label_id_map {
         if let Some(new_bid) = block_map.get(&BlockId(*old_block_u32)) {
-            caller.label_id_map.entry(new_bid.0).or_insert(*label_val);
+            let new_label = label_remap.get(label_val).copied().unwrap_or(*label_val);
+            caller.label_id_map.entry(new_bid.0).or_insert(new_label);
         }
     }
     // loop_roles: BlockId -> LoopRole.
@@ -613,6 +680,84 @@ fn clone_loop_role(role: &LoopRole) -> LoopRole {
 
 fn clone_loop_break_kind(kind: &LoopBreakKind) -> LoopBreakKind {
     *kind
+}
+
+/// The opcodes whose `"value"` attribute is a SimpleIR **label id** naming an
+/// exception/handler target block (read by [`crate::tir::dominators::exception_successors`]
+/// and re-emitted by `lower_to_simple`). These are the only in-block ops that
+/// reference a block by label rather than by `BlockId`, so they are the only ops
+/// whose attrs need label remapping when a body is cloned.
+fn is_exception_label_op(opcode: OpCode) -> bool {
+    matches!(
+        opcode,
+        OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
+    )
+}
+
+/// Read the label id from an exception op's `"value"` attr, if present.
+fn exception_label_of(op: &TirOp) -> Option<i64> {
+    if !is_exception_label_op(op.opcode) {
+        return None;
+    }
+    match op.attrs.get("value") {
+        Some(AttrValue::Int(label)) => Some(*label),
+        _ => None,
+    }
+}
+
+/// The set of SimpleIR label ids `func` uses: the union of every `label_id_map`
+/// value and every exception op's `"value"` label. `label_id_map` already covers
+/// every label-bearing block, but the exception-op attrs are unioned in so a
+/// callee whose exception target is (defensively) missing from `label_id_map`
+/// still gets a fresh remap rather than an accidental passthrough collision.
+fn function_label_ids(func: &TirFunction) -> std::collections::BTreeSet<i64> {
+    let mut labels: std::collections::BTreeSet<i64> = func.label_id_map.values().copied().collect();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if let Some(label) = exception_label_of(op) {
+                labels.insert(label);
+            }
+        }
+    }
+    labels
+}
+
+/// Build the callee→fresh label remap for one clone. Every label the callee uses
+/// is reassigned to a fresh id strictly greater than every label currently in the
+/// caller, so the cloned body's exception labels cannot collide with the caller's
+/// (or with the fresh labels of callees already inlined into this caller — those
+/// were inserted into `caller.label_id_map`, so the caller's max grows with each
+/// clone). Deterministic: callee labels are processed in ascending order.
+fn build_label_remap(callee: &TirFunction, caller: &TirFunction) -> HashMap<i64, i64> {
+    let callee_labels = function_label_ids(callee);
+    if callee_labels.is_empty() {
+        return HashMap::new();
+    }
+    let caller_max = function_label_ids(caller).iter().copied().max();
+    // Start strictly above the caller's max (or at 0 if the caller has no labels).
+    let mut next = caller_max.map(|m| m + 1).unwrap_or(0);
+    let mut remap = HashMap::with_capacity(callee_labels.len());
+    for label in callee_labels {
+        remap.insert(label, next);
+        next += 1;
+    }
+    remap
+}
+
+/// Rewrite a cloned exception op's `"value"` label attr through `label_remap`.
+/// A non-exception op, or an exception label not present in the remap, is left
+/// untouched (a missing remap entry can only happen for a label the callee did
+/// not actually declare, which `function_label_ids` already folds in, so in
+/// practice every cloned exception label is remapped).
+fn remap_exception_label_attr(opcode: OpCode, attrs: &mut AttrDict, label_remap: &HashMap<i64, i64>) {
+    if !is_exception_label_op(opcode) {
+        return;
+    }
+    if let Some(AttrValue::Int(old_label)) = attrs.get("value")
+        && let Some(&new_label) = label_remap.get(old_label)
+    {
+        attrs.insert("value".into(), AttrValue::Int(new_label));
+    }
 }
 
 /// Splice the call site `(block, op_index)` in `caller`: replace the `Call` to
@@ -676,19 +821,31 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
         return false;
     }
 
+    // Classify the callee's `Return` blocks on its **terminator-only** CFG:
+    //  * NORMAL return — reachable from entry through terminator edges. Carries
+    //    the function's actual return value.
+    //  * EXCEPTION EXIT — reachable ONLY via implicit exception edges
+    //    (`CheckException` → function-exit). A `ret_void` "propagate the pending
+    //    flag" exit; it carries no value.
+    // This classification (computed on the callee, before any mutation) drives
+    // both the pre-check below and the placeholder padding in the rewrite loop.
+    let normal_reachable = reachable_blocks_with(callee, CfgEdgePolicy::TerminatorOnly);
+
     // Return-arity compatibility pre-check (BEFORE any mutation, so a refusal
     // leaves `caller` byte-identical — no fragile mid-splice rollback). The
-    // continuation block will carry one argument iff the call produces a value.
-    // Every callee `Return` must then carry a matching value count: a value call
-    // demands exactly one returned value from each return site; a void call
-    // tolerates any (the returned value, if any, is discarded). A callee that
-    // returns *no* value at some site while the call expects one is a
-    // frontend-shape mismatch we refuse rather than fabricate a value for.
+    // continuation carries one argument iff the call produces a value. Every
+    // NORMAL-return site must then carry a value: a value call demands exactly
+    // one returned value from each normal return. A normal return that carries
+    // *no* value while the call expects one is a frontend-shape mismatch we
+    // refuse rather than fabricate a value for. (An EXCEPTION-EXIT carries no
+    // value by construction; it is handled by placeholder padding, not refused —
+    // refusing it would re-dormant the inliner on every value-returning
+    // observation-only callee, which is the whole point of this arc.)
     let call_wants_value = call_result.is_some();
     if call_wants_value {
-        for block in callee.blocks.values() {
+        for (bid, block) in &callee.blocks {
             if let Terminator::Return { values } = &block.terminator {
-                if values.is_empty() {
+                if normal_reachable.contains(bid) && values.is_empty() {
                     return false;
                 }
             }
@@ -697,6 +854,16 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
 
     // Clone the callee body into the caller (params → call args).
     let cloned = clone_function_body_with_fresh_ids(callee, caller, &call_args);
+
+    // The cloned block ids of the callee's EXCEPTION-EXIT blocks (reached only via
+    // exception edges). Their cloned `Return`s need placeholder padding when the
+    // continuation carries a value.
+    let exception_exit_clones: std::collections::HashSet<BlockId> = callee
+        .blocks
+        .keys()
+        .filter(|bid| !normal_reachable.contains(bid))
+        .filter_map(|bid| cloned.block_map.get(bid).copied())
+        .collect();
 
     // Split the caller block. Take the original block out, partition its ops.
     let original = caller
@@ -738,33 +905,61 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
     };
 
     // Rewrite each cloned `Return { values }` into a branch to the continuation.
-    // Arity is guaranteed compatible by the pre-check above: a value call's
-    // continuation has exactly one arg and every callee return carries ≥1 value
-    // (take the first — the single-return convention); a void call's
-    // continuation has zero args (drop any returned value, which the call
-    // discarded). No rollback path is reachable here.
+    //  * A NORMAL return (value call): branch with the returned value — the
+    //    pre-check guarantees it carries one.
+    //  * An EXCEPTION-EXIT return (`ret_void`) into a value-carrying continuation:
+    //    synthesize a representation-matched DEAD placeholder for the missing
+    //    continuation arg. The value is provably dead — `B_cont`'s first op is the
+    //    caller's post-call `CheckException`, which re-observes the pending flag
+    //    and reroutes before the call result is ever used — so the placeholder is
+    //    never read. `verify_block_args` checks only arity; the typed placeholder
+    //    keeps the continuation phi's representation clean for codegen.
+    //  * A void call (cont_arity 0): branch with no args (any returned value, on
+    //    the normal or exception path, is discarded — the call discarded it too).
     let cont_arity = cont_args.len();
+    let cont_ty: Option<TirType> = cont_args.first().map(|a| a.ty.clone());
     debug_assert!(cont_arity <= 1, "continuation arity is 0 (void) or 1 (value)");
     for &cloned_bid in &cloned.cloned_blocks {
-        let block = caller
+        let return_values: Option<Vec<ValueId>> =
+            match &caller.blocks[&cloned_bid].terminator {
+                Terminator::Return { values } => Some(values.clone()),
+                _ => None,
+            };
+        let Some(values) = return_values else { continue };
+
+        let branch_args: Vec<ValueId> = match (cont_arity, values.first()) {
+            (0, _) => Vec::new(),
+            (1, Some(&v)) => vec![v],
+            (1, None) => {
+                // Void return into a value-carrying continuation. The pre-check
+                // refused any NORMAL return that carries no value, so this is
+                // exclusively an exception-exit.
+                debug_assert!(
+                    exception_exit_clones.contains(&cloned_bid),
+                    "void return survived the pre-check in a non-exception-exit block"
+                );
+                let ty = cont_ty.clone().unwrap_or(TirType::DynBox);
+                let placeholder = caller.fresh_value();
+                caller.value_types.entry(placeholder).or_insert(ty.clone());
+                let const_op = dead_placeholder_const(&ty, placeholder);
+                caller
+                    .blocks
+                    .get_mut(&cloned_bid)
+                    .expect("cloned block missing")
+                    .ops
+                    .push(const_op);
+                vec![placeholder]
+            }
+            _ => unreachable!("continuation arity is 0 or 1 (debug-asserted)"),
+        };
+        caller
             .blocks
             .get_mut(&cloned_bid)
-            .expect("cloned block missing");
-        if let Terminator::Return { values } = &block.terminator {
-            let branch_args: Vec<ValueId> = if cont_arity == 1 {
-                debug_assert!(
-                    !values.is_empty(),
-                    "value-call return must carry a value (pre-checked)"
-                );
-                vec![values[0]]
-            } else {
-                Vec::new()
-            };
-            block.terminator = Terminator::Branch {
-                target: cont_block_id,
-                args: branch_args,
-            };
-        }
+            .expect("cloned block missing")
+            .terminator = Terminator::Branch {
+            target: cont_block_id,
+            args: branch_args,
+        };
     }
 
     // Insert B_pre (original id, ops 0..call, branch into cloned entry).
@@ -794,6 +989,44 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
     );
 
     true
+}
+
+/// A representation-matched **dead** placeholder constant of `ty`, producing
+/// `result`. Used by [`splice_call_site`] for the continuation arg on an inlined
+/// exception-exit path: the value is never read (the caller's post-call
+/// `CheckException` reroutes first), but SSA requires the continuation phi edge to
+/// supply *some* value. Matching the type keeps the phi's representation clean for
+/// codegen — an unboxed-scalar continuation gets a matching unboxed zero, every
+/// boxed/reference continuation gets a boxed `None`. Attr conventions mirror the
+/// SSA lift (`ConstInt`/`ConstBool` under `"value"`, `ConstFloat` under
+/// `"f_value"`, `ConstNone` attr-less).
+fn dead_placeholder_const(ty: &TirType, result: ValueId) -> TirOp {
+    let (opcode, attrs) = match ty {
+        TirType::I64 | TirType::BigInt => {
+            let mut a = AttrDict::new();
+            a.insert("value".into(), AttrValue::Int(0));
+            (OpCode::ConstInt, a)
+        }
+        TirType::Bool => {
+            let mut a = AttrDict::new();
+            a.insert("value".into(), AttrValue::Bool(false));
+            (OpCode::ConstBool, a)
+        }
+        TirType::F64 => {
+            let mut a = AttrDict::new();
+            a.insert("f_value".into(), AttrValue::Float(0.0));
+            (OpCode::ConstFloat, a)
+        }
+        _ => (OpCode::ConstNone, AttrDict::new()),
+    };
+    TirOp {
+        dialect: Dialect::Molt,
+        opcode,
+        operands: vec![],
+        results: vec![result],
+        attrs,
+        source_span: None,
+    }
 }
 
 /// The type the callee returns, derived from its `Return` terminators'
@@ -906,9 +1139,14 @@ pub fn run_inliner(
                 if did_inline {
                     stats.sites_inlined += 1;
                     changed_this_fn = true;
-                    // Propagate the callee's exception-handling flag (it is
-                    // false here — phase c excludes EH callees — but keep the
-                    // contract explicit for when phase c lands).
+                    // Propagate the callee's exception-handling flag. An
+                    // OBSERVATION-only callee carries `has_exception_handling`
+                    // (its `CheckException` ops set it); inlining its body imports
+                    // those ops, so the merged caller must be flagged too — the
+                    // conservative downstream passes (SCCP try-region, DCE) read
+                    // this flag. (The caller is usually already flagged, since it
+                    // has its own post-call `CheckException`, but a caller with no
+                    // exception ops of its own would otherwise be left unflagged.)
                     if callee_owned.has_exception_handling {
                         caller.has_exception_handling = true;
                     }
@@ -1042,6 +1280,137 @@ mod tests {
         let cg = CallGraph::build(m);
         let sm = ModuleSummaries::compute(m, &cg);
         (cg, sm)
+    }
+
+    /// An **observation-only** callee `fn obs(a) -> a` shaped like real lowered
+    /// TIR: an entry block carrying a `CheckException` (handler label
+    /// `exc_label`) that, on a pending exception, routes to a void exception-exit
+    /// block (`ret_void`, reached only via the exception edge); the normal path
+    /// branches to a return block that yields the parameter. `has_exception_handling`
+    /// is set (the `CheckException` would set it during lift) but there is NO
+    /// handler region.
+    fn observation_callee(name: &str, exc_label: i64) -> TirFunction {
+        let mut f = TirFunction::new(name.into(), vec![TirType::I64], TirType::I64);
+        f.has_exception_handling = true;
+        let a = ValueId(0);
+        let normal = f.fresh_block();
+        let exc_exit = f.fresh_block();
+        let entry = f.entry_block;
+        {
+            let mut ce_attrs = AttrDict::new();
+            ce_attrs.insert("value".into(), AttrValue::Int(exc_label));
+            let block = f.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CheckException,
+                operands: vec![],
+                results: vec![],
+                attrs: ce_attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Branch {
+                target: normal,
+                args: vec![],
+            };
+        }
+        f.blocks.insert(
+            normal,
+            TirBlock {
+                id: normal,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![a] },
+            },
+        );
+        f.blocks.insert(
+            exc_exit,
+            TirBlock {
+                id: exc_exit,
+                args: vec![],
+                ops: vec![],
+                // ret_void — propagate the pending flag.
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        // The exception edge resolves through label_id_map: the exit block carries
+        // the handler label the entry's CheckException references.
+        f.label_id_map.insert(exc_exit.0, exc_label);
+        f.value_types.insert(a, TirType::I64);
+        f
+    }
+
+    /// A caller `fn c() { r = obs(5); <observe>; return r }` that calls an
+    /// observation-only callee for a value, with its OWN post-call
+    /// `CheckException` (handler label `caller_label`, resolving to the caller's
+    /// own void exception-exit block). The caller's label deliberately COLLIDES
+    /// numerically with the callee's exception label so the clone's fresh-label
+    /// remap is exercised.
+    fn caller_calling_obs_with_label(
+        name: &str,
+        callee_name: &str,
+        caller_label: i64,
+    ) -> TirFunction {
+        let mut c = TirFunction::new(name.into(), vec![], TirType::I64);
+        c.has_exception_handling = true;
+        let five = c.fresh_value();
+        let call_res = c.fresh_value();
+        let caller_exit = c.fresh_block();
+        let entry = c.entry_block;
+        {
+            let mut five_attrs = AttrDict::new();
+            five_attrs.insert("value".into(), AttrValue::Int(5));
+            let mut call_attrs = AttrDict::new();
+            call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.to_string()));
+            let mut ce_attrs = AttrDict::new();
+            ce_attrs.insert("value".into(), AttrValue::Int(caller_label));
+            let block = c.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![five],
+                attrs: five_attrs,
+                source_span: None,
+            });
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![five],
+                results: vec![call_res],
+                attrs: call_attrs,
+                source_span: None,
+            });
+            // The caller's own post-call exception observation.
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CheckException,
+                operands: vec![],
+                results: vec![],
+                attrs: ce_attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return {
+                values: vec![call_res],
+            };
+        }
+        c.blocks.insert(
+            caller_exit,
+            TirBlock {
+                id: caller_exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        c.label_id_map.insert(caller_exit.0, caller_label);
+        c.value_types.insert(five, TirType::I64);
+        c.value_types.insert(call_res, TirType::I64);
+        c
+    }
+
+    /// Convenience: caller with a non-colliding label.
+    fn caller_calling_obs(name: &str, callee_name: &str) -> TirFunction {
+        caller_calling_obs_with_label(name, callee_name, 99)
     }
 
     // -- (a) clone + remap primitives ----------------------------------------
@@ -1344,17 +1713,63 @@ mod tests {
     }
 
     #[test]
-    fn exception_bearing_not_inlined_this_arc() {
-        // has_exception_handling callee is excluded (phase c).
+    fn handler_bearing_callee_not_inlined() {
+        // A callee with a REAL exception handler region (TryStart/TryEnd) is
+        // excluded — splicing across a handler boundary needs handler-label
+        // re-targeting this arc does not perform.
         let mut f = TirFunction::new("guarded".into(), vec![], TirType::None);
         f.has_exception_handling = true;
         let entry = f.entry_block;
-        f.blocks.get_mut(&entry).unwrap().terminator =
-            Terminator::Return { values: vec![] };
+        {
+            let block = f.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::TryStart,
+                operands: vec![],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::TryEnd,
+                operands: vec![],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![] };
+        }
+        assert!(f.has_exception_handlers(), "TryStart/TryEnd => handlers");
         let m = module(vec![f]);
         let (cg, sm) = analysis(&m);
         let tti = TargetInfo::native_release_fast();
         assert!(!is_inlineable(&m.functions[0], &cg, &sm, &tti));
+    }
+
+    #[test]
+    fn observation_only_callee_is_inlineable() {
+        // An OBSERVATION-only callee (CheckException, no handler region) IS
+        // inlinable even though `has_exception_handling` is set: it has no real
+        // handler, so `has_exception_handlers()` is false.
+        let callee = observation_callee("obs", 3);
+        assert!(
+            callee.has_exception_handling,
+            "CheckException sets has_exception_handling"
+        );
+        assert!(
+            !callee.has_exception_handlers(),
+            "no TryStart/TryEnd/StateBlock => no handler region"
+        );
+        let caller = caller_calling_obs("c", "obs");
+        let m = module(vec![callee, caller]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        let obs = m.functions.iter().find(|f| f.name == "obs").unwrap();
+        assert!(
+            is_inlineable(obs, &cg, &sm, &tti),
+            "observation-only callee is inlinable"
+        );
     }
 
     // -- run_inliner end-to-end ----------------------------------------------
@@ -1622,5 +2037,154 @@ mod tests {
             })
             .count();
         assert_eq!(const_42_count, 2, "each inlined site contributes a const 42");
+    }
+
+    // -- (c) exception-observation inlining ----------------------------------
+
+    /// The set of every label value in `func`'s `label_id_map` plus every
+    /// exception-op `"value"` label, used to assert collision-freedom.
+    fn all_labels(func: &TirFunction) -> Vec<i64> {
+        function_label_ids(func).into_iter().collect()
+    }
+
+    #[test]
+    fn splice_observation_callee_remaps_labels_collision_free() {
+        // Callee exception label 3; caller ALSO uses label 3 (collision). After
+        // splicing, the cloned exit block must carry a FRESH label (not 3), the
+        // caller's original label 3 must survive, and no two blocks may share a
+        // label value (which would make `exception_label_to_block` ambiguous and
+        // emit duplicate `label N` ops in lower_to_simple — a miscompile).
+        let callee = observation_callee("obs", 3);
+        let mut caller = caller_calling_obs_with_label("c", "obs", 3);
+
+        let sites = collect_call_sites(&caller, &["obs".to_string()]);
+        assert_eq!(sites.len(), 1);
+        assert!(splice_call_site(&mut caller, &callee, &sites[0]), "spliced");
+
+        // No two blocks share a label value.
+        let labels: Vec<i64> = caller.label_id_map.values().copied().collect();
+        let mut sorted = labels.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            labels.len(),
+            "every block label is distinct (no collision): {labels:?}"
+        );
+        // The caller's original label 3 survived.
+        assert!(all_labels(&caller).contains(&3), "caller label 3 preserved");
+
+        // Every cloned CheckException's handler label resolves to a block that
+        // carries that exact label in label_id_map (the exception edge resolves).
+        let label_to_block: std::collections::HashMap<i64, BlockId> = caller
+            .label_id_map
+            .iter()
+            .map(|(b, l)| (*l, BlockId(*b)))
+            .collect();
+        for block in caller.blocks.values() {
+            for op in &block.ops {
+                if let Some(label) = exception_label_of(op) {
+                    assert!(
+                        label_to_block.contains_key(&label),
+                        "CheckException label {label} resolves to a block"
+                    );
+                }
+            }
+        }
+        // The merged function is valid SSA.
+        crate::tir::verify::verify_function(&caller)
+            .unwrap_or_else(|e| panic!("merged fn invalid SSA: {e:?}"));
+        // The Call is gone.
+        let calls: usize = caller
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.opcode == OpCode::Call)
+            .count();
+        assert_eq!(calls, 0, "obs call eliminated");
+    }
+
+    #[test]
+    fn splice_void_exception_exit_pads_placeholder() {
+        // The observation callee's exception-exit returns NO value, but the call
+        // wants one. The splice must NOT refuse (that would re-dormant the inliner
+        // on every value-returning observation callee) — it pads the continuation
+        // arg with a representation-matched dead placeholder. The exit branch ends
+        // up supplying exactly one continuation arg, and the merged fn verifies.
+        let callee = observation_callee("obs", 3);
+        let mut caller = caller_calling_obs("c", "obs");
+
+        let sites = collect_call_sites(&caller, &["obs".to_string()]);
+        assert_eq!(sites.len(), 1);
+        assert!(
+            splice_call_site(&mut caller, &callee, &sites[0]),
+            "value-returning observation callee inlines (not refused)"
+        );
+        crate::tir::verify::verify_function(&caller)
+            .unwrap_or_else(|e| panic!("merged fn invalid SSA after placeholder pad: {e:?}"));
+
+        // Find the continuation block: the one whose single arg is the original
+        // call result. Every block that branches to it must supply exactly 1 arg
+        // (the normal-return value OR the placeholder). At least two predecessors
+        // exist (normal return + exception exit), and the exception-exit
+        // predecessor ends in a placeholder const op feeding its branch arg.
+        let mut placeholder_const_seen = false;
+        for block in caller.blocks.values() {
+            if let Terminator::Branch { args, .. } = &block.terminator {
+                // A 1-op cloned exit block ending in a Branch with 1 arg whose
+                // value is produced by a trailing Const op is the padded exit.
+                if args.len() == 1
+                    && block
+                        .ops
+                        .last()
+                        .map(|op| {
+                            matches!(
+                                op.opcode,
+                                OpCode::ConstInt
+                                    | OpCode::ConstNone
+                                    | OpCode::ConstBool
+                                    | OpCode::ConstFloat
+                            ) && op.results.first() == args.first()
+                        })
+                        .unwrap_or(false)
+                {
+                    placeholder_const_seen = true;
+                }
+            }
+        }
+        assert!(
+            placeholder_const_seen,
+            "the void exception-exit branch is padded with a placeholder const"
+        );
+    }
+
+    #[test]
+    fn run_inliner_inlines_observation_callee_end_to_end() {
+        // End-to-end through run_inliner (clone + splice + per-function pipeline
+        // re-run): a value-returning observation-only callee is inlined, the Call
+        // is gone, and the merged caller is valid SSA with collision-free labels.
+        let callee = observation_callee("obs", 3);
+        let caller = caller_calling_obs_with_label("c", "obs", 3);
+        let mut m = module(vec![caller, callee]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        assert_eq!(stats.sites_inlined, 1, "obs inlined into c");
+        let c = m.functions.iter().find(|f| f.name == "c").unwrap();
+        let calls: usize = c
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.opcode == OpCode::Call)
+            .count();
+        assert_eq!(calls, 0, "obs call eliminated from c");
+        crate::tir::verify::verify_function(c)
+            .unwrap_or_else(|e| panic!("c invalid after observation inlining: {e:?}"));
+        // Labels remain collision-free after the pipeline re-run.
+        let labels: Vec<i64> = c.label_id_map.values().copied().collect();
+        let mut sorted = labels.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), labels.len(), "labels distinct: {labels:?}");
     }
 }
