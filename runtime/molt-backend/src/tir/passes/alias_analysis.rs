@@ -646,7 +646,10 @@ fn opcode_touches_memory(opcode: OpCode) -> bool {
     !matches!(
         opcode,
         // Pure arithmetic / comparison / bitwise / boolean computations.
+        // CheckedAdd is a pure 2-result register computation (raw i64 sum +
+        // overflow flag) — no heap footprint.
         OpCode::Add
+            | OpCode::CheckedAdd
             | OpCode::Sub
             | OpCode::Mul
             | OpCode::InplaceAdd
@@ -758,7 +761,7 @@ mod tests {
     fn all_opcodes() -> Vec<OpCode> {
         use OpCode::*;
         vec![
-            Add, Sub, Mul, InplaceAdd, InplaceSub, InplaceMul, Div, FloorDiv, Mod, Pow, Neg, Pos,
+            Add, CheckedAdd, Sub, Mul, InplaceAdd, InplaceSub, InplaceMul, Div, FloorDiv, Mod, Pow, Neg, Pos,
             Eq, Ne, Lt, Le, Gt, Ge, Is, IsNot, In, NotIn, BitAnd, BitOr, BitXor, BitNot, Shl, Shr,
             And, Or, Not, Bool, Alloc, StackAlloc, ObjectNewBound, ObjectNewBoundStack, Free,
             LoadAttr, StoreAttr, DelAttr, Index, StoreIndex, DelIndex, Call, CallMethod,
@@ -778,7 +781,7 @@ mod tests {
     fn assert_opcode_listed(opcode: OpCode) {
         use OpCode::*;
         match opcode {
-            Add | Sub | Mul | InplaceAdd | InplaceSub | InplaceMul | Div | FloorDiv | Mod | Pow
+            Add | CheckedAdd | Sub | Mul | InplaceAdd | InplaceSub | InplaceMul | Div | FloorDiv | Mod | Pow
             | Neg | Pos | Eq | Ne | Lt | Le | Gt | Ge | Is | IsNot | In | NotIn | BitAnd | BitOr
             | BitXor | BitNot | Shl | Shr | And | Or | Not | Bool | Alloc | StackAlloc
             | ObjectNewBound | ObjectNewBoundStack | Free | LoadAttr | StoreAttr | DelAttr
