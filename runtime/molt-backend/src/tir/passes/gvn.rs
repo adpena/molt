@@ -22,11 +22,12 @@
 //! LLVM's GVN uses an analogous scoped-hash-table walk over the dominator
 //! tree (see `llvm/lib/Transforms/Scalar/GVN.cpp::ValueTable`).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
-use crate::tir::blocks::{BlockId, Terminator};
-use crate::tir::dominators::{build_pred_map, compute_idoms, dominates};
+use crate::tir::analysis::{AnalysisManager, DomChildren, ImmediateDoms, StrictReachable};
+use crate::tir::blocks::BlockId;
+use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -153,78 +154,7 @@ fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>, Option<Vec<u8>>) {
     }
 }
 
-/// Build the dominator-tree children map from an idom map.
-fn build_dom_children(idoms: &HashMap<BlockId, Option<BlockId>>) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for &bid in idoms.keys() {
-        children.entry(bid).or_default();
-    }
-    for (&child, parent) in idoms {
-        if let Some(parent) = parent
-            && *parent != child
-        {
-            children.entry(*parent).or_default().push(child);
-        }
-    }
-    // Sort children for deterministic traversal order.
-    for kids in children.values_mut() {
-        kids.sort_unstable_by_key(|b| b.0);
-    }
-    children
-}
-
-/// Set of blocks reachable from entry via terminator-only successors.
-///
-/// `compute_idoms` is exception-edge-aware: it considers handler blocks
-/// reachable through `CheckException`/`TryStart`/`TryEnd` ops and assigns
-/// them a dominator.  However, the LIR verifier (`verify_lir`) computes
-/// reachability and dominance from terminator successors only — handler
-/// blocks reached only via exception edges are unreachable in its view,
-/// and therefore are not in its dominator preorder.
-///
-/// If GVN replaces an op in such a block with `Copy(leader)` where
-/// `leader` is defined elsewhere, `verify_lir` will reject the operand:
-/// `dominates(leader_block, handler_block)` returns `false` because the
-/// handler is not in the strict-CFG dominator tree.
-///
-/// To stay sound under the strict-CFG verifier, GVN restricts cross-block
-/// replacements to use sites that are themselves reachable via terminator
-/// successors.  Blocks reachable only through exception edges still get
-/// intra-block GVN (their leaders never escape their own scope), matching
-/// the behaviour the previous intra-block-only pass had for them.
-fn strict_terminator_reachable(func: &TirFunction) -> HashSet<BlockId> {
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut queue: VecDeque<BlockId> = VecDeque::new();
-    queue.push_back(func.entry_block);
-    visited.insert(func.entry_block);
-    while let Some(bid) = queue.pop_front() {
-        let Some(block) = func.blocks.get(&bid) else {
-            continue;
-        };
-        let succs: Vec<BlockId> = match &block.terminator {
-            Terminator::Branch { target, .. } => vec![*target],
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => vec![*then_block, *else_block],
-            Terminator::Switch { cases, default, .. } => {
-                let mut s: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
-                s.push(*default);
-                s
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
-        };
-        for succ in succs {
-            if visited.insert(succ) {
-                queue.push_back(succ);
-            }
-        }
-    }
-    visited
-}
-
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "gvn",
         ..Default::default()
@@ -234,17 +164,19 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         return stats;
     }
 
-    // Build dominator tree (exception-edge-aware).
-    let pred_map = build_pred_map(func);
-    let idoms = compute_idoms(func, &pred_map);
-    let dom_children = build_dom_children(&idoms);
+    // Dominator tree (exception-edge-aware) + dom-children, from the analysis
+    // manager. The idom tree and its children map share a single dominator
+    // computation across GVN/LICM/BCE/refcount-elim.
+    let idoms = am.get::<ImmediateDoms>(func).clone();
+    let dom_children = am.get::<DomChildren>(func).clone();
 
-    // Strict-CFG reachability (terminator-only).  Cross-block replacements
-    // are only safe when the use site is reachable via terminators — that
-    // is the reachability `verify_lir` uses, and emitting `Copy(leader)`
-    // into a block that's reachable only through exception edges would
-    // cause the verifier to reject the new operand.
-    let strict_reachable = strict_terminator_reachable(func);
+    // Strict-CFG reachability (terminator-only). Cross-block replacements are
+    // only safe when the use site is reachable via terminators — that is the
+    // reachability `verify_lir` uses; emitting `Copy(leader)` into a block
+    // reachable only through exception edges would make the verifier reject the
+    // new operand. Blocks reachable only via exception edges still get
+    // intra-block GVN (their leaders never escape their own scope).
+    let strict_reachable = am.get::<StrictReachable>(func).clone();
 
     // Build a value→type map from STRUCTURALLY GUARANTEED sources only:
     // block args (set by type_refine), constants, and function params.
@@ -630,7 +562,7 @@ mod tests {
         entry.ops.push(make_binop(OpCode::Add, p0, p1, sum2));
         entry.terminator = Terminator::Return { values: vec![sum2] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert!(stats.values_changed > 0);
 
         // sum2's definition should now be a Copy from sum1.
@@ -650,7 +582,7 @@ mod tests {
         entry.ops.push(make_const_int(42, c2));
         entry.terminator = Terminator::Return { values: vec![c2] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // Constants are intentionally left as constants. Backends handle
         // safe constant pooling in backend-native form; GVN must not create
@@ -671,7 +603,7 @@ mod tests {
         entry.ops.push(make_const_int(99, c2));
         entry.terminator = Terminator::Return { values: vec![c2] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // c2 should NOT be folded — different constant.
         let ops = &func.blocks[&func.entry_block].ops;
         assert_eq!(ops[1].opcode, OpCode::ConstInt);
@@ -689,7 +621,7 @@ mod tests {
         entry.ops.push(make_const_bytes(b"two", c2));
         entry.terminator = Terminator::Return { values: vec![c2] };
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let ops = &func.blocks[&func.entry_block].ops;
         assert_eq!(ops[1].opcode, OpCode::ConstBytes);
@@ -726,7 +658,7 @@ mod tests {
         });
         entry.terminator = Terminator::Return { values: vec![r2] };
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // Both calls must remain — not folded.
         let ops = &func.blocks[&func.entry_block].ops;
@@ -766,7 +698,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.values_changed, 0);
 
         // c2 in `body` remains a backend-native constant.
@@ -807,7 +739,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert!(stats.values_changed > 0);
 
         let body_ops = &func.blocks[&body].ops;
@@ -893,7 +825,7 @@ mod tests {
             },
         );
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // Both sibling adds must remain real Add ops. `then` does not
         // dominate `else` (and vice versa), so neither may be replaced
@@ -985,7 +917,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert!(stats.values_changed >= 2);
         assert_eq!(func.blocks[&then_b].ops[0].opcode, OpCode::Copy);
         assert_eq!(func.blocks[&then_b].ops[0].operands[0], e);
@@ -1071,7 +1003,7 @@ mod tests {
             },
         );
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // body constants are not replaced with cross-block copies. The
         // loop-carried `bumped` must remain a real Add because its operand
@@ -1174,7 +1106,7 @@ mod tests {
             },
         );
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let body_ops = &func.blocks[&body].ops;
         assert_eq!(
@@ -1266,7 +1198,7 @@ mod tests {
             },
         );
 
-        let _stats = run(&mut func);
+        let _stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // Neither sibling block dominates the other, so each ConstInt 7
         // must remain a ConstInt (not a Copy of the other).
@@ -1303,7 +1235,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.values_changed, 0);
         assert_eq!(func.blocks[&body].ops[0].opcode, OpCode::ConstBool);
         let _ = b1;

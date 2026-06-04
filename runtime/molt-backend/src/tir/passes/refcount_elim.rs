@@ -26,8 +26,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::tir::analysis::{AnalysisManager, ImmediateDoms, PredMap};
 use crate::tir::blocks::BlockId;
-use crate::tir::dominators::{build_pred_map, compute_idoms, dominates};
+use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
@@ -129,7 +130,7 @@ fn build_heap_exposed_set(func: &TirFunction) -> HashSet<ValueId> {
 }
 
 /// Eliminate redundant IncRef/DecRef pairs.
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "refcount_elim",
         ..Default::default()
@@ -249,8 +250,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // as an ownership transfer with no interleaving observer.
     // -----------------------------------------------------------------------
     if func.blocks.len() > 1 {
-        let pred_map = build_pred_map(func);
-        let idoms = compute_idoms(func, &pred_map);
+        let pred_map = am.get::<PredMap>(func).clone();
+        let idoms = am.get::<ImmediateDoms>(func).clone();
 
         // Collect candidate trailing refcount ops per block: the last op that
         // is IncRef or DecRef with no barrier between it and the block end.
@@ -414,8 +415,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     //   - The loop header must have a back-edge (it IS a loop header).
     // -----------------------------------------------------------------------
     if !func.loop_roles.is_empty() || func.blocks.len() > 1 {
-        let pred_map = build_pred_map(func);
-        let idoms = compute_idoms(func, &pred_map);
+        let pred_map = am.get::<PredMap>(func).clone();
+        let idoms = am.get::<ImmediateDoms>(func).clone();
+        // NOTE: refcount-elim's def map intentionally EXCLUDES function params
+        // (a refcount on a param must not be treated as loop-invariant and
+        // removed). This differs from the canonical `DefMap` analysis, so it
+        // stays a local computation rather than going through the manager.
         let def_map = build_def_map(func);
 
         // Identify loop headers: blocks with at least one back-edge predecessor.
@@ -714,7 +719,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 2);
         assert!(func.blocks[&func.entry_block].ops.is_empty());
     }
@@ -732,7 +737,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::IncRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 2);
         assert!(func.blocks[&func.entry_block].ops.is_empty());
     }
@@ -751,7 +756,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
         assert_eq!(
@@ -779,7 +784,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // Intra-block can't pair across Call barrier, but deferred RC
         // eliminates both because v has no heap exposure.
         assert_eq!(stats.ops_removed, 2);
@@ -798,7 +803,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v]));
         entry.terminator = Terminator::Return { values: vec![v] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
     }
@@ -818,7 +823,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![v2], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // No intra-block pairing (different values), but deferred RC
         // eliminates both since neither has heap exposure.
         assert_eq!(stats.ops_removed, 2);
@@ -850,7 +855,7 @@ mod tests {
             args: vec![],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 2);
         assert!(func.blocks[&func.entry_block].ops.is_empty());
         assert!(func.blocks[&succ_bid].ops.is_empty());
@@ -894,7 +899,7 @@ mod tests {
             else_args: vec![],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // Deferred RC eliminates both — v has no heap exposure.
         assert_eq!(stats.ops_removed, 2);
     }
@@ -926,7 +931,7 @@ mod tests {
             args: vec![],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // Deferred RC eliminates both — v not passed to Call.
         assert_eq!(stats.ops_removed, 2);
     }
@@ -973,7 +978,7 @@ mod tests {
             args: vec![],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&header_bid].ops.len(), 1);
         assert_eq!(func.blocks[&header_bid].ops[0].opcode, OpCode::ConstBool);
@@ -1021,7 +1026,7 @@ mod tests {
             args: vec![],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // Intra-block pairing handles it (adjacent, no barrier).
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&header_bid].ops.len(), 2);
@@ -1048,7 +1053,7 @@ mod tests {
             args: vec![],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 2);
         assert!(func.blocks[&func.entry_block].ops.is_empty());
         assert!(func.blocks[&succ_bid].ops.is_empty());
@@ -1081,7 +1086,7 @@ mod tests {
             args: vec![],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // Deferred RC eliminates both — v has no heap exposure.
         assert_eq!(stats.ops_removed, 2);
     }
@@ -1114,7 +1119,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 3);
     }
@@ -1138,7 +1143,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![v] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // v returned (heap exposure) + Call barrier = nothing eliminated.
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 4);
@@ -1161,7 +1166,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 3);
     }
@@ -1191,7 +1196,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // v not passed to Call, not returned — deferred RC eliminates.
         assert_eq!(stats.ops_removed, 2);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 3);
@@ -1221,7 +1226,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // v passed to Call = heap exposure. Call is barrier. Nothing eliminated.
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 4);
@@ -1264,7 +1269,7 @@ mod tests {
             .push(make_op(OpCode::DecRef, vec![local_v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // local_v eliminated (no heap exposure), heap_v kept (StoreAttr).
         assert_eq!(stats.ops_removed, 2);
         let entry = &func.blocks[&func.entry_block];
@@ -1297,7 +1302,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 0);
     }
 
@@ -1323,7 +1328,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::DecRef, vec![elem], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // elem has heap exposure via BuildList, Call is barrier.
         assert_eq!(stats.ops_removed, 0);
     }

@@ -32,7 +32,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::analysis::{AnalysisManager, PredMap};
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -43,27 +44,13 @@ use super::PassStats;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Collect successor BlockIds from a terminator.
-fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
-            let mut targets: Vec<BlockId> = cases.iter().map(|(_, t, _)| *t).collect();
-            targets.push(*default);
-            targets.dedup();
-            targets
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
-}
-
-/// Build a map: ValueId → BlockId that defines it.
-/// Covers both block arguments and op results.
+/// Build a map: ValueId → BlockId that defines it (block args + op results).
+///
+/// This intentionally EXCLUDES function params (unlike the canonical
+/// [`DefMap`](crate::tir::analysis::DefMap) analysis): a TypeGuard whose
+/// operand is a param has no in-function defining block here, so it is left
+/// un-hoisted. Routing through the param-including `DefMap` would change which
+/// guards are considered loop-invariant, so this stays a local computation.
 fn build_def_map(func: &TirFunction) -> HashMap<ValueId, BlockId> {
     let mut def_map: HashMap<ValueId, BlockId> = HashMap::new();
     for (&bid, block) in &func.blocks {
@@ -81,27 +68,12 @@ fn build_def_map(func: &TirFunction) -> HashMap<ValueId, BlockId> {
     def_map
 }
 
-/// Build predecessor map: BlockId → Vec<BlockId>.
-fn build_pred_map(func: &TirFunction) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut pred_map: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    // Initialise all blocks with empty predecessor lists.
-    for &bid in func.blocks.keys() {
-        pred_map.entry(bid).or_default();
-    }
-    for (&bid, block) in &func.blocks {
-        for succ in terminator_successors(&block.terminator) {
-            pred_map.entry(succ).or_default().push(bid);
-        }
-    }
-    pred_map
-}
-
 // ---------------------------------------------------------------------------
 // Main pass
 // ---------------------------------------------------------------------------
 
 /// Hoist TypeGuard ops out of loops when the guarded value is loop-invariant.
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "type_guard_hoist",
         ..Default::default()
@@ -119,9 +91,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         return stats;
     }
 
-    // Build def map and predecessor map.
+    // Build def map (param-excluding; see `build_def_map`) and take the cached
+    // predecessor map. type_guard_hoist only reaches this point when
+    // `has_exception_handling == false` (it bailed above otherwise), so the
+    // function has no exception-edge ops and the full-CFG `PredMap` coincides
+    // with the terminator-only predecessor relation this pass needs.
     let def_map = build_def_map(func);
-    let pred_map = build_pred_map(func);
+    let pred_map = am.get::<PredMap>(func).clone();
 
     // Identify loop headers: a block B is a loop header if it has a predecessor
     // P where P.0 >= B.0 (back-edge by BlockId ordering).
@@ -393,7 +369,7 @@ mod tests {
         };
         func.blocks.insert(loop_body_id, body_block);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // The TypeGuard should have been moved.
         assert!(
@@ -467,7 +443,7 @@ mod tests {
         };
         func.blocks.insert(loop_body_id, body_block);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // TypeGuard on %y (defined in loop body) must NOT be hoisted.
         assert_eq!(
@@ -493,7 +469,7 @@ mod tests {
         entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v]));
         entry.terminator = Terminator::Return { values: vec![v] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(stats.ops_added, 0);
     }
@@ -512,7 +488,7 @@ mod tests {
         entry.ops.push(make_type_guard(x, ok));
         entry.terminator = Terminator::Return { values: vec![ok] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(stats.ops_added, 0);
         // TypeGuard is still in the entry block

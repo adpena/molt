@@ -41,6 +41,29 @@ fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
         .collect()
 }
 
+/// Which CFG edges a dominator/reachability computation should traverse.
+///
+/// The TIR analysis passes (GVN, LICM, BCE, refcount-elim, …) reason about the
+/// *full* control-flow graph including implicit exception edges, so that a
+/// handler block reachable only via `CheckException`/`TryStart`/`TryEnd` still
+/// gets a sound dominator and is treated as reachable. This is the default
+/// (`Full`).
+///
+/// The TIR verifier deliberately restricts its SSA-dominance check to the
+/// strict terminator-only CFG (`TerminatorOnly`): handler blocks reached only
+/// through exception edges are intentionally *not* checked for SSA dominance,
+/// because their defs may legitimately come from the protected region rather
+/// than via a terminator-dominating block. Both views are produced by the same
+/// algorithm here so there is exactly ONE dominator implementation over
+/// `TirFunction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CfgEdgePolicy {
+    /// Terminator edges plus implicit exception edges (the analysis view).
+    Full,
+    /// Terminator edges only (the strict-CFG verifier view).
+    TerminatorOnly,
+}
+
 fn exception_successors(block: &TirBlock, label_to_block: &HashMap<i64, BlockId>) -> Vec<BlockId> {
     let mut successors = Vec::new();
     for op in &block.ops {
@@ -56,18 +79,43 @@ fn exception_successors(block: &TirBlock, label_to_block: &HashMap<i64, BlockId>
     successors
 }
 
-/// Build predecessor map: BlockId -> Vec<BlockId>.
+/// All CFG successors of `block` under the given edge policy.
+fn block_successors(
+    block: &TirBlock,
+    label_to_block: &HashMap<i64, BlockId>,
+    policy: CfgEdgePolicy,
+) -> Vec<BlockId> {
+    let mut succs = terminator_successors(&block.terminator);
+    if policy == CfgEdgePolicy::Full {
+        succs.extend(exception_successors(block, label_to_block));
+    }
+    succs
+}
+
+/// Build predecessor map for the full CFG (terminator + exception edges).
+///
+/// This is the analysis view consumed by GVN/LICM/BCE/refcount-elim/type-refine
+/// via the [`crate::tir::analysis`] manager. For the strict-CFG verifier view,
+/// use [`build_pred_map_with`] with [`CfgEdgePolicy::TerminatorOnly`].
 pub fn build_pred_map(func: &TirFunction) -> HashMap<BlockId, Vec<BlockId>> {
+    build_pred_map_with(func, CfgEdgePolicy::Full)
+}
+
+/// Build predecessor map under an explicit edge policy. Predecessor lists are
+/// sorted by `BlockId` and de-duplicated so the result is the canonical CFG
+/// predecessor *set* (a block is a predecessor or it is not — multiplicity from
+/// a degenerate `CondBranch { then == else }` is not meaningful).
+pub fn build_pred_map_with(
+    func: &TirFunction,
+    policy: CfgEdgePolicy,
+) -> HashMap<BlockId, Vec<BlockId>> {
     let mut pred_map: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     for &bid in func.blocks.keys() {
         pred_map.entry(bid).or_default();
     }
     let label_to_block = exception_label_to_block(func);
     for (&bid, block) in &func.blocks {
-        for succ in terminator_successors(&block.terminator) {
-            pred_map.entry(succ).or_default().push(bid);
-        }
-        for succ in exception_successors(block, &label_to_block) {
+        for succ in block_successors(block, &label_to_block, policy) {
             pred_map.entry(succ).or_default().push(bid);
         }
     }
@@ -85,6 +133,11 @@ pub fn build_pred_map(func: &TirFunction) -> HashMap<BlockId, Vec<BlockId>> {
 /// but those metadata-only blocks are not executable CFG nodes and must not
 /// contribute typed predecessor edges.
 pub fn executable_reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
+    reachable_blocks_with(func, CfgEdgePolicy::Full)
+}
+
+/// Blocks reachable from the function entry under an explicit edge policy.
+pub fn reachable_blocks_with(func: &TirFunction, policy: CfgEdgePolicy) -> HashSet<BlockId> {
     let mut visited: HashSet<BlockId> = HashSet::new();
     let mut stack: Vec<BlockId> = vec![func.entry_block];
     let label_to_block = exception_label_to_block(func);
@@ -96,10 +149,7 @@ pub fn executable_reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
         let Some(block) = func.blocks.get(&bid) else {
             continue;
         };
-        for succ in terminator_successors(&block.terminator) {
-            stack.push(succ);
-        }
-        for succ in exception_successors(block, &label_to_block) {
+        for succ in block_successors(block, &label_to_block, policy) {
             stack.push(succ);
         }
     }
@@ -111,12 +161,27 @@ pub fn executable_reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
 // Dominator tree
 // ---------------------------------------------------------------------------
 
-/// Compute immediate dominators using the Cooper-Harvey-Kennedy algorithm.
-/// Returns a map from BlockId -> Option<BlockId> (idom). The entry block has
-/// no dominator (None).
+/// Compute immediate dominators using the Cooper-Harvey-Kennedy algorithm over
+/// the *full* CFG (terminator + exception edges). Returns a map from
+/// BlockId -> Option<BlockId> (idom). The entry block has no dominator (None).
+///
+/// `pred_map` MUST have been built under the same edge policy (here,
+/// [`CfgEdgePolicy::Full`] via [`build_pred_map`]). For the strict-CFG verifier
+/// view, use [`compute_idoms_with`] with [`CfgEdgePolicy::TerminatorOnly`].
 pub fn compute_idoms(
     func: &TirFunction,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
+) -> HashMap<BlockId, Option<BlockId>> {
+    compute_idoms_with(func, pred_map, CfgEdgePolicy::Full)
+}
+
+/// Compute immediate dominators under an explicit edge policy. The `pred_map`
+/// must have been built with the *same* policy or the dominator tree is
+/// undefined.
+pub fn compute_idoms_with(
+    func: &TirFunction,
+    pred_map: &HashMap<BlockId, Vec<BlockId>>,
+    policy: CfgEdgePolicy,
 ) -> HashMap<BlockId, Option<BlockId>> {
     // RPO numbering via DFS from entry.
     let mut rpo_order: Vec<BlockId> = Vec::new();
@@ -126,6 +191,7 @@ pub fn compute_idoms(
         bid: BlockId,
         func: &TirFunction,
         label_to_block: &HashMap<i64, BlockId>,
+        policy: CfgEdgePolicy,
         visited: &mut HashSet<BlockId>,
         order: &mut Vec<BlockId>,
     ) {
@@ -133,11 +199,8 @@ pub fn compute_idoms(
             return;
         }
         if let Some(block) = func.blocks.get(&bid) {
-            for succ in terminator_successors(&block.terminator) {
-                dfs_postorder(succ, func, label_to_block, visited, order);
-            }
-            for succ in exception_successors(block, label_to_block) {
-                dfs_postorder(succ, func, label_to_block, visited, order);
+            for succ in block_successors(block, label_to_block, policy) {
+                dfs_postorder(succ, func, label_to_block, policy, visited, order);
             }
         }
         order.push(bid);
@@ -148,6 +211,7 @@ pub fn compute_idoms(
         func.entry_block,
         func,
         &label_to_block,
+        policy,
         &mut visited,
         &mut rpo_order,
     );
@@ -225,6 +289,30 @@ pub fn compute_idoms(
         }
     }
     result
+}
+
+/// Build the dominator-tree children map from an idom map: for each block, the
+/// set of blocks it *immediately* dominates, in ascending `BlockId` order for
+/// deterministic traversal. Every block in `idoms` appears as a key (with a
+/// possibly-empty child list). The root maps any self-idom edge away.
+pub fn build_dom_children(
+    idoms: &HashMap<BlockId, Option<BlockId>>,
+) -> HashMap<BlockId, Vec<BlockId>> {
+    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for &bid in idoms.keys() {
+        children.entry(bid).or_default();
+    }
+    for (&child, parent) in idoms {
+        if let Some(parent) = parent
+            && *parent != child
+        {
+            children.entry(*parent).or_default().push(child);
+        }
+    }
+    for kids in children.values_mut() {
+        kids.sort_unstable_by_key(|b| b.0);
+    }
+    children
 }
 
 /// Returns `true` if `dominator` dominates `target` according to the idom tree.
@@ -510,5 +598,24 @@ mod tests {
         let idoms = compute_idoms(&func, &pred_map);
 
         assert!(dominates(func.entry_block, handler, &idoms));
+
+        // Under the strict terminator-only policy (the verifier view), the
+        // handler is reached ONLY via the exception edge, so it is not in the
+        // dominator preorder at all — the two policies diverge exactly here.
+        let term_pred = build_pred_map_with(&func, CfgEdgePolicy::TerminatorOnly);
+        let term_idoms = compute_idoms_with(&func, &term_pred, CfgEdgePolicy::TerminatorOnly);
+        assert!(
+            !term_idoms.contains_key(&handler),
+            "terminator-only dominators must exclude the exception-only handler"
+        );
+        // The normal block reachable via the terminator IS present under both.
+        assert!(term_idoms.contains_key(&normal));
+
+        // Reachability views diverge the same way.
+        let full_reach = executable_reachable_blocks(&func);
+        let strict_reach = reachable_blocks_with(&func, CfgEdgePolicy::TerminatorOnly);
+        assert!(full_reach.contains(&handler));
+        assert!(!strict_reach.contains(&handler));
+        assert!(strict_reach.contains(&normal));
     }
 }

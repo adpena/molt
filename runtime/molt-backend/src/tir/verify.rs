@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::blocks::{BlockId, Terminator};
+use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
 use super::ops::{AttrValue, OpCode};
 use super::values::ValueId;
@@ -626,59 +627,19 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 
 /// Compute immediate dominator for each reachable block, returning a map
 /// `BlockId -> Option<BlockId>` (None = entry block / no idom).
+///
+/// Delegates to the single shared dominator implementation
+/// ([`dominators::compute_idoms_with`]) under the **strict-CFG** edge policy
+/// ([`CfgEdgePolicy::TerminatorOnly`]): the verifier intentionally restricts
+/// SSA-dominance to terminator-reachable blocks (handler blocks reached only
+/// via implicit exception edges are not SSA-dominance-checked). There is now
+/// exactly ONE dominator implementation over `TirFunction`.
 fn compute_dominators(func: &TirFunction) -> HashMap<BlockId, Option<BlockId>> {
     if func.blocks.is_empty() {
         return HashMap::new();
     }
-
-    // BFS to find reachable blocks and RPO order.
-    let rpo = bfs_order(func);
-    let rpo_index: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
-
-    // Build predecessor map.
-    let mut pred: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for bid in func.blocks.keys() {
-        pred.entry(*bid).or_default();
-    }
-    for (bid, block) in &func.blocks {
-        for succ in successors_of(block) {
-            pred.entry(succ).or_default().push(*bid);
-        }
-    }
-
-    // Simple iterative dominator algorithm (Cooper et al.).
-    let mut idom: HashMap<BlockId, Option<BlockId>> = HashMap::new();
-    let entry = func.entry_block;
-    idom.insert(entry, None);
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &b in &rpo {
-            if b == entry {
-                continue;
-            }
-            let preds = pred.get(&b).cloned().unwrap_or_default();
-            // Find the first predecessor that has already been assigned a dominator.
-            let mut new_idom: Option<BlockId> = None;
-            for &p in &preds {
-                if idom.contains_key(&p) {
-                    new_idom = Some(match new_idom {
-                        None => p,
-                        Some(cur) => intersect_dom(&idom, &rpo_index, cur, p),
-                    });
-                }
-            }
-            let old = idom.get(&b).copied().flatten();
-            let new_val = new_idom;
-            if !idom.contains_key(&b) || old != new_val {
-                idom.insert(b, new_val);
-                changed = true;
-            }
-        }
-    }
-
-    idom
+    let pred_map = dominators::build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly);
+    dominators::compute_idoms_with(func, &pred_map, CfgEdgePolicy::TerminatorOnly)
 }
 
 /// Compute dominator-tree metadata for reachable blocks.
@@ -733,44 +694,6 @@ fn compute_dominator_tree(func: &TirFunction) -> DominatorInfo {
         preorder,
         postorder,
     }
-}
-
-fn intersect_dom(
-    idom: &HashMap<BlockId, Option<BlockId>>,
-    rpo: &HashMap<BlockId, usize>,
-    mut a: BlockId,
-    mut b: BlockId,
-) -> BlockId {
-    let rpo_of = |x: BlockId| rpo.get(&x).copied().unwrap_or(usize::MAX);
-    // Safety bound: at most N iterations where N = number of blocks.
-    // Prevents infinite loop on malformed CFG where idom chain has a cycle.
-    let max_iters = rpo.len() * 2 + 1;
-    let mut iters = 0;
-    while a != b {
-        iters += 1;
-        if iters > max_iters {
-            break; // Malformed CFG — stop rather than loop forever
-        }
-        while rpo_of(a) > rpo_of(b) {
-            match idom.get(&a).and_then(|x| *x) {
-                Some(p) if p != a => a = p,
-                _ => break,
-            }
-        }
-        while rpo_of(b) > rpo_of(a) {
-            match idom.get(&b).and_then(|x| *x) {
-                Some(p) if p != b => b = p,
-                _ => break,
-            }
-        }
-        // If neither a nor b changed, we're stuck — break to prevent infinite loop
-        let a_rpo = rpo_of(a);
-        let b_rpo = rpo_of(b);
-        if a_rpo == b_rpo && a != b {
-            break;
-        }
-    }
-    a
 }
 
 /// BFS from entry block, returning blocks in BFS (roughly RPO) order.
