@@ -130,6 +130,42 @@ pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAn
         );
     }
 
+    // Module-slot promotion (after inlining, so merged bodies — whose calls
+    // disappeared — become promotable loops). Promoted functions are
+    // re-optimized through the same refine→pipeline→refine contract the inliner
+    // uses, so the value-range/RawI64Safe machinery proves the now-SSA loop
+    // phis and the backends receive fully-refined bodies.
+    let (promo_stats, promo_changed) =
+        super::passes::module_slot_promotion::run_module_slot_promotion(module);
+    if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
+        eprintln!(
+            "[E1] module '{}': slot-promotion {} slots / {} ops eliminated in {} functions {:?}",
+            module.name,
+            promo_stats.slots_promoted,
+            promo_stats.ops_eliminated,
+            promo_stats.functions_changed,
+            promo_changed,
+        );
+    }
+    if !promo_changed.is_empty() {
+        let changed_set: std::collections::HashSet<&str> =
+            promo_changed.iter().map(String::as_str).collect();
+        for func in &mut module.functions {
+            if changed_set.contains(func.name.as_str()) {
+                super::type_refine::refine_types(func);
+                let _ = super::passes::run_pipeline(func, tti);
+                super::type_refine::refine_types(func);
+            }
+        }
+    }
+
+    let mut changed_functions = inline_stats.changed_functions;
+    for name in promo_changed {
+        if !changed_functions.contains(&name) {
+            changed_functions.push(name);
+        }
+    }
+
     // Rebuild over the post-inline module: inlining removed `Call` ops and grew
     // caller bodies, so the leaf set / edges / op counts the returned analysis
     // exposes must reflect the merged program.
@@ -138,7 +174,7 @@ pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAn
     ModuleAnalysis {
         call_graph,
         summaries,
-        changed_functions: inline_stats.changed_functions,
+        changed_functions,
     }
 }
 

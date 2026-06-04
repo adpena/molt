@@ -418,7 +418,10 @@ pub struct AliasAnalysisResult {
 impl AliasAnalysisResult {
     /// Compute the result for `func`. Builds the alias union-find by a single
     /// forward scan, then folds the (now alias-aware) escape analysis on top.
-    fn compute(func: &TirFunction) -> Self {
+    /// `pub(crate)` so module-phase transforms (which have no per-function
+    /// `AnalysisManager`) can compute it directly; per-function passes go
+    /// through `am.get::<AliasAnalysis>()` for caching.
+    pub(crate) fn compute(func: &TirFunction) -> Self {
         // Phase A: build the transparent-alias union-find with a forward scan.
         let mut aliases = AliasUnionFind::default();
         for block in func.blocks.values() {
