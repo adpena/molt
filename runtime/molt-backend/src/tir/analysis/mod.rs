@@ -305,10 +305,9 @@ impl AnalysisManager {
     /// analyses, then mutates the function).
     pub fn get<A: Analysis>(&mut self, func: &TirFunction) -> &A::Result {
         let id = A::ID;
-        if !self.cache.contains_key(&id) {
-            let result = A::compute(func);
-            self.cache.insert(id, Box::new(result));
-        }
+        self.cache
+            .entry(id)
+            .or_insert_with(|| Box::new(A::compute(func)) as Box<dyn Any + Send + Sync>);
         // SAFETY of the downcast: the only writer of slot `id` is this method,
         // which always stores `A::Result`. The cache key `A::ID` is unique per
         // `A`. Therefore the stored `Any` is always `A::Result`.

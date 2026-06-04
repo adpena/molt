@@ -350,7 +350,7 @@ fn compute_leaf_functions_via_call_graph(functions: &[FunctionIR]) -> BTreeSet<S
     let tir_functions: Vec<crate::tir::TirFunction> = functions
         .iter()
         .filter(|f| !f.is_extern)
-        .map(|f| crate::tir::lower_from_simple::lower_to_tir(f))
+        .map(crate::tir::lower_from_simple::lower_to_tir)
         .collect();
     let module = crate::tir::TirModule {
         name: "native_leaf_analysis".to_string(),

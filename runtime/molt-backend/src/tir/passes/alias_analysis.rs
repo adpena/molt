@@ -567,17 +567,17 @@ impl AliasAnalysisResult {
                         return MemRegion::TypedField { class, offset };
                     }
                 }
-                if op.opcode == OpCode::LoadAttr && load_attr_is_typed_slot(&op.attrs) {
-                    if let (Some(&obj), Some(offset)) =
+                if op.opcode == OpCode::LoadAttr
+                    && load_attr_is_typed_slot(&op.attrs)
+                    && let (Some(&obj), Some(offset)) =
                         (op.operands.first(), load_attr_offset(&op.attrs))
-                    {
-                        let root = self.aliases.root(obj);
-                        if self.is_stack_object(root) {
-                            return MemRegion::StackObject { root };
-                        }
-                        if let Some(class) = self.class_of(root) {
-                            return MemRegion::TypedField { class, offset };
-                        }
+                {
+                    let root = self.aliases.root(obj);
+                    if self.is_stack_object(root) {
+                        return MemRegion::StackObject { root };
+                    }
+                    if let Some(class) = self.class_of(root) {
+                        return MemRegion::TypedField { class, offset };
                     }
                 }
                 MemRegion::GenericHeap

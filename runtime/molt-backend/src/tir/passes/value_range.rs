@@ -101,6 +101,9 @@ impl IntRange {
     }
 
     /// Saturating `self + other` in i128, clamped to the i64 domain.
+    // Intentionally an inherent saturating-interval method, not `std::ops::Add`
+    // (whose contract is wrapping/unchecked `+` on a scalar, not interval join).
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, other: IntRange) -> IntRange {
         let lo = (self.lo as i128) + (other.lo as i128);
         let hi = (self.hi as i128) + (other.hi as i128);
@@ -651,9 +654,11 @@ fn back_edge_update_value(
 /// the body regardless of trip count:
 ///   * step `k > 0`: the IV only increases, so `iv >= s0` (range `[s0, MAX]`).
 ///   * step `k < 0`: the IV only decreases, so `iv <= s0` (range `[MIN, s0]`).
+///
 /// A *constant* trip count `t` refines the open side to the IV's last value:
 ///   * `k > 0`: `[s0, s0 + (t-1)*k]`.
 ///   * `k < 0`: `[s0 + (t-1)*k, s0]`.
+///
 /// The remaining open side (for symbolic/unknown trips) is supplied by the
 /// header guard's edge-narrowing (`Lt`/`Le`). All arithmetic is i128,
 /// saturating to i64 — never wrapping.
@@ -739,7 +744,9 @@ fn narrow_from_header_guards(
         // the then-edge re-enters the body, the else-edge exits. (If the
         // polarity is inverted, the guard fact under `cond==true` does not hold
         // in the body, so we conservatively skip — never narrow unsoundly.)
-        if !(then_in && !else_in) {
+        // (`!then_in || else_in` ≡ `!(then_in && !else_in)`: skip unless the
+        // then-edge re-enters the body and the else-edge does not.)
+        if !then_in || else_in {
             continue;
         }
         let Some((opcode, raw_operands)) = def_op.get(&cond) else {
