@@ -8,8 +8,9 @@
 //! Only unrolls loops that meet ALL criteria:
 //! 1. Trip count is a compile-time constant, recovered structurally
 //!    from the SSA shape that `range_devirt` emits for `for i in range(...)`.
-//! 2. Trip count <= MAX_UNROLL_TRIP_COUNT (default 8).
-//! 3. Loop body has <= MAX_UNROLL_OPS ops (prevents code bloat).
+//! 2. Trip count <= the cost model's unroll trip cap (`TargetInfo`, default 8).
+//! 3. Loop body has <= the cost model's unroll body cap (default 20 ops;
+//!    prevents code bloat).
 //! 4. No exception handling in the function.
 //! 5. No nested loops (only innermost loops).
 //!
@@ -56,13 +57,8 @@ use super::PassStats;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::target_info::TargetInfo;
 use crate::tir::values::ValueId;
-
-/// Maximum trip count for unrolling.
-const MAX_UNROLL_TRIP_COUNT: i64 = 8;
-
-/// Maximum ops in loop body for unrolling (prevents code bloat).
-const MAX_UNROLL_OPS: usize = 20;
 
 /// Metadata about a loop eligible for unrolling.
 struct UnrollCandidate {
@@ -248,7 +244,7 @@ fn body_value_escapes(func: &TirFunction, header: BlockId, body: BlockId, exit: 
 
 /// Detect loops eligible for unrolling using the structural CFG shape that
 /// `range_devirt` emits. Does NOT use any `range_role`-style metadata.
-fn find_unroll_candidates(func: &TirFunction) -> Vec<UnrollCandidate> {
+fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<UnrollCandidate> {
     // Bail out early on functions with exception handling — none of the loops
     // in such a function are safe to unroll under the current contract.
     if func.has_exception_handling {
@@ -384,8 +380,8 @@ fn find_unroll_candidates(func: &TirFunction) -> Vec<UnrollCandidate> {
             continue;
         }
 
-        // Body size cap.
-        if body_block.ops.len() > MAX_UNROLL_OPS {
+        // Body size cap (cost model: anti-bloat unroll body limit).
+        if body_block.ops.len() > tti.unroll_max_body() {
             continue;
         }
 
@@ -465,7 +461,8 @@ fn find_unroll_candidates(func: &TirFunction) -> Vec<UnrollCandidate> {
             _ => continue,
         };
 
-        if trip_count <= 0 || trip_count > MAX_UNROLL_TRIP_COUNT {
+        // Cost model: positive trip count within the full-unroll trip cap.
+        if trip_count <= 0 || trip_count > tti.unroll_max_trip() {
             continue;
         }
 
@@ -492,13 +489,13 @@ fn find_unroll_candidates(func: &TirFunction) -> Vec<UnrollCandidate> {
     candidates
 }
 
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
     let mut stats = PassStats {
         name: "loop_unroll",
         ..Default::default()
     };
 
-    let candidates = find_unroll_candidates(func);
+    let candidates = find_unroll_candidates(func, tti);
     if candidates.is_empty() {
         return stats;
     }
@@ -969,7 +966,7 @@ mod tests {
             ..
         } = build_test_loop(0, 4, 1, 1);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         // 4 trips × (1 user Add + 1 increment Add) = 8 Adds plus 4 iter constants.
         // Stats add: 4 iter ConstInts are produced via fresh_value but accounted
@@ -1020,7 +1017,7 @@ mod tests {
     fn unrolls_loop_with_explicit_start_and_step() {
         // for i in range(2, 10, 2): body_op(i) -> trip count = 4 (2,4,6,8)
         let TestLoop { mut func, .. } = build_test_loop(2, 10, 2, 1);
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert!(stats.ops_added > 0);
 
         let landing = match &func.blocks[&func.entry_block].terminator {
@@ -1046,7 +1043,7 @@ mod tests {
     fn unrolls_loop_with_negative_step() {
         // for i in range(5, 0, -1): body_op(i) -> trip count = 5 (5,4,3,2,1)
         let TestLoop { mut func, .. } = build_test_loop(5, 0, -1, 1);
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert!(
             stats.ops_added > 0,
             "negative-step loop should still unroll"
@@ -1079,13 +1076,18 @@ mod tests {
             body,
             body_op_result,
             ..
-        } = build_test_loop(0, 4, 1, MAX_UNROLL_OPS + 1);
+        } = build_test_loop(
+            0,
+            4,
+            1,
+            TargetInfo::native_release_fast().unroll_max_body() + 1,
+        );
         let entry_target_before = match &func.blocks[&func.entry_block].terminator {
             Terminator::Branch { target, .. } => *target,
             _ => panic!("entry should branch to header"),
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         assert_eq!(stats.values_changed, 0);
         assert_eq!(stats.ops_added, 0);
@@ -1103,11 +1105,11 @@ mod tests {
 
     #[test]
     fn does_not_unroll_when_trip_count_exceeds_limit() {
-        // for i in range(0, 100): trip count = 100 > MAX_UNROLL_TRIP_COUNT (8)
+        // for i in range(0, 100): trip count = 100 > unroll trip cap (8)
         let TestLoop {
             mut func, header, ..
         } = build_test_loop(0, 100, 1, 1);
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.ops_added, 0, "loop with 100 trips should not unroll");
         assert!(func.blocks.contains_key(&header));
     }
@@ -1178,7 +1180,7 @@ mod tests {
         );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.ops_added, 0, "step=0 loop must never unroll");
         assert!(func.blocks.contains_key(&header));
     }
@@ -1199,7 +1201,7 @@ mod tests {
                 op.opcode = OpCode::Lt;
             }
         }
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(
             stats.ops_added, 0,
             "polarity/step mismatch must reject the loop"
@@ -1213,7 +1215,7 @@ mod tests {
             mut func, header, ..
         } = build_test_loop(0, 4, 1, 1);
         func.has_exception_handling = true;
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.ops_added, 0);
         assert!(func.blocks.contains_key(&header));
     }
@@ -1228,7 +1230,7 @@ mod tests {
             ..
         } = build_test_loop(0, 4, 1, 1);
         func.loop_roles.insert(body, LoopRole::LoopHeader);
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.ops_added, 0, "nested loop must be rejected");
         assert!(func.blocks.contains_key(&header));
     }
@@ -1251,7 +1253,7 @@ mod tests {
             .ops
             .push(add_op(body_op_result, body_op_result, dummy));
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.ops_added, 0, "escaping body value must block unroll");
         assert!(func.blocks.contains_key(&header));
     }
@@ -1280,7 +1282,7 @@ mod tests {
             }
         }
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert!(
             stats.ops_added > 0 && stats.values_changed > 0,
             "structural detector must fire on real range_devirt CFG shape"

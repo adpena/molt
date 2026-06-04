@@ -60,8 +60,18 @@ pub const PIPELINE_PASS_CAPACITY_HINT: usize = 32;
 /// pipeline; only the dispatch and analysis-caching mechanism changed. See
 /// [`pass_manager::build_default_pipeline`](crate::tir::pass_manager::build_default_pipeline)
 /// for the phase-ordering rationale and per-pass mutation classes.
-pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
-    super::pass_manager::build_default_pipeline().run(func)
+///
+/// `tti` is the unified cost model (Tier-0 S2): the single, target-aware source
+/// of truth for every profitability decision (inline/unroll/vectorize/tile/
+/// branchless thresholds). Callers pass the per-(target, profile) instance for
+/// the backend they are lowering to; the behavioral baseline
+/// [`TargetInfo::native_release_fast`](crate::tir::target_info::TargetInfo::native_release_fast)
+/// reproduces every pre-S2 decision exactly.
+pub fn run_pipeline(
+    func: &mut super::function::TirFunction,
+    tti: &super::target_info::TargetInfo,
+) -> Vec<PassStats> {
+    super::pass_manager::build_default_pipeline(tti.clone()).run(func)
 }
 
 #[cfg(test)]
@@ -109,7 +119,7 @@ mod tests {
     #[test]
     fn pipeline_records_every_pass_unconditionally() {
         let mut func = minimal_function();
-        let stats = run_pipeline(&mut func);
+        let stats = run_pipeline(&mut func, &crate::tir::target_info::TargetInfo::native_release_fast());
         let names: Vec<_> = stats.iter().map(|stat| stat.name).collect();
         assert_eq!(
             names,

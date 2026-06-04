@@ -6,6 +6,12 @@ use super::PassStats;
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
+use crate::tir::target_info::TargetInfo;
+
+/// Representative element size (bytes) for the numeric loop nests the polyhedral
+/// analyzer targets (i64 / f64 are both 8 bytes). Used to query the cost
+/// model's cache-aware tile sizes.
+const TILE_ELEM_SIZE_BYTES: usize = 8;
 
 /// Loop nest analysis result.
 #[derive(Debug, Clone)]
@@ -20,8 +26,10 @@ pub struct LoopNest {
     pub tile_sizes: Vec<u32>,
 }
 
-/// Analyze loop nests for polyhedral optimization potential.
-pub fn analyze_loop_nests(func: &TirFunction) -> Vec<LoopNest> {
+/// Analyze loop nests for polyhedral optimization potential. `tti` supplies the
+/// cache-aware tile sizes (the baseline cost model yields a single L1-edge tile
+/// of 32, reproducing the prior hardcoded `vec![32]`).
+pub fn analyze_loop_nests(func: &TirFunction, tti: &TargetInfo) -> Vec<LoopNest> {
     let mut nests = Vec::new();
     let mut block_ids: Vec<_> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
@@ -36,7 +44,11 @@ pub fn analyze_loop_nests(func: &TirFunction) -> Vec<LoopNest> {
                     loop_blocks: vec![bid],
                     trip_counts: vec![None], // Would need range analysis
                     is_affine,
-                    tile_sizes: if is_affine { vec![32] } else { vec![] },
+                    tile_sizes: if is_affine {
+                        tti.tile_sizes(TILE_ELEM_SIZE_BYTES)
+                    } else {
+                        vec![]
+                    },
                 });
             }
         }
@@ -80,8 +92,8 @@ fn check_affine_body(func: &TirFunction, _bid: BlockId) -> bool {
 }
 
 /// Annotate loops with polyhedral optimization hints.
-pub fn run(func: &mut TirFunction) -> PassStats {
-    let nests = analyze_loop_nests(func);
+pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
+    let nests = analyze_loop_nests(func, tti);
     let mut annotated = 0;
     for nest in &nests {
         if nest.is_affine && !nest.tile_sizes.is_empty() {
@@ -173,7 +185,7 @@ mod tests {
     #[test]
     fn test_affine_loop_detected() {
         let func = make_affine_loop_func();
-        let nests = analyze_loop_nests(&func);
+        let nests = analyze_loop_nests(&func, &TargetInfo::native_release_fast());
         assert_eq!(nests.len(), 1);
         assert!(nests[0].is_affine);
         assert_eq!(nests[0].tile_sizes, vec![32]);
@@ -182,7 +194,7 @@ mod tests {
     #[test]
     fn test_non_affine_loop_skipped() {
         let func = make_non_affine_loop_func();
-        let nests = analyze_loop_nests(&func);
+        let nests = analyze_loop_nests(&func, &TargetInfo::native_release_fast());
         assert_eq!(nests.len(), 1);
         assert!(!nests[0].is_affine);
         assert!(nests[0].tile_sizes.is_empty());
@@ -191,7 +203,7 @@ mod tests {
     #[test]
     fn test_run_annotates_affine_loops() {
         let mut func = make_affine_loop_func();
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.values_changed, 1);
         // Check the annotation was added
         let block = &func.blocks[&func.entry_block];
@@ -210,7 +222,7 @@ mod tests {
     #[test]
     fn test_run_skips_non_affine() {
         let mut func = make_non_affine_loop_func();
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.values_changed, 0);
     }
 }

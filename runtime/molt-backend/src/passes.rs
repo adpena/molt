@@ -254,29 +254,6 @@ pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-const INLINE_OP_LIMIT: usize = 30;
-
-/// PGO-guided inline limit for hot functions (called >1000 times).
-/// Hot callees get a larger budget so more of their body can be inlined.
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
-const PGO_HOT_INLINE_OP_LIMIT: usize = 80;
-
-/// Call-count threshold above which a function is considered "hot" for
-/// inlining purposes.  The profiler uses this to populate
-/// `PgoProfileIR::hot_functions`; the constant is kept here for reference.
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
-const _PGO_HOT_CALL_THRESHOLD: u64 = 1000;
-
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 fn is_inlineable_with_limit(
     func: &FunctionIR,
     defined_functions: &BTreeSet<&str>,
@@ -310,18 +287,22 @@ fn is_inlineable_with_limit(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub fn inline_functions(ir: &mut SimpleIR) {
+pub fn inline_functions(ir: &mut SimpleIR, tti: &crate::tir::target_info::TargetInfo) {
     if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
         return;
     }
+    // Base inline op budget from the unified cost model (Tier-0 S2), still
+    // overridable per-build via MOLT_INLINE_LIMIT.
     let limit: usize = std::env::var("MOLT_INLINE_LIMIT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(INLINE_OP_LIMIT);
+        .unwrap_or_else(|| tti.base_inline_op_limit());
 
     let defined_functions: BTreeSet<&str> = ir.functions.iter().map(|f| f.name.as_str()).collect();
 
-    // Build a set of PGO-hot function names for O(1) lookup.
+    // Build a set of PGO-hot function names for O(1) lookup. The hot set comes
+    // from the SimpleIR-side profile (populated by a future PGO collector); the
+    // cost model supplies the *budgets* the hot/cold split selects between.
     let pgo_hot: BTreeSet<&str> = ir
         .profile
         .as_ref()
@@ -330,11 +311,10 @@ pub fn inline_functions(ir: &mut SimpleIR) {
 
     let mut inlineable: BTreeMap<String, (Vec<String>, Vec<OpIR>)> = BTreeMap::new();
     for func in &ir.functions {
-        // PGO-guided inlining: if the profile shows this function is called
-        // frequently (>1000 times), allow a larger op budget so more of its
-        // body can be inlined at call sites.
+        // PGO-guided inlining: a profile-hot callee gets the cost model's larger
+        // hot inline budget so more of its body can be inlined at call sites.
         let effective_limit = if pgo_hot.contains(func.name.as_str()) {
-            limit.max(PGO_HOT_INLINE_OP_LIMIT)
+            limit.max(tti.hot_inline_op_limit())
         } else {
             limit
         };

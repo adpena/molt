@@ -2491,7 +2491,12 @@ impl SimpleBackend {
                             let mut tir_func =
                                 crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                             crate::tir::type_refine::refine_types(&mut tir_func);
-                            let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                            let _stats = crate::tir::passes::run_pipeline(
+                                &mut tir_func,
+                                &crate::tir::target_info::TargetInfo::native_from_simd_caps(
+                                    crate::tir::target_info::SimdCaps::detect_host(),
+                                ),
+                            );
                             crate::tir::type_refine::refine_types(&mut tir_func);
                             // LIR verification path (not the native codegen
                             // carrier, which consumes `ScalarRepresentationPlan`):
@@ -2566,7 +2571,12 @@ impl SimpleBackend {
             pre_split_task_kinds = analysis.task_kinds;
             pre_split_task_closure_sizes = analysis.task_closure_sizes;
             if analysis.needs_inlining && !self.skip_ir_passes {
-                inline_functions(&mut ir);
+                inline_functions(
+                    &mut ir,
+                    &crate::tir::target_info::TargetInfo::native_from_simd_caps(
+                        crate::tir::target_info::SimdCaps::detect_host(),
+                    ),
+                );
             }
         }
         // Dead function elimination: remove functions that are unreachable from
@@ -2666,6 +2676,15 @@ impl SimpleBackend {
             );
             let codegen_start = std::time::Instant::now();
 
+            // Unified cost model (Tier-0 S2) for the LLVM target, derived from
+            // the host CPU's vector feature string so the vectorizer can size
+            // lanes to the actual machine (behavior-neutral today: the width is
+            // a dead annotation, but structurally correct for real SIMD codegen).
+            let llvm_tti = crate::tir::target_info::TargetInfo::from_llvm_feature_string(
+                inkwell::targets::TargetMachine::get_host_cpu_features()
+                    .to_str()
+                    .unwrap_or(""),
+            );
             let tir_funcs: Vec<_> = ir
                 .functions
                 .iter()
@@ -2675,7 +2694,7 @@ impl SimpleBackend {
                     // Without this, all values stay DynBox and every operation
                     // dispatches through the runtime instead of emitting native ops.
                     crate::tir::type_refine::refine_types(&mut tir_func);
-                    let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                    let _stats = crate::tir::passes::run_pipeline(&mut tir_func, &llvm_tti);
                     crate::tir::type_refine::refine_types(&mut tir_func);
                     (func.is_extern, tir_func)
                 })
@@ -4251,7 +4270,10 @@ mod tests {
     fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
         let mut tir = crate::tir::lower_from_simple::lower_to_tir(func);
         crate::tir::type_refine::refine_types(&mut tir);
-        let _stats = crate::tir::passes::run_pipeline(&mut tir);
+        let _stats = crate::tir::passes::run_pipeline(
+            &mut tir,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+        );
         crate::tir::type_refine::refine_types(&mut tir);
         let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir, None);
         if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir) {
