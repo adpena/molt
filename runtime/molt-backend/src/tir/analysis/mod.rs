@@ -78,11 +78,15 @@ pub enum AnalysisId {
     /// First-class alias analysis: points-to/escape map + transparent-copy
     /// alias roots + memory-region/load-purity queries (Tier-0 S5 phase 1).
     AliasAnalysis,
+    /// MemorySSA: memory versions (Def/Use/Phi nodes) over the alias oracle's
+    /// regions — which store produced the value a load reads (Tier-0 S5
+    /// phase 2a).
+    MemorySSA,
 }
 
 impl AnalysisId {
     /// All analyses, for iteration in the debug self-check.
-    pub const ALL: [AnalysisId; 10] = [
+    pub const ALL: [AnalysisId; 11] = [
         AnalysisId::PredMap,
         AnalysisId::ImmediateDoms,
         AnalysisId::DomChildren,
@@ -93,6 +97,7 @@ impl AnalysisId {
         AnalysisId::ScalarEvolution,
         AnalysisId::ValueRange,
         AnalysisId::AliasAnalysis,
+        AnalysisId::MemorySSA,
     ];
 }
 
@@ -361,6 +366,7 @@ impl AnalysisManager {
 /// `AnalysisId` variant without classifying it fails to compile.
 fn cfg_sensitive(id: AnalysisId) -> bool {
     use super::passes::alias_analysis::AliasAnalysis;
+    use super::passes::memory_ssa::MemorySSA;
     use super::passes::scev::ScalarEvolution;
     use super::passes::value_range::ValueRange;
     match id {
@@ -374,12 +380,14 @@ fn cfg_sensitive(id: AnalysisId) -> bool {
         AnalysisId::ScalarEvolution => ScalarEvolution::CFG_SENSITIVE,
         AnalysisId::ValueRange => ValueRange::CFG_SENSITIVE,
         AnalysisId::AliasAnalysis => AliasAnalysis::CFG_SENSITIVE,
+        AnalysisId::MemorySSA => MemorySSA::CFG_SENSITIVE,
     }
 }
 
 /// Ops-sensitivity by id — mirrors each analysis's `OPS_SENSITIVE` const.
 fn ops_sensitive(id: AnalysisId) -> bool {
     use super::passes::alias_analysis::AliasAnalysis;
+    use super::passes::memory_ssa::MemorySSA;
     use super::passes::scev::ScalarEvolution;
     use super::passes::value_range::ValueRange;
     match id {
@@ -393,6 +401,7 @@ fn ops_sensitive(id: AnalysisId) -> bool {
         AnalysisId::ScalarEvolution => ScalarEvolution::OPS_SENSITIVE,
         AnalysisId::ValueRange => ValueRange::OPS_SENSITIVE,
         AnalysisId::AliasAnalysis => AliasAnalysis::OPS_SENSITIVE,
+        AnalysisId::MemorySSA => MemorySSA::OPS_SENSITIVE,
     }
 }
 
