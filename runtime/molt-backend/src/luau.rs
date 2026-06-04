@@ -3478,7 +3478,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "module_get_attr" | "module_get_global" | "module_get_name" => {
+            "module_get_attr" | "module_import_from" | "module_get_global" | "module_get_name" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let is_global = matches!(op.kind.as_str(), "module_get_global" | "module_get_name");

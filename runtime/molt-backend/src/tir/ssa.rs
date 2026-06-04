@@ -1863,6 +1863,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "module_cache_set" => OpCode::ModuleCacheSet,
         "module_cache_del" => OpCode::ModuleCacheDel,
         "module_get_attr" => OpCode::ModuleGetAttr,
+        "module_import_from" => OpCode::ModuleImportFrom,
         "module_get_global" => OpCode::ModuleGetGlobal,
         "module_get_name" => OpCode::ModuleGetName,
         "module_set_attr" => OpCode::ModuleSetAttr,

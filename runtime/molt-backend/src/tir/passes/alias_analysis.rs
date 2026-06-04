@@ -587,6 +587,7 @@ impl AliasAnalysisResult {
             | OpCode::ModuleCacheSet
             | OpCode::ModuleCacheDel
             | OpCode::ModuleGetAttr
+            | OpCode::ModuleImportFrom
             | OpCode::ModuleGetGlobal
             | OpCode::ModuleGetName
             | OpCode::ModuleSetAttr
@@ -754,7 +755,8 @@ mod tests {
             ClosureLoad, ClosureStore, Yield, YieldFrom, Raise, CheckException, ExceptionPending,
             TryStart, TryEnd, StateBlockStart, StateBlockEnd, ConstInt, ConstFloat, ConstStr,
             ConstBool, ConstNone, ConstBytes, Copy, Import, ImportFrom, ModuleCacheGet,
-            ModuleCacheSet, ModuleCacheDel, ModuleGetAttr, ModuleGetGlobal, ModuleGetName,
+            ModuleCacheSet, ModuleCacheDel, ModuleGetAttr, ModuleImportFrom, ModuleGetGlobal,
+            ModuleGetName,
             ModuleSetAttr, ModuleDelGlobal, ModuleDelGlobalIfPresent, WarnStderr, ScfIf, ScfFor,
             ScfWhile, ScfYield, Deopt,
         ]
@@ -775,7 +777,7 @@ mod tests {
             | ExceptionPending | TryStart | TryEnd | StateBlockStart | StateBlockEnd | ConstInt
             | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
             | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
-            | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
+            | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
             | ModuleDelGlobalIfPresent | WarnStderr | ScfIf | ScfFor | ScfWhile | ScfYield
             | Deopt => {}
         }

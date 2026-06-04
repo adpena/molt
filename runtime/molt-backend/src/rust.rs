@@ -3416,7 +3416,7 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     &self.hoisted_vars.clone(),
                 ));
             }
-            "module_get_attr" | "module_get_name" => {
+            "module_get_attr" | "module_import_from" | "module_get_name" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {

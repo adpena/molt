@@ -12925,13 +12925,21 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "module_get_attr" => {
+                    "module_get_attr" | "module_import_from" => {
                         let args = op.args.as_ref().unwrap();
                         let module = locals[&args[0]];
                         let name = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(module));
                         func.instruction(&Instruction::LocalGet(name));
-                        emit_call(func, reloc_enabled, import_ids["module_get_attr"]);
+                        // `from M import name` uses CPython IMPORT_FROM semantics
+                        // (ImportError on miss + sys.modules submodule fallback);
+                        // plain `M.name` raises AttributeError.
+                        let import_symbol = if op.kind == "module_import_from" {
+                            "module_import_from"
+                        } else {
+                            "module_get_attr"
+                        };
+                        emit_call(func, reloc_enabled, import_ids[import_symbol]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

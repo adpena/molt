@@ -3657,6 +3657,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            // ── ModuleImportFrom: `from M import name` binding ──
+            // operands: [module, attr_name]. CPython IMPORT_FROM semantics:
+            // ImportError (not AttributeError) on miss, with a sys.modules
+            // submodule fallback (see molt_module_import_from).
+            OpCode::ModuleImportFrom => {
+                let result = self.call_runtime_2_boxed(
+                    "molt_module_import_from",
+                    op.operands[0],
+                    op.operands[1],
+                );
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
             // ── ModuleGetGlobal: CPython-style module global lookup ──
             // operands: [module, global_name]
             OpCode::ModuleGetGlobal => {
@@ -7273,11 +7289,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
-            "module_get_attr" => {
+            "module_get_attr" | "module_import_from" => {
                 if op.operands.len() != 2 {
                     return false;
                 }
-                let get_fn = self.ensure_runtime_i64_fn("molt_module_get_attr", 2);
+                // `from M import name` (module_import_from) uses CPython
+                // IMPORT_FROM semantics — ImportError on miss with a sys.modules
+                // submodule fallback; plain `M.name` raises AttributeError.
+                let runtime_symbol = if kind == "module_import_from" {
+                    "molt_module_import_from"
+                } else {
+                    "molt_module_get_attr"
+                };
+                let get_fn = self.ensure_runtime_i64_fn(runtime_symbol, 2);
                 let module_bits = self.ensure_i64(self.resolve(op.operands[0]));
                 let attr_bits = self.ensure_i64(self.resolve(op.operands[1]));
                 let result = self

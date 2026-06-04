@@ -179,6 +179,20 @@ pub enum OpCode {
     /// not define the requested attribute, so optimization passes must
     /// not treat it as a pure value copy.
     ModuleGetAttr,
+    /// Bind an attribute for a `from MODULE import name` statement.
+    ///
+    /// Operands: `[module_value, attr_name_value]`.
+    /// Result: dynamic Molt value (the imported binding).
+    ///
+    /// Distinct from [`OpCode::ModuleGetAttr`] because CPython's `IMPORT_FROM`
+    /// has import-specific failure semantics: a missing attribute is first
+    /// retried as a `sys.modules["{module}.{name}"]` submodule lookup
+    /// (circular-import recovery) and, on miss, raises
+    /// `ImportError("cannot import name ...")` rather than `AttributeError`.
+    /// For every optimization pass it behaves identically to `ModuleGetAttr`
+    /// (effectful, may raise, DCE-preserved, DynBox result); only the runtime
+    /// entrypoint and failure mode differ.
+    ModuleImportFrom,
     /// Resolve a module global using CPython LOAD_GLOBAL semantics.
     ///
     /// Operands: `[module_value, global_name_value]`.
