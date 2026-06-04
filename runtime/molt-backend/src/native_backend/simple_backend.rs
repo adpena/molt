@@ -2683,8 +2683,12 @@ impl SimpleBackend {
         let emit_resolver_here = self.emit_app_intrinsic_resolver && !use_llvm;
         let app_intrinsic_manifest = if emit_resolver_here {
             self.app_intrinsic_manifest.take().unwrap_or_else(|| {
-                let runtime_symbols = runtime_intrinsic_symbols_required();
-                crate::passes::compute_intrinsic_manifest(&ir.functions, &runtime_symbols)
+                // `_checked`: requires the staticlib symbol set (fail-closed)
+                // only when some `molt_`-prefixed const_str exists — an empty
+                // module (the CLI's post-build feature probe) has a necessarily
+                // empty manifest and must not demand a symbol file that is not
+                // staged for it.
+                crate::passes::compute_intrinsic_manifest_checked(&ir.functions)
             })
         } else {
             self.app_intrinsic_manifest.take().unwrap_or_default()
