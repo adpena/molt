@@ -35,8 +35,10 @@
 
 use std::collections::HashSet;
 
+use crate::tir::analysis::AnalysisManager;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
+use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult};
 use crate::tir::type_refine;
 use crate::tir::values::ValueId;
 
@@ -146,49 +148,16 @@ fn reuse_compatible(a: &crate::tir::types::TirType, b: &crate::tir::types::TirTy
     sa == sb
 }
 
-/// Returns `true` if the op at the given index might alias with or observe
-/// the memory of `val`. Conservative: any op that could read/write heap memory
-/// through `val` is considered aliasing.
-fn is_aliasing_op(
-    func: &TirFunction,
-    block_id: crate::tir::blocks::BlockId,
-    op_idx: usize,
-    val: ValueId,
-) -> bool {
-    let block = &func.blocks[&block_id];
-    let op = &block.ops[op_idx];
-
-    // If the op directly uses `val` as an operand, it aliases.
-    if op.operands.contains(&val) {
-        return true;
-    }
-
-    // Ops that can observe/modify arbitrary heap state are barriers.
-    matches!(
-        op.opcode,
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::StoreAttr
-            | OpCode::StoreIndex
-            | OpCode::Raise
-            | OpCode::Yield
-            | OpCode::YieldFrom
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::ClosureStore
-            | OpCode::Free
-    )
-}
-
 /// Analyze a TIR function for Perceus-style reuse candidates.
 ///
 /// Returns a list of `ReuseCandidate` structs identifying `DecRef` → `Alloc`
 /// pairs that can potentially be converted to reuse tokens.
-pub fn analyze(func: &TirFunction) -> Vec<ReuseCandidate> {
+///
+/// The reuse-window aliasing barrier ("could this op alias/observe the memory of
+/// the DecRef'd value?") is answered by the first-class alias analysis
+/// ([`AliasAnalysisResult::is_barrier_for`]) — the single source of truth that
+/// replaces the former hand-maintained `is_aliasing_op` list (Tier-0 S5 phase 1).
+pub fn analyze(func: &TirFunction, alias: &AliasAnalysisResult) -> Vec<ReuseCandidate> {
     let type_map = type_refine::extract_type_map(func);
 
     // Collect all values produced by `Alloc` (not `StackAlloc` — those are
@@ -241,7 +210,7 @@ pub fn analyze(func: &TirFunction) -> Vec<ReuseCandidate> {
                 let candidate_op = &ops[alloc_idx];
 
                 // Check for aliasing barrier between DecRef and this op.
-                if is_aliasing_op(func, bid, alloc_idx, decref_val) {
+                if alias.is_barrier_for(candidate_op, decref_val) {
                     // Hit a barrier — stop searching for this DecRef.
                     break;
                 }
@@ -321,8 +290,9 @@ pub fn annotate(func: &mut TirFunction, candidates: &[ReuseCandidate]) -> PassSt
 }
 
 /// Convenience: analyze + annotate in one step.
-pub fn run(func: &mut TirFunction) -> PassStats {
-    let candidates = analyze(func);
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+    let alias = am.get::<AliasAnalysis>(func).clone();
+    let candidates = analyze(func, &alias);
     annotate(func, &candidates)
 }
 
@@ -345,6 +315,20 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         }
+    }
+
+    /// Run `analyze` against a freshly-computed alias analysis (the S5 oracle
+    /// that supplies the reuse-window barrier query).
+    fn analyze_fresh(func: &TirFunction) -> Vec<ReuseCandidate> {
+        let mut am = AnalysisManager::new();
+        let alias = am.get::<AliasAnalysis>(func).clone();
+        analyze(func, &alias)
+    }
+
+    /// Run the full pass against a fresh analysis manager.
+    fn run_fresh(func: &mut TirFunction) -> PassStats {
+        let mut am = AnalysisManager::new();
+        run(func, &mut am)
     }
 
     /// Test 1: Basic DecRef → Alloc pattern with same type produces a reuse candidate.
@@ -384,7 +368,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let candidates = analyze(&func);
+        let candidates = analyze_fresh(&func);
         assert_eq!(
             candidates.len(),
             1,
@@ -427,7 +411,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let candidates = analyze(&func);
+        let candidates = analyze_fresh(&func);
         assert!(
             candidates.is_empty(),
             "barrier between DecRef and Alloc should prevent reuse"
@@ -463,7 +447,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let candidates = analyze(&func);
+        let candidates = analyze_fresh(&func);
         assert!(
             candidates.is_empty(),
             "StackAlloc values should not be reuse candidates"
@@ -495,7 +479,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let stats = run(&mut func);
+        let stats = run_fresh(&mut func);
         assert_eq!(stats.values_changed, 1, "should annotate one reuse pair");
 
         let entry = &func.blocks[&func.entry_block];
@@ -553,7 +537,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let candidates = analyze(&func);
+        let candidates = analyze_fresh(&func);
         assert_eq!(candidates.len(), 2, "should find two reuse pairs");
 
         // First pair: DecRef(a) → Alloc(c)
@@ -586,7 +570,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let candidates = analyze(&func);
+        let candidates = analyze_fresh(&func);
         assert!(
             candidates.is_empty(),
             "DecRef on function parameter should not produce reuse candidate"
@@ -632,7 +616,7 @@ mod tests {
             values: vec![const_none],
         };
 
-        let candidates = analyze(&func);
+        let candidates = analyze_fresh(&func);
         assert_eq!(
             candidates.len(),
             1,
