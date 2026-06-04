@@ -220,6 +220,7 @@ pub fn opcode_name(op: &OpCode) -> &'static str {
 fn mlir_opcode(op: &OpCode) -> &'static str {
     match op {
         OpCode::Add | OpCode::InplaceAdd => "add",
+        OpCode::CheckedAdd => "checked_add",
         OpCode::Sub | OpCode::InplaceSub => "sub",
         OpCode::Mul | OpCode::InplaceMul => "mul",
         OpCode::Div => "div",

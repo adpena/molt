@@ -437,6 +437,7 @@ pub fn print_dialect(dialect: Dialect) -> &'static str {
 pub fn print_opcode(op: &OpCode) -> &'static str {
     match op {
         OpCode::Add => "add",
+        OpCode::CheckedAdd => "checked_add",
         OpCode::Sub => "sub",
         OpCode::Mul => "mul",
         OpCode::InplaceAdd => "inplace_add",

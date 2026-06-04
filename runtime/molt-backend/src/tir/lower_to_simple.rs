@@ -1401,6 +1401,24 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::Neg => Some(unary_op("neg", op, out_var)),
         OpCode::Pos => Some(unary_op("pos", op, out_var)),
 
+        // Checked arithmetic: two output vars, mirroring IterNextUnboxed —
+        // `var` = results[0] (wrapping sum), `out` = results[1] (overflow
+        // flag). The module phase re-lifts every function from SimpleIR, so
+        // this op MUST round-trip (ssa.rs maps "checked_add" back to
+        // OpCode::CheckedAdd with the same var/out → results order); without
+        // the pair it would fall to the Copy fallback and silently vanish.
+        OpCode::CheckedAdd => {
+            let sum_var = op.results.first().map(|v| value_var(*v));
+            let flag_var = op.results.get(1).map(|v| value_var(*v));
+            Some(OpIR {
+                kind: "checked_add".to_string(),
+                args: Some(operand_args(op)),
+                out: flag_var,
+                var: sum_var,
+                ..OpIR::default()
+            })
+        }
+
         // Comparison.
         OpCode::Eq => Some(binary_op("eq", op, out_var)),
         OpCode::Ne => Some(binary_op("ne", op, out_var)),
