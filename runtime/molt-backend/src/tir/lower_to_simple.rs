@@ -1807,6 +1807,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             effect_proof: attr_str(&op.attrs, "effect_proof"),
             ..OpIR::default()
         }),
+        OpCode::ModuleImportFrom => Some(OpIR {
+            kind: "module_import_from".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
         OpCode::ModuleGetGlobal => Some(OpIR {
             kind: "module_get_global".to_string(),
             args: Some(operand_args(op)),

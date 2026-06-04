@@ -1210,6 +1210,7 @@ fn infer_single_result_type_with_attrs(
         // result type must not inherit the module/name operand type.
         OpCode::ModuleCacheGet
         | OpCode::ModuleGetAttr
+        | OpCode::ModuleImportFrom
         | OpCode::ModuleGetGlobal
         | OpCode::ModuleGetName => Some(TirType::DynBox),
 

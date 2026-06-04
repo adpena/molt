@@ -107,6 +107,7 @@ pub(super) fn opcode_may_throw(opcode: OpCode) -> bool {
             | OpCode::ModuleCacheSet
             | OpCode::ModuleCacheDel
             | OpCode::ModuleGetAttr
+            | OpCode::ModuleImportFrom
             | OpCode::ModuleGetGlobal
             | OpCode::ModuleGetName
             | OpCode::ModuleSetAttr
@@ -190,6 +191,7 @@ fn opcode_is_side_effecting(opcode: OpCode) -> bool {
         | OpCode::ModuleCacheSet
         | OpCode::ModuleCacheDel
         | OpCode::ModuleGetAttr
+        | OpCode::ModuleImportFrom
         | OpCode::ModuleGetGlobal
         | OpCode::ModuleGetName
         | OpCode::ModuleSetAttr
@@ -662,7 +664,7 @@ mod tests {
             | ExceptionPending | TryStart | TryEnd | StateBlockStart | StateBlockEnd | ConstInt
             | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
             | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
-            | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
+            | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
             | ModuleDelGlobalIfPresent | WarnStderr | ScfIf | ScfFor | ScfWhile | ScfYield
             | Deopt => {}
         }
@@ -763,6 +765,7 @@ mod tests {
             ModuleCacheSet,
             ModuleCacheDel,
             ModuleGetAttr,
+            ModuleImportFrom,
             ModuleGetGlobal,
             ModuleGetName,
             ModuleSetAttr,
