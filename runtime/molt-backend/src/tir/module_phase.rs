@@ -92,12 +92,31 @@ impl ModuleAnalysis {
 ///
 /// Runs **before** the per-function
 /// [`compile_module_parallel`](crate::tir::parallel::compile_module_parallel).
-/// Today this builds the call graph and the bottom-up summaries (analysis only;
-/// it does not transform bodies — hence `module` is read through `&*module`).
-/// The `&mut TirModule` and the `&TargetInfo` are the stable signature the
-/// module *transforms* (the E1 inliner) will use without a further API change:
-/// the inliner mutates bodies across functions and consults the cost model.
-pub fn run_module_pipeline(module: &mut TirModule, _tti: &TargetInfo) -> ModuleAnalysis {
+/// The phase:
+///
+/// 1. Builds the call graph + bottom-up summaries over the lifted module.
+/// 2. Runs the **E1 function inliner** ([`run_inliner`](super::passes::inliner::run_inliner)):
+///    a module *transform* that splices in-budget, exception-free,
+///    non-recursive, non-generator leaf-ish callees at their static call sites,
+///    bottom-up, re-optimizing each merged caller via the per-function pipeline.
+/// 3. Because step 2 mutates bodies (calls disappear, op counts change), the
+///    call graph and summaries are **rebuilt** so the returned [`ModuleAnalysis`]
+///    reflects the post-inline module — the leaf set the native backend's
+///    recursion-guard skip consults must describe the *inlined* program, not the
+///    pre-inline one.
+///
+/// `tti` is the unified cost model (Tier-0 S2): the single source of truth for
+/// the inliner's per-callee budget.
+pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAnalysis {
+    let call_graph = CallGraph::build(module);
+    let summaries = ModuleSummaries::compute(module, &call_graph);
+
+    // E1: inline (a module transform — mutates bodies across functions).
+    let _inline_stats = super::passes::inliner::run_inliner(module, &call_graph, &summaries, tti);
+
+    // Rebuild over the post-inline module: inlining removed `Call` ops and grew
+    // caller bodies, so the leaf set / edges / op counts the returned analysis
+    // exposes must reflect the merged program.
     let call_graph = CallGraph::build(module);
     let summaries = ModuleSummaries::compute(module, &call_graph);
     ModuleAnalysis {
@@ -143,6 +162,11 @@ mod tests {
 
     #[test]
     fn module_phase_produces_call_graph_and_summaries() {
+        // `b` is a trivial inlinable leaf (no ops, just Return), so the module
+        // phase inlines the static call `a → b`. The returned analysis is
+        // rebuilt over the post-inline module: every function is summarized, and
+        // because a's only call was to the inlined-away b, the post-inline graph
+        // records no a→b edge (a is now a leaf).
         let mut m = module(vec![
             func_calling("a", &["b"]),
             func_calling("b", &[]),
@@ -150,11 +174,17 @@ mod tests {
         let tti = TargetInfo::native_release_fast();
         let analysis = run_module_pipeline(&mut m, &tti);
 
-        assert_eq!(analysis.call_graph.callees("a"), &["b".to_string()]);
+        // Both functions remain summarized (the post-inline rebuild covers all).
         assert!(analysis.summaries.get("a").is_some());
         assert!(analysis.summaries.get("b").is_some());
+        // b was inlined into a, so a no longer statically calls b.
+        assert!(
+            analysis.call_graph.callees("a").is_empty(),
+            "a's static call to b was inlined away"
+        );
+        // After inlining, a makes no call → it joins the leaf set alongside b.
+        assert!(analysis.leaf_functions().contains("a"));
         assert!(analysis.leaf_functions().contains("b"));
-        assert!(!analysis.leaf_functions().contains("a"));
     }
 
     #[test]
@@ -175,14 +205,42 @@ mod tests {
     }
 
     #[test]
-    fn module_phase_does_not_mutate_bodies() {
-        // Analysis-only: op counts are unchanged after the phase runs.
-        let before = func_calling("a", &["b"]);
-        let before_ops: usize = before.blocks.values().map(|b| b.ops.len()).sum();
-        let mut m = module(vec![before, func_calling("b", &[])]);
+    fn module_phase_inlines_static_calls() {
+        // The module phase now runs the E1 inliner (a body transform). A static
+        // call `a → b` to an in-budget, exception-free, non-recursive leaf `b`
+        // is inlined: a's body no longer contains the `Call` to b, and the
+        // post-inline analysis no longer records the a→b edge.
+        let a = func_calling("a", &["b"]);
+        // `b` is a trivial leaf: a single ConstNone op + Return. Inlinable.
+        let mut b = TirFunction::new("b".into(), vec![], TirType::None);
+        let bentry = b.entry_block;
+        let v = b.fresh_value();
+        b.blocks.get_mut(&bentry).unwrap().ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstNone,
+            operands: vec![],
+            results: vec![v],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        b.blocks.get_mut(&bentry).unwrap().terminator = Terminator::Return { values: vec![] };
+
+        let mut m = module(vec![a, b]);
         let tti = TargetInfo::native_release_fast();
         let _ = run_module_pipeline(&mut m, &tti);
-        let after_ops: usize = m.functions[0].blocks.values().map(|b| b.ops.len()).sum();
-        assert_eq!(before_ops, after_ops);
+
+        // a's body no longer has a Call op (b was inlined).
+        let a_after = m.functions.iter().find(|f| f.name == "a").unwrap();
+        let a_calls: usize = a_after
+            .blocks
+            .values()
+            .flat_map(|blk| blk.ops.iter())
+            .filter(|op| op.opcode == OpCode::Call)
+            .count();
+        assert_eq!(a_calls, 0, "the static call a→b is inlined away");
+
+        // a is valid SSA after the merge + per-function re-optimization.
+        crate::tir::verify::verify_function(a_after)
+            .unwrap_or_else(|e| panic!("a invalid after module-phase inlining: {e:?}"));
     }
 }
