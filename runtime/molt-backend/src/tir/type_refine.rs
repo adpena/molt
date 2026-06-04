@@ -515,7 +515,9 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // After the fixpoint has converged, propagate TypeGuard-proven types
     // into all dominated blocks. This is additive and cannot break the
     // existing fixpoint — it only strengthens types that were DynBox.
-    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env);
+    // Reuse the dominator tree already computed above (the fixpoint loop only
+    // refines types, never the CFG), instead of recomputing it.
+    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env, &idoms);
 
     // Write refined types back into the function-owned map and mirror block
     // argument entries into their in-place `TirValue` records.
@@ -599,6 +601,7 @@ fn parse_guard_type(attrs: &super::ops::AttrDict) -> Option<TirType> {
 fn propagate_guard_types(
     func: &TirFunction,
     env: &mut HashMap<ValueId, TirType>,
+    idoms: &HashMap<BlockId, Option<BlockId>>,
 ) -> (usize, HashMap<ValueId, TirType>) {
     let mut proven_types: HashMap<ValueId, TirType> = HashMap::new();
     let mut refinements = 0usize;
@@ -641,9 +644,8 @@ fn propagate_guard_types(
         return (refinements, proven_types);
     }
 
-    // Build dominator tree.
-    let pred_map = dominators::build_pred_map(func);
-    let idoms = dominators::compute_idoms(func, &pred_map);
+    // The dominator tree (`idoms`) is supplied by the caller, which already
+    // computed it for the same unmodified CFG — no redundant recompute here.
 
     // For each TypeGuard, find the success branch of the CondBranch that
     // uses the guard result. The then_block is the success path.
@@ -681,7 +683,7 @@ fn propagate_guard_types(
                     // blocks it dominates.
                     let mut dominated = Vec::new();
                     for &bid in func.blocks.keys() {
-                        if dominators::dominates(*then_block, bid, &idoms) {
+                        if dominators::dominates(*then_block, bid, idoms) {
                             dominated.push(bid);
                         }
                     }
@@ -694,7 +696,7 @@ fn propagate_guard_types(
                     let mut dominated = Vec::new();
                     for &bid in func.blocks.keys() {
                         if bid != guard.guard_block
-                            && dominators::dominates(guard.guard_block, bid, &idoms)
+                            && dominators::dominates(guard.guard_block, bid, idoms)
                         {
                             dominated.push(bid);
                         }
@@ -708,7 +710,7 @@ fn propagate_guard_types(
                 let mut dominated = Vec::new();
                 for &bid in func.blocks.keys() {
                     if bid != guard.guard_block
-                        && dominators::dominates(guard.guard_block, bid, &idoms)
+                        && dominators::dominates(guard.guard_block, bid, idoms)
                     {
                         dominated.push(bid);
                     }
@@ -895,7 +897,9 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
 
     // Run the guard propagation to add TypeGuard-proven values.
     let mut env = extract_type_map(func);
-    let (_refinements, guard_proven) = propagate_guard_types(func, &mut env);
+    let pred_map = dominators::build_pred_map(func);
+    let idoms = dominators::compute_idoms(func, &pred_map);
+    let (_refinements, guard_proven) = propagate_guard_types(func, &mut env, &idoms);
     for (vid, ty) in guard_proven {
         proven.insert(vid, ty);
     }

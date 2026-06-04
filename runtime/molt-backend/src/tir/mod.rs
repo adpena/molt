@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod blocks;
 pub mod bolt;
 pub mod cache;
@@ -5,6 +6,7 @@ pub mod cfg;
 pub mod deopt;
 pub mod dominators;
 pub mod function;
+pub mod pass_manager;
 pub mod lir;
 pub mod lower_from_simple;
 pub mod lower_to_lir;

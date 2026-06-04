@@ -34,6 +34,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::tir::analysis::{AnalysisManager, PredMap};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
@@ -85,39 +86,6 @@ fn parse_guard_type(op: &TirOp) -> Option<TirType> {
         },
         _ => None,
     }
-}
-
-/// Collect successor BlockIds from a terminator.
-fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
-            let mut targets: Vec<BlockId> = cases.iter().map(|(_, t, _)| *t).collect();
-            targets.push(*default);
-            targets.dedup();
-            targets
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
-}
-
-/// Build predecessor map: BlockId -> Vec<BlockId>.
-fn build_pred_map(func: &TirFunction) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut pred_map: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for &bid in func.blocks.keys() {
-        pred_map.entry(bid).or_default();
-    }
-    for (&bid, block) in &func.blocks {
-        for succ in terminator_successors(&block.terminator) {
-            pred_map.entry(succ).or_default().push(bid);
-        }
-    }
-    pred_map
 }
 
 /// Build a map: ValueId -> OpCode that produced it (for ops, not block args).
@@ -392,7 +360,7 @@ fn redirect_terminator(
 // ---------------------------------------------------------------------------
 
 /// Run the SBBV pass on a TIR function.
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "block_versioning",
         ..Default::default()
@@ -404,11 +372,14 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
     // Conservative bail-out: exception handling makes versioning unsafe because
     // a TypeGuard failure inside a try region must propagate to the handler.
+    // Because the pass only proceeds when `has_exception_handling == false`,
+    // the cached full-CFG `PredMap` has no exception edges and coincides with
+    // the terminator-only predecessor relation back-edge detection needs.
     if func.has_exception_handling {
         return stats;
     }
 
-    let pred_map = build_pred_map(func);
+    let pred_map = am.get::<PredMap>(func).clone();
     let loop_headers = find_loop_headers(&pred_map);
     let producing_ops = build_producing_op_map(func);
 
@@ -742,7 +713,7 @@ mod tests {
         };
         func.blocks.insert(bb1, block1);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // Should have created a specialized version.
         assert!(
@@ -857,7 +828,7 @@ mod tests {
         };
         func.blocks.insert(bb3, block3);
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // The pass traces through branch args to their definitions:
         // - bb1 passes int_val (from ConstInt) → proves INT → routed to bb3_spec
@@ -983,7 +954,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // At most 1 specialized version should be created (k=2 total including original).
         assert!(
@@ -1058,7 +1029,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         // bb1 is a loop header — it must NOT be versioned.
         assert_eq!(
@@ -1096,7 +1067,7 @@ mod tests {
         entry.ops.push(make_const_int(v, 0));
         entry.terminator = Terminator::Return { values: vec![v] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(stats.values_changed, 0);
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(stats.ops_added, 0);
@@ -1133,7 +1104,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         assert_eq!(
             stats.values_changed, 0,
             "unknown type should not be versioned"
