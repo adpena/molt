@@ -24,6 +24,29 @@ pub enum OpCode {
     Add,
     Sub,
     Mul,
+    /// Signed 64-bit add with hardware-exact overflow detection.
+    ///
+    /// Operands: `[lhs: I64, rhs: I64]` — both raw i64 carriers.
+    /// Two results: `results[0]` = the wrapping i64 sum, `results[1]` = the
+    /// overflow flag (Bool, true iff the signed addition overflowed i64).
+    ///
+    /// CONTRACT (soundness-critical): when `results[1]` is true,
+    /// `results[0]` holds the mathematically WRAPPED value and MUST NOT be
+    /// observed as a Python int — feeding it to `molt_int_from_i64` would
+    /// produce a wrong BigInt. Consumers (the `overflow_peel` dual-loop
+    /// transform) branch on `results[1]` and seed the boxed continuation
+    /// from the PRE-add operands, never from the wrapped sum.
+    ///
+    /// Lowering: native = Cranelift `sadd_overflow`; LLVM =
+    /// `llvm.sadd.with.overflow.i64`; WASM = raw `i64.add` + the sign-bit
+    /// identity `((lhs ^ sum) & (rhs ^ sum)) < 0`; Luau = the
+    /// `molt_checked_i64_add` prelude helper `(a + b, false)` — f64 addition
+    /// never wraps i64, so the overflow branch is correctly dead there.
+    ///
+    /// Deliberately NOT classified pure-movable/CSE-safe in the effects
+    /// oracle: a 2-result op must not be value-numbered or hoisted until the
+    /// multi-result handling of GVN/LICM is separately verified.
+    CheckedAdd,
     // In-place arithmetic (must roundtrip as inplace_* to preserve semantics)
     InplaceAdd,
     InplaceSub,

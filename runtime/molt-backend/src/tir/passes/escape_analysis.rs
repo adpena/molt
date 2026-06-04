@@ -483,7 +483,9 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                     // operand value anywhere.
                 }
                 // Local ops that don't cause escape.
+                // CheckedAdd operates on raw i64 scalars (never heap refs).
                 OpCode::Add
+                | OpCode::CheckedAdd
                 | OpCode::Sub
                 | OpCode::Mul
                 | OpCode::InplaceAdd
