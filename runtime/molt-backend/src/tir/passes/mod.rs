@@ -14,6 +14,7 @@ pub mod effects;
 pub mod escape_analysis;
 pub mod fast_math;
 pub mod gvn;
+pub mod ip_summary;
 pub mod iter_devirt;
 pub mod licm;
 pub mod loop_unroll;

@@ -121,7 +121,9 @@ pub struct NativeBackendModuleContext {
 #[cfg(feature = "native-backend")]
 impl NativeBackendModuleContext {
     fn from_functions(functions: &[FunctionIR]) -> Self {
-        let analysis = analyze_native_backend_functions(functions);
+        // The module context carries the whole-program leaf set consumed by the
+        // batched codegen path, so compute it here (Tier-0 S4).
+        let analysis = analyze_native_backend_functions(functions, /* compute_leaves */ true);
         Self {
             function_arities: functions
                 .iter()
@@ -137,8 +139,19 @@ impl NativeBackendModuleContext {
     }
 }
 
+/// Analyze the native backend's SimpleIR function set.
+///
+/// `compute_leaves` gates the whole-program TIR call-graph leaf-set computation
+/// (Tier-0 S4): it is a relatively heavy whole-program lift, so the callers that
+/// only need `task_kinds` / `task_closure_sizes` / `needs_inlining` (the
+/// pre-megafunction-split task-annotation capture) pass `false` and leave
+/// `leaf_functions` empty, while the callers that actually consume the leaf set
+/// (the post-split analysis and the module-context builder) pass `true`.
 #[cfg(feature = "native-backend")]
-fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIrAnalysis {
+fn analyze_native_backend_functions(
+    functions: &[FunctionIR],
+    compute_leaves: bool,
+) -> NativeBackendIrAnalysis {
     let defined_functions: BTreeSet<String> = functions
         .iter()
         .filter(|func| !func.is_extern)
@@ -269,32 +282,26 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
         }
     }
 
-    // Detect leaf functions: functions that contain no user-level calls.
-    // These can safely skip the recursion guard since they cannot recurse.
-    let mut leaf_functions: BTreeSet<String> = BTreeSet::new();
-    for func_ir in functions {
-        let has_call = func_ir.ops.iter().any(|op| {
-            matches!(
-                op.kind.as_str(),
-                "call"
-                    | "call_guarded"
-                    | "call_func"
-                    | "call_internal"
-                    | "call_indirect"
-                    | "call_bind"
-                    | "invoke_ffi"
-            )
-        });
-        if !has_call {
-            leaf_functions.insert(func_ir.name.clone());
+    // Detect leaf functions via the whole-program TIR call graph (Tier-0 S4).
+    // A leaf makes no call of any kind and therefore cannot recurse, so call
+    // sites targeting it may skip the recursion guard. The TIR call graph is
+    // strictly more precise than the former raw-SimpleIR "has no call op" scan
+    // (TIR DCE / devirtualization may have removed calls the raw IR still
+    // carried), and it conservatively treats dynamic dispatch (`CallMethod`) and
+    // indirect/opaque calls as recursion-capable — never marking a function that
+    // retains a call as a leaf. See `tir::call_graph` and `tir::module_phase`.
+    let leaf_functions = if compute_leaves {
+        let leaves = compute_leaf_functions_via_call_graph(functions);
+        if !leaves.is_empty() {
+            eprintln!(
+                "MOLT_BACKEND: leaf functions (skip recursion guard): {} detected",
+                leaves.len()
+            );
         }
-    }
-    if !leaf_functions.is_empty() {
-        eprintln!(
-            "MOLT_BACKEND: leaf functions (skip recursion guard): {} detected",
-            leaf_functions.len()
-        );
-    }
+        leaves
+    } else {
+        BTreeSet::new()
+    };
 
     NativeBackendIrAnalysis {
         defined_functions,
@@ -307,8 +314,41 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
 }
 
 #[cfg(feature = "native-backend")]
-fn analyze_native_backend_ir(ir: &SimpleIR) -> NativeBackendIrAnalysis {
-    analyze_native_backend_functions(&ir.functions)
+fn analyze_native_backend_ir(ir: &SimpleIR, compute_leaves: bool) -> NativeBackendIrAnalysis {
+    analyze_native_backend_functions(&ir.functions, compute_leaves)
+}
+
+/// Compute the leaf-function set via the whole-program TIR module phase
+/// (Tier-0 S4). Lifts the SimpleIR `functions` to a [`crate::tir::TirModule`],
+/// runs [`crate::tir::run_module_pipeline`] to build the call graph, and returns
+/// its leaf set. The transient `TirModule` is dropped as soon as the leaf set is
+/// extracted, so peak additional memory is one whole-program TIR lift (the same
+/// function set already held as `FunctionIR`), not a retained copy.
+///
+/// Extern functions (bodies in `stdlib_shared.o`) carry no ops here; they lift
+/// to call-free TIR and would appear "leaf", but the leaf set only gates the
+/// recursion-guard skip at *direct* call sites to *defined* functions, so an
+/// extern entry is harmless. We exclude them to keep the set identity-equal to
+/// the set of real local function bodies.
+#[cfg(feature = "native-backend")]
+fn compute_leaf_functions_via_call_graph(functions: &[FunctionIR]) -> BTreeSet<String> {
+    let tir_functions: Vec<crate::tir::TirFunction> = functions
+        .iter()
+        .filter(|f| !f.is_extern)
+        .map(|f| crate::tir::lower_from_simple::lower_to_tir(f))
+        .collect();
+    let module = crate::tir::TirModule {
+        name: "native_leaf_analysis".to_string(),
+        functions: tir_functions,
+    };
+    // Analysis-only; the cost model is unused by the call-graph build but is the
+    // stable signature of the module phase (S2 threading).
+    let tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
+        crate::tir::target_info::SimdCaps::detect_host(),
+    );
+    let mut module = module;
+    let analysis = crate::tir::run_module_pipeline(&mut module, &tti);
+    analysis.leaf_functions()
 }
 
 #[cfg(feature = "native-backend")]
@@ -2567,7 +2607,10 @@ impl SimpleBackend {
         let pre_split_task_kinds: BTreeMap<String, TrampolineKind>;
         let pre_split_task_closure_sizes: BTreeMap<String, i64>;
         {
-            let analysis = analyze_native_backend_ir(&ir);
+            // This pre-split capture only reads task annotations + the inlining
+            // flag; the leaf set is recomputed post-split below, so skip the
+            // (heavier) whole-program leaf analysis here.
+            let analysis = analyze_native_backend_ir(&ir, /* compute_leaves */ false);
             pre_split_task_kinds = analysis.task_kinds;
             pre_split_task_closure_sizes = analysis.task_closure_sizes;
             if analysis.needs_inlining && !self.skip_ir_passes {
@@ -2817,8 +2860,13 @@ impl SimpleBackend {
         }
         // Re-analyze after dead function elimination and megafunction
         // splitting so defined_functions/closure_functions reflect only the
-        // surviving (and newly created chunk) functions.
-        let mut ir_analysis = analyze_native_backend_ir(&ir);
+        // surviving (and newly created chunk) functions. The leaf set is
+        // consumed by codegen (recursion-guard skip). When a whole-program
+        // module context is already set (the batched path), its leaf set wins
+        // over this per-batch one (see `effective_leaf_functions` below), so
+        // skip the redundant per-batch whole-program leaf lift here.
+        let need_local_leaves = self.module_context.is_none();
+        let mut ir_analysis = analyze_native_backend_ir(&ir, need_local_leaves);
         // Merge pre-split task annotations: megafunction splitting can
         // separate `func_new` from `set_attr_generic_obj(__molt_is_generator__)`
         // into different chunk functions, causing the post-split analysis to
@@ -4230,7 +4278,7 @@ mod tests {
             functions,
             profile: None,
         };
-        let analysis = analyze_native_backend_ir(&ir);
+        let analysis = analyze_native_backend_ir(&ir, true);
         let function_has_ret = compute_function_has_ret(&ir.functions);
         let function_arities = ir
             .functions
@@ -4355,7 +4403,7 @@ mod tests {
             profile: None,
         };
 
-        let analysis = analyze_native_backend_ir(&ir);
+        let analysis = analyze_native_backend_ir(&ir, true);
 
         assert!(!analysis.needs_inlining);
         assert!(analysis.defined_functions.contains("molt_main"));
@@ -4406,7 +4454,7 @@ mod tests {
             profile: None,
         };
 
-        let analysis = analyze_native_backend_ir(&ir);
+        let analysis = analyze_native_backend_ir(&ir, true);
 
         assert!(analysis.closure_functions.contains("worker_poll"));
         assert_eq!(
