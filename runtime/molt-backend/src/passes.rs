@@ -3886,6 +3886,47 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
 /// This MUST be called over ALL functions including externs (before the
 /// `is_extern` filter), so the `stdlib_shared.o` partition's intrinsic uses are
 /// covered.
+/// Compute the per-app intrinsic manifest, obtaining the linked runtime
+/// staticlib's symbol set on demand — fail-closed exactly when it matters.
+///
+/// A module with NO `molt_`-prefixed `const_str` anywhere (the CLI's empty
+/// post-build feature-probe module, or an app that reaches every intrinsic by
+/// direct call) has a necessarily-empty manifest under ANY symbol set: every
+/// manifest entry is a `const_str` value that is a member of the symbol set, and
+/// all runtime intrinsics are `molt_`-prefixed (the CLI extractor keeps exactly
+/// the staticlib's `molt_*` text symbols). The resolver then emits its trivial
+/// zero-entry "always not found" form with no relocations, so the staticlib
+/// symbol set is not a precondition there. Requiring it unconditionally made the
+/// CLI's post-build backend feature probe — which runs the backend on an empty
+/// module with no symbol file staged — panic in
+/// [`runtime_intrinsic_symbols_required`](crate::intrinsic_symbols::runtime_intrinsic_symbols_required),
+/// wedging every backend rebuild behind a "feature mismatch; cleaning and
+/// rebuilding" loop. For any module that COULD name an intrinsic (some
+/// `molt_`-prefixed `const_str` exists), the symbol set remains a hard
+/// precondition and absence still fails the build closed — the
+/// dangling-relocation corruption class this guards is unchanged.
+///
+/// This is the single manifest entry point for every resolver-emitting caller
+/// (native `SimpleBackend::compile`, the orchestrator's split/batch paths); the
+/// two-argument [`compute_intrinsic_manifest`] is the set-supplied core it and
+/// the unit tests share.
+pub fn compute_intrinsic_manifest_checked(functions: &[FunctionIR]) -> BTreeSet<String> {
+    let any_candidate = functions.iter().any(|f| {
+        f.ops.iter().any(|op| {
+            op.kind == "const_str"
+                && op
+                    .s_value
+                    .as_deref()
+                    .is_some_and(|v| v.starts_with("molt_"))
+        })
+    });
+    if !any_candidate {
+        return BTreeSet::new();
+    }
+    let runtime_intrinsic_symbols = crate::intrinsic_symbols::runtime_intrinsic_symbols_required();
+    compute_intrinsic_manifest(functions, &runtime_intrinsic_symbols)
+}
+
 pub fn compute_intrinsic_manifest(
     functions: &[FunctionIR],
     runtime_intrinsic_symbols: &BTreeSet<String>,
@@ -4045,6 +4086,26 @@ mod tests {
             manifest.contains("molt_gc_collect"),
             "wrapper-indirected intrinsic name must be in the manifest"
         );
+    }
+
+    /// `compute_intrinsic_manifest_checked` on a module with NO `molt_`-prefixed
+    /// const_str (the CLI's empty post-build feature-probe module, or an app
+    /// reaching every intrinsic by direct call) yields the empty manifest WITHOUT
+    /// requiring the staticlib symbol set. This is the regression for the
+    /// probe-panic loop: the probe runs the backend on `functions: []` with no
+    /// `MOLT_RUNTIME_INTRINSIC_SYMBOLS` staged, and unconditionally requiring the
+    /// set wedged every backend rebuild behind "feature mismatch; cleaning and
+    /// rebuilding".
+    #[test]
+    fn manifest_checked_empty_module_needs_no_symbol_set() {
+        // The empty probe module.
+        assert!(compute_intrinsic_manifest_checked(&[]).is_empty());
+        // A module with ops but no molt_-prefixed const_str.
+        let func = manifest_func(vec![
+            make_const_str("s", "hello world"),
+            make_call_func("res", "print", &["s"]),
+        ]);
+        assert!(compute_intrinsic_manifest_checked(&[func]).is_empty());
     }
 
     /// A const-string that names a symbol absent from the linked staticlib (e.g.

@@ -9269,9 +9269,53 @@ def _native_object_has_unresolved_module_chunks(
     return any(symbol not in stdlib_defined for symbol in unresolved_chunks)
 
 
-def _runtime_intrinsic_symbols_file(runtime_lib: Path) -> Path | None:
+def _nm_candidate_binaries() -> list[str]:
+    """Ordered candidate `nm` binaries for reading the runtime staticlib.
+
+    The staticlib's members are LLVM *bitcode* when the runtime profile builds
+    with LTO, and bitcode is only readable by an ``llvm-nm`` whose LLVM is at
+    least as new as the producing rustc's. Apple's Xcode ``nm`` (an older LLVM
+    reader) rejects newer Rust bitcode with ``Unknown attribute kind`` — the
+    failure that silently broke symbol extraction when the toolchain moved to
+    Rust 1.96/LLVM 22 while ``shutil.which("nm")`` kept resolving to Xcode's.
+    Order newest/most-capable readers first; the extraction loop validates each
+    candidate (clean exit AND a non-empty ``molt_*`` set) before trusting it.
+    """
+    candidates: list[str] = []
+    env_override = os.environ.get("MOLT_NM")
+    if env_override:
+        candidates.append(env_override)
+    # The Rust toolchain's own llvm-nm (the `llvm-tools` component) matches the
+    # bitcode producer exactly when installed.
+    try:
+        sysroot = subprocess.run(
+            ["rustc", "--print", "sysroot"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        sysroot = ""
+    if sysroot:
+        candidates.extend(
+            str(p) for p in sorted(Path(sysroot).glob("lib/rustlib/*/bin/llvm-nm"))
+        )
+    # Homebrew LLVM kegs (Apple Silicon + Intel prefixes), newest keg first.
+    for prefix in ("/opt/homebrew/opt", "/usr/local/opt"):
+        candidates.extend(
+            str(p) for p in sorted(Path(prefix).glob("llvm*/bin/llvm-nm"), reverse=True)
+        )
+    for which_name in ("llvm-nm", "nm"):
+        found = shutil.which(which_name)
+        if found:
+            candidates.append(found)
+    return list(dict.fromkeys(candidates))
+
+
+def _runtime_intrinsic_symbols_file(runtime_lib: Path) -> tuple[Path | None, str | None]:
     """Materialize a newline-separated list of the `molt_*` intrinsic symbols the
-    runtime staticlib *defines*, returning the cache file path.
+    runtime staticlib *defines*, returning ``(cache file path, failure detail)``.
 
     The per-app intrinsic resolver (emitted into the user object) takes the
     address of every intrinsic the app reaches by name. Those addresses are
@@ -9284,63 +9328,82 @@ def _runtime_intrinsic_symbols_file(runtime_lib: Path) -> Path | None:
     (``MOLT_RUNTIME_INTRINSIC_SYMBOLS``) and intersects the candidate manifest
     against it.
 
+    Extraction iterates [`_nm_candidate_binaries`], accepting the FIRST candidate
+    that exits cleanly AND yields a non-empty ``molt_*`` text-symbol set — an nm
+    that cannot parse the staticlib's LTO bitcode (Apple's, on newer Rust) fails
+    one of the two and the loop moves on. On total failure the second element
+    carries the per-candidate reasons so the caller can fail the build with an
+    actionable message instead of letting the backend panic later.
+
     Cached next to the staticlib and keyed by the staticlib's size+mtime so it is
     extracted at most once per runtime build.
     """
     try:
         stat = runtime_lib.stat()
-    except OSError:
-        return None
+    except OSError as exc:
+        return None, f"runtime staticlib unreadable: {runtime_lib} ({exc})"
     cache_path = runtime_lib.with_name(
         f"{runtime_lib.name}.intrinsic_symbols.{stat.st_size}.{int(stat.st_mtime)}.txt"
     )
     if cache_path.exists():
-        return cache_path
-    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
-    if nm_bin is None:
-        return None
-    try:
-        # `-g` would hide the staticlib's defined intrinsic symbols when they are
-        # local after LTO; intrinsics are `#[no_mangle] pub extern "C"` (external),
-        # so the default listing captures them. Use a generous timeout: the native
-        # full/micro staticlib can exceed 100MB. Pass an absolute path so the
-        # `cwd=runtime_lib.parent` working directory cannot break path resolution.
-        runtime_lib_abs = runtime_lib.resolve()
-        result = _run_completed_command(
-            [nm_bin, "--defined-only", str(runtime_lib_abs)],
-            capture_output=True,
-            timeout=120,
-            env=None,
-            cwd=runtime_lib_abs.parent,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
+        return cache_path, None
+    # `-g` would hide the staticlib's defined intrinsic symbols when they are
+    # local after LTO; intrinsics are `#[no_mangle] pub extern "C"` (external),
+    # so the default listing captures them. Use a generous timeout: the native
+    # full/micro staticlib can exceed 100MB. Pass an absolute path so the
+    # `cwd=runtime_lib.parent` working directory cannot break path resolution.
+    runtime_lib_abs = runtime_lib.resolve()
+    failures: list[str] = []
     symbols: set[str] = set()
-    for raw_line in result.stdout.splitlines():
-        parts = raw_line.split()
-        if len(parts) < 2:
+    for nm_bin in _nm_candidate_binaries():
+        try:
+            result = _run_completed_command(
+                [nm_bin, "--defined-only", str(runtime_lib_abs)],
+                capture_output=True,
+                timeout=120,
+                env=None,
+                cwd=runtime_lib_abs.parent,
+                memory_guard_prefix="MOLT_BUILD",
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"{nm_bin}: {exc}")
             continue
-        # Defined symbols list as either "<addr> <kind> <name>" or "<kind> <name>".
-        kind = parts[-2]
-        name = _normalize_native_symbol_name(parts[-1])
-        # Text symbols (T/t) are the intrinsic function definitions the resolver
-        # takes the address of. Restrict to the `molt_` namespace.
-        if kind in ("T", "t") and name.startswith("molt_"):
-            symbols.add(name)
+        if result.returncode != 0:
+            stderr_lines = (result.stderr or "").strip().splitlines()
+            detail = stderr_lines[-1] if stderr_lines else "no stderr"
+            failures.append(f"{nm_bin}: exit {result.returncode} ({detail})")
+            continue
+        candidate_symbols: set[str] = set()
+        for raw_line in result.stdout.splitlines():
+            parts = raw_line.split()
+            if len(parts) < 2:
+                continue
+            # Defined symbols list as either "<addr> <kind> <name>" or "<kind> <name>".
+            kind = parts[-2]
+            name = _normalize_native_symbol_name(parts[-1])
+            # Text symbols (T/t) are the intrinsic function definitions the resolver
+            # takes the address of. Restrict to the `molt_` namespace.
+            if kind in ("T", "t") and name.startswith("molt_"):
+                candidate_symbols.add(name)
+        if not candidate_symbols:
+            failures.append(f"{nm_bin}: produced no molt_* text symbols")
+            continue
+        symbols = candidate_symbols
+        break
     if not symbols:
-        return None
+        return None, (
+            "no available nm could extract the staticlib's molt_* symbols — "
+            + "; ".join(failures or ["no nm candidates found"])
+        )
     tmp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
     try:
         tmp_path.write_text("\n".join(sorted(symbols)) + "\n", encoding="utf-8")
         os.replace(tmp_path, cache_path)
-    except OSError:
+    except OSError as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
-        return None
-    return cache_path
+        return None, f"failed to write symbol cache {cache_path}: {exc}"
+    return cache_path, None
 
 
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
@@ -20013,7 +20076,7 @@ def _prepare_backend_runtime_context(
     stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | frozenset[str] | None = None,
     target_triple: str | None = None,
-) -> _PreparedBackendRuntimeContext:
+) -> tuple[_PreparedBackendRuntimeContext | None, _CliFailure | None]:
     runtime_state = prepared_backend_setup.runtime_state
 
     def ensure_runtime_wasm_shared(
@@ -20069,7 +20132,7 @@ def _prepare_backend_runtime_context(
     runtime_lib = runtime_state.runtime_lib
     os.environ.pop("MOLT_RUNTIME_INTRINSIC_SYMBOLS", None)
     if runtime_lib is not None and not is_wasm_freestanding:
-        _ensure_native_runtime_lib_ready_before_link(
+        runtime_ready = _ensure_native_runtime_lib_ready_before_link(
             runtime_state,
             target_triple=target_triple,
             json_output=json_output,
@@ -20081,10 +20144,34 @@ def _prepare_backend_runtime_context(
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
         )
-        if runtime_lib.exists():
-            symbols_file = _runtime_intrinsic_symbols_file(runtime_lib)
-            if symbols_file is not None:
-                os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = str(symbols_file)
+        # The staticlib symbol set is a HARD precondition of native codegen: the
+        # backend's per-app intrinsic resolver validates its manifest against it
+        # and fails closed when it is absent. Every failure here must therefore
+        # fail the build NOW with the real reason — silently skipping the env
+        # staging used to surface, much later and misleadingly, as a backend
+        # panic ("MOLT_RUNTIME_INTRINSIC_SYMBOLS was unset").
+        if not runtime_ready or not runtime_lib.exists():
+            return None, _fail(
+                "native runtime staticlib build failed or produced no artifact "
+                f"({runtime_lib}); cannot stage the intrinsic-symbol set native "
+                "codegen requires. See the cargo output above for the build error.",
+                json_output,
+                command="build",
+            )
+        symbols_file, symbols_failure = _runtime_intrinsic_symbols_file(runtime_lib)
+        if symbols_file is None:
+            return None, _fail(
+                "failed to extract the runtime staticlib's molt_* intrinsic "
+                f"symbols from {runtime_lib}: {symbols_failure}. Native codegen "
+                "requires this set (the per-app resolver must not reference "
+                "symbols the linker cannot satisfy). Remediation: install an "
+                "LLVM matching your Rust toolchain (`brew install llvm` or "
+                "`rustup component add llvm-tools`), or point MOLT_NM at a "
+                "bitcode-capable llvm-nm.",
+                json_output,
+                command="build",
+            )
+        os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = str(symbols_file)
 
     return _PreparedBackendRuntimeContext(
         runtime_state=runtime_state,
@@ -20101,7 +20188,7 @@ def _prepare_backend_runtime_context(
         cache_path=prepared_backend_setup.cache_path,
         function_cache_path=prepared_backend_setup.function_cache_path,
         stdlib_object_path=prepared_backend_setup.stdlib_object_path,
-    )
+    ), None
 
 
 def _prepare_backend_dispatch(
@@ -21223,17 +21310,22 @@ def _run_backend_pipeline(
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
     assert prepared_backend_setup is not None
-    prepared_backend_runtime_context = _prepare_backend_runtime_context(
-        prepared_backend_setup=prepared_backend_setup,
-        is_wasm_freestanding=output_layout.is_wasm_freestanding,
-        json_output=json_output,
-        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-        cargo_timeout=prepared_build_config.cargo_timeout,
-        molt_root=prepared_build_roots.molt_root,
-        stdlib_profile=stdlib_profile,
-        resolved_modules=resolved_modules,
-        target_triple=output_layout.target_triple,
+    prepared_backend_runtime_context, prepared_backend_runtime_error = (
+        _prepare_backend_runtime_context(
+            prepared_backend_setup=prepared_backend_setup,
+            is_wasm_freestanding=output_layout.is_wasm_freestanding,
+            json_output=json_output,
+            runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+            cargo_timeout=prepared_build_config.cargo_timeout,
+            molt_root=prepared_build_roots.molt_root,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            target_triple=output_layout.target_triple,
+        )
     )
+    if prepared_backend_runtime_error is not None:
+        return prepared_backend_runtime_error
+    assert prepared_backend_runtime_context is not None
     prepared_backend_compile, prepared_backend_compile_error = _prepare_backend_compile(
         diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
         phase_starts=prepared_build_preamble.phase_starts,

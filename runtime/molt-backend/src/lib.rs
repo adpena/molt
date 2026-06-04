@@ -44,7 +44,8 @@ pub mod tir;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
-    compute_intrinsic_manifest, elide_dead_struct_allocs, elide_safe_exception_checks,
+    compute_intrinsic_manifest, compute_intrinsic_manifest_checked, elide_dead_struct_allocs,
+    elide_safe_exception_checks,
     eliminate_dead_functions, eliminate_dead_imports, eliminate_dead_ops,
     eliminate_redundant_guard_tags, eliminate_unbound_local_checks, escape_analysis, fold_constants,
     fold_constants_cross_block, hoist_loop_invariants, inject_runtime_exit, inline_functions,

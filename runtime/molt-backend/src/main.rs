@@ -1337,17 +1337,13 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 // defining stdlib wrappers live in the stdlib cache object. The
                 // non-split path leaves this `None` and `compile` derives it from
                 // the full `ir.functions` it already holds. This manifest always
-                // feeds the main object's resolver, so it is filtered against the
-                // REQUIRED staticlib symbol set (no heuristic fallback — an unknown
-                // set fails the build closed rather than emitting dangling relocs).
-                let app_intrinsic_manifest = stdlib_obj_path.as_ref().map(|_| {
-                    let runtime_intrinsic_symbols =
-                        molt_backend::runtime_intrinsic_symbols_required();
-                    molt_backend::compute_intrinsic_manifest(
-                        &ir.functions,
-                        &runtime_intrinsic_symbols,
-                    )
-                });
+                // feeds the main object's resolver; `_checked` filters against the
+                // REQUIRED staticlib symbol set (fail-closed) whenever any
+                // `molt_`-prefixed const_str exists, and yields the empty manifest
+                // (zero-entry resolver, no relocations) otherwise.
+                let app_intrinsic_manifest = stdlib_obj_path
+                    .as_ref()
+                    .map(|_| molt_backend::compute_intrinsic_manifest_checked(&ir.functions));
 
                 if let Some(ref stdlib_path_str) = stdlib_obj_path {
                     let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
@@ -2342,14 +2338,13 @@ fn main() -> io::Result<()> {
             // before partitioning splits the stdlib bodies into the cache object
             // (see the daemon path for the rationale). `None` in the non-split
             // case lets `compile` derive it from the full IR it holds. Every
-            // manifest computed here feeds a resolver-emitting object, so it is
-            // filtered against the REQUIRED staticlib symbol set — an unknown set
-            // fails the build closed rather than emitting dangling relocations.
-            let mut app_intrinsic_manifest = stdlib_obj_path.as_ref().map(|_| {
-                let runtime_intrinsic_symbols =
-                    molt_backend::runtime_intrinsic_symbols_required();
-                molt_backend::compute_intrinsic_manifest(&ir.functions, &runtime_intrinsic_symbols)
-            });
+            // manifest computed here feeds a resolver-emitting object; `_checked`
+            // filters against the REQUIRED staticlib symbol set (fail-closed)
+            // whenever any `molt_`-prefixed const_str exists, and yields the empty
+            // manifest (zero-entry resolver, no relocations) otherwise.
+            let mut app_intrinsic_manifest = stdlib_obj_path
+                .as_ref()
+                .map(|_| molt_backend::compute_intrinsic_manifest_checked(&ir.functions));
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
@@ -2514,12 +2509,9 @@ fn main() -> io::Result<()> {
                 // itself the full set, so derive it here. Either way batch 0's
                 // resolver sees every name-resolved intrinsic across all batches.
                 if app_intrinsic_manifest.is_none() {
-                    let runtime_intrinsic_symbols =
-                        molt_backend::runtime_intrinsic_symbols_required();
-                    app_intrinsic_manifest = Some(molt_backend::compute_intrinsic_manifest(
-                        &all_functions,
-                        &runtime_intrinsic_symbols,
-                    ));
+                    app_intrinsic_manifest = Some(
+                        molt_backend::compute_intrinsic_manifest_checked(&all_functions),
+                    );
                 }
 
                 while !all_functions.is_empty() {
