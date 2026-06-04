@@ -1,6 +1,7 @@
 //! TIR optimization passes.
 //! Each pass transforms a TirFunction in-place and returns statistics.
 
+pub mod alias_analysis;
 pub mod bce;
 pub mod block_versioning;
 pub mod branchless_count;

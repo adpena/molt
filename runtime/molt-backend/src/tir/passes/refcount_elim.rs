@@ -31,6 +31,7 @@ use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
+use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult};
 use crate::tir::values::ValueId;
 
 use super::PassStats;
@@ -38,27 +39,6 @@ use super::PassStats;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Returns `true` if the opcode is a barrier that prevents cross-block
-/// IncRef/DecRef pairing. Barriers are operations that may capture, store,
-/// or observe reference counts.
-fn is_barrier(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::StoreAttr
-            | OpCode::StoreIndex
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ClosureLoad
-            | OpCode::ClosureStore
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-    )
-}
 
 /// Build a map: ValueId → BlockId that defines it.
 fn build_def_map(func: &TirFunction) -> HashMap<ValueId, BlockId> {
@@ -136,6 +116,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         ..Default::default()
     };
 
+    // S5 phase 1: the RC-pairing barrier is now answered by the first-class
+    // alias analysis (`is_rc_barrier`), the single source of truth that replaces
+    // the former hand-maintained `is_barrier` list. It is opcode-only, so it
+    // stays valid across the in-place IncRef/DecRef removals this pass performs.
+    let alias: AliasAnalysisResult = am.get::<AliasAnalysis>(func).clone();
+
     // Step 1: Collect all ValueIds produced by StackAlloc ops (O(N) scan).
     // IncRef/DecRef on stack-allocated values are always safe to remove.
     let mut stack_alloc_vals: HashSet<ValueId> = HashSet::new();
@@ -211,7 +197,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                         continue;
                     }
                     let op_j = &block.ops[j];
-                    if is_barrier(op_j.opcode) {
+                    if alias.is_rc_barrier(op_j) {
                         break;
                     }
                     if op_j.opcode == target_opcode && op_j.operands.first().copied() == Some(val_i)
@@ -292,7 +278,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // (we already applied intra-block removals so all remaining ops
                 // are live). Stop at the first barrier or non-refcount op.
                 for (i, op) in pred_block.ops.iter().enumerate().rev() {
-                    if is_barrier(op.opcode) {
+                    if alias.is_rc_barrier(op) {
                         break;
                     }
                     if op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef {
@@ -323,7 +309,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 let pred_block = &func.blocks[&pred_bid];
                 let mut has_barrier = false;
                 for op in &pred_block.ops[(trail.idx + 1)..] {
-                    if is_barrier(op.opcode) {
+                    if alias.is_rc_barrier(op) {
                         has_barrier = true;
                         break;
                     }
@@ -344,7 +330,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 let succ_block = &func.blocks[&succ_bid];
                 let mut result: Option<usize> = None;
                 for (i, op) in succ_block.ops.iter().enumerate() {
-                    if is_barrier(op.opcode) {
+                    if alias.is_rc_barrier(op) {
                         break;
                     }
                     if op.opcode == target_opcode && op.operands.first().copied() == Some(trail.val)
@@ -494,7 +480,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 let mut partner: Option<usize> = None;
                 for j in (i + 1)..n {
                     let op_j = &block.ops[j];
-                    if is_barrier(op_j.opcode) {
+                    if alias.is_rc_barrier(op_j) {
                         break;
                     }
                     if op_j.opcode == target_opcode && op_j.operands.first().copied() == Some(val) {
