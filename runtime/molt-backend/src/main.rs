@@ -2196,7 +2196,12 @@ fn main() -> io::Result<()> {
             }
             let mut tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(func);
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
-            let _stats = molt_backend::tir::passes::run_pipeline(&mut tir_func);
+            let _stats = molt_backend::tir::passes::run_pipeline(
+                &mut tir_func,
+                &molt_backend::tir::target_info::TargetInfo::native_from_simd_caps(
+                    molt_backend::tir::target_info::SimdCaps::detect_host(),
+                ),
+            );
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
             let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
             if molt_backend::tir::lower_to_simple::validate_labels(&ops) {

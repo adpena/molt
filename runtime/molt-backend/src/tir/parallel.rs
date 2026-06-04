@@ -8,6 +8,7 @@ use rayon::prelude::*;
 
 use super::function::TirModule;
 use super::passes::PassStats;
+use super::target_info::TargetInfo;
 
 /// Compile all functions in a module in parallel using rayon work-stealing.
 ///
@@ -19,13 +20,17 @@ use super::passes::PassStats;
 /// order: [func0_pass0, func0_pass1, …, func1_pass0, func1_pass1, …].
 /// The order across functions is non-deterministic (rayon schedules freely),
 /// but within a single function the pass order is preserved.
-pub fn compile_module_parallel(module: &mut TirModule) -> Vec<PassStats> {
+///
+/// `tti` is the unified cost model (Tier-0 S2) shared by every function in the
+/// module (it is `Sync` and read-only, so the rayon workers share `&TargetInfo`
+/// freely).
+pub fn compile_module_parallel(module: &mut TirModule, tti: &TargetInfo) -> Vec<PassStats> {
     module
         .functions
         .par_iter_mut()
         .flat_map(|func| {
             super::type_refine::refine_types(func);
-            super::passes::run_pipeline(func)
+            super::passes::run_pipeline(func, tti)
         })
         .collect()
 }
@@ -142,7 +147,10 @@ mod tests {
     fn expected_pipeline_pass_counts() -> (usize, HashMap<&'static str, usize>) {
         let mut func = make_add_func("expected_pipeline_shape");
         super::super::type_refine::refine_types(&mut func);
-        let stats = super::super::passes::run_pipeline(&mut func);
+        let stats = super::super::passes::run_pipeline(
+            &mut func,
+            &TargetInfo::native_release_fast(),
+        );
         let mut counts = HashMap::new();
         for stat in &stats {
             *counts.entry(stat.name).or_insert(0) += 1;
@@ -164,7 +172,7 @@ mod tests {
             ],
         };
 
-        let stats = compile_module_parallel(&mut module);
+        let stats = compile_module_parallel(&mut module, &TargetInfo::native_release_fast());
 
         // Zero-delta pipelines now restore the original snapshot but still
         // return per-pass stats so the caller keeps the strict TIR roundtrip.
@@ -205,7 +213,7 @@ mod tests {
             functions: vec![],
         };
 
-        let stats = compile_module_parallel(&mut module);
+        let stats = compile_module_parallel(&mut module, &TargetInfo::native_release_fast());
         assert!(stats.is_empty());
     }
 
@@ -221,14 +229,17 @@ mod tests {
 
         // Sequential path.
         super::super::type_refine::refine_types(&mut seq_func);
-        let seq_stats = super::super::passes::run_pipeline(&mut seq_func);
+        let seq_stats = super::super::passes::run_pipeline(
+            &mut seq_func,
+            &TargetInfo::native_release_fast(),
+        );
 
         // Parallel path (single function in module).
         let mut module = TirModule {
             name: "single".into(),
             functions: vec![par_func],
         };
-        let par_stats = compile_module_parallel(&mut module);
+        let par_stats = compile_module_parallel(&mut module, &TargetInfo::native_release_fast());
 
         // Same number of passes and same names/stats.
         assert_eq!(par_stats.len(), seq_stats.len());

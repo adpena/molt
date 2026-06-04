@@ -80,7 +80,10 @@ fn symbol_matches(symbol_name: Option<&str>, func_name: &str) -> bool {
 fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
     let mut typed = lower_to_tir(&func);
     refine_types(&mut typed);
-    let _stats = run_pipeline(&mut typed);
+    let _stats = run_pipeline(
+        &mut typed,
+        &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
+    );
     refine_types(&mut typed);
     verify_function(&typed).expect("typed TIR must verify");
     eprintln!("TYPED_TIR_DEBUG: {typed:#?}");
@@ -595,7 +598,10 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
 
     let mut tir = lower_to_tir(&func_ir);
     refine_types(&mut tir);
-    let _stats = run_pipeline(&mut tir);
+    let _stats = run_pipeline(
+        &mut tir,
+        &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
+    );
     refine_types(&mut tir);
     assert!(
         verify_function(&tir).is_ok(),

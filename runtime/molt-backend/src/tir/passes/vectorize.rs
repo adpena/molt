@@ -57,6 +57,7 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -618,7 +619,7 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
 ///
 /// Returns [`PassStats`] with `values_changed` set to the number of loops
 /// annotated.
-pub fn run(func: &mut TirFunction) -> PassStats {
+pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
     let mut stats = PassStats {
         name: "vectorize",
         ..Default::default()
@@ -694,10 +695,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             };
             op.attrs
                 .insert("element_type".into(), AttrValue::Str(ty_str.into()));
-            let simd_width: i64 = match elem_ty {
-                TirType::I64 | TirType::F64 => 2, // 128-bit minimum
-                _ => 1,
-            };
+            // Cost model: SIMD lane count for this element type. The baseline
+            // `native_release_fast` cost model returns 2 (128-bit minimum),
+            // reproducing the prior hardcoded width exactly; a target-aware
+            // cost model widens it from host SIMD caps (AVX2 → 4, AVX-512F → 8).
+            let simd_width: i64 = tti.vector_width(elem_ty) as i64;
             op.attrs
                 .insert("simd_width".into(), AttrValue::Int(simd_width));
         }
@@ -874,7 +876,7 @@ mod tests {
             loop_cond_blocks: std::collections::HashMap::new(),
         };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         // Loop header should have been annotated.
         assert!(
@@ -982,7 +984,7 @@ mod tests {
             loop_cond_blocks: std::collections::HashMap::new(),
         };
 
-        run(&mut func);
+        run(&mut func, &TargetInfo::native_release_fast());
 
         // The ForIter op must NOT have the "vectorize" attribute.
         let header = &func.blocks[&header_id];
@@ -1123,7 +1125,7 @@ mod tests {
             vec![int_val, new_acc],
         );
 
-        run(&mut func);
+        run(&mut func, &TargetInfo::native_release_fast());
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1183,7 +1185,7 @@ mod tests {
             vec![acc2],
         );
 
-        run(&mut func);
+        run(&mut func, &TargetInfo::native_release_fast());
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1234,7 +1236,7 @@ mod tests {
             vec![acc2],
         );
 
-        run(&mut func);
+        run(&mut func, &TargetInfo::native_release_fast());
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1291,7 +1293,7 @@ mod tests {
             vec![acc2, flag],
         );
 
-        run(&mut func);
+        run(&mut func, &TargetInfo::native_release_fast());
 
         let for_iter_op = header_op(&func, BlockId(1));
 
@@ -1325,7 +1327,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         assert_eq!(stats.values_changed, 0);
         assert_eq!(stats.ops_removed, 0);

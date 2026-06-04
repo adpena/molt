@@ -43,6 +43,7 @@ use super::analysis::{
 };
 use super::function::TirFunction;
 use super::passes::{self, PassStats};
+use super::target_info::TargetInfo;
 
 /// How a pass may mutate the function — drives analysis invalidation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,18 +84,25 @@ pub trait TirPass {
     }
 
     /// Run the pass, returning its stats. The [`AnalysisManager`] provides
-    /// cached dominators / pred map / reachability / loop forest / def map.
-    fn run(&self, func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats;
+    /// cached dominators / pred map / reachability / loop forest / def map; the
+    /// [`TargetInfo`] is the unified cost model (Tier-0 S2) the pass consults
+    /// for every profitability decision instead of a hardcoded constant.
+    fn run(
+        &self,
+        func: &mut TirFunction,
+        am: &mut AnalysisManager,
+        tti: &TargetInfo,
+    ) -> PassStats;
 }
 
 /// Adapter wrapping a legacy `fn(&mut TirFunction) -> PassStats` (or a closure
-/// taking the AnalysisManager) as a [`TirPass`] with an explicit mutation
-/// class. The function pointer form keeps the pipeline table compact and
-/// branch-predictable.
+/// taking the AnalysisManager / TargetInfo) as a [`TirPass`] with an explicit
+/// mutation class. The function pointer form keeps the pipeline table compact
+/// and branch-predictable.
 struct FnPass {
     name: &'static str,
     mutates: Mutates,
-    run: fn(&mut TirFunction, &mut AnalysisManager) -> PassStats,
+    run: fn(&mut TirFunction, &mut AnalysisManager, &TargetInfo) -> PassStats,
 }
 
 impl TirPass for FnPass {
@@ -104,8 +112,13 @@ impl TirPass for FnPass {
     fn mutation_class(&self) -> Mutates {
         self.mutates
     }
-    fn run(&self, func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-        (self.run)(func, am)
+    fn run(
+        &self,
+        func: &mut TirFunction,
+        am: &mut AnalysisManager,
+        tti: &TargetInfo,
+    ) -> PassStats {
+        (self.run)(func, am, tti)
     }
 }
 
@@ -113,7 +126,7 @@ impl TirPass for FnPass {
 fn pass(
     name: &'static str,
     mutates: Mutates,
-    run: fn(&mut TirFunction, &mut AnalysisManager) -> PassStats,
+    run: fn(&mut TirFunction, &mut AnalysisManager, &TargetInfo) -> PassStats,
 ) -> Box<dyn TirPass> {
     Box::new(FnPass {
         name,
@@ -122,15 +135,27 @@ fn pass(
     })
 }
 
-/// The TIR pass pipeline: an ordered list of passes plus the analysis manager
-/// threading and invalidation logic.
+/// The TIR pass pipeline: an ordered list of passes, the unified cost model
+/// (Tier-0 S2), plus the analysis manager threading and invalidation logic.
 pub struct PassManager {
     passes: Vec<Box<dyn TirPass>>,
+    /// The cost model threaded to every pass's `run`. Owned by the manager so a
+    /// single per-(target, profile) instance drives every profitability
+    /// decision in the pipeline.
+    target_info: TargetInfo,
 }
 
 impl PassManager {
-    pub fn new(passes: Vec<Box<dyn TirPass>>) -> Self {
-        Self { passes }
+    pub fn new(passes: Vec<Box<dyn TirPass>>, target_info: TargetInfo) -> Self {
+        Self {
+            passes,
+            target_info,
+        }
+    }
+
+    /// The cost model this manager threads to its passes.
+    pub fn target_info(&self) -> &TargetInfo {
+        &self.target_info
     }
 
     /// Pass names in pipeline order (test/diagnostic aid).
@@ -169,7 +194,7 @@ impl PassManager {
         let mut am = AnalysisManager::new();
 
         for p in &self.passes {
-            let mut stat = p.run(func, &mut am);
+            let mut stat = p.run(func, &mut am, &self.target_info);
             stat.name = p.name();
 
             // Invalidate analyses according to the pass's mutation class.
@@ -254,70 +279,83 @@ impl PassManager {
 ///   tuple_scalarize.
 /// * `ReadOnly` — only marks attrs/metadata, no executable-IR change: bce
 ///   (`bce_safe` attr), reuse_analysis, vectorize, polyhedral.
-pub fn build_default_pipeline() -> PassManager {
+pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
     use Mutates::*;
-    // The `am`-ignoring adapters wrap analysis-free legacy passes; the
-    // analysis-consuming passes take `am` through their migrated `run`.
+    // The `am`/`tti`-ignoring adapters wrap legacy passes that consume neither
+    // the analysis manager nor the cost model; the analysis-consuming passes
+    // take `am` and the cost-model-consuming passes take `tti` through their
+    // migrated `run` signatures.
     let passes: Vec<Box<dyn TirPass>> = vec![
         // ── Lowering ────────────────────────────────────────────────
-        pass("range_devirt", Cfg, |f, _am| passes::range_devirt::run(f)),
-        pass("iter_devirt", Cfg, |f, _am| passes::iter_devirt::run(f)),
-        pass("tuple_scalarize", OpsOnly, |f, _am| {
+        pass("range_devirt", Cfg, |f, _am, _tti| {
+            passes::range_devirt::run(f)
+        }),
+        pass("iter_devirt", Cfg, |f, _am, _tti| passes::iter_devirt::run(f)),
+        pass("tuple_scalarize", OpsOnly, |f, _am, _tti| {
             passes::deforestation::run_tuple_scalarize(f)
         }),
-        pass("loop_unroll", Cfg, |f, _am| passes::loop_unroll::run(f)),
+        pass("loop_unroll", Cfg, |f, _am, tti| {
+            passes::loop_unroll::run(f, tti)
+        }),
         // ── Canonicalization (phase 1) ──────────────────────────────
-        pass("canonicalize", OpsOnly, |f, _am| passes::canonicalize::run(f)),
+        pass("canonicalize", OpsOnly, |f, _am, _tti| {
+            passes::canonicalize::run(f)
+        }),
         // ── Type-directed optimization ──────────────────────────────
-        pass("unboxing", OpsOnly, |f, _am| passes::unboxing::run(f)),
-        pass("block_versioning", Cfg, |f, am| {
+        pass("unboxing", OpsOnly, |f, _am, _tti| passes::unboxing::run(f)),
+        pass("block_versioning", Cfg, |f, am, _tti| {
             passes::block_versioning::run(f, am)
         }),
         // ── Canonicalization (phase 2) ──────────────────────────────
-        pass("canonicalize_post", OpsOnly, |f, _am| {
+        pass("canonicalize_post", OpsOnly, |f, _am, _tti| {
             passes::canonicalize::run(f)
         }),
         // ── Global redundancy elimination ───────────────────────────
-        pass("gvn", OpsOnly, |f, am| passes::gvn::run(f, am)),
-        pass("licm", Cfg, |f, am| passes::licm::run(f, am)),
+        pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am)),
+        pass("licm", Cfg, |f, am, _tti| passes::licm::run(f, am)),
         // ── Memory optimization ─────────────────────────────────────
-        pass("escape_analysis", OpsOnly, |f, _am| {
+        pass("escape_analysis", OpsOnly, |f, _am, _tti| {
             passes::escape_analysis::run(f)
         }),
-        pass("refcount_elim", OpsOnly, |f, am| {
+        pass("refcount_elim", OpsOnly, |f, am, _tti| {
             passes::refcount_elim::run(f, am)
         }),
-        pass("reuse_analysis", ReadOnly, |f, _am| {
+        pass("reuse_analysis", ReadOnly, |f, _am, _tti| {
             passes::reuse_analysis::run(f)
         }),
-        pass("dead_store_elim", OpsOnly, |f, _am| {
+        pass("dead_store_elim", OpsOnly, |f, _am, _tti| {
             passes::dead_store_elim::run(f)
         }),
         // ── Value optimization ──────────────────────────────────────
-        pass("type_guard_hoist", Cfg, |f, am| {
+        pass("type_guard_hoist", Cfg, |f, am, _tti| {
             passes::type_guard_hoist::run(f, am)
         }),
-        pass("sccp", Cfg, |f, _am| passes::sccp::run(f)),
-        pass("strength_reduction", OpsOnly, |f, _am| {
+        pass("sccp", Cfg, |f, _am, _tti| passes::sccp::run(f)),
+        pass("strength_reduction", OpsOnly, |f, _am, _tti| {
             passes::strength_reduction::run(f)
         }),
-        pass("fast_math", OpsOnly, |f, _am| passes::fast_math::run(f)),
+        pass("fast_math", OpsOnly, |f, _am, _tti| passes::fast_math::run(f)),
         // branchless_count rewrites a `CondBranch` cond-block into a `Branch`
-        // and removes the then/else blocks → CFG mutation.
-        pass("branchless_count", Cfg, |f, _am| {
-            passes::branchless_count::run(f)
+        // and removes the then/else blocks → CFG mutation. Gated by the cost
+        // model's branchless-rewrite profitability query.
+        pass("branchless_count", Cfg, |f, _am, tti| {
+            passes::branchless_count::run(f, tti)
         }),
-        pass("bce", ReadOnly, |f, am| passes::bce::run(f, am)),
-        pass("vectorize", ReadOnly, |f, _am| passes::vectorize::run(f)),
-        pass("polyhedral", ReadOnly, |f, _am| passes::polyhedral::run(f)),
+        pass("bce", ReadOnly, |f, am, _tti| passes::bce::run(f, am)),
+        pass("vectorize", ReadOnly, |f, _am, tti| {
+            passes::vectorize::run(f, tti)
+        }),
+        pass("polyhedral", ReadOnly, |f, _am, tti| {
+            passes::polyhedral::run(f, tti)
+        }),
         // ── Cleanup ─────────────────────────────────────────────────
-        pass("check_exception_elim", Cfg, |f, _am| {
+        pass("check_exception_elim", Cfg, |f, _am, _tti| {
             passes::check_exception_elim::run(f)
         }),
-        pass("copy_prop", OpsOnly, |f, _am| passes::copy_prop::run(f)),
-        pass("dce", Cfg, |f, _am| passes::dce::run(f)),
+        pass("copy_prop", OpsOnly, |f, _am, _tti| passes::copy_prop::run(f)),
+        pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
     ];
-    PassManager::new(passes)
+    PassManager::new(passes, target_info)
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +517,7 @@ mod tests {
     /// a behavior change and must update this list deliberately.
     #[test]
     fn default_pipeline_preserves_canonical_pass_order() {
-        let pm = build_default_pipeline();
+        let pm = build_default_pipeline(TargetInfo::native_release_fast());
         assert_eq!(
             pm.pass_names(),
             vec![
@@ -517,7 +555,7 @@ mod tests {
     /// declaring `branchless_count` `OpsOnly` again) trips this test.
     #[test]
     fn cfg_mutating_passes_are_declared_cfg() {
-        let pm = build_default_pipeline();
+        let pm = build_default_pipeline(TargetInfo::native_release_fast());
         let cfg_passes: Vec<&'static str> = pm
             .passes
             .iter()
@@ -590,7 +628,7 @@ mod tests {
         });
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
-        let pm = build_default_pipeline();
+        let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
         // All 25 pass invocations ran.

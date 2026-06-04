@@ -41,15 +41,30 @@ use super::PassStats;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 /// Run the branchless boolean counting pass on `func`.
-pub fn run(func: &mut TirFunction) -> PassStats {
+///
+/// Gated by the cost model: the rewrite trades a conditional branch for a
+/// branchless add, which only pays off where a mispredicted branch costs more
+/// than the extra arithmetic. On every target we emit for the branch-mispredict
+/// penalty is positive, so [`TargetInfo::is_profitable_branchless_rewrite`]
+/// returns `true` and the pass behaves exactly as the prior unconditional
+/// rewrite — the gate makes the decision explicit and target-tunable.
+pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
     let mut stats = PassStats {
         name: "branchless_count",
         ..Default::default()
     };
+
+    // Cost-model profitability gate. If branchless counting does not pay off on
+    // this target, leave the branchy form untouched (a pure perf bail, never a
+    // miscompile — the branchy code is semantically identical).
+    if !tti.is_profitable_branchless_rewrite() {
+        return stats;
+    }
 
     // Phase 1: Build type map from block args and constant ops.
     let mut type_map: HashMap<ValueId, TirType> = HashMap::new();
@@ -415,7 +430,7 @@ mod tests {
         let mut func = make_bool_counting_func();
         assert_eq!(func.blocks.len(), 4); // bb0, bb1, bb2, bb3
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         // Should have fused the pattern.
         assert_eq!(stats.values_changed, 1, "should report one value changed");
@@ -443,7 +458,7 @@ mod tests {
         entry.args[0].ty = TirType::I64;
         func.param_types = vec![TirType::I64];
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         // Should NOT fuse — cond is I64, not Bool.
         assert_eq!(stats.values_changed, 0);
@@ -469,7 +484,7 @@ mod tests {
             source_span: None,
         });
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         // Should NOT fuse — then block has 2 ops.
         assert_eq!(stats.values_changed, 0);
@@ -485,7 +500,7 @@ mod tests {
             *v = 2;
         }
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         // Should NOT fuse — increment is 2, not 1.
         assert_eq!(stats.values_changed, 0);
@@ -500,7 +515,7 @@ mod tests {
         let then_block = func.blocks.get_mut(&then_id).unwrap();
         then_block.ops[0].opcode = OpCode::InplaceAdd;
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         // Should still fuse — InplaceAdd is recognized.
         assert_eq!(stats.values_changed, 1);
@@ -623,7 +638,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func);
+        let stats = run(&mut func, &TargetInfo::native_release_fast());
 
         assert_eq!(
             stats.values_changed, 1,
