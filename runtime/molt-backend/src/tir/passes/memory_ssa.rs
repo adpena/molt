@@ -71,26 +71,25 @@
 //!
 //! ## What this arc (S5-2a) delivers
 //!
-//! The value types ([`MemVersion`], [`MemAccess`], [`MemorySsaResult`]) and
-//! [`compute_standalone`] — a STANDALONE analysis with no pipeline consumers and
-//! **zero behavior change**. The [`crate::tir::analysis::Analysis`] trait
-//! registration (an `AnalysisId::MemorySSA` marker) is the deferred
-//! supervisor-integration step (the `analysis/mod.rs` `AnalysisId` enum is owned
-//! by a concurrent edit); see the module-level test
-//! [`tests::compute_standalone_is_the_integration_entry_point`].
+//! The value types ([`MemVersion`], [`MemAccess`], [`MemorySsaResult`]),
+//! [`compute_standalone`], and the [`MemorySSA`] marker registering the analysis
+//! with the S1 [`AnalysisManager`] (`am.get::<MemorySSA>(func)`) — a STANDALONE
+//! analysis with no pipeline consumers and **zero behavior change**. The first
+//! consumer is MemGVN (S5-2b).
 //!
 //! [`AnalysisManager`]: crate::tir::analysis::AnalysisManager
 //! [`CfgEdgePolicy::Full`]: crate::tir::dominators::CfgEdgePolicy
 
 use std::collections::{HashMap, HashSet};
 
+use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{self, CfgEdgePolicy};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-use super::alias_analysis::{AliasAnalysisResult, LoadPurity, MemRegion};
+use super::alias_analysis::{AliasAnalysis, AliasAnalysisResult, LoadPurity, MemRegion};
 
 // ===========================================================================
 // MemVersion
@@ -172,7 +171,9 @@ impl MemAccess {
 // ===========================================================================
 
 /// The complete MemorySSA result for one function.
-#[derive(Debug, Clone, Default)]
+// `PartialEq` is required by the `MOLT_VERIFY_ANALYSIS` staleness self-check
+// (pass_manager's cached-vs-fresh recompute comparison).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MemorySsaResult {
     /// Every Def and Phi, keyed by the version it defines. (Uses define no
     /// version and are recorded only in `block_op_to_use_def`.)
@@ -669,6 +670,29 @@ fn dom_tree_preorder(
     order
 }
 
+/// Zero-sized marker registering MemorySSA with the S1
+/// [`AnalysisManager`](crate::tir::analysis::AnalysisManager)
+/// (`am.get::<MemorySSA>(func)`).
+pub struct MemorySSA;
+
+impl Analysis for MemorySSA {
+    type Result = MemorySsaResult;
+    const ID: AnalysisId = AnalysisId::MemorySSA;
+    // CFG-sensitive (phi placement/renaming walk the full CFG) AND
+    // ops-sensitive (Def/Use classification reads every op): invalidated by the
+    // same mutation classes as its [`AliasAnalysis`] substrate.
+    const CFG_SENSITIVE: bool = true;
+    const OPS_SENSITIVE: bool = true;
+    fn compute(func: &TirFunction) -> Self::Result {
+        // Derive the alias substrate through its own `Analysis` interface —
+        // the same inline-dependency pattern `ValueRange::compute` uses for
+        // SCEV (`Analysis::compute` only receives the function, so a dependent
+        // analysis recomputes its input; the manager memoizes *this* result).
+        let alias = AliasAnalysis::compute(func);
+        compute_standalone(func, &alias)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,6 +775,41 @@ mod tests {
             "the load must read exactly the dominating store's version"
         );
         assert!(mem.is_direct_def_of_use(store_ver, func.entry_block, 1));
+    }
+
+    // ── AnalysisManager registration ────────────────────────────────────────
+
+    #[test]
+    fn analysis_manager_registration_matches_compute_standalone() {
+        // The S1 manager path (`am.get::<MemorySSA>`) must yield exactly the
+        // result `compute_standalone` produces over the alias substrate.
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let obj = ValueId(0);
+        let val = ValueId(1);
+        let r = func.fresh_value();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(store(obj, val, 0));
+            entry.ops.push(load(obj, 0, r));
+            entry.terminator = Terminator::Return { values: vec![r] };
+        }
+        let direct = run(&func);
+        use crate::tir::analysis::AnalysisManager;
+        let mut am = AnalysisManager::new();
+        let via_manager = am.get::<MemorySSA>(&func);
+        assert_eq!(via_manager.next_version, direct.next_version);
+        assert_eq!(
+            via_manager.def_at(func.entry_block, 0),
+            direct.def_at(func.entry_block, 0),
+        );
+        assert_eq!(
+            via_manager.reaching_def_for_use(func.entry_block, 1),
+            direct.reaching_def_for_use(func.entry_block, 1),
+        );
     }
 
     // ── Test 2: store-store kill (last store dominates the read) ───────────
