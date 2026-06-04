@@ -1943,6 +1943,275 @@ pub(crate) unsafe fn object_attr_lookup_raw(
     }
 }
 
+/// Resolution outcome for the per-site method inline cache.
+pub(crate) struct MethodIcResolution {
+    pub(crate) class_bits: u64,
+    pub(crate) class_version: u64,
+    pub(crate) func_bits: u64,
+    /// Whether an instance of this class could carry an OWN attribute of this
+    /// name (a managed field slot).  When false, instance-shadow checks may be
+    /// skipped on IC hits — a non-data class method can never be shadowed.
+    pub(crate) can_shadow: bool,
+}
+
+/// Class-side resolution for the fused method fast path (everything except the
+/// per-instance shadow check).  Returns the resolved plain-function method plus
+/// the `(class_bits, class_version)` IC key and a `can_shadow` flag.  Returns
+/// `None` for any shape the unbound fast path does not cover (non-OBJECT type,
+/// custom `__getattribute__`, data descriptor, non-function attr).
+///
+/// # Safety
+/// `obj_ptr` must be live; the GIL must be held.
+pub(crate) unsafe fn object_method_ic_resolve(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<MethodIcResolution> {
+    unsafe {
+        crate::gil_assert();
+        let type_id = object_type_id(obj_ptr);
+        if type_id != TYPE_ID_OBJECT && type_id != TYPE_ID_DATACLASS {
+            return None;
+        }
+        let class_bits = object_class_bits(obj_ptr);
+        if class_bits == 0 {
+            return None;
+        }
+        let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+
+        // (2) Bail out if the class installs a custom __getattribute__ — its
+        // observable behaviour must run.  A custom __getattr__ only fires on
+        // AttributeError (i.e. a FAILED lookup), so it cannot change the result
+        // of a SUCCESSFUL method resolution and is intentionally not checked.
+        let getattribute_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.getattribute_name,
+            b"__getattribute__",
+        );
+        let getattribute_raw = class_attr_lookup_raw_mro(_py, class_ptr, getattribute_bits);
+        if let Some(raw_bits) = getattribute_raw {
+            match crate::builtins::methods::object_method_bits(_py, "__getattribute__") {
+                Some(default_bits) => {
+                    if !obj_eq(_py, obj_from_bits(raw_bits), obj_from_bits(default_bits)) {
+                        return None;
+                    }
+                }
+                None => return None,
+            }
+        }
+
+        // (3) Resolve the class attribute, preferring the descriptor cache
+        // (populated by object_attr_lookup_raw) and validating against the
+        // class layout version.  A data descriptor of this name takes
+        // precedence over both the instance and a plain method, so bail.
+        let class_version = class_layout_version_bits(class_ptr);
+        let class_attr_bits = {
+            let mut resolved: Option<u64> = None;
+            if let Some(entry) = descriptor_cache_lookup(class_bits, attr_bits, class_version) {
+                if entry.data_desc_bits.is_some() {
+                    return None;
+                }
+                resolved = entry.class_attr_bits;
+            }
+            match resolved {
+                Some(bits) => bits,
+                None => {
+                    let val_bits = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?;
+                    if descriptor_is_data(_py, val_bits) {
+                        descriptor_cache_store(
+                            class_bits,
+                            attr_bits,
+                            class_version,
+                            Some(val_bits),
+                            None,
+                        );
+                        return None;
+                    }
+                    descriptor_cache_store(class_bits, attr_bits, class_version, None, Some(val_bits));
+                    val_bits
+                }
+            }
+        };
+
+        // (3 cont.) Only a plain function qualifies for the unbound fast path.
+        let func_ptr = maybe_ptr_from_bits(class_attr_bits)?;
+        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+            return None;
+        }
+
+        // `can_shadow` is a CLASS-level property (the IC is keyed on the class,
+        // not the instance, so it must hold for EVERY instance of the class).
+        // A non-data class method is shadowed only by an instance OWN attribute,
+        // which requires either a managed field slot for the name OR a dynamic
+        // instance `__dict__`.  We only prove "cannot shadow" when the class
+        // layout has no offset for `attr` AND the class forbids an instance
+        // `__dict__` (slots-only without `__dict__`).  Otherwise stay
+        // conservative (`true`) and keep the cheap per-call shadow check.
+        let has_field_offset = class_field_offset(_py, class_ptr, attr_bits).is_some();
+        let allows_instance_dict = match class_slots_info(_py, class_ptr, attr_bits) {
+            // A class declaring __slots__ permits an instance __dict__ only when
+            // `__dict__` itself is among the slots.
+            Some(info) => info.allows_dict,
+            // No __slots__ anywhere in the MRO => instances carry a __dict__.
+            None => true,
+        };
+        let can_shadow = has_field_offset || allows_instance_dict;
+
+        Some(MethodIcResolution {
+            class_bits,
+            class_version,
+            func_bits: class_attr_bits,
+            can_shadow,
+        })
+    }
+}
+
+/// Public wrapper of [`instance_shadows_attr`] for the per-site method IC's
+/// hit-time validation.
+///
+/// # Safety
+/// `obj_ptr`/`class_ptr` must be live; the GIL must be held.
+pub(crate) unsafe fn object_instance_shadows(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    class_ptr: *mut u8,
+    attr_bits: u64,
+) -> bool {
+    unsafe { instance_shadows_attr(_py, obj_ptr, class_ptr, attr_bits) }
+}
+
+/// True when `obj` has an OWN attribute named `attr_bits` (an instance field
+/// slot holding a present value, or a `__dict__` entry).  Mirrors the
+/// instance-precedence portion of `object_attr_lookup_raw`.
+///
+/// # Safety
+/// Pointers must be live; the GIL must be held.
+unsafe fn instance_shadows_attr(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    class_ptr: *mut u8,
+    attr_bits: u64,
+) -> bool {
+    unsafe {
+        // Instance field slot (CPython managed-dict / __slots__ value).
+        if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
+            let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
+            let present = !is_missing_bits(_py, bits);
+            dec_ref_bits(_py, bits);
+            if present {
+                return true;
+            }
+        }
+        // Instance __dict__ entry.
+        let dict_bits = instance_dict_bits(obj_ptr);
+        if dict_bits != 0
+            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && object_type_id(dict_ptr) == TYPE_ID_DICT
+            && dict_get_in_place(_py, dict_ptr, attr_bits).is_some()
+        {
+            return true;
+        }
+        false
+    }
+}
+
+/// Resolution outcome for the per-site super-method inline cache.
+pub(crate) struct SuperIcResolution {
+    /// `type(self)` — the IC key class (super resolution depends on the runtime
+    /// type of the instance, not the defining class alone).
+    pub(crate) self_class_bits: u64,
+    pub(crate) self_class_version: u64,
+    pub(crate) func_bits: u64,
+}
+
+/// `super().method(args)` fast path: resolve the MRO-next plain method without
+/// allocating a `super` object, a bound method, or a CallArgs builder.
+///
+/// `start_class_bits` is the defining class (`__class__`); `self_bits` is the
+/// instance.  Mirrors the `TYPE_ID_SUPER` branch of `attr_lookup_ptr`: walk the
+/// MRO of `type(self)` (the object-bound super form) starting AFTER
+/// `start_class`, and return the first plain-`TYPE_ID_FUNCTION` attribute found
+/// in a class dict, along with the `(type(self), version)` IC key.  Returns
+/// `None` (caller falls back to the allocating `super_new` + `get_attr` + `call`
+/// path) for any non-function descriptor, builtin-class hit, or unsupported
+/// shape.  The returned `func_bits` is BORROWED (it lives in a class dict).
+///
+/// # Safety
+/// `self_bits` must be a live object; the GIL must be held.
+pub(crate) unsafe fn super_resolve_method_unbound(
+    _py: &PyToken<'_>,
+    start_class_bits: u64,
+    self_bits: u64,
+    attr_bits: u64,
+) -> Option<SuperIcResolution> {
+    unsafe {
+        crate::gil_assert();
+        // Object-bound super: walk the MRO of `type(self)`.  (The class-bound
+        // `super(C, D)` form, where the target is itself a type, is left to the
+        // slow path — it is rare and outside the per-call hot loop.)
+        let self_ptr = maybe_ptr_from_bits(self_bits)?;
+        if object_type_id(self_ptr) == TYPE_ID_TYPE {
+            return None;
+        }
+        let obj_type_bits = type_of_bits(_py, self_bits);
+        let obj_type_ptr = obj_from_bits(obj_type_bits).as_ptr()?;
+        if object_type_id(obj_type_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        let self_class_version = class_layout_version_bits(obj_type_ptr);
+        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(obj_type_ptr) {
+            Cow::Borrowed(mro.as_slice())
+        } else {
+            Cow::Owned(class_mro_vec(obj_type_bits))
+        };
+        let mut found_start = false;
+        for class_bits in mro.iter().copied() {
+            if !found_start {
+                if class_bits == start_class_bits {
+                    found_start = true;
+                }
+                continue;
+            }
+            let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                continue;
+            }
+            // Builtin classes resolve methods through a separate table; defer
+            // those to the slow path for exact parity.
+            if is_builtin_class_bits(_py, class_bits) {
+                return None;
+            }
+            let dict_bits = class_dict_bits(class_ptr);
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                continue;
+            }
+            let Some(val_bits) = dict_get_in_place(_py, dict_ptr, attr_bits) else {
+                continue;
+            };
+            // Only a plain function qualifies; anything else (classmethod /
+            // staticmethod / property / data descriptor) needs descriptor_bind.
+            let val_ptr = maybe_ptr_from_bits(val_bits)?;
+            if object_type_id(val_ptr) != TYPE_ID_FUNCTION {
+                return None;
+            }
+            return Some(SuperIcResolution {
+                self_class_bits: obj_type_bits,
+                self_class_version,
+                func_bits: val_bits,
+            });
+        }
+        None
+    }
+}
+
 pub(crate) unsafe fn dataclass_attr_lookup_raw(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,

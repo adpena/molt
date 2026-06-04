@@ -25,7 +25,7 @@ use crate::builtins::strings::clear_const_str_cache;
 use crate::builtins::sys_ext::sys_ext_clear_state;
 use crate::builtins::types::types_clear_runtime_state;
 use crate::c_api::c_api_module_clear_state;
-use crate::call::bind::clear_call_bind_ic_cache;
+use crate::call::bind::{clear_call_bind_ic_cache, clear_method_ic_cache, clear_super_ic_cache};
 use crate::object::builders::clear_builder_singletons;
 use crate::object::dec_ref_ptr;
 use crate::object::utf8_cache::{
@@ -300,6 +300,10 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_runtime_static_names(_py, state);
     trace_shutdown("clear_call_bind_ic_cache");
     clear_call_bind_ic_cache();
+    trace_shutdown("clear_method_ic_cache");
+    clear_method_ic_cache(_py);
+    trace_shutdown("clear_super_ic_cache");
+    clear_super_ic_cache(_py);
     trace_shutdown("clear_attributes_runtime_state");
     attributes_clear_runtime_state(_py, state);
     trace_shutdown("clear_special_cache");

@@ -396,6 +396,178 @@ pub(crate) fn clear_call_bind_ic_cache() {
     });
 }
 
+/// Per-site inline cache for fused method / super-method dispatch.
+///
+/// Keyed on the call-site id, validated against `(class_bits, class_version)`.
+/// On a hit the resolved class function and the pre-interned attribute name are
+/// reused, eliminating the per-call name interning + MRO walk + descriptor-cache
+/// probe.  `can_shadow` records whether an instance of this class could possibly
+/// carry an own attribute of this name (a managed field slot) — when false, the
+/// per-call instance-shadow check is skipped entirely.
+#[derive(Clone, Copy)]
+struct MethodIcEntry {
+    class_bits: u64,
+    class_version: u64,
+    func_bits: u64,
+    attr_bits: u64,
+    can_shadow: bool,
+    valid: bool,
+}
+
+const METHOD_IC_TLS_SIZE: usize = 256; // Must be power of 2.
+
+thread_local! {
+    static METHOD_IC_TLS: std::cell::RefCell<[(u64, MethodIcEntry); METHOD_IC_TLS_SIZE]> =
+        const {
+            std::cell::RefCell::new(
+                [(
+                    0u64,
+                    MethodIcEntry {
+                        class_bits: 0,
+                        class_version: 0,
+                        func_bits: 0,
+                        attr_bits: 0,
+                        can_shadow: true,
+                        valid: false,
+                    },
+                ); METHOD_IC_TLS_SIZE],
+            )
+        };
+}
+
+#[inline]
+fn method_ic_lookup(site_id: u64) -> Option<MethodIcEntry> {
+    METHOD_IC_TLS.with(|cache| {
+        let cache = cache.borrow();
+        let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
+        let (stored_id, entry) = cache[idx];
+        if stored_id == site_id && entry.valid {
+            Some(entry)
+        } else {
+            None
+        }
+    })
+}
+
+/// Install a method-IC entry.  The IC OWNS a reference to `entry.attr_bits`
+/// (the interned method-name object): the caller must transfer an owned ref
+/// (i.e. NOT dec-ref the bits it stored).  Any previous entry's `attr_bits`
+/// ref is released here so names cannot leak when a slot is reused.
+#[inline]
+fn method_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: MethodIcEntry) {
+    METHOD_IC_TLS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
+        let (_, prev) = cache[idx];
+        if prev.valid && prev.attr_bits != 0 {
+            dec_ref_bits(_py, prev.attr_bits);
+        }
+        cache[idx] = (site_id, entry);
+    });
+}
+
+pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
+    METHOD_IC_TLS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        for (_, entry) in cache.iter() {
+            if entry.valid && entry.attr_bits != 0 {
+                dec_ref_bits(_py, entry.attr_bits);
+            }
+        }
+        *cache = [(
+            0u64,
+            MethodIcEntry {
+                class_bits: 0,
+                class_version: 0,
+                func_bits: 0,
+                attr_bits: 0,
+                can_shadow: true,
+                valid: false,
+            },
+        ); METHOD_IC_TLS_SIZE];
+    });
+}
+
+/// Per-site inline cache for fused `super().method(args)` dispatch.  Keyed on
+/// the call-site id (which fixes the defining `__class__`) and validated against
+/// `(type(self), version)`.  Super resolution bypasses the instance dict, so no
+/// shadow check is needed; the IC reuses the resolved class function and the
+/// pre-interned attribute name on hits.
+#[derive(Clone, Copy)]
+struct SuperIcEntry {
+    self_class_bits: u64,
+    self_class_version: u64,
+    func_bits: u64,
+    attr_bits: u64,
+    valid: bool,
+}
+
+thread_local! {
+    static SUPER_IC_TLS: std::cell::RefCell<[(u64, SuperIcEntry); METHOD_IC_TLS_SIZE]> =
+        const {
+            std::cell::RefCell::new(
+                [(
+                    0u64,
+                    SuperIcEntry {
+                        self_class_bits: 0,
+                        self_class_version: 0,
+                        func_bits: 0,
+                        attr_bits: 0,
+                        valid: false,
+                    },
+                ); METHOD_IC_TLS_SIZE],
+            )
+        };
+}
+
+#[inline]
+fn super_ic_lookup(site_id: u64) -> Option<SuperIcEntry> {
+    SUPER_IC_TLS.with(|cache| {
+        let cache = cache.borrow();
+        let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
+        let (stored_id, entry) = cache[idx];
+        if stored_id == site_id && entry.valid {
+            Some(entry)
+        } else {
+            None
+        }
+    })
+}
+
+#[inline]
+fn super_ic_insert(_py: &PyToken<'_>, site_id: u64, entry: SuperIcEntry) {
+    SUPER_IC_TLS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
+        let (_, prev) = cache[idx];
+        if prev.valid && prev.attr_bits != 0 {
+            dec_ref_bits(_py, prev.attr_bits);
+        }
+        cache[idx] = (site_id, entry);
+    });
+}
+
+pub(crate) fn clear_super_ic_cache(_py: &PyToken<'_>) {
+    SUPER_IC_TLS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        for (_, entry) in cache.iter() {
+            if entry.valid && entry.attr_bits != 0 {
+                dec_ref_bits(_py, entry.attr_bits);
+            }
+        }
+        *cache = [(
+            0u64,
+            SuperIcEntry {
+                self_class_bits: 0,
+                self_class_version: 0,
+                func_bits: 0,
+                attr_bits: 0,
+                valid: false,
+            },
+        ); METHOD_IC_TLS_SIZE];
+    });
+}
+
 fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
     let site = obj_from_bits(site_bits);
     if let Some(i) = site.as_int() {
@@ -2480,6 +2652,520 @@ unsafe fn try_call_bind_ic_fast(
 pub extern "C" fn molt_call_bind_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
+    })
+}
+
+/// Fused instance-method dispatch (`obj.method(args...)`) — the CPython
+/// `LOAD_METHOD` + `CALL_METHOD` optimisation.
+///
+/// The legacy lowering split this into `get_attr_generic_ptr` (which allocates
+/// a BOUND-METHOD object) followed by `call_bind` (which allocates a CallArgs
+/// builder).  Both heap allocations recur every call.  This entry point fuses
+/// them with a per-site inline cache: when `object_method_ic_resolve` proves the
+/// attribute is a plain class method (no data descriptor, no `__getattribute__`
+/// override) and the instance does not shadow it, the resolved function is
+/// invoked directly with `self` prepended — ZERO allocations, one GIL crossing.
+/// Otherwise it reproduces the exact legacy behaviour (real getattr -> bound
+/// method -> callargs -> `molt_call_bind_ic`), preserving semantics bit-for-bit.
+///
+/// `args` are BORROWED positional argument bits (NOT including `self`); the fast
+/// path reads them without consuming, and the slow path inc-refs them into the
+/// CallArgs builder exactly as `molt_callargs_push_pos` always has.
+///
+/// # Safety
+/// `recv_bits` must be a live object; `name_ptr`/`name_len` a valid UTF-8 method
+/// name; `args` valid for `args.len()` reads.  GIL acquired by the caller.
+unsafe fn call_method_ic_dispatch(
+    _py: &PyToken<'_>,
+    site_bits: u64,
+    recv_bits: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args: &[u64],
+) -> u64 {
+    unsafe {
+        let recv_obj = obj_from_bits(recv_bits);
+        if let Some(recv_ptr) = recv_obj.as_ptr() {
+            // FAST PATH: call the resolved class function directly with
+            // `[self, args...]`.  `self` and `args` stay borrowed —
+            // `call_function_obj_vec` reads them without consuming.
+            let call_direct = |_py: &PyToken<'_>, func_bits: u64| -> u64 {
+                let mut argv = [0u64; 13];
+                argv[0] = recv_bits;
+                for (idx, a) in args.iter().copied().enumerate() {
+                    argv[idx + 1] = a;
+                }
+                call_function_obj_vec(_py, func_bits, &argv[..args.len() + 1])
+            };
+
+            // Per-site IC: on a hit, validate the receiver class + layout
+            // version, run the (cheap) shadow check only when the class permits
+            // shadowing, and dispatch directly — no name interning, no MRO walk.
+            if let Some(site_id) = ic_site_from_bits(site_bits)
+                && let Some(entry) = method_ic_lookup(site_id)
+            {
+                let class_bits = object_class_bits(recv_ptr);
+                if class_bits == entry.class_bits
+                    && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                    && class_layout_version_bits(class_ptr) == entry.class_version
+                {
+                    let shadowed = entry.can_shadow
+                        && crate::builtins::attr::object_instance_shadows(
+                            _py,
+                            recv_ptr,
+                            class_ptr,
+                            entry.attr_bits,
+                        );
+                    if !shadowed {
+                        return call_direct(_py, entry.func_bits);
+                    }
+                }
+            }
+
+            // IC miss: resolve the method class-side, install the IC, dispatch.
+            let slice = std::slice::from_raw_parts(name_ptr, name_len);
+            if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+                let info = crate::builtins::attr::object_method_ic_resolve(_py, recv_ptr, attr_bits);
+                if let Some(info) = info {
+                    let shadowed = info.can_shadow
+                        && crate::builtins::attr::object_instance_shadows(
+                            _py,
+                            recv_ptr,
+                            obj_from_bits(info.class_bits)
+                                .as_ptr()
+                                .unwrap_or(std::ptr::null_mut()),
+                            attr_bits,
+                        );
+                    if !shadowed {
+                        if let Some(site_id) = ic_site_from_bits(site_bits) {
+                            // Transfer the owned `attr_bits` ref into the IC; it
+                            // is released by `method_ic_insert`/`clear` on reuse.
+                            method_ic_insert(
+                                _py,
+                                site_id,
+                                MethodIcEntry {
+                                    class_bits: info.class_bits,
+                                    class_version: info.class_version,
+                                    func_bits: info.func_bits,
+                                    attr_bits,
+                                    can_shadow: info.can_shadow,
+                                    valid: true,
+                                },
+                            );
+                            return call_direct(_py, info.func_bits);
+                        }
+                        // No stable site id — cannot cache; release our ref.
+                        let res = call_direct(_py, info.func_bits);
+                        dec_ref_bits(_py, attr_bits);
+                        return res;
+                    }
+                }
+                dec_ref_bits(_py, attr_bits);
+            }
+        }
+
+        // SLOW PATH: byte-identical to the legacy `get_attr_generic_ptr` +
+        // `call_bind` lowering.  `molt_get_attr_generic` materialises the bound
+        // method (or raises); `molt_call_bind_ic` consumes the CallArgs.
+        let recv_ptr = recv_obj.as_ptr().unwrap_or(std::ptr::null_mut());
+        let method_bits = crate::molt_get_attr_generic(recv_ptr, name_ptr, name_len as u64) as u64;
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let callargs_bits =
+            molt_callargs_new(MoltObject::from_int(args.len() as i64).bits(), 0);
+        if callargs_bits == 0 || exception_pending(_py) {
+            dec_ref_bits(_py, method_bits);
+            return MoltObject::none().bits();
+        }
+        for a in args.iter().copied() {
+            molt_callargs_push_pos(callargs_bits, a);
+        }
+        let res = molt_call_bind_ic(site_bits, method_bits, callargs_bits);
+        dec_ref_bits(_py, method_bits);
+        res
+    }
+}
+
+/// C-ABI entry for fused method dispatch with 0 positional args (`obj.m()`).
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_method_ic0(
+    site_bits: u64,
+    recv_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_method_ic_dispatch(_py, site_bits, recv_bits, name_ptr, name_len_bits as usize, &[])
+        }
+    })
+}
+
+/// C-ABI entry for fused method dispatch with 1 positional arg.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_method_ic1(
+    site_bits: u64,
+    recv_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_method_ic_dispatch(
+                _py,
+                site_bits,
+                recv_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0],
+            )
+        }
+    })
+}
+
+/// C-ABI entry for fused method dispatch with 2 positional args.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_method_ic2(
+    site_bits: u64,
+    recv_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+    a1: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_method_ic_dispatch(
+                _py,
+                site_bits,
+                recv_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0, a1],
+            )
+        }
+    })
+}
+
+/// C-ABI entry for fused method dispatch with 3 positional args.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_method_ic3(
+    site_bits: u64,
+    recv_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_method_ic_dispatch(
+                _py,
+                site_bits,
+                recv_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0, a1, a2],
+            )
+        }
+    })
+}
+
+/// C-ABI entry for fused method dispatch with 4 positional args.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_method_ic4(
+    site_bits: u64,
+    recv_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+    a3: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_method_ic_dispatch(
+                _py,
+                site_bits,
+                recv_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0, a1, a2, a3],
+            )
+        }
+    })
+}
+
+/// Fused `super().method(args...)` dispatch.
+///
+/// The legacy lowering allocated a `super` object (`super_new`), a bound method
+/// (`get_attr_generic_obj`), and a CallArgs builder (`callargs_new`) on EVERY
+/// call.  This entry point resolves the MRO-next plain method directly via
+/// `super_resolve_method_unbound` and invokes it with `self` prepended — zero
+/// allocations on the fast path.  Any shape the fast path does not cover
+/// (class-bound super, builtin-class method, non-function descriptor) falls
+/// back to the exact legacy `super_new` + `get_attr` + `call_bind` sequence.
+///
+/// `start_class_bits` is the defining class (`__class__`); `self_bits` the
+/// instance; `args` the BORROWED positional args (excluding `self`).
+///
+/// # Safety
+/// `self_bits` must be live; `name_ptr`/`name_len` valid UTF-8; `args` readable.
+/// GIL acquired by the caller.
+unsafe fn call_super_method_ic_dispatch(
+    _py: &PyToken<'_>,
+    site_bits: u64,
+    start_class_bits: u64,
+    self_bits: u64,
+    name_ptr: *const u8,
+    name_len: usize,
+    args: &[u64],
+) -> u64 {
+    unsafe {
+        let call_direct = |_py: &PyToken<'_>, func_bits: u64| -> u64 {
+            let mut argv = [0u64; 13];
+            argv[0] = self_bits;
+            for (idx, a) in args.iter().copied().enumerate() {
+                argv[idx + 1] = a;
+            }
+            call_function_obj_vec(_py, func_bits, &argv[..args.len() + 1])
+        };
+
+        // Per-site super IC: validate `type(self)` + layout version and
+        // dispatch directly — no super object, no name interning, no MRO walk.
+        if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr()
+            && let Some(site_id) = ic_site_from_bits(site_bits)
+            && let Some(entry) = super_ic_lookup(site_id)
+        {
+            let self_class_bits = type_of_bits(_py, self_bits);
+            if self_class_bits == entry.self_class_bits
+                && let Some(self_class_ptr) = obj_from_bits(self_class_bits).as_ptr()
+                && class_layout_version_bits(self_class_ptr) == entry.self_class_version
+            {
+                let _ = self_ptr;
+                return call_direct(_py, entry.func_bits);
+            }
+        }
+
+        let slice = std::slice::from_raw_parts(name_ptr, name_len);
+        if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+            let resolved = crate::builtins::attr::super_resolve_method_unbound(
+                _py,
+                start_class_bits,
+                self_bits,
+                attr_bits,
+            );
+            if let Some(info) = resolved {
+                if let Some(site_id) = ic_site_from_bits(site_bits) {
+                    // Transfer the owned `attr_bits` ref into the IC.
+                    super_ic_insert(
+                        _py,
+                        site_id,
+                        SuperIcEntry {
+                            self_class_bits: info.self_class_bits,
+                            self_class_version: info.self_class_version,
+                            func_bits: info.func_bits,
+                            attr_bits,
+                            valid: true,
+                        },
+                    );
+                    return call_direct(_py, info.func_bits);
+                }
+                let res = call_direct(_py, info.func_bits);
+                dec_ref_bits(_py, attr_bits);
+                return res;
+            }
+            dec_ref_bits(_py, attr_bits);
+        }
+
+        // SLOW PATH: byte-identical to the legacy lowering.
+        let super_bits = molt_super_new(start_class_bits, self_bits);
+        if super_bits == 0 || exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let super_ptr = obj_from_bits(super_bits).as_ptr().unwrap_or(std::ptr::null_mut());
+        let method_bits = crate::molt_get_attr_generic(super_ptr, name_ptr, name_len as u64) as u64;
+        if exception_pending(_py) {
+            dec_ref_bits(_py, super_bits);
+            return MoltObject::none().bits();
+        }
+        let callargs_bits = molt_callargs_new(MoltObject::from_int(args.len() as i64).bits(), 0);
+        if callargs_bits == 0 || exception_pending(_py) {
+            dec_ref_bits(_py, method_bits);
+            dec_ref_bits(_py, super_bits);
+            return MoltObject::none().bits();
+        }
+        for a in args.iter().copied() {
+            molt_callargs_push_pos(callargs_bits, a);
+        }
+        let res = molt_call_bind_ic(site_bits, method_bits, callargs_bits);
+        dec_ref_bits(_py, method_bits);
+        dec_ref_bits(_py, super_bits);
+        res
+    }
+}
+
+/// C-ABI entry for fused super dispatch with 0 positional args.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_super_method_ic0(
+    site_bits: u64,
+    start_class_bits: u64,
+    self_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_super_method_ic_dispatch(
+                _py,
+                site_bits,
+                start_class_bits,
+                self_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[],
+            )
+        }
+    })
+}
+
+/// C-ABI entry for fused super dispatch with 1 positional arg.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_super_method_ic1(
+    site_bits: u64,
+    start_class_bits: u64,
+    self_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_super_method_ic_dispatch(
+                _py,
+                site_bits,
+                start_class_bits,
+                self_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0],
+            )
+        }
+    })
+}
+
+/// C-ABI entry for fused super dispatch with 2 positional args.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_super_method_ic2(
+    site_bits: u64,
+    start_class_bits: u64,
+    self_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+    a1: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_super_method_ic_dispatch(
+                _py,
+                site_bits,
+                start_class_bits,
+                self_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0, a1],
+            )
+        }
+    })
+}
+
+/// C-ABI entry for fused super dispatch with 3 positional args.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_super_method_ic3(
+    site_bits: u64,
+    start_class_bits: u64,
+    self_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_super_method_ic_dispatch(
+                _py,
+                site_bits,
+                start_class_bits,
+                self_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0, a1, a2],
+            )
+        }
+    })
+}
+
+/// C-ABI entry for fused super dispatch with 4 positional args.
+///
+/// # Safety
+/// `name_ptr`/`name_len_bits` describe a valid UTF-8 method name.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_call_super_method_ic4(
+    site_bits: u64,
+    start_class_bits: u64,
+    self_bits: u64,
+    name_ptr: *const u8,
+    name_len_bits: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+    a3: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            call_super_method_ic_dispatch(
+                _py,
+                site_bits,
+                start_class_bits,
+                self_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[a0, a1, a2, a3],
+            )
+        }
     })
 }
 
