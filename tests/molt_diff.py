@@ -19,6 +19,16 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+# Make the repository root importable so the `tools` / `tests` packages resolve
+# regardless of the current working directory or how this harness is launched.
+# Running `python3 tests/molt_diff.py` puts `tests/` (the script directory) on
+# sys.path, NOT the repo root, so the `from tools...` imports below would fail
+# with ModuleNotFoundError unless PYTHONPATH happened to include the root. This
+# self-bootstrap makes the documented invocation work from any directory.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from tools.batch_compile_client import BatchCompileServerClient
 from tools import harness_memory_guard, memory_guard, process_sentinel, resource_pressure
 
