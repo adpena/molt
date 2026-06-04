@@ -23,10 +23,12 @@ pub mod range_devirt;
 mod reachability;
 pub mod refcount_elim;
 pub mod reuse_analysis;
+pub mod scev;
 pub mod sccp;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
 pub mod unboxing;
+pub mod value_range;
 pub mod vectorize;
 
 /// Statistics returned by each optimization pass.
