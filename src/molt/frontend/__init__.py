@@ -6313,7 +6313,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
         if self.known_modules:
             exc_val = self._emit_exception_new(
-                "ImportError", f"No module named '{module_name}'"
+                "ModuleNotFoundError", f"No module named '{module_name}'"
             )
             self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
