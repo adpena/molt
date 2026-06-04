@@ -34664,6 +34664,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             "kind": "store",
                             "args": [obj.name, val.name],
                             "value": offset,
+                            # The concrete class whose fixed layout authored this
+                            # `offset` (the frontend emits the raw-offset form only
+                            # when the object's class is statically proven here).
+                            # Carried through TIR so the alias oracle can assign a
+                            # class+offset `TypedField` region (S5-1.5).
+                            "class": expected_class,
                         }
                     )
             elif op.kind == "SETATTR_INIT":
@@ -34701,6 +34707,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             "kind": "store_init",
                             "args": [obj.name, val.name],
                             "value": offset,
+                            "class": expected_class,
                         }
                     )
             elif op.kind == "GUARDED_SETATTR":
@@ -34741,6 +34748,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             "s_value": attr,
                             "value": offset,
                             "out": op.result.name,
+                            # The class the runtime version-guard proves at this
+                            # op; authority for `offset`. Carried through TIR for
+                            # the class+offset `TypedField` alias region (S5-1.5).
+                            "class": expected_class,
                         }
                     )
             elif op.kind == "GUARDED_SETATTR_INIT":
@@ -34781,6 +34792,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             "s_value": attr,
                             "value": offset,
                             "out": op.result.name,
+                            "class": expected_class,
                         }
                     )
             elif op.kind == "SETATTR_GENERIC_PTR":
@@ -34892,6 +34904,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             "args": [obj.name],
                             "value": offset,
                             "out": op.result.name,
+                            # The statically-proven class authoring `offset`.
+                            # Carried through TIR for the class+offset
+                            # `TypedField` alias region (S5-1.5).
+                            "class": expected_class,
                         }
                     )
             elif op.kind == "GUARDED_GETATTR":
@@ -34934,6 +34950,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             "value": offset,
                             "out": op.result.name,
                             "metadata": {"expected_type_id": 100},
+                            # The class the runtime version-guard proves at this
+                            # op; authority for `offset`. Carried through TIR for
+                            # the class+offset `TypedField` alias region (S5-1.5).
+                            "class": expected_class,
                         }
                     )
             elif op.kind == "GETATTR_GENERIC_PTR":

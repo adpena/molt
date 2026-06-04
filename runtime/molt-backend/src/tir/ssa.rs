@@ -1308,6 +1308,17 @@ impl<'a> SsaContext<'a> {
             attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
         }
 
+        // The concrete class authoring a typed-slot field op's byte-offset
+        // (`store`/`store_init`/`load`/`guarded_field_*`). Carried through TIR so
+        // the alias oracle (`region_of`) can assign a class+offset `TypedField`
+        // memory region. The frontend emits these offset-based forms only when
+        // the object's class is proven at the op (runtime version-guard for the
+        // `guarded_field_*` forms, static type inference for the plain forms), so
+        // the class is the layout authority for `value` (the offset).
+        if let Some(ref class) = op.class_name {
+            attrs.insert("_class".into(), AttrValue::Str(class.clone()));
+        }
+
         TirOp {
             dialect: Dialect::Molt,
             opcode,

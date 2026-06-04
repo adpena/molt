@@ -1456,6 +1456,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 value: attr_int(&op.attrs, "value"),
                 out: out_var,
                 ic_index: attr_int(&op.attrs, "ic_index"),
+                // Preserve the typed-slot class identity across the roundtrip so
+                // the alias oracle's class+offset region is stable (S5-1.5).
+                class_name: attr_str(&op.attrs, "_class"),
                 ..OpIR::default()
             })
         }
@@ -1468,6 +1471,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
                 value: attr_int(&op.attrs, "value"),
                 out: out_var,
+                class_name: attr_str(&op.attrs, "_class"),
                 ..OpIR::default()
             })
         }
@@ -4352,6 +4356,7 @@ mod tests {
                 bce_safe: None,
                 arena_eligible: None,
                 effect_proof: None,
+                class_name: None,
             },
             OpIR {
                 kind: "loop_end".into(),
@@ -4374,6 +4379,7 @@ mod tests {
                 bce_safe: None,
                 arena_eligible: None,
                 effect_proof: None,
+                class_name: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4396,6 +4402,7 @@ mod tests {
                 bce_safe: None,
                 arena_eligible: None,
                 effect_proof: None,
+                class_name: None,
             },
         ];
 
@@ -4431,6 +4438,7 @@ mod tests {
                 bce_safe: None,
                 arena_eligible: None,
                 effect_proof: None,
+                class_name: None,
             },
             OpIR {
                 kind: "jump".into(),
@@ -4453,6 +4461,7 @@ mod tests {
                 bce_safe: None,
                 arena_eligible: None,
                 effect_proof: None,
+                class_name: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4475,6 +4484,7 @@ mod tests {
                 bce_safe: None,
                 arena_eligible: None,
                 effect_proof: None,
+                class_name: None,
             },
         ];
 
@@ -5028,6 +5038,93 @@ mod tests {
             load_op.out.is_some(),
             "guarded_field_get must preserve an output"
         );
+    }
+
+    #[test]
+    fn tir_round_trip_preserves_typed_field_class_identity() {
+        // The `class` field on typed-slot field ops (the S5-1.5 alias-region
+        // authority) must survive the SimpleIR↔TIR roundtrip on both load and
+        // store spellings; otherwise the alias oracle's `TypedField` region would
+        // collapse to `GenericHeap` after the first roundtrip.
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+
+        let func_ir = FunctionIR {
+            name: "field_class".into(),
+            params: vec![
+                "obj".into(),
+                "class_bits".into(),
+                "expected".into(),
+                "value".into(),
+            ],
+            ops: vec![
+                OpIR {
+                    kind: "guarded_field_get".into(),
+                    args: Some(vec!["obj".into(), "class_bits".into(), "expected".into()]),
+                    s_value: Some("x".into()),
+                    value: Some(24),
+                    out: Some("loaded".into()),
+                    class_name: Some("Point".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "guarded_field_set".into(),
+                    args: Some(vec![
+                        "obj".into(),
+                        "class_bits".into(),
+                        "expected".into(),
+                        "value".into(),
+                    ]),
+                    s_value: Some("x".into()),
+                    value: Some(24),
+                    class_name: Some("Point".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load".into(),
+                    args: Some(vec!["obj".into()]),
+                    value: Some(8),
+                    out: Some("plain".into()),
+                    class_name: Some("Line".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".into(),
+                    args: Some(vec!["obj".into(), "value".into()]),
+                    value: Some(8),
+                    class_name: Some("Line".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let round_tripped = lower_to_simple_ir(&tir_func);
+        for kind in ["guarded_field_get", "guarded_field_set"] {
+            let op = round_tripped
+                .iter()
+                .find(|op| op.kind == kind)
+                .unwrap_or_else(|| panic!("{kind} missing after roundtrip"));
+            assert_eq!(
+                op.class_name.as_deref(),
+                Some("Point"),
+                "{kind} must preserve its `class` identity"
+            );
+        }
+        for kind in ["load", "store"] {
+            let op = round_tripped
+                .iter()
+                .find(|op| op.kind == kind)
+                .unwrap_or_else(|| panic!("{kind} missing after roundtrip"));
+            assert_eq!(
+                op.class_name.as_deref(),
+                Some("Line"),
+                "{kind} must preserve its `class` identity"
+            );
+        }
     }
 
     #[test]
