@@ -2113,7 +2113,10 @@ impl WasmBackend {
 
                 let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                 crate::tir::type_refine::refine_types(&mut tir_func);
-                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                let stats = crate::tir::passes::run_pipeline(
+                    &mut tir_func,
+                    &crate::tir::target_info::TargetInfo::wasm_release_fast(),
+                );
                 crate::tir::type_refine::refine_types(&mut tir_func);
                 if tir_dump {
                     eprintln!("{}", crate::tir::printer::print_function(&tir_func));
@@ -2150,7 +2153,10 @@ impl WasmBackend {
             tir_cache.save_index();
         }
 
-        crate::inline_functions(&mut ir);
+        crate::inline_functions(
+            &mut ir,
+            &crate::tir::target_info::TargetInfo::wasm_release_fast(),
+        );
 
         // Megafunction splitting is only sound on the current wasm path for
         // straight-line functions. Non-linear control is lowered into a

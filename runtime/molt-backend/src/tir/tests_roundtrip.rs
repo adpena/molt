@@ -8,6 +8,7 @@ mod tests {
     use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::lower_to_simple::lower_to_simple_ir;
     use crate::tir::passes::run_pipeline;
+    use crate::tir::target_info::TargetInfo;
     use crate::tir::type_refine::refine_types;
     use crate::tir::verify::verify_function;
     use std::f64::consts::PI;
@@ -31,7 +32,7 @@ mod tests {
         let ir = make_function(ops);
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir);
+        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
         assert!(
             verify_function(&tir).is_ok(),
             "TIR verification failed after optimization"
@@ -237,7 +238,7 @@ mod tests {
 
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir);
+        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
         assert!(verify_function(&tir).is_ok(), "TIR verification failed");
         let result = lower_to_simple_ir(&tir);
 
@@ -337,7 +338,7 @@ mod tests {
         let ir = make_function(ops);
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        run_pipeline(&mut tir);
+        run_pipeline(&mut tir, &TargetInfo::native_release_fast());
         // run_pipeline already panics on verify failure, but let's assert
         // explicitly to make the intent clear in test output.
         assert!(
@@ -365,7 +366,7 @@ mod tests {
         };
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir);
+        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
         assert!(verify_function(&tir).is_ok());
         let result = lower_to_simple_ir(&tir);
         assert!(!result.is_empty());
@@ -395,7 +396,7 @@ mod tests {
         };
         let mut tir = lower_to_tir(&ir);
         refine_types(&mut tir);
-        let _stats = run_pipeline(&mut tir);
+        let _stats = run_pipeline(&mut tir, &TargetInfo::native_release_fast());
         assert!(verify_function(&tir).is_ok());
         let result = lower_to_simple_ir(&tir);
         assert!(!result.is_empty());

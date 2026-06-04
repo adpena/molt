@@ -5138,7 +5138,10 @@ mod tests {
 
         let mut tir_func = lower_to_tir(&func_ir);
         refine_types(&mut tir_func);
-        run_pipeline(&mut tir_func);
+        run_pipeline(
+            &mut tir_func,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+        );
         refine_types(&mut tir_func);
         let round_tripped = lower_to_simple_ir(&tir_func);
 
@@ -5873,7 +5876,10 @@ mod tests {
         for func_ir in [callee_ir, caller_ir] {
             let mut tir_func = lower_to_tir(&func_ir);
             refine_types(&mut tir_func);
-            run_pipeline(&mut tir_func);
+            run_pipeline(
+                &mut tir_func,
+                &crate::tir::target_info::TargetInfo::native_release_fast(),
+            );
             refine_types(&mut tir_func);
             let round_tripped = lower_to_simple_ir(&tir_func);
 
