@@ -401,6 +401,7 @@ fn assert_analyses_fresh(func: &TirFunction, am: &mut AnalysisManager, after_pas
             }
             AnalysisId::ValueRange => check!(super::passes::value_range::ValueRange),
             AnalysisId::AliasAnalysis => check!(super::passes::alias_analysis::AliasAnalysis),
+            AnalysisId::MemorySSA => check!(super::passes::memory_ssa::MemorySSA),
         }
     }
 }
