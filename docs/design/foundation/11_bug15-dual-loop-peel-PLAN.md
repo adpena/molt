@@ -303,3 +303,55 @@ If phases A-D cannot land in one session, the correct baton is: leave `OpCode::C
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/module_phase.rs` — `run_module_pipeline` (where overflow_peel slot would go at module scope if ever needed; NOT needed for this arc)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/function.rs` — `TirFunction` struct, `has_exception_handlers()`
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/effects.rs` — exhaustive opcode match oracle (CRITICAL for CheckedAdd registration)
+
+---
+
+## IMPLEMENTATION WORKSHEET (verified 2026-06-04, post-plan grounding)
+
+### The 2-result SimpleIR round-trip convention (CRITICAL — verified from IterNextUnboxed)
+- **Emission** (`lower_to_simple.rs:1620`): `var` = results[0] (the value/sum), `out` = results[1]
+  (the done/flag). `checked_add` mirrors: `var` = sum, `out` = overflow flag.
+- **Lift** (`ssa.rs get_def_vars`, ~line 967 region): a special-case arm returning `[var, out]` in
+  that order; `checked_add` needs the same arm + the kind→`OpCode::CheckedAdd` mapping in the
+  opcode table (~ssa.rs:1808 region).
+- **WHY ROUND-TRIP IS MANDATORY**: the module phase (`lower_functions_to_tir_module`) RE-LIFTS
+  every function from its post-pipeline SimpleIR on EVERY build, and the TIR content cache stores
+  post-pipeline SimpleIR that re-lifts on cache hits. An op that doesn't round-trip falls to the
+  `OpCode::Copy` fallback and silently vanishes — the exact iterator-consumer-bug class
+  (`exception_pending`'s comment in ssa.rs documents the precedent).
+
+### The matches!-oracle audit map (15 files, classified)
+- **Compiler-enforced (exhaustive `match`, will not compile until classified)**: `effects.rs`
+  (assert_opcode_is_listed + all_opcodes + opcode_effects table) — classify CheckedAdd:
+  side-effect-free, NOT pure-movable first cut (2-result op; keep GVN/LICM hands off until
+  verified), never-throws, no-memory.
+- **`false`-default SAFE (conservative for a new opcode)**: type_refine (5 sites — no type fact ⇒
+  the peel seeds types explicitly), block_versioning (4), scev (2 — accumulator stays Unknown by
+  design), polyhedral (2), module_slot_promotion (2 — CheckedAdd is pure_movable=false ⇒ falls to
+  region check ⇒ ScalarRegister ⇒ not a barrier… VERIFY region_of default for CheckedAdd:
+  `opcode_touches_memory` must return false or it lands in GenericHeap and barriers promotion —
+  add it to the not-touches-memory set in alias_analysis.rs:642 region), vectorize, value_range,
+  memory_ssa (partner file — coordinate; likely needs a no-memory classification arm),
+  gvn, escape_analysis, branchless_count, check_exception_elim, ssa (the 2 sites are the
+  multi-result handling — covered by the lift arm above).
+- **Intentional new arms**: lower_to_lir (`lowers_to_checked_i64_arithmetic` + the triple
+  emission), verify.rs (arity: 2 operands I64, 2 results I64+Bool), native function_compiler
+  (`"checked_add"` → Cranelift `sadd_overflow`), llvm lowering (`llvm.sadd.with.overflow.i64`).
+
+### Landing prerequisites still open (parity directive)
+1. The Luau CheckedAdd lowering decision (swarm wf_971517d5-6b2 lane 2: runtime-helper vs
+   target-gated refusal-with-verified-boxed-fallback) — REQUIRED before the atomic landing.
+2. LLVM/Luau inheritance verification of E1+promotion (lane 1) — determines whether the peel's
+   pipeline placement (per-function, after range_devirt) reaches all targets uniformly.
+3. The profile matrix (dev-fast) measurement commands from lane 1 → the peel's perf gate must
+   cover release-fast AND dev-fast per the directive.
+
+### Order of work for the implementation session
+1. ops.rs variant + effects.rs exhaustive arms (compiler walks you through every site).
+2. alias_analysis opcode_touches_memory + the audit's intentional arms (lift/emit/verify/lir).
+3. Native + LLVM lowerings; Luau per the swarm decision.
+4. Unit test: construct CheckedAdd → full SimpleIR round-trip (lift→emit→lift) preserves opcode +
+   both results; native compile smoke of a hand-built function.
+5. THEN overflow_peel (the transform) + MOLT_OVERFLOW_PEEL_STATS + the recognizer; iterate with the
+   instrument on bench_sum 30M until peeled=1 (expect refusal layers — budget for them).
+6. The 11-shape differential matrix ×{native,wasm,llvm,luau} + perf gates ×{release-fast,dev-fast}.
