@@ -154,6 +154,13 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 /// * **generator / async** — the body contains a state-machine opcode
 ///   ([`is_generator_or_async_op`]).
 /// * **exception-bearing** — `has_exception_handling` (phase c handles these).
+/// * **entry block has predecessors** — the splice binds parameters *directly*
+///   to the call arguments and clones the callee entry as an argument-less
+///   block. That is only SSA-valid when no branch targets the entry (i.e. the
+///   entry has zero predecessors — the normal case, since the SSA lift puts
+///   loop headers in separate blocks). A callee whose entry block is itself a
+///   branch target would need its entry args preserved, which this arc's
+///   direct-binding splice does not model, so it is refused (never miscompiled).
 pub fn is_inlineable(
     callee: &TirFunction,
     call_graph: &CallGraph,
@@ -177,6 +184,9 @@ pub fn is_inlineable(
     {
         return false;
     }
+    if entry_block_has_predecessor(callee) {
+        return false;
+    }
     let op_count = summaries
         .get(&callee.name)
         .map(|s| s.op_count)
@@ -185,6 +195,25 @@ pub fn is_inlineable(
         return false;
     }
     true
+}
+
+/// True if any block's terminator branches to `callee`'s entry block. The direct
+/// param→arg binding splice requires the cloned entry to be argument-less and
+/// hence predecessor-free in the callee.
+fn entry_block_has_predecessor(callee: &TirFunction) -> bool {
+    let entry = callee.entry_block;
+    callee.blocks.values().any(|b| match &b.terminator {
+        Terminator::Branch { target, .. } => *target == entry,
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => *then_block == entry || *else_block == entry,
+        Terminator::Switch { cases, default, .. } => {
+            *default == entry || cases.iter().any(|(_, t, _)| *t == entry)
+        }
+        Terminator::Return { .. } | Terminator::Unreachable => false,
+    })
 }
 
 /// One statically-resolvable, inlinable call site inside a caller block.
@@ -615,6 +644,25 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
         return false;
     }
 
+    // Return-arity compatibility pre-check (BEFORE any mutation, so a refusal
+    // leaves `caller` byte-identical — no fragile mid-splice rollback). The
+    // continuation block will carry one argument iff the call produces a value.
+    // Every callee `Return` must then carry a matching value count: a value call
+    // demands exactly one returned value from each return site; a void call
+    // tolerates any (the returned value, if any, is discarded). A callee that
+    // returns *no* value at some site while the call expects one is a
+    // frontend-shape mismatch we refuse rather than fabricate a value for.
+    let call_wants_value = call_result.is_some();
+    if call_wants_value {
+        for block in callee.blocks.values() {
+            if let Terminator::Return { values } = &block.terminator {
+                if values.is_empty() {
+                    return false;
+                }
+            }
+        }
+    }
+
     // Clone the callee body into the caller (params → call args).
     let cloned = clone_function_body_with_fresh_ids(callee, caller, &call_args);
 
@@ -633,10 +681,11 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
     // Ops after the call become the continuation block's ops.
     let cont_ops = all_ops.split_off(op_index + 1);
     // Remove the `Call` op itself (now the last element of `all_ops`).
-    let removed = all_ops.pop();
-    debug_assert!(
-        matches!(removed.as_ref().map(|o| o.opcode), Some(OpCode::Call)),
-        "splice: expected to remove the Call op"
+    let removed_call_opcode = all_ops.pop().map(|o| o.opcode);
+    assert_eq!(
+        removed_call_opcode,
+        Some(OpCode::Call),
+        "splice: expected to remove the Call op at {block_id:?}#{op_index}"
     );
     let pre_ops = all_ops;
 
@@ -656,47 +705,29 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
         None => Vec::new(),
     };
 
-    // Rewrite each cloned `Return { values }` into a branch to the continuation,
-    // passing the returned values as the continuation's block args.
+    // Rewrite each cloned `Return { values }` into a branch to the continuation.
+    // Arity is guaranteed compatible by the pre-check above: a value call's
+    // continuation has exactly one arg and every callee return carries ≥1 value
+    // (take the first — the single-return convention); a void call's
+    // continuation has zero args (drop any returned value, which the call
+    // discarded). No rollback path is reachable here.
+    let cont_arity = cont_args.len();
+    debug_assert!(cont_arity <= 1, "continuation arity is 0 (void) or 1 (value)");
     for &cloned_bid in &cloned.cloned_blocks {
-        let cont_arity = cont_args.len();
         let block = caller
             .blocks
             .get_mut(&cloned_bid)
             .expect("cloned block missing");
         if let Terminator::Return { values } = &block.terminator {
-            let mut branch_args = values.clone();
-            // Reconcile arity: a void call (no cont arg) must pass zero args even
-            // if the callee returned a (discarded) value; a value call must pass
-            // exactly one. The callee's own return arity is authoritative for
-            // value calls (single-return convention enforced above by the caller
-            // result count), but guard defensively.
-            if branch_args.len() != cont_arity {
-                if cont_arity == 0 {
-                    branch_args.clear();
-                } else if cont_arity == 1 && branch_args.is_empty() {
-                    // Callee fell through to a bare `return` (no value) but the
-                    // call expects a value. This is a frontend-shape mismatch we
-                    // will not splice — abort by restoring the original block.
-                    caller.blocks.insert(
-                        block_id,
-                        TirBlock {
-                            id: block_id,
-                            args: pre_args,
-                            ops: rejoin_ops(pre_ops, removed, cont_ops),
-                            terminator: original_term,
-                        },
-                    );
-                    // Remove the partially-cloned blocks to leave caller pristine.
-                    for &b in &cloned.cloned_blocks {
-                        caller.blocks.remove(&b);
-                    }
-                    caller.blocks.remove(&cont_block_id);
-                    return false;
-                } else if cont_arity == 1 && branch_args.len() > 1 {
-                    branch_args.truncate(1);
-                }
-            }
+            let branch_args: Vec<ValueId> = if cont_arity == 1 {
+                debug_assert!(
+                    !values.is_empty(),
+                    "value-call return must carry a value (pre-checked)"
+                );
+                vec![values[0]]
+            } else {
+                Vec::new()
+            };
             block.terminator = Terminator::Branch {
                 target: cont_block_id,
                 args: branch_args,
@@ -731,17 +762,6 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
     );
 
     true
-}
-
-/// Reassemble a block's ops after an aborted splice: pre-ops, the (re-inserted)
-/// call op, and the continuation ops, in original order.
-fn rejoin_ops(pre: Vec<TirOp>, call: Option<TirOp>, cont: Vec<TirOp>) -> Vec<TirOp> {
-    let mut ops = pre;
-    if let Some(call_op) = call {
-        ops.push(call_op);
-    }
-    ops.extend(cont);
-    ops
 }
 
 /// The type the callee returns, derived from its `Return` terminators'
@@ -821,35 +841,31 @@ pub fn run_inliner(
                 continue;
             };
 
-            // Collect this caller's inlinable call sites. Process them in
-            // REVERSE op-index order within each block so earlier splices do not
-            // invalidate the op indices of later (not-yet-processed) sites.
-            // Re-collect fresh each iteration because a splice changes the block
-            // structure; we drive site-by-site to keep indices valid.
+            // Collect this caller's inlinable call sites ONCE, then splice them
+            // in **reverse** order (descending block id, then descending op
+            // index). `collect_call_sites` yields ascending order, so `.rev()`
+            // gives the splice-safe order: a splice at `(B, i)` keeps the
+            // pre-call half at the *same* block id `B` with ops `0..i`, so every
+            // not-yet-processed site at `(B, j<i)` or in an earlier block keeps
+            // its `(block, op_index)` identity. Processing highest-index-first
+            // therefore never invalidates a pending site's coordinates — no
+            // re-collection needed.
+            //
+            // A refused site (refcount guard / shape mismatch) is simply skipped
+            // (its `Call` survives, conservative-correct) and does NOT block the
+            // remaining inlinable sites in the same caller.
             let mut changed_this_fn = false;
-            loop {
-                let sites = {
-                    let caller = &module.functions[caller_idx];
-                    collect_call_sites(caller, &defined)
-                };
-                // Find the first site (in reverse order) whose callee is
-                // inlinable and not the caller itself.
-                let mut picked: Option<CallSite> = None;
-                for site in sites.into_iter().rev() {
-                    if site.callee == caller_name {
-                        continue; // self-call (recursive) — never inline.
-                    }
-                    if !inlinable_bodies.contains_key(&site.callee) {
-                        continue;
-                    }
-                    picked = Some(site);
-                    break;
+            let sites = {
+                let caller = &module.functions[caller_idx];
+                collect_call_sites(caller, &defined)
+            };
+            for site in sites.into_iter().rev() {
+                if site.callee == caller_name {
+                    continue; // self-call (recursive) — never inline.
                 }
-                let Some(site) = picked else { break };
-
-                let callee = inlinable_bodies
-                    .get(&site.callee)
-                    .expect("inlinable callee snapshot present");
+                let Some(callee) = inlinable_bodies.get(&site.callee) else {
+                    continue;
+                };
                 // Clone the callee snapshot so the borrow on the map does not
                 // overlap the `&mut module.functions[caller_idx]`.
                 let callee_owned = callee.clone();
@@ -864,13 +880,6 @@ pub fn run_inliner(
                     if callee_owned.has_exception_handling {
                         caller.has_exception_handling = true;
                     }
-                } else {
-                    // The site was refused (refcount guard / shape mismatch).
-                    // Mark it consumed by NOT re-picking it: but collect_call_sites
-                    // would re-find it. Break to avoid an infinite loop — a
-                    // refused site stays a call (conservative). Since refusal is
-                    // deterministic, re-collecting would re-pick it forever.
-                    break;
                 }
             }
 
@@ -1267,6 +1276,34 @@ mod tests {
     }
 
     #[test]
+    fn entry_predecessor_callee_not_inlined() {
+        // A callee whose entry block is a branch target (a back-edge to entry)
+        // cannot be spliced by the direct-param-binding model — refuse it.
+        let mut f = TirFunction::new("looper".into(), vec![], TirType::None);
+        let body = f.fresh_block();
+        f.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![],
+                // body branches BACK to the entry → entry has a predecessor.
+                terminator: Terminator::Branch { target: f.entry_block, args: vec![] },
+            },
+        );
+        let entry = f.entry_block;
+        f.blocks.get_mut(&entry).unwrap().terminator =
+            Terminator::Branch { target: body, args: vec![] };
+        let m = module(vec![f]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        assert!(
+            !is_inlineable(&m.functions[0], &cg, &sm, &tti),
+            "callee with entry-block predecessor is not inlinable this arc"
+        );
+    }
+
+    #[test]
     fn exception_bearing_not_inlined_this_arc() {
         // has_exception_handling callee is excluded (phase c).
         let mut f = TirFunction::new("guarded".into(), vec![], TirType::None);
@@ -1367,5 +1404,70 @@ mod tests {
             })
         });
         assert!(add_uses_params, "inlined add uses caller params directly");
+    }
+
+    #[test]
+    fn run_inliner_two_sites_same_block_both_inlined() {
+        // g() { x = constfn(); y = constfn(); return x + y } — two calls to the
+        // same inlinable leaf in one block. The reverse-order driver must splice
+        // BOTH (a refused/early site must not block the other). After inlining,
+        // zero Call ops remain and SSA is valid.
+        let callee = const_callee();
+        let mut g = TirFunction::new("g".into(), vec![], TirType::I64);
+        let x = g.fresh_value();
+        let y = g.fresh_value();
+        let sum = g.fresh_value();
+        let entry = g.entry_block;
+        let mk_call = |name: &str, out: ValueId| {
+            let mut a = AttrDict::new();
+            a.insert("s_value".into(), AttrValue::Str(name.to_string()));
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![],
+                results: vec![out],
+                attrs: a,
+                source_span: None,
+            }
+        };
+        let block = g.blocks.get_mut(&entry).unwrap();
+        block.ops.push(mk_call("constfn", x));
+        block.ops.push(mk_call("constfn", y));
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![x, y],
+            results: vec![sum],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        block.terminator = Terminator::Return { values: vec![sum] };
+
+        let mut m = module(vec![g, callee]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        assert_eq!(stats.sites_inlined, 2, "both call sites inlined");
+        let g = m.functions.iter().find(|f| f.name == "g").unwrap();
+        let calls: usize = g
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.opcode == OpCode::Call)
+            .count();
+        assert_eq!(calls, 0, "both constfn calls eliminated");
+        crate::tir::verify::verify_function(g)
+            .unwrap_or_else(|e| panic!("g invalid after 2-site inlining: {e:?}"));
+        // Two distinct const-42 ops now live in g (one per inlined site).
+        let const_42_count: usize = g
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::ConstInt
+                    && matches!(op.attrs.get("value"), Some(AttrValue::Int(42)))
+            })
+            .count();
+        assert_eq!(const_42_count, 2, "each inlined site contributes a const 42");
     }
 }
