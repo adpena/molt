@@ -69,7 +69,7 @@ use std::collections::HashMap;
 use super::super::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
 use super::super::call_graph::CallGraph;
 use super::super::function::{TirFunction, TirModule};
-use super::super::ops::{AttrValue, OpCode, TirOp};
+use super::super::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use super::super::target_info::TargetInfo;
 use super::super::values::{TirValue, ValueId};
 use super::ip_summary::ModuleSummaries;
@@ -104,6 +104,34 @@ fn s_value(op: &TirOp) -> Option<&str> {
         Some(AttrValue::Str(s)) => Some(s.as_str()),
         _ => None,
     }
+}
+
+/// Clone an op's attribute dict while dropping the SimpleIR value-name
+/// annotations (`_simple_out` and `_simple_result_N`).
+///
+/// Cloning a callee body remaps every `ValueId`/`BlockId` to a fresh id, but
+/// these annotations are *function-local name strings* (a Python local like `x`
+/// or `i`) with no id to remap — a verbatim copy carries the callee's names into
+/// the caller. If a callee name collides with a caller value of a different
+/// container kind, the name-keyed container-dispatch plan
+/// (`LlvmReprFacts::container_kind`, the only `_simple_out`-keyed reader on the
+/// merged TIR) would resolve the inlined value to the *caller's* kind — a wrong
+/// `molt_len_*` selection, i.e. a miscompile. It would likewise alias two values
+/// onto one SimpleIR slot in the native TIR→SimpleIR lowering.
+///
+/// Dropping the names lets each inlined value fall to its unique canonical
+/// (`ValueId`-derived) name, so it is classified by the authoritative
+/// `ValueId`-keyed `TirType` instead. Freshly-built inlined containers keep their
+/// concrete `TirType`, so the correct kind is preserved for the common case; only
+/// a `DynBox`-typed inlined container loses `len` specialization (sound — generic
+/// dispatch). The soundness-critical integer-carrier `repr_by_value` is already
+/// `ValueId`-keyed and is unaffected either way.
+fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
+    attrs
+        .iter()
+        .filter(|(k, _)| k.as_str() != "_simple_out" && !k.starts_with("_simple_result_"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 /// The fixed runtime-intrinsic `s_value` symbols that lift to `OpCode::Call` but
@@ -400,7 +428,11 @@ fn clone_function_body_with_fresh_ids(
                 .collect()
         };
 
-        // Cloned ops with operands/results remapped.
+        // Cloned ops with operands/results remapped. The SimpleIR value-name
+        // annotations are dropped (see `clone_attrs_without_simple_names`): they
+        // are function-local name strings with no id to remap, so a verbatim copy
+        // would carry the callee's names into the caller and collide with caller
+        // values of the same name.
         let new_ops: Vec<TirOp> = src
             .ops
             .iter()
@@ -409,7 +441,7 @@ fn clone_function_body_with_fresh_ids(
                 opcode: op.opcode,
                 operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
                 results: op.results.iter().map(|v| remap(*v, &value_map)).collect(),
-                attrs: op.attrs.clone(),
+                attrs: clone_attrs_without_simple_names(&op.attrs),
                 source_span: op.source_span,
             })
             .collect();
@@ -888,9 +920,17 @@ pub fn run_inliner(
                 // Re-run the per-function pipeline on the merged caller so the
                 // inlined body is optimized jointly. A fresh PassManager (no
                 // stale AnalysisManager cache) — run_pipeline builds one anew.
+                // Bracket with type refinement on BOTH sides (refine → pipeline →
+                // refine), matching every backend's per-function lift contract, so
+                // `run_module_pipeline` returns every changed body *fully
+                // type-refined*. The LLVM/WASM/native lowerers and the post-inline
+                // representation-fact rebuild all depend on this invariant: an
+                // unrefined merged body would floor its values to `DynBox` and emit
+                // boxed dispatch on exactly the hot inlined paths.
                 let caller = &mut module.functions[caller_idx];
                 super::super::type_refine::refine_types(caller);
                 let _ = super::run_pipeline(caller, tti);
+                super::super::type_refine::refine_types(caller);
             }
         }
     }
@@ -1357,6 +1397,119 @@ mod tests {
             })
         });
         assert!(has_const_42, "callee's const 42 inlined into g");
+    }
+
+    #[test]
+    fn clone_attrs_without_simple_names_drops_only_value_names() {
+        // The strip helper drops `_simple_out` and `_simple_result_N` (the
+        // collision-prone SimpleIR value-name annotations) but preserves every
+        // other attribute verbatim (e.g. the call symbol or a const value).
+        let mut attrs = AttrDict::new();
+        attrs.insert("_simple_out".into(), AttrValue::Str("x".into()));
+        attrs.insert("_simple_result_0".into(), AttrValue::Str("y".into()));
+        attrs.insert("_simple_result_1".into(), AttrValue::Str("z".into()));
+        attrs.insert("s_value".into(), AttrValue::Str("callee".into()));
+        attrs.insert("value".into(), AttrValue::Int(7));
+        let stripped = clone_attrs_without_simple_names(&attrs);
+        assert!(!stripped.contains_key("_simple_out"), "_simple_out dropped");
+        assert!(
+            !stripped.contains_key("_simple_result_0"),
+            "_simple_result_0 dropped"
+        );
+        assert!(
+            !stripped.contains_key("_simple_result_1"),
+            "_simple_result_1 dropped"
+        );
+        assert_eq!(
+            stripped.get("s_value"),
+            Some(&AttrValue::Str("callee".into())),
+            "s_value preserved"
+        );
+        assert_eq!(
+            stripped.get("value"),
+            Some(&AttrValue::Int(7)),
+            "value preserved"
+        );
+    }
+
+    #[test]
+    fn inlined_ops_do_not_inherit_callee_simple_out_names() {
+        // A callee whose op carries `_simple_out: "collide"` is inlined into a
+        // caller that has its OWN op with the SAME `_simple_out: "collide"`. After
+        // inlining, the name must appear on exactly ONE op (the caller's
+        // original): the cloned callee op must have shed the name, so a name-keyed
+        // container-dispatch lookup cannot resolve the inlined value to the
+        // caller's kind. Before the strip, the merged body had two ops named
+        // "collide" — a latent miscompile.
+        let mut callee = TirFunction::new("c".into(), vec![], TirType::I64);
+        let cv = callee.fresh_value();
+        {
+            let entry = callee.entry_block;
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(1));
+            attrs.insert("_simple_out".into(), AttrValue::Str("collide".into()));
+            let block = callee.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![cv],
+                attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![cv] };
+        }
+        callee.value_types.insert(cv, TirType::I64);
+
+        // caller g(): own = const 9 (named "collide"); r = c(); return own.
+        let mut g = TirFunction::new("g".into(), vec![], TirType::I64);
+        let own = g.fresh_value();
+        let call_res = g.fresh_value();
+        {
+            let entry = g.entry_block;
+            let mut own_attrs = AttrDict::new();
+            own_attrs.insert("value".into(), AttrValue::Int(9));
+            own_attrs.insert("_simple_out".into(), AttrValue::Str("collide".into()));
+            let mut call_attrs = AttrDict::new();
+            call_attrs.insert("s_value".into(), AttrValue::Str("c".into()));
+            let block = g.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstInt,
+                operands: vec![],
+                results: vec![own],
+                attrs: own_attrs,
+                source_span: None,
+            });
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![],
+                results: vec![call_res],
+                attrs: call_attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![own] };
+        }
+        g.value_types.insert(own, TirType::I64);
+        g.value_types.insert(call_res, TirType::I64);
+
+        let mut m = module(vec![g, callee]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        assert_eq!(stats.sites_inlined, 1, "c() inlined into g");
+        let g = m.functions.iter().find(|f| f.name == "g").unwrap();
+        let collide_count: usize = g
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.attrs.get("_simple_out") == Some(&AttrValue::Str("collide".into())))
+            .count();
+        assert_eq!(
+            collide_count, 1,
+            "only the caller's own op keeps the name; the inlined op shed it"
+        );
     }
 
     #[test]
