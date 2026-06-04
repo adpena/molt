@@ -396,6 +396,10 @@ fn assert_analyses_fresh(func: &TirFunction, am: &mut AnalysisManager, after_pas
             AnalysisId::StrictReachable => check!(StrictReachable),
             AnalysisId::LoopForest => check!(LoopForest),
             AnalysisId::DefMap => check!(DefMap),
+            AnalysisId::ScalarEvolution => {
+                check!(super::passes::scev::ScalarEvolution)
+            }
+            AnalysisId::ValueRange => check!(super::passes::value_range::ValueRange),
         }
     }
 }

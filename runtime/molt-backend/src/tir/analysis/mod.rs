@@ -71,11 +71,15 @@ pub enum AnalysisId {
     StrictReachable,
     LoopForest,
     DefMap,
+    /// Scalar-evolution recurrences + trip counts (Tier-0 S6).
+    ScalarEvolution,
+    /// Integer value-range / interval lattice (Tier-0 S6).
+    ValueRange,
 }
 
 impl AnalysisId {
     /// All analyses, for iteration in the debug self-check.
-    pub const ALL: [AnalysisId; 7] = [
+    pub const ALL: [AnalysisId; 9] = [
         AnalysisId::PredMap,
         AnalysisId::ImmediateDoms,
         AnalysisId::DomChildren,
@@ -83,6 +87,8 @@ impl AnalysisId {
         AnalysisId::StrictReachable,
         AnalysisId::LoopForest,
         AnalysisId::DefMap,
+        AnalysisId::ScalarEvolution,
+        AnalysisId::ValueRange,
     ];
 }
 
@@ -351,6 +357,8 @@ impl AnalysisManager {
 /// Mirrors each analysis's `CFG_SENSITIVE` const. Kept exhaustive so adding an
 /// `AnalysisId` variant without classifying it fails to compile.
 fn cfg_sensitive(id: AnalysisId) -> bool {
+    use super::passes::scev::ScalarEvolution;
+    use super::passes::value_range::ValueRange;
     match id {
         AnalysisId::PredMap => PredMap::CFG_SENSITIVE,
         AnalysisId::ImmediateDoms => ImmediateDoms::CFG_SENSITIVE,
@@ -359,11 +367,15 @@ fn cfg_sensitive(id: AnalysisId) -> bool {
         AnalysisId::StrictReachable => StrictReachable::CFG_SENSITIVE,
         AnalysisId::LoopForest => LoopForest::CFG_SENSITIVE,
         AnalysisId::DefMap => DefMap::CFG_SENSITIVE,
+        AnalysisId::ScalarEvolution => ScalarEvolution::CFG_SENSITIVE,
+        AnalysisId::ValueRange => ValueRange::CFG_SENSITIVE,
     }
 }
 
 /// Ops-sensitivity by id — mirrors each analysis's `OPS_SENSITIVE` const.
 fn ops_sensitive(id: AnalysisId) -> bool {
+    use super::passes::scev::ScalarEvolution;
+    use super::passes::value_range::ValueRange;
     match id {
         AnalysisId::PredMap => PredMap::OPS_SENSITIVE,
         AnalysisId::ImmediateDoms => ImmediateDoms::OPS_SENSITIVE,
@@ -372,6 +384,8 @@ fn ops_sensitive(id: AnalysisId) -> bool {
         AnalysisId::StrictReachable => StrictReachable::OPS_SENSITIVE,
         AnalysisId::LoopForest => LoopForest::OPS_SENSITIVE,
         AnalysisId::DefMap => DefMap::OPS_SENSITIVE,
+        AnalysisId::ScalarEvolution => ScalarEvolution::OPS_SENSITIVE,
+        AnalysisId::ValueRange => ValueRange::OPS_SENSITIVE,
     }
 }
 
