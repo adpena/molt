@@ -8,7 +8,7 @@
 //! recomputes against the new shape.
 //!
 //! The default pipeline ([`build_default_pipeline`]) preserves the EXACT
-//! 24-pass order, the snapshot/restore-on-zero-delta behavior, and the
+//! 26-pass order, the snapshot/restore-on-zero-delta behavior, and the
 //! post-pipeline `verify_function` of the legacy `run_pipeline`. `run_pipeline`
 //! is now a thin entry that builds the default pipeline and runs it — the real
 //! API, not a shim.
@@ -251,7 +251,7 @@ impl PassManager {
     }
 }
 
-/// Build the default 24-pass pipeline in the canonical order. The ordering and
+/// Build the default 26-pass pipeline in the canonical order. The ordering and
 /// per-pass behavior are byte-for-byte identical to the legacy `run_pipeline`;
 /// only the dispatch and analysis-caching mechanism changed.
 ///
@@ -326,6 +326,12 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("dead_store_elim", OpsOnly, |f, am, _tti| {
             passes::dead_store_elim::run(f, am)
         }),
+        // MemGVN consumes MemorySSA (built on the class-aware TypedField alias
+        // regions) to forward stores into proven-pure typed-slot loads and dedup
+        // redundant loads. Placed AFTER dead_store_elim so it sees the final set
+        // of live stores, and its replacement IncRef is final (refcount_elim has
+        // already run). OpsOnly: replaces a load with IncRef+Copy in place.
+        pass("mem_gvn", OpsOnly, |f, am, _tti| passes::mem_gvn::run(f, am)),
         // ── Value optimization ──────────────────────────────────────
         pass("type_guard_hoist", Cfg, |f, am, _tti| {
             passes::type_guard_hoist::run(f, am)
@@ -518,7 +524,7 @@ mod tests {
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
 
-    /// The default pipeline must preserve the EXACT canonical pass order (25
+    /// The default pipeline must preserve the EXACT canonical pass order (26
     /// `run` invocations — canonicalize runs twice). Any reorder/insert/drop is
     /// a behavior change and must update this list deliberately.
     #[test]
@@ -541,6 +547,7 @@ mod tests {
                 "refcount_elim",
                 "reuse_analysis",
                 "dead_store_elim",
+                "mem_gvn",
                 "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
@@ -637,7 +644,7 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 25 pass invocations ran.
-        assert_eq!(stats.len(), 25);
+        // All 26 pass invocations ran.
+        assert_eq!(stats.len(), 26);
     }
 }
