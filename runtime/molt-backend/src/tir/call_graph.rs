@@ -571,7 +571,7 @@ impl CallGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::blocks::Terminator;
     use crate::tir::function::{TirFunction, TirModule};
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
