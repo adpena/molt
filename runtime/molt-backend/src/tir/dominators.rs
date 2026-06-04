@@ -254,6 +254,64 @@ pub fn dominates(
     }
 }
 
+/// Compute the set of blocks that make up the natural loop with the given
+/// `header_bid`, using dominator-based natural-loop construction.
+///
+/// A natural loop is defined by its back edges: edges `tail → header` where
+/// `header` dominates `tail`. The loop body is the header plus every block that
+/// can reach a back-edge tail without passing through the header. Using
+/// *dominance* (rather than mere reachability from the header) is what cleanly
+/// distinguishes inner-loop bodies from outer-loop bodies in nested CFGs: an
+/// inner-loop preheader is reachable from the inner header (via the outer
+/// iteration cycle) but is not dominated by it, so it is correctly excluded
+/// from the inner loop's body.
+///
+/// This is the canonical loop-body collection shared by `licm` and `bce`.
+/// (It replaces an earlier id-ordering heuristic in `bce` that could mis-
+/// attribute blocks to a loop after CFG-renumbering passes.)
+pub(crate) fn collect_loop_blocks(
+    func: &TirFunction,
+    pred_map: &HashMap<BlockId, Vec<BlockId>>,
+    idoms: &HashMap<BlockId, Option<BlockId>>,
+    header_bid: BlockId,
+) -> HashSet<BlockId> {
+    let mut loop_blocks = HashSet::new();
+    loop_blocks.insert(header_bid);
+
+    // Back-edge tails: predecessors of header dominated by header.
+    let header_preds: &[BlockId] = pred_map
+        .get(&header_bid)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    let mut worklist: Vec<BlockId> = Vec::new();
+    for &p in header_preds {
+        if dominates(header_bid, p, idoms) && loop_blocks.insert(p) {
+            worklist.push(p);
+        }
+    }
+
+    // Walk predecessors backwards from each back-edge tail, never crossing
+    // the header. The header acts as the loop's single entry, so any node
+    // reaching a tail without going through the header belongs to the loop.
+    while let Some(bid) = worklist.pop() {
+        if let Some(block_preds) = pred_map.get(&bid) {
+            for &p in block_preds {
+                if p == header_bid {
+                    continue;
+                }
+                if loop_blocks.insert(p) {
+                    worklist.push(p);
+                }
+            }
+        }
+    }
+
+    // Defensive: only retain blocks that actually exist in the function.
+    loop_blocks.retain(|bid| func.blocks.contains_key(bid));
+    loop_blocks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
