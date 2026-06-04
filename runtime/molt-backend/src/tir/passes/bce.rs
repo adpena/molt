@@ -48,6 +48,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
+use crate::tir::dominators::{build_pred_map, collect_loop_blocks, compute_idoms};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::values::ValueId;
@@ -287,9 +288,16 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // Set of blocks that belong to each loop (header → body blocks).
     let mut loop_body_blocks: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
 
+    // Dominator-based natural-loop construction (shared with LICM). This is the
+    // sound definition of a loop body; a prior id-ordering heuristic here could
+    // mis-attribute blocks to a loop after CFG-renumbering passes, which gates
+    // the Phase 2/3 `bce_safe` marking and so is correctness-critical.
+    let pred_map = build_pred_map(func);
+    let idoms = compute_idoms(func, &pred_map);
+
     for &header in &loop_headers {
-        let body = collect_loop_body(func, header);
-        let body_set: HashSet<BlockId> = body.iter().copied().collect();
+        let body_set = collect_loop_blocks(func, &pred_map, &idoms, header);
+        let body: Vec<BlockId> = body_set.iter().copied().collect();
 
         // Find IterNextUnboxed/ForIter ops in the loop header or body that
         // produce the induction variable.
@@ -610,44 +618,6 @@ fn prove_guard_bound(
             }
         }
     }
-}
-
-/// Collect all blocks that belong to a loop body rooted at `header`.
-/// Uses deterministic block ordering and preserved loop metadata.
-fn collect_loop_body(func: &TirFunction, header: BlockId) -> Vec<BlockId> {
-    let mut ordered_blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
-    ordered_blocks.sort_by_key(|bid| bid.0);
-
-    let mut body = vec![header];
-    for bid in ordered_blocks {
-        if bid == header || bid.0 <= header.0 {
-            continue;
-        }
-
-        let role = func.loop_roles.get(&bid).cloned().unwrap_or(LoopRole::None);
-        if role == LoopRole::LoopHeader {
-            break;
-        }
-
-        body.push(bid);
-
-        if let Some(block) = func.blocks.get(&bid) {
-            let branches_to_header = match &block.terminator {
-                Terminator::Branch { target, .. } => *target == header,
-                Terminator::CondBranch {
-                    then_block,
-                    else_block,
-                    ..
-                } => *then_block == header || *else_block == header,
-                _ => false,
-            };
-            if branches_to_header {
-                break;
-            }
-        }
-    }
-
-    body
 }
 
 // ---------------------------------------------------------------------------

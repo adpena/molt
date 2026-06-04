@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
-use crate::tir::dominators::{build_pred_map, compute_idoms, dominates};
+use crate::tir::dominators::{build_pred_map, collect_loop_blocks, compute_idoms};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -88,62 +88,6 @@ fn is_hoistable(op: &TirOp) -> bool {
             | OpCode::TypeGuard
             | OpCode::BuildSlice
     ) || op.is_plain_value_copy()
-}
-
-/// Identify all blocks that belong to the natural loop whose header is
-/// `header_bid`.
-///
-/// Standard textbook construction (Muchnick §13.4): a back edge is an edge
-/// `tail → header` where `header` dominates `tail`. The natural loop of a
-/// back edge is `{header} ∪ {nodes that can reach tail without passing
-/// through header}`. The natural loop of a header is the union over all
-/// back edges to that header. Using *dominance* (rather than mere
-/// reachability from the header) is what cleanly distinguishes inner-loop
-/// bodies from outer-loop bodies in nested CFGs: an inner-loop preheader
-/// is reachable from the inner header (via the outer iteration cycle) but
-/// is not dominated by it, so the inner-loop preheader is correctly
-/// excluded from the inner loop's body.
-fn collect_loop_blocks(
-    func: &TirFunction,
-    pred_map: &HashMap<BlockId, Vec<BlockId>>,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
-    header_bid: BlockId,
-) -> HashSet<BlockId> {
-    let mut loop_blocks = HashSet::new();
-    loop_blocks.insert(header_bid);
-
-    // Back-edge tails: predecessors of header dominated by header.
-    let header_preds: &[BlockId] = pred_map
-        .get(&header_bid)
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
-
-    let mut worklist: Vec<BlockId> = Vec::new();
-    for &p in header_preds {
-        if dominates(header_bid, p, idoms) && loop_blocks.insert(p) {
-            worklist.push(p);
-        }
-    }
-
-    // Walk predecessors backwards from each back-edge tail, never crossing
-    // the header. The header acts as the loop's single entry, so any node
-    // reaching a tail without going through the header belongs to the loop.
-    while let Some(bid) = worklist.pop() {
-        if let Some(block_preds) = pred_map.get(&bid) {
-            for &p in block_preds {
-                if p == header_bid {
-                    continue;
-                }
-                if loop_blocks.insert(p) {
-                    worklist.push(p);
-                }
-            }
-        }
-    }
-
-    // Defensive: only retain blocks that actually exist in the function.
-    loop_blocks.retain(|bid| func.blocks.contains_key(bid));
-    loop_blocks
 }
 
 /// Find the preheader block for a loop header.
