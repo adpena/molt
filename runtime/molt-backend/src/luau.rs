@@ -515,6 +515,18 @@ impl LuauBackend {
                 "local function molt_ord(ch: any): number\n\tif type(ch) ~= \"string\" then error({__type=\"TypeError\", __msg=\"ord() expected string of length 1, but \" .. type(ch) .. \" found\"}) end\n\tlocal len = molt_str_codepoint_len(ch)\n\tif len ~= 1 then error({__type=\"TypeError\", __msg=\"ord() expected a character, but string of length \" .. tostring(len) .. \" found\"}) end\n\tlocal code = utf8.codepoint(ch, 1)\n\tif code == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn code\nend\n",
             ),
             (
+                // CheckedAdd's Luau lowering (docs/design/foundation/
+                // 15_luau-checkedadd-plan.md): Luau numbers are f64 — `+`
+                // never wraps i64, it rounds — so the i64-overflow flag is
+                // ALWAYS false here and the overflow_peel slow path is
+                // correctly dead. The sum is the same f64 addition the bare
+                // `add` op already emits, so peeled and un-peeled Luau output
+                // are identical (precision above 2^53 is the pre-existing
+                // Luau number-model bound, not a peel regression).
+                "molt_checked_i64_add",
+                "@native\nlocal function molt_checked_i64_add(a: number, b: number): (number, boolean)\n\treturn a + b, false\nend\n",
+            ),
+            (
                 "molt_ord_at",
                 "local function molt_ord_at(obj: any, key: any): number\n\tif type(obj) ~= \"string\" then\n\t\tif type(obj) == \"table\" then\n\t\t\tlocal table_key = key\n\t\t\tif type(key) == \"boolean\" then\n\t\t\t\ttable_key = if key then 2 else 1\n\t\t\telseif type(key) == \"number\" then\n\t\t\t\ttable_key = if key >= 0 then key + 1 else #obj + key + 1\n\t\t\tend\n\t\t\treturn molt_ord(obj[table_key])\n\t\tend\n\t\terror({__type=\"TypeError\", __msg=\"'\" .. type(obj) .. \"' object is not subscriptable\"})\n\tend\n\tlocal key_num = key\n\tif type(key) == \"boolean\" then key_num = if key then 1 else 0 end\n\tif type(key_num) ~= \"number\" then error({__type=\"TypeError\", __msg=\"string indices must be integers, not '\" .. type(key_num) .. \"'\"}) end\n\tlocal len = molt_str_codepoint_len(obj)\n\tlocal idx = if key_num >= 0 then key_num + 1 else len + key_num + 1\n\tif idx < 1 or idx > len then error({__type=\"IndexError\", __msg=\"string index out of range\"}) end\n\tlocal byte_idx = molt_str_byte_offset(obj, idx)\n\tlocal code = utf8.codepoint(obj, byte_idx)\n\tif code == nil then error({__type=\"UnicodeDecodeError\", __msg=\"invalid UTF-8 string\"}) end\n\treturn code\nend\n",
             ),
@@ -4405,6 +4417,41 @@ impl LuauBackend {
                     }
                     if let Some(value) = value_out {
                         self.emit_line(&format!("local {value} = {tmp}[1]"));
+                    }
+                }
+            }
+
+            "checked_add" => {
+                // 2-result op: op.var = wrapping sum (results[0]), op.out =
+                // overflow flag (results[1]) — the IterNextUnboxed transport
+                // convention. Luau supports multi-return destructuring, so no
+                // tmp table is needed (unlike iter_next_unboxed's table
+                // unpack). The helper returns (a + b, false): f64 addition
+                // never overflows i64, so the flag is constant-false and the
+                // peel's slow loop is dead on this target by design.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let lhs = sanitize_ident(&args[0]);
+                    let rhs = sanitize_ident(&args[1]);
+                    let flag_out = op.out.as_deref().map(sanitize_ident);
+                    let sum_out = op.var.as_deref().map(sanitize_ident);
+                    match (sum_out, flag_out) {
+                        (Some(sum), Some(flag)) => {
+                            self.emit_line(&format!(
+                                "local {sum}: number, {flag}: boolean = molt_checked_i64_add({lhs}, {rhs})"
+                            ));
+                        }
+                        (Some(sum), None) => {
+                            self.emit_line(&format!(
+                                "local {sum}: number = molt_checked_i64_add({lhs}, {rhs})"
+                            ));
+                        }
+                        (None, Some(flag)) => {
+                            self.emit_line(&format!(
+                                "local _, {flag}: boolean = molt_checked_i64_add({lhs}, {rhs})"
+                            ));
+                        }
+                        (None, None) => {}
                     }
                 }
             }

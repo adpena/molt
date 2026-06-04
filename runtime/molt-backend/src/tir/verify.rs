@@ -290,6 +290,11 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 | OpCode::ImportFrom
                 | OpCode::ClosureLoad => Some(1),
                 OpCode::IterNextUnboxed => Some(2),
+                // CheckedAdd: results[0] = wrapping i64 sum, results[1] =
+                // signed-overflow flag. Both results are mandatory — a
+                // 1-result CheckedAdd would silently drop the overflow flag
+                // and reintroduce the wrapped-BigInt miscompile class.
+                OpCode::CheckedAdd => Some(2),
                 // These produce zero results (side-effecting only).
                 OpCode::IncRef
                 | OpCode::DecRef

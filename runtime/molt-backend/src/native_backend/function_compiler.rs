@@ -4190,6 +4190,54 @@ impl SimpleBackend {
                         // representation is unknown.
                     }
                 }
+                "checked_add" => {
+                    // CheckedAdd from the overflow_peel transform. op.args =
+                    // [lhs, rhs] (raw i64 int-primary carriers — the peel's
+                    // repr seeding guarantees this), op.var = wrapping-sum
+                    // output (int-primary), op.out = overflow-flag output.
+                    // Hardware-exact signed-overflow detection via Cranelift
+                    // `sadd_overflow` (a single instruction pair on
+                    // x64/aarch64).
+                    //
+                    // SOUNDNESS: when the flag is set, the sum holds the
+                    // mathematically WRAPPED value — consumers may only
+                    // observe it on the flag=0 branch (the peel's CFG
+                    // enforces this; the overflow bridge is seeded from the
+                    // PRE-add operands). A non-raw operand reaching this arm
+                    // is a repr-seeding bug: fail loudly at compile time
+                    // rather than emit a raw add on a NaN-boxed word.
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let lhs_raw =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]).expect(
+                            "checked_add: lhs must be a raw i64 int-primary carrier (repr seeding bug)",
+                        );
+                    let rhs_raw =
+                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]).expect(
+                            "checked_add: rhs must be a raw i64 int-primary carrier (repr seeding bug)",
+                        );
+                    let (sum, of) = builder.ins().sadd_overflow(lhs_raw, rhs_raw);
+                    if let Some(ref sum_name) = op.var {
+                        assert!(
+                            int_primary_vars.contains(sum_name),
+                            "checked_add: sum output '{sum_name}' must be an int-primary carrier (repr seeding bug)",
+                        );
+                        def_var_named(&mut builder, &vars, sum_name, sum);
+                    }
+                    if let Some(ref flag_name) = op.out {
+                        // `of` is an i8 0/1; widen to the I64 raw-bool
+                        // carrier convention (bool_primary stores raw 0/1,
+                        // everything else gets the NaN-boxed bool).
+                        let of_wide = builder.ins().uextend(types::I64, of);
+                        def_raw_bool_value(
+                            &mut builder,
+                            &vars,
+                            &bool_primary_vars,
+                            flag_name,
+                            of_wide,
+                            &nbc,
+                        );
+                    }
+                }
                 "inplace_add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get: see "add" handler comment.

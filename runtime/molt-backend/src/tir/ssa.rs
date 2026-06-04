@@ -964,7 +964,10 @@ impl<'a> SsaContext<'a> {
                 })
                 .unwrap_or_default();
         }
-        if op.kind == "iter_next_unboxed" {
+        // Two-result ops: `var` = results[0], `out` = results[1] (the
+        // IterNextUnboxed transport convention; CheckedAdd carries
+        // var = wrapping sum, out = overflow flag).
+        if op.kind == "iter_next_unboxed" || op.kind == "checked_add" {
             let mut out = Vec::new();
             if let Some(var) = &op.var
                 && is_variable(var)
@@ -1074,8 +1077,11 @@ impl<'a> SsaContext<'a> {
             }
         }
         // If `var` is an input (not store_var), resolve it too.
+        // For the two-result ops (iter_next_unboxed, checked_add) `var` is
+        // the results[0] OUTPUT, not an input.
         if op.kind != "store_var"
             && op.kind != "iter_next_unboxed"
+            && op.kind != "checked_add"
             && let Some(v) = &op.var
             && is_variable(v)
             && let Some(vid) = self.resolve_known_var(v, var_stacks)
@@ -1156,7 +1162,7 @@ impl<'a> SsaContext<'a> {
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }
-        if op.kind == "iter_next_unboxed" {
+        if op.kind == "iter_next_unboxed" || op.kind == "checked_add" {
             if let Some(ref value_out) = op.var {
                 attrs.insert("_simple_result_0".into(), AttrValue::Str(value_out.clone()));
             }
@@ -1826,6 +1832,12 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "get_iter" => OpCode::GetIter,
         "iter_next" => OpCode::IterNext,
         "iter_next_unboxed" => OpCode::IterNextUnboxed,
+        // CheckedAdd round-trip: the module phase re-lifts every function
+        // from post-pipeline SimpleIR on every build, so without this
+        // mapping a peeled fast loop would fall to the Copy fallback and
+        // the overflow check would silently vanish (the exception_pending
+        // precedent below).
+        "checked_add" => OpCode::CheckedAdd,
         "for_iter" => OpCode::ForIter,
         "state_switch" => OpCode::StateSwitch,
         "state_transition" => OpCode::StateTransition,
