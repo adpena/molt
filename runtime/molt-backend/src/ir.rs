@@ -89,6 +89,22 @@ pub struct OpIR {
     /// This is not a representation hint: consumers must validate the proof
     /// name against the op kind before weakening effect semantics.
     pub effect_proof: Option<String>,
+    /// The concrete user-class name whose fixed instance layout authored the
+    /// `value` byte-offset of a typed-slot field op (`store` / `store_init` /
+    /// `load` / `guarded_field_get` / `guarded_field_set` / `guarded_field_init`).
+    ///
+    /// The frontend emits these offset-based forms ONLY when the object's class
+    /// is proven at the op — either by a preceding runtime version-guard (the
+    /// `guarded_field_*` forms deopt/raise on class mismatch) or by static type
+    /// inference (the plain `store`/`load` forms). Either way the class is the
+    /// authority for `offset`, so the alias oracle can assign a class+offset
+    /// `TypedField` memory region that disjoint-aliases other classes' fields,
+    /// container elements, and module-dict slots (S5-1.5).
+    ///
+    /// Wire name is `"class"` (the frontend JSON / msgpack key); the manual
+    /// `from_json_value` parser and the serde derive (rmp/cbor path) agree on it.
+    #[serde(rename = "class")]
+    pub class_name: Option<String>,
 }
 
 impl PgoProfileIR {
@@ -330,6 +346,7 @@ impl OpIR {
             bce_safe: optional_bool(obj, "bce_safe", ctx)?,
             arena_eligible: optional_bool(obj, "arena_eligible", ctx)?,
             effect_proof: optional_string(obj, "effect_proof", ctx)?,
+            class_name: optional_string(obj, "class", ctx)?,
         })
     }
 }

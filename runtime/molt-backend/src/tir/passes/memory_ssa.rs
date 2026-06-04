@@ -713,8 +713,27 @@ mod tests {
         }
     }
 
-    /// A typed-slot store `obj.<offset> = val` (`_original_kind = "store"`).
+    /// A typed-slot store `obj.<offset> = val` of class `Point`
+    /// (`_original_kind = "store"`, `_class = "Point"`). Carries the class
+    /// identity so the alias oracle assigns a `TypedField { "Point", offset }`.
     fn store(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
+        store_of(obj, val, offset, "Point")
+    }
+
+    /// A typed-slot store with an explicit class name.
+    fn store_of(obj: ValueId, val: ValueId, offset: i64, class: &str) -> TirOp {
+        let mut o = op(OpCode::StoreAttr, vec![obj, val], vec![]);
+        o.attrs.insert("value".into(), AttrValue::Int(offset));
+        o.attrs
+            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        o.attrs
+            .insert("_class".into(), AttrValue::Str(class.into()));
+        o
+    }
+
+    /// A typed-slot store with NO class identity (a pre-S5-1.5 cached-artifact
+    /// shape): fail-closed to `GenericHeap`.
+    fn store_no_class(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
         let mut o = op(OpCode::StoreAttr, vec![obj, val], vec![]);
         o.attrs.insert("value".into(), AttrValue::Int(offset));
         o.attrs
@@ -722,8 +741,25 @@ mod tests {
         o
     }
 
-    /// A proven-pure typed-slot load `r = obj.<offset>` (`_original_kind = "load"`).
+    /// A proven-pure typed-slot load `r = obj.<offset>` of class `Point`
+    /// (`_original_kind = "load"`, `_class = "Point"`).
     fn load(obj: ValueId, offset: i64, r: ValueId) -> TirOp {
+        load_of(obj, offset, r, "Point")
+    }
+
+    /// A typed-slot load with an explicit class name.
+    fn load_of(obj: ValueId, offset: i64, r: ValueId, class: &str) -> TirOp {
+        let mut o = op(OpCode::LoadAttr, vec![obj], vec![r]);
+        o.attrs.insert("value".into(), AttrValue::Int(offset));
+        o.attrs
+            .insert("_original_kind".into(), AttrValue::Str("load".into()));
+        o.attrs
+            .insert("_class".into(), AttrValue::Str(class.into()));
+        o
+    }
+
+    /// A typed-slot load with NO class identity: fail-closed to `GenericHeap`.
+    fn load_no_class(obj: ValueId, offset: i64, r: ValueId) -> TirOp {
         let mut o = op(OpCode::LoadAttr, vec![obj], vec![r]);
         o.attrs.insert("value".into(), AttrValue::Int(offset));
         o.attrs
@@ -889,10 +925,9 @@ mod tests {
     #[test]
     fn distinct_offsets_have_independent_reaching_defs() {
         // store(obj, v1, 0); store(obj, v2, 8); r0 = load(obj, 0); r8 = load(obj, 8)
-        // A typed-slot store/load carries no class id in phase 1, so both map to
-        // GenericHeap and the offset disambiguation does not yet split them. The
-        // soundness guarantee we assert is the CONSERVATIVE one: each load reads
-        // the most-recent dominating def (never an older, killed one).
+        // With class-aware `TypedField` regions (S5-1.5), the same-class fields at
+        // offsets 0 and 8 are DISJOINT, so each load refines to the store of its
+        // OWN offset — store@8 does NOT clobber load@0.
         let mut func = TirFunction::new(
             "f".into(),
             vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
@@ -905,10 +940,10 @@ mod tests {
         let r8 = func.fresh_value();
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.ops.push(store(obj, v1, 0)); // op 0
-            entry.ops.push(store(obj, v2, 8)); // op 1
-            entry.ops.push(load(obj, 0, r0)); // op 2
-            entry.ops.push(load(obj, 8, r8)); // op 3
+            entry.ops.push(store(obj, v1, 0)); // op 0 — TypedField{Point, 0}
+            entry.ops.push(store(obj, v2, 8)); // op 1 — TypedField{Point, 8}
+            entry.ops.push(load(obj, 0, r0)); // op 2 — TypedField{Point, 0}
+            entry.ops.push(load(obj, 8, r8)); // op 3 — TypedField{Point, 8}
             entry.terminator = Terminator::Return { values: vec![r0, r8] };
         }
         let mem = run(&func);
@@ -916,17 +951,107 @@ mod tests {
         let store8 = mem.def_at(func.entry_block, 1).unwrap();
         let load0_reaching = mem.reaching_def_for_use(func.entry_block, 2).unwrap();
         let load8_reaching = mem.reaching_def_for_use(func.entry_block, 3).unwrap();
-        // Both loads see the most-recent dominating def (store8). This is the
-        // conservative phase-1 answer; with class-aware regions (later phase)
-        // load0 would refine to store0. We assert reaching defs are real defs in
-        // the clobber chain and never a killed/older one out of order.
-        assert_eq!(load8_reaching, store8, "load@8 reads the immediately-preceding store");
+        // Offset disambiguation: each load reaches the store of ITS offset.
+        assert_eq!(load0_reaching, store0, "load@0 reaches store@0 (store@8 is a disjoint field)");
+        assert_eq!(load8_reaching, store8, "load@8 reaches store@8");
+        // The clobber chain is still store0 ← store8 (store@8 flows through
+        // store@0 — they are ordered defs, just disjoint regions).
+        assert_eq!(mem.def_version_of(store8), Some(store0));
+        // Forwarding is now unblocked for BOTH loads.
+        assert!(mem.is_direct_def_of_use(store0, func.entry_block, 2));
+        assert!(mem.is_direct_def_of_use(store8, func.entry_block, 3));
+    }
+
+    #[test]
+    fn distinct_classes_at_same_offset_do_not_clobber() {
+        // A `Point.x@0` store followed by a `Line.a@0` store must NOT clobber a
+        // `Point.x@0` load: distinct concrete classes never share an object, so
+        // `TypedField{Point,0}` and `TypedField{Line,0}` are disjoint.
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let p = ValueId(0);
+        let l = ValueId(1);
+        let v1 = ValueId(2);
+        let v2 = ValueId(3);
+        let r = func.fresh_value();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(store_of(p, v1, 0, "Point")); // op 0
+            entry.ops.push(store_of(l, v2, 0, "Line")); // op 1 — disjoint class
+            entry.ops.push(load_of(p, 0, r, "Point")); // op 2
+            entry.terminator = Terminator::Return { values: vec![r] };
+        }
+        let mem = run(&func);
+        let store_point = mem.def_at(func.entry_block, 0).unwrap();
+        let reaching = mem.reaching_def_for_use(func.entry_block, 2).unwrap();
+        assert_eq!(
+            reaching, store_point,
+            "the Point.x load reaches the Point store, not the disjoint Line store"
+        );
+        assert!(mem.is_direct_def_of_use(store_point, func.entry_block, 2));
+    }
+
+    #[test]
+    fn same_class_offset_store_still_clobbers() {
+        // A same-class same-offset store BETWEEN a store and a load IS a clobber:
+        // object identity is untracked, so two `Point.x@0` accesses may-alias.
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let a = ValueId(0);
+        let b = ValueId(1); // possibly the same Point as `a` at runtime
+        let v1 = ValueId(2);
+        let v2 = ValueId(3);
+        let r = func.fresh_value();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(store_of(a, v1, 0, "Point")); // op 0
+            entry.ops.push(store_of(b, v2, 0, "Point")); // op 1 — same class+offset
+            entry.ops.push(load_of(a, 0, r, "Point")); // op 2
+            entry.terminator = Terminator::Return { values: vec![r] };
+        }
+        let mem = run(&func);
+        let store_b = mem.def_at(func.entry_block, 1).unwrap();
+        let reaching = mem.reaching_def_for_use(func.entry_block, 2).unwrap();
+        assert_eq!(
+            reaching, store_b,
+            "a same-class+offset store on a possibly-different object still clobbers"
+        );
+    }
+
+    #[test]
+    fn no_class_typed_slot_falls_back_to_generic_heap() {
+        // A typed-slot op with NO `_class` proof (a pre-S5-1.5 cached artifact)
+        // must fail-closed to GenericHeap: the offset-8 store then clobbers the
+        // offset-0 load (GenericHeap may-aliases everything).
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let obj = ValueId(0);
+        let v1 = ValueId(1);
+        let v2 = ValueId(2);
+        let r0 = func.fresh_value();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(store_no_class(obj, v1, 0)); // op 0 — GenericHeap
+            entry.ops.push(store_no_class(obj, v2, 8)); // op 1 — GenericHeap
+            entry.ops.push(load_no_class(obj, 0, r0)); // op 2 — GenericHeap
+            entry.terminator = Terminator::Return { values: vec![r0] };
+        }
+        let mem = run(&func);
+        let store8 = mem.def_at(func.entry_block, 1).unwrap();
+        let load0_reaching = mem.reaching_def_for_use(func.entry_block, 2).unwrap();
         assert_eq!(
             load0_reaching, store8,
-            "phase-1 conservative: GenericHeap store@8 may-alias load@0, so it is the reaching def"
+            "fail-closed: a class-less typed-slot load reaches the most-recent GenericHeap store"
         );
-        // The clobber chain is store0 ← store8.
-        assert_eq!(mem.def_version_of(store8), Some(store0));
     }
 
     // ── Test 4: cross-block phi placement at a diamond join ────────────────
@@ -1232,9 +1357,12 @@ mod tests {
                 assert_eq!(*def_ver, store_ver, "Use reads the store's version");
                 assert_eq!(*block, func.entry_block);
                 assert_eq!(*op_idx, 1);
-                // A typed-slot load with no proven class id degrades to
-                // GenericHeap in phase 1 (class_of returns None).
-                assert_eq!(*region, MemRegion::GenericHeap);
+                // The typed-slot load carries its proven class identity, so it
+                // names a `TypedField { "Point", 0 }` region (S5-1.5).
+                assert_eq!(
+                    *region,
+                    MemRegion::TypedField { class: "Point".into(), offset: 0 }
+                );
             }
             other => panic!("expected a Use node, got {other:?}"),
         }
