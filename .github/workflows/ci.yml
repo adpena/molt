@@ -146,6 +146,37 @@ jobs:
       - name: Clippy (molt-backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
 
+      - name: Clippy (runtime satellites)
+        # The feature-gated stdlib satellite crates (molt-runtime-X) are the
+        # DEFAULT native source for their modules but were never clippy-gated, so
+        # lints drifted in silently (e.g. an unnecessary u64->u64 cast in crypto,
+        # a manual loop in regex). Gate every satellite with -D warnings so the
+        # default-tier runtime stays lint-clean alongside molt-backend.
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy --all-targets \
+            -p molt-runtime-asyncio \
+            -p molt-runtime-collections \
+            -p molt-runtime-compression \
+            -p molt-runtime-core \
+            -p molt-runtime-crypto \
+            -p molt-runtime-difflib \
+            -p molt-runtime-http \
+            -p molt-runtime-ipaddress \
+            -p molt-runtime-itertools \
+            -p molt-runtime-logging \
+            -p molt-runtime-math \
+            -p molt-runtime-net \
+            -p molt-runtime-path \
+            -p molt-runtime-protobuf \
+            -p molt-runtime-regex \
+            -p molt-runtime-serial \
+            -p molt-runtime-stringprep \
+            -p molt-runtime-text \
+            -p molt-runtime-tk \
+            -p molt-runtime-xml \
+            -p molt-runtime-zoneinfo \
+            -- -D warnings
+
       - name: Test molt-snapshot
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo test -p molt-snapshot
 
