@@ -2762,13 +2762,16 @@ impl SimpleBackend {
         // object holds the full set and derives it locally against the REQUIRED
         // staticlib symbol set (no heuristic fallback — see
         // `runtime_intrinsic_symbols_required`).
-        // The per-app resolver is emitted only by the Cranelift path below; the
-        // LLVM path (`use_llvm`) returns early and never references this manifest,
-        // so deriving it — and demanding the staticlib symbol set — there would be
-        // both wasted work and a spurious build failure for LLVM objects that take
-        // no intrinsic addresses. Compute (and require the exact symbol set) only
-        // when this Cranelift object will actually emit the resolver.
-        let emit_resolver_here = self.emit_app_intrinsic_resolver && !use_llvm;
+        // The per-app resolver is emitted by BOTH the Cranelift path below and
+        // the LLVM path (`use_llvm`): the LLVM-compiled application object must
+        // carry `molt_app_resolve_intrinsic` (referenced by the CLI's main stub)
+        // exactly like the Cranelift object, or the link leaves it undefined and
+        // every name-based intrinsic resolution fails at runtime. The manifest
+        // scan is backend-independent (it reads `FunctionIR` const_str ops
+        // against the linked staticlib's intrinsic symbol set), so compute it —
+        // and require the exact symbol set — whenever THIS object will emit the
+        // resolver, regardless of which codegen backend produces the bytes.
+        let emit_resolver_here = self.emit_app_intrinsic_resolver;
         let app_intrinsic_manifest = if emit_resolver_here {
             self.app_intrinsic_manifest.take().unwrap_or_else(|| {
                 // `_checked`: requires the staticlib symbol set (fail-closed)
@@ -2904,6 +2907,20 @@ impl SimpleBackend {
                 }
                 crate::llvm_backend::lowering::try_lower_tir_to_llvm(tir_func, &llvm)
                     .unwrap_or_else(|err| panic!("{err}"));
+            }
+
+            // ── Per-app intrinsic resolver ────────────────────────────
+            // The LLVM-compiled application object must carry
+            // `molt_app_resolve_intrinsic` (referenced by the CLI's main stub and
+            // registered with the runtime before `molt_runtime_init`) exactly
+            // like the Cranelift object. Emitted into the LLVM module here, after
+            // every function is lowered, so the manifest intrinsics already exist
+            // as declarations whose addresses the resolver table takes. Gated on
+            // `emit_resolver_here` so batch/stdlib-cache LLVM objects (which set
+            // `emit_app_intrinsic_resolver = false`) never emit a duplicate
+            // `_molt_app_resolve_intrinsic` symbol.
+            if emit_resolver_here {
+                llvm.emit_app_resolver_function(&app_intrinsic_manifest);
             }
 
             // Dump LLVM IR under the repo-local debug artifact root when
