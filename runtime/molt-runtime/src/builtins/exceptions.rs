@@ -254,6 +254,16 @@ fn trace_exception_stack() -> bool {
     *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_EXCEPTION_STACK").as_deref() == Ok("1"))
 }
 
+/// Cached `MOLT_DEBUG_EXCEPTIONS` flag. `record_exception_with_caller_frame`
+/// runs on every exception raise, so reading the env var directly there takes
+/// the libc environ lock and heap-allocates per raise — a measurable tax in
+/// exception-heavy loops. Cache it like the sibling flags above.
+#[inline]
+fn debug_exceptions() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTIONS").as_deref() == Ok("1"))
+}
+
 thread_local! {
     static EXCEPTION_CLEAR_REASON: RefCell<Option<&'static str>> = const { RefCell::new(None) };
 }
@@ -1743,7 +1753,7 @@ fn record_exception_with_caller_frame(_py: &PyToken<'_>, ptr: *mut u8, include_c
         // pointers acquire a fresh slot reference.
         global_last_exception_store_recorded(_py, ptr, same_ptr);
     }
-    if std::env::var("MOLT_DEBUG_EXCEPTIONS").as_deref() == Ok("1") {
+    if debug_exceptions() {
         let debug_pending = debug_exception_pending();
         let kind_bits = unsafe { exception_kind_bits(ptr) };
         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
