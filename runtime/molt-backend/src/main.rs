@@ -49,8 +49,22 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "TIR_OPT_STATS",
     "MOLT_DUMP_CLIF",
     "MOLT_DUMP_CLIF_ON_ERROR",
+    "MOLT_DUMP_CLIF_ON_CFG_ERROR",
+    "MOLT_DUMP_CLIF_FUNC",
+    "MOLT_DUMP_CLIF_FILE",
+    "MOLT_DUMP_CLIF_FILE_FILTER",
     "MOLT_DUMP_FINAL_FUNC_IR",
     "MOLT_DUMP_IR",
+    // Optimization-pass instruments + rollback levers. Every optimization
+    // lands WITH a firing/refusal instrument (the L4/needs_inlining lesson);
+    // those instruments are useless if the daemon strips their env keys.
+    "MOLT_OVERFLOW_PEEL_STATS",
+    "MOLT_DISABLE_OVERFLOW_PEEL",
+    "MOLT_PROMOTE_DEBUG",
+    "MOLT_DISABLE_MODULE_SLOT_PROMOTION",
+    "MOLT_INLINE_STATS",
+    "MOLT_DISABLE_INLINING",
+    "MOLT_VERIFY_ANALYSIS",
     "MOLT_DEBUG_BIND",
     "MOLT_BACKEND",
     "MOLT_DEBUG_CHECK_EXC",

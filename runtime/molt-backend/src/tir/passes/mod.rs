@@ -23,6 +23,7 @@ pub mod loop_unroll;
 pub mod mem_gvn;
 pub mod memory_ssa;
 pub mod module_slot_promotion;
+pub mod overflow_peel;
 pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
@@ -156,6 +157,7 @@ mod tests {
                 "vectorize",
                 "polyhedral",
                 "check_exception_elim",
+                "overflow_peel",
                 "copy_prop",
                 "dce",
             ],

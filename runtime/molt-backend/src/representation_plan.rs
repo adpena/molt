@@ -224,6 +224,11 @@ impl ScalarRepresentationFact {
 pub(crate) struct ScalarRepresentationPlan {
     facts_by_name: BTreeMap<String, ScalarRepresentationFact>,
     conflicted_names: BTreeSet<String>,
+    /// Names whose current fact came from a SYNTHETIC (canonical fallback)
+    /// name — `_v{N}` / `_bb{N}_arg{I}` from the internal re-lift. Weak facts
+    /// yield to explicit-stream-name facts instead of conflicting them out
+    /// (see [`Self::insert_lir_value_weak`]).
+    weak_fact_names: BTreeSet<String>,
     non_scalar_names: BTreeSet<String>,
     integer_family_names: BTreeSet<String>,
     container_storage_by_name: BTreeMap<String, ContainerStorageFact>,
@@ -653,8 +658,13 @@ impl ScalarRepresentationPlan {
         for block_id in block_ids {
             let block = &lir_func.blocks[&block_id];
             for (index, arg) in block.args.iter().enumerate() {
-                plan.insert_lir_value(names.value_name(arg.id), arg);
-                plan.insert_lir_value(names.block_arg_slot(block.id, index), arg);
+                // Both arg-name forms are synthetic fallbacks (a re-lift
+                // renumbers ValueIds and BlockIds), so they insert WEAK facts:
+                // an explicit stream name carried by a `_simple_out` /
+                // `_simple_result_N` override must win over a colliding
+                // canonical name, not be conflicted out by it.
+                plan.insert_lir_value_weak(names.value_name(arg.id), arg);
+                plan.insert_lir_value_weak(names.block_arg_slot(block.id, index), arg);
             }
             for op in &block.ops {
                 let checked_i64_arithmetic = matches!(
@@ -662,12 +672,16 @@ impl ScalarRepresentationPlan {
                     Some(AttrValue::Bool(true))
                 );
                 for (index, result) in op.result_values.iter().enumerate() {
-                    let name = if checked_i64_arithmetic && index == 0 {
-                        SimpleValueNames::canonical_value_name(result.id)
+                    if checked_i64_arithmetic && index == 0 {
+                        plan.insert_lir_value_weak(
+                            SimpleValueNames::canonical_value_name(result.id),
+                            result,
+                        );
+                    } else if names.has_override(result.id) {
+                        plan.insert_lir_value(names.value_name(result.id), result);
                     } else {
-                        names.value_name(result.id)
-                    };
-                    plan.insert_lir_value(name, result);
+                        plan.insert_lir_value_weak(names.value_name(result.id), result);
+                    }
                 }
                 if op.result_values.len() == 1
                     && let Some(AttrValue::Str(simple_out)) = op.tir_op.attrs.get("_simple_out")
@@ -877,16 +891,57 @@ impl ScalarRepresentationPlan {
         );
     }
 
+    /// Insert a fact under a SYNTHETIC (canonical fallback) name — `_v{N}` /
+    /// `_bb{N}_arg{I}` from the plan's internal re-lift, whose numbering does
+    /// NOT match the emitted stream's. Weak facts never displace or conflict
+    /// out an explicit-stream-name (strong) fact: a canonical name colliding
+    /// with a different value's explicit name previously blacklisted BOTH,
+    /// silently demoting the explicitly-named value to the boxed lane (found
+    /// via the overflow_peel flag chain, where `_v43`-style emitted names
+    /// collided with the re-lift's canonical `_v43`).
+    fn insert_lir_value_weak(&mut self, name: String, value: &LirValue) {
+        let fact = ScalarRepresentationFact {
+            ty: value.ty.clone(),
+            repr: value.repr,
+        };
+        if self.conflicted_names.contains(&name) {
+            return;
+        }
+        if let Some(existing) = self.facts_by_name.get(&name) {
+            if existing != &fact && self.weak_fact_names.contains(&name) {
+                // Two genuinely ambiguous weak facts: blacklist (the old
+                // conservative behavior).
+                self.facts_by_name.remove(&name);
+                self.weak_fact_names.remove(&name);
+                self.conflicted_names.insert(name);
+            }
+            // A strong fact stands regardless of weak disagreement.
+            return;
+        }
+        self.weak_fact_names.insert(name.clone());
+        self.facts_by_name.insert(name, fact);
+    }
+
     fn insert_fact(&mut self, name: String, fact: ScalarRepresentationFact) -> bool {
         if self.conflicted_names.contains(&name) {
             return false;
         }
         if let Some(existing) = self.facts_by_name.get(&name) {
             if existing != &fact {
+                // A strong (explicit stream name) fact REPLACES a weak
+                // (canonical fallback) one — the explicit name is the
+                // stream's source of truth.
+                if self.weak_fact_names.remove(&name) {
+                    self.facts_by_name.insert(name, fact);
+                    return true;
+                }
                 self.facts_by_name.remove(&name);
                 self.conflicted_names.insert(name);
                 return true;
             }
+            // Equal fact: upgrade weak → strong so a later disagreeing weak
+            // insert cannot blacklist it.
+            self.weak_fact_names.remove(&name);
             return false;
         }
         self.facts_by_name.insert(name, fact);
@@ -1421,6 +1476,16 @@ impl ScalarRepresentationPlan {
                 .into_iter()
                 .filter(|name| passes_filter(name))
                 .collect();
+        // OSC admission for `overflow_peel`'d loops: the {slot → load_var →
+        // checked_add → slot} carrier cycle is raw-i64-admissible AS A UNIT —
+        // no interval proof is needed (or possible: the accumulator is
+        // genuinely unbounded; that is the point of the peel). The
+        // `checked_add` contract supplies the wrap-safety the interval chain
+        // cannot: the sum is a true i64 with a hardware overflow flag, and
+        // the peel's CFG gates every consumption of a wrapped value.
+        candidates.extend(
+            checked_loop_seed_names(func_ir, &bounded_i64_names, &passes_filter).into_iter(),
+        );
         let mut changed = true;
         while changed {
             changed = false;
@@ -1586,6 +1651,18 @@ impl ScalarRepresentationPlan {
         match op.kind.as_str() {
             "const_bool" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "string_eq" | "is" | "not"
             | "bool" | "cast_bool" | "builtin_bool" => true,
+            // checked_add's `out` is the overflow flag — defined raw 0/1 on
+            // both native lanes (hardware `of` widened, or constant false on
+            // the boxed fallback).
+            "checked_add" => true,
+            // Python `and`/`or` are value-selects, but a value-select over two
+            // raw 0/1 bools IS the boolean op — the native arms emit a raw
+            // band/bor lane when both operands are bool-primary, so the result
+            // is a raw producer exactly when both inputs are.
+            "and" | "or" => op
+                .args
+                .as_ref()
+                .is_some_and(|args| args.len() >= 2 && args.iter().all(|a| candidates.contains(a))),
             "copy" | "copy_var" | "load_var" | "identity_alias" => {
                 first_source().is_some_and(|s| candidates.contains(s))
             }
@@ -2555,6 +2632,102 @@ fn loop_backedge_update_names(func_ir: &FunctionIR) -> BTreeSet<String> {
         }
     }
     names
+}
+
+/// OSC admission for `overflow_peel`'d loops (the name-keyed native chain).
+///
+/// The peeled fast loop's carrier cycle is
+/// `slot --load_var--> arg --checked_add--> sum --store_var--> slot`, plus
+/// the `prev_*` snapshot slots (`slot --load_var--> val --store_var--> slot`).
+/// The cycle is raw-i64-admissible AS A UNIT: `checked_add`'s contract — a
+/// true wrapping-i64 sum with a hardware overflow flag, every wrapped value
+/// CFG-gated by the peel — makes the raw carrier exact for every reachable
+/// value, which the interval chain cannot prove (the accumulator is genuinely
+/// unbounded; that is the point of the peel).
+///
+/// Greatest-fixpoint: optimistically admit every `checked_add` sum, every
+/// `load_var` result, and every `store_var` slot, then iteratively STRIP any
+/// member whose defs don't conform —
+///   * a sum whose arg is neither an in-set member nor interval-bounded,
+///   * a load whose slot was stripped,
+///   * a slot with ANY store from a non-member, non-bounded source,
+///   * anything failing the int-primary `passes_filter` (type/poison gates).
+/// Fail-closed: a questionable member invalidates its dependents, so the
+/// boxed slow-loop clone (whose plain `add` sums are not members) and the
+/// exit-merge slot (fed by both loops) strip out exactly as required, while
+/// the fast loop's accumulator, IV, and `prev_*` snapshot slots survive.
+fn checked_loop_seed_names(
+    func_ir: &FunctionIR,
+    bounded_i64_names: &BTreeMap<String, I64Interval>,
+    passes_filter: &dyn Fn(&str) -> bool,
+) -> BTreeSet<String> {
+    // No checked_add ops → nothing to admit (the common case, zero cost).
+    if !func_ir.ops.iter().any(|op| op.kind == "checked_add") {
+        return BTreeSet::new();
+    }
+
+    // Structure maps over the SimpleIR.
+    let mut sum_args: BTreeMap<&str, Vec<&str>> = BTreeMap::new(); // sum var → args
+    let mut load_slot: BTreeMap<&str, &str> = BTreeMap::new(); // load out → slot
+    let mut slot_sources: BTreeMap<&str, Vec<&str>> = BTreeMap::new(); // slot → store sources
+    for op in &func_ir.ops {
+        match op.kind.as_str() {
+            "checked_add" => {
+                if let (Some(var), Some(args)) = (op.var.as_deref(), op.args.as_ref())
+                    && args.len() == 2
+                {
+                    sum_args.insert(var, args.iter().map(String::as_str).collect());
+                }
+            }
+            "load_var" => {
+                if let (Some(out), Some(slot)) = (op.out.as_deref(), op.var.as_deref()) {
+                    load_slot.insert(out, slot);
+                }
+            }
+            "store_var" => {
+                let target = op.var.as_deref().or(op.out.as_deref());
+                let source = op
+                    .args
+                    .as_ref()
+                    .and_then(|args| args.first().map(String::as_str));
+                if let (Some(target), Some(source)) = (target, source) {
+                    slot_sources.entry(target).or_default().push(source);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Optimistic membership: every sum, load result, and stored slot.
+    let mut members: BTreeSet<&str> = BTreeSet::new();
+    members.extend(sum_args.keys().copied());
+    members.extend(load_slot.keys().copied());
+    members.extend(slot_sources.keys().copied());
+
+    // Strip to the greatest conforming fixpoint.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let conforming_source =
+            |s: &str, members: &BTreeSet<&str>| members.contains(s) || bounded_i64_names.contains_key(s);
+        let snapshot: Vec<&str> = members.iter().copied().collect();
+        for m in snapshot {
+            let ok = if let Some(args) = sum_args.get(m) {
+                args.iter().all(|a| conforming_source(a, &members))
+            } else if let Some(slot) = load_slot.get(m) {
+                members.contains(slot)
+            } else if let Some(sources) = slot_sources.get(m) {
+                sources.iter().all(|s| conforming_source(s, &members))
+            } else {
+                false
+            };
+            if !(ok && passes_filter(m)) && members.remove(m) {
+                changed = true;
+            }
+        }
+    }
+
+    members.into_iter().map(str::to_string).collect()
 }
 
 fn bounded_store_load_loop_seed_names(
@@ -3802,6 +3975,140 @@ mod tests {
 
     fn empty_func_ir() -> FunctionIR {
         function("rl", &[], None, vec![])
+    }
+
+    fn op_v(kind: &str, out: Option<&str>, var: Option<&str>, args: &[&str], value: i64) -> OpIR {
+        OpIR {
+            value: Some(value),
+            ..op(kind, out, var, args)
+        }
+    }
+
+    /// The EXACT post-`overflow_peel` SimpleIR shape (captured live from
+    /// `tmp/peel_sum.py`'s `compute` — fast structured loop with two
+    /// `checked_add`s + carried overflow flag + `prev_*` snapshot slots,
+    /// post-loop dispatch, generic boxed slow loop, exit-arg merge).
+    fn peeled_compute_func_ir() -> FunctionIR {
+        function(
+            "peel_compute",
+            &["n"],
+            None,
+            vec![
+                op_v("const", Some("v106"), None, &[], 0),
+                op_v("const", Some("v108"), None, &[], 0),
+                op_v("const", Some("v117"), None, &[], 1),
+                op_v("const_bool", Some("_v43"), None, &[], 0),
+                op("store_var", None, Some("_bb1_arg0"), &["v108"]),
+                op("store_var", None, Some("_bb1_arg1"), &["v106"]),
+                op("store_var", None, Some("_bb1_arg2"), &["_v43"]),
+                op("store_var", None, Some("_bb1_arg3"), &["v108"]),
+                op("store_var", None, Some("_bb1_arg4"), &["v106"]),
+                op_v("jump", None, None, &[], 15),
+                op_v("label", None, None, &[], 15),
+                op("loop_start", None, None, &[]),
+                op("load_var", Some("_v16"), Some("_bb1_arg0"), &[]),
+                op("load_var", Some("_v17"), Some("_bb1_arg1"), &[]),
+                op("load_var", Some("_v40"), Some("_bb1_arg2"), &[]),
+                op("load_var", Some("_v41"), Some("_bb1_arg3"), &[]),
+                op("load_var", Some("_v42"), Some("_bb1_arg4"), &[]),
+                op("lt", Some("v111"), None, &["_v16", "n"]),
+                op("not", Some("_v44"), None, &["_v40"]),
+                op("and", Some("_v45"), None, &["v111", "_v44"]),
+                op("loop_break_if_false", None, None, &["_v45"]),
+                op("checked_add", Some("_v47"), Some("_v22"), &["_v17", "_v16"]),
+                op("checked_add", Some("_v46"), Some("_v25"), &["_v16", "v117"]),
+                op("or", Some("_v48"), None, &["_v46", "_v47"]),
+                op("store_var", None, Some("_bb1_arg0"), &["_v25"]),
+                op("store_var", None, Some("_bb1_arg1"), &["_v22"]),
+                op("store_var", None, Some("_bb1_arg2"), &["_v48"]),
+                op("store_var", None, Some("_bb1_arg3"), &["_v16"]),
+                op("store_var", None, Some("_bb1_arg4"), &["_v17"]),
+                op("loop_continue", None, None, &[]),
+                op("loop_end", None, None, &[]),
+                op_v("jump", None, None, &[], 19),
+                op_v("label", None, None, &[], 19),
+                op_v("br_if", None, None, &["_v40"], 20),
+                op("store_var", None, Some("_bb5_arg0"), &["_v17"]),
+                op_v("jump", None, None, &[], 17),
+                op_v("label", None, None, &[], 20),
+                op("store_var", None, Some("_bb7_arg0"), &["_v41"]),
+                op("store_var", None, Some("_bb7_arg1"), &["_v42"]),
+                op_v("jump", None, None, &[], 18),
+                op_v("label", None, None, &[], 18),
+                op("load_var", Some("_v29"), Some("_bb7_arg0"), &[]),
+                op("load_var", Some("_v30"), Some("_bb7_arg1"), &[]),
+                op_v("jump", None, None, &[], 21),
+                op_v("label", None, None, &[], 21),
+                op("lt", Some("v111"), None, &["_v29", "n"]),
+                op_v("br_if", None, None, &["v111"], 16),
+                op("store_var", None, Some("_bb5_arg0"), &["_v30"]),
+                op_v("jump", None, None, &[], 17),
+                op_v("label", None, None, &[], 17),
+                op("load_var", Some("_v51"), Some("_bb5_arg0"), &[]),
+                op("ret", None, Some("_v51"), &["_v51"]),
+                op_v("label", None, None, &[], 16),
+                op("add", Some("v114"), None, &["_v30", "_v29"]),
+                op("add", Some("v118"), None, &["_v29", "v117"]),
+                op("store_var", None, Some("_bb7_arg0"), &["v118"]),
+                op("store_var", None, Some("_bb7_arg1"), &["v114"]),
+                op_v("jump", None, None, &[], 18),
+            ],
+        )
+    }
+
+    /// The overflow_peel'd loop's carrier cycle must admit into the native
+    /// int-primary set — the slots, their loads, and the checked sums — while
+    /// the bool flag lane, the exit-merge slot, and the boxed slow loop must
+    /// all be refused. If the fast-lane names are missing the native arm
+    /// silently takes the boxed lane (no speedup); if the refused names leak
+    /// in, the trusted raw carrier meets boxed values (the 2^47 truncation
+    /// miscompile class). Both directions are load-bearing.
+    #[test]
+    fn checked_loop_seed_admits_peeled_fast_loop_only() {
+        let func_ir = peeled_compute_func_ir();
+        let plan = ScalarRepresentationPlan::for_function_ir(&func_ir);
+        let int_primary = plan.primary_name_sets().int;
+
+        for name in [
+            "_bb1_arg0", "_bb1_arg1", "_bb1_arg3", "_bb1_arg4", // fast slots
+            "_v16", "_v17", "_v41", "_v42", // their loads
+            "_v22", "_v25", // checked sums
+        ] {
+            assert!(
+                int_primary.contains(name),
+                "{name} must be int-primary (fast-lane admission); got {int_primary:?}"
+            );
+        }
+        for name in [
+            "_bb1_arg2", "_v40", "_v48", // overflow-flag lane (bool)
+            "_bb5_arg0", "_v51", // exit merge (fed by the boxed slow loop)
+            "_bb7_arg0", "_bb7_arg1", "_v29", "_v30", "v114", "v118", // slow loop
+        ] {
+            assert!(
+                !int_primary.contains(name),
+                "{name} must NOT be int-primary (boxed lane); got {int_primary:?}"
+            );
+        }
+
+        // The overflow-flag chain must admit into the RAW BOOL lane — without
+        // it the break condition costs ~4 runtime calls per iteration
+        // (inc_ref + is_truthy + not + or-select) and the peel's fast loop
+        // loses its win.
+        let bool_primary = plan.primary_name_sets().bool_;
+        for name in [
+            "_v46", "_v47", // checked_add overflow flags
+            "_v48",  // or fan-in
+            "_v40",  // of-slot load
+            "_v44",  // not(of)
+            "_v45",  // and(cond, not_of) — the break condition
+            "v111",  // the guard compare
+            "_bb1_arg2", // the carried of slot
+        ] {
+            assert!(
+                bool_primary.contains(name),
+                "{name} must be bool-primary (raw flag lane); got {bool_primary:?}"
+            );
+        }
     }
 
     fn is_raw(map: &HashMap<ValueId, Repr>, id: ValueId) -> bool {
