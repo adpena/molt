@@ -1,10 +1,11 @@
 """Static-typing Protocol for SimpleTIRGenerator (F1 decomposition).
 
-GENERATED from frontend/__init__.py by tmp/gen_protocol.py. Enumerates the full
-method + attribute surface of the assembled generator so that visitor/lowering
-mixins can annotate ``self`` as ``_GeneratorProtocol`` and have cross-mixin
-``self.<method>`` / ``self.<attr>`` references type-check (the single-class form
-had this implicitly; the Protocol restores it across files).
+GENERATED from frontend/__init__.py + the visitors/ and lowering/ mixins by
+tmp/gen_protocol.py. Enumerates the full method + attribute surface of the
+assembled generator so that visitor/lowering mixins can annotate ``self`` as
+``_GeneratorProtocol`` and have cross-mixin ``self.<method>`` / ``self.<attr>``
+references type-check (the single-class form had this implicitly; the Protocol
+restores it across files).
 
 This module is import-only under TYPE_CHECKING; it has no runtime effect.
 """
