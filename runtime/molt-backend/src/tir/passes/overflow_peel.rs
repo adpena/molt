@@ -1074,7 +1074,7 @@ mod tests {
         let exit = func.fresh_block();
 
         let n = ValueId(0); // entry arg (param)
-        let mut fresh = |func: &mut TirFunction, ty: TirType| {
+        let fresh = |func: &mut TirFunction, ty: TirType| {
             let v = func.fresh_value();
             func.value_types.insert(v, ty);
             v

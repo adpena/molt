@@ -42,6 +42,25 @@ fn lir_repr_from_repr(repr: ReprOverride<'_>, id: ValueId, ty: &TirType) -> LirR
 }
 
 pub fn lower_function_to_lir(func: &TirFunction, repr: ReprOverride<'_>) -> LirFunction {
+    lower_function_to_lir_with_inline_proof(func, repr, None)
+}
+
+/// [`lower_function_to_lir`] with the value-range proof threaded in.
+///
+/// `inline_proof` is the ValueRange analysis computed on this EXACT `func`
+/// (ValueIds must line up). It gates the checked-i64 triple: the triple's
+/// raw `I64Add` + inline-range check + inline-boxed overflow arm is only
+/// sound when operands and result are PROVEN inside the 47-bit window —
+/// `Repr::RawI64Safe` alone no longer implies that (it is a FULL-RANGE
+/// carrier contract; the overflow_peel accumulators are genuinely
+/// unbounded). Production value-keyed callers (the WASM fast lane) must
+/// supply the proof; `None` keeps the legacy type/repr-gated behavior for
+/// fact extraction and hand-built-repr tests.
+pub fn lower_function_to_lir_with_inline_proof(
+    func: &TirFunction,
+    repr: ReprOverride<'_>,
+    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+) -> LirFunction {
     let mut refined = func.clone();
     refine_types(&mut refined);
     canonicalize_non_executable_blocks(&mut refined);
@@ -59,7 +78,7 @@ pub fn lower_function_to_lir(func: &TirFunction, repr: ReprOverride<'_>) -> LirF
                 .expect("sorted block id must exist");
             (
                 bid,
-                lower_block(block, &refined, &type_map, &mut allocator, repr),
+                lower_block(block, &refined, &type_map, &mut allocator, repr, inline_proof),
             )
         })
         .collect();
@@ -145,8 +164,9 @@ fn lower_block(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: ReprOverride<'_>,
+    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> LirBlock {
-    let mut ops = lower_block_ops(block.ops.as_slice(), type_map, allocator, repr);
+    let mut ops = lower_block_ops(block.ops.as_slice(), type_map, allocator, repr, inline_proof);
     let terminator = lower_terminator(&block.terminator, func, type_map, allocator, &mut ops, repr);
     LirBlock {
         id: block.id,
@@ -161,9 +181,10 @@ fn lower_block_ops(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: ReprOverride<'_>,
+    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> Vec<LirOp> {
     ops.iter()
-        .map(|op| lower_op(op, type_map, allocator, repr))
+        .map(|op| lower_op(op, type_map, allocator, repr, inline_proof))
         .collect()
 }
 
@@ -172,9 +193,54 @@ fn lower_op(
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: ReprOverride<'_>,
+    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> LirOp {
-    if lowers_to_checked_i64_arithmetic(op, type_map, repr) {
+    if lowers_to_checked_i64_arithmetic(op, type_map, repr, inline_proof) {
         return lower_checked_i64_arithmetic(op, type_map, allocator, repr);
+    }
+    // Arithmetic on raw-i64 carriers WITHOUT the inline-window proof: a bare
+    // machine op could silently wrap at 2^63 (`RawI64Safe` is a FULL-RANGE
+    // carrier contract — CheckedAdd sums / overflow_peel accumulators are
+    // unbounded). Such ops are marked for the BOXED runtime dispatch; only
+    // proof-carrying ops take the checked triple above, and only
+    // proven-result raw ops may use a bare machine instruction. The decision
+    // is made HERE (where the value-range proof lives), not in the wasm
+    // emitter (which only sees reprs).
+    if matches!(
+        op.opcode,
+        OpCode::Add
+            | OpCode::InplaceAdd
+            | OpCode::Sub
+            | OpCode::InplaceSub
+            | OpCode::Mul
+            | OpCode::InplaceMul
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::Mod
+    ) && let Some(map) = repr
+        && op
+            .operands
+            .iter()
+            .any(|id| matches!(map.get(id), Some(Repr::RawI64Safe)))
+    {
+        let proven = |id: &ValueId| inline_proof.is_some_and(|vr| vr.fits_inline_int47(*id));
+        let all_proven = op.operands.iter().all(proven)
+            && op.results.iter().all(proven);
+        if !all_proven {
+            let mut tir_op = op.clone();
+            tir_op
+                .attrs
+                .insert("lir.boxed_dispatch".to_string(), AttrValue::Bool(true));
+            let result_values = tir_op
+                .results
+                .iter()
+                .map(|result_id| lir_value_from_type_map(*result_id, type_map, repr))
+                .collect();
+            return LirOp {
+                tir_op,
+                result_values,
+            };
+        }
     }
     if op.opcode == OpCode::BoxVal {
         return lower_box_op(op, type_map);
@@ -203,6 +269,7 @@ fn lowers_to_checked_i64_arithmetic(
     op: &TirOp,
     type_map: &HashMap<ValueId, TirType>,
     repr: ReprOverride<'_>,
+    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> bool {
     let type_eligible = matches!(op.opcode, OpCode::Add | OpCode::Sub | OpCode::Mul)
         && op.results.len() == 1
@@ -217,19 +284,30 @@ fn lowers_to_checked_i64_arithmetic(
     }
     // When a proven `Repr` override is supplied (WASM/LIR codegen path), the
     // checked-i64 triple (raw `I64Add` + inline-bounds overflow box) is sound
-    // ONLY when every operand and the result is a proven `RawI64Safe` carrier.
-    // A `MaybeBigInt` operand (`TirType::I64`-typed but possibly a heap BigInt)
-    // must instead take the generic boxed path (`emit_lir_binary_arith`'s boxed
-    // arm), which dispatches through the BigInt-correct runtime helper. Without
-    // an override (fact extraction / native / tests) the gate stays type-only so
-    // those callers are byte-identical.
+    // ONLY when every operand and the result is PROVEN inside the 47-bit
+    // inline window. `Repr::RawI64Safe` alone is NOT that proof: it is a
+    // FULL-RANGE i64 carrier contract (CheckedAdd sums and overflow_peel
+    // accumulators are genuinely unbounded), and a raw `I64Add` over
+    // full-range operands could silently wrap at 2^63 while the triple's
+    // overflow arm inline-boxes operands assuming the 47-bit window. So with
+    // a repr override the gate requires the VALUE-RANGE proof
+    // (`fits_inline_int47`) on operands AND result; a production caller that
+    // supplies a repr override without a proof gets NO triples (falls to the
+    // boxed runtime path — sound, never fast-but-wrong). A `MaybeBigInt`
+    // operand must likewise take the generic boxed path. Without an override
+    // (fact extraction / native / tests) the gate stays type-only so those
+    // callers are byte-identical.
     match repr {
         None => true,
         Some(map) => {
-            let proven_i64 = |id: &ValueId| {
-                matches!(map.get(id), Some(Repr::RawI64Safe))
+            let proven_repr = |id: &ValueId| matches!(map.get(id), Some(Repr::RawI64Safe));
+            let proven_inline = |id: &ValueId| {
+                inline_proof.is_some_and(|vr| vr.fits_inline_int47(*id))
             };
-            op.operands.iter().all(proven_i64) && proven_i64(&op.results[0])
+            op.operands.iter().all(proven_repr)
+                && proven_repr(&op.results[0])
+                && op.operands.iter().all(proven_inline)
+                && proven_inline(&op.results[0])
         }
     }
 }
