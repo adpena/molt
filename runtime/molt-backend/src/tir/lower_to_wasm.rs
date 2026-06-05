@@ -558,44 +558,55 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         }
         OpCode::Add | OpCode::InplaceAdd => emit_lir_binary_arith(ctx, op, ArithOp::Add),
         OpCode::CheckedAdd => {
-            // (sum, flag) = signed-i64 add with EXACT overflow detection at
-            // 2^63 (NOT the 47-bit inline-range triple above — that fires
+            // (sum, flag) = signed-i64 add. A TOTAL function with two lanes:
+            //
+            // RAW lane (both operands LirRepr::I64): EXACT overflow detection
+            // at 2^63 (NOT the 47-bit inline-range triple above — that fires
             // 2^16x too early for the overflow_peel fast loop). WASM has no
             // add-with-overflow instruction; the sign-bit identity
             // ((lhs ^ sum) & (rhs ^ sum)) < 0 is exact: overflow occurred
             // iff both operands share a sign and the sum's sign differs.
             //
-            // Operands MUST be raw-i64 carriers (overflow_peel seeds
-            // Repr::RawI64Safe on the fast-loop phi). A boxed operand here
-            // is a repr-seeding bug — fail loudly at compile time rather
-            // than emit a silently-wrong raw add on a NaN-boxed word.
+            // BOXED lane (any operand unproven — the v1 state on WASM, whose
+            // value-keyed RawI64Safe is a 47-bit-window contract that cannot
+            // carry an unbounded accumulator): dispatch through the runtime
+            // add with both operands NaN-boxed — BigInt-exact, so the sum
+            // can never silently wrap and the flag is CONSTANT FALSE (the
+            // peel's slow path is correctly dead; same semantics, no speedup
+            // until the RawI64Full lattice extension lands).
             assert!(
                 tir_op.operands.len() >= 2 && op.result_values.len() >= 2,
                 "checked_add requires 2 operands and 2 results"
             );
             let lhs = tir_op.operands[0];
             let rhs = tir_op.operands[1];
-            assert!(
-                matches!(ctx.repr_of(lhs), LirRepr::I64)
-                    && matches!(ctx.repr_of(rhs), LirRepr::I64),
-                "checked_add operands must be raw-i64 carriers (repr seeding bug)"
-            );
             let sum = op.result_values[0].id;
             let flag = op.result_values[1].id;
-            ctx.emit_get(lhs);
-            ctx.emit_get(rhs);
-            ctx.instructions.push(Instruction::I64Add);
-            ctx.emit_set(sum);
-            ctx.emit_get(lhs);
-            ctx.emit_get(sum);
-            ctx.instructions.push(Instruction::I64Xor);
-            ctx.emit_get(rhs);
-            ctx.emit_get(sum);
-            ctx.instructions.push(Instruction::I64Xor);
-            ctx.instructions.push(Instruction::I64And);
-            ctx.instructions.push(Instruction::I64Const(0));
-            ctx.instructions.push(Instruction::I64LtS);
-            ctx.emit_set(flag);
+            if matches!(ctx.repr_of(lhs), LirRepr::I64)
+                && matches!(ctx.repr_of(rhs), LirRepr::I64)
+            {
+                ctx.emit_get(lhs);
+                ctx.emit_get(rhs);
+                ctx.instructions.push(Instruction::I64Add);
+                ctx.emit_set(sum);
+                ctx.emit_get(lhs);
+                ctx.emit_get(sum);
+                ctx.instructions.push(Instruction::I64Xor);
+                ctx.emit_get(rhs);
+                ctx.emit_get(sum);
+                ctx.instructions.push(Instruction::I64Xor);
+                ctx.instructions.push(Instruction::I64And);
+                ctx.instructions.push(Instruction::I64Const(0));
+                ctx.instructions.push(Instruction::I64LtS);
+                ctx.emit_set(flag);
+            } else {
+                emit_get_boxed_for_repr(ctx, lhs);
+                emit_get_boxed_for_repr(ctx, rhs);
+                ctx.instructions.push(Instruction::Call(0));
+                ctx.emit_set(sum);
+                ctx.instructions.push(Instruction::I32Const(0));
+                ctx.emit_set(flag);
+            }
         }
         OpCode::Sub | OpCode::InplaceSub => emit_lir_binary_arith(ctx, op, ArithOp::Sub),
         OpCode::Mul | OpCode::InplaceMul => emit_lir_binary_arith(ctx, op, ArithOp::Mul),

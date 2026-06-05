@@ -506,44 +506,72 @@ fn ensure_boxed_overflow_safe(
 ) -> Value {
     let raw_val = int_raw_value(builder, vars, int_primary_vars, name);
     if let Some(raw_val) = raw_val {
-        let fits = int_value_fits_inline(builder, raw_val);
-        let fast_blk = builder.create_block();
-        let slow_blk = builder.create_block();
-        builder.set_cold_block(slow_blk);
-        let merge_blk = builder.create_block();
-        builder.append_block_param(merge_blk, types::I64);
-        builder.ins().brif(fits, fast_blk, &[], slow_blk, &[]);
-
-        switch_to_block_materialized(builder, fast_blk);
-        seal_block_once(builder, sealed_blocks, fast_blk);
-        let inline_boxed =
-            box_int_value_hoisted(builder, raw_val, box_int_mask_var, box_int_tag_var);
-        jump_block(builder, merge_blk, &[inline_boxed]);
-
-        switch_to_block_materialized(builder, slow_blk);
-        seal_block_once(builder, sealed_blocks, slow_blk);
-        let big_fn = import_func_ref(
+        let boxed = box_raw_i64_value_overflow_safe(
             module,
             import_ids,
             builder,
             import_refs,
-            "molt_int_from_i64",
-            &[types::I64],
-            &[types::I64],
+            sealed_blocks,
+            raw_val,
+            box_int_mask_var,
+            box_int_tag_var,
         );
-        let big_call = builder.ins().call(big_fn, &[raw_val]);
-        let big_res = builder.inst_results(big_call)[0];
-        jump_block(builder, merge_blk, &[big_res]);
-
-        switch_to_block_materialized(builder, merge_blk);
-        seal_block_once(builder, sealed_blocks, merge_blk);
         if let Some(&var) = vars.get(name) {
             builder.def_var(var, raw_val);
         }
-        builder.block_params(merge_blk)[0]
+        boxed
     } else {
         *var_get(builder, vars, name).expect("Variable not found for overflow-safe boxing")
     }
+}
+
+/// Box a raw i64 VALUE overflow-safely: fits-inline fast path (band+bor NaN
+/// box) with a cold `molt_int_from_i64` BigInt slow path. The value-level
+/// core of [`ensure_boxed_overflow_safe`], shared by the raw-backed join-slot
+/// load path (which has a `Value` from a `stack_load`, not a named Variable).
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn box_raw_i64_value_overflow_safe(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    raw_val: Value,
+    box_int_mask_var: Variable,
+    box_int_tag_var: Variable,
+) -> Value {
+    let fits = int_value_fits_inline(builder, raw_val);
+    let fast_blk = builder.create_block();
+    let slow_blk = builder.create_block();
+    builder.set_cold_block(slow_blk);
+    let merge_blk = builder.create_block();
+    builder.append_block_param(merge_blk, types::I64);
+    builder.ins().brif(fits, fast_blk, &[], slow_blk, &[]);
+
+    switch_to_block_materialized(builder, fast_blk);
+    seal_block_once(builder, sealed_blocks, fast_blk);
+    let inline_boxed = box_int_value_hoisted(builder, raw_val, box_int_mask_var, box_int_tag_var);
+    jump_block(builder, merge_blk, &[inline_boxed]);
+
+    switch_to_block_materialized(builder, slow_blk);
+    seal_block_once(builder, sealed_blocks, slow_blk);
+    let big_fn = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_int_from_i64",
+        &[types::I64],
+        &[types::I64],
+    );
+    let big_call = builder.ins().call(big_fn, &[raw_val]);
+    let big_res = builder.inst_results(big_call)[0];
+    jump_block(builder, merge_blk, &[big_res]);
+
+    switch_to_block_materialized(builder, merge_blk);
+    seal_block_once(builder, sealed_blocks, merge_blk);
+    builder.block_params(merge_blk)[0]
 }
 
 /// Phase 1d typed-IR: overflow-safe sibling of `var_get_boxed` for boxing
@@ -2797,6 +2825,33 @@ impl SimpleBackend {
                 slot_backed_join_slots.insert(name.clone(), slot);
             }
         }
+        // Raw-backed join slots: int-primary names whose slot carries RAW i64
+        // and bool-primary names whose slot carries RAW 0/1 (no NaN box, no
+        // refcounting — a raw scalar is never a heap pointer).
+        //
+        // This is the single-carrier-convention completion of the primary
+        // contracts: the name-keyed chain admits FULL-RANGE i64 carriers (the
+        // overflow_peel accumulator cycle is the motivating case), so a
+        // slot-backed transport that NaN-boxes on store and TRUSTED-unboxes
+        // (`(v<<17)>>17`) on load would truncate any value past the 47-bit
+        // inline window — the silent-integer-miscompile class. Carrying the
+        // slot raw removes the hazard AND deletes the per-iteration
+        // box/unbox/inc_ref/dec_ref churn every counted loop in an
+        // exception-observing function previously paid. The bool lane (the
+        // peel's loop-carried overflow flag) gets the same treatment so the
+        // break-condition chain stays call-free.
+        let raw_backed_slot_names: BTreeSet<String> = if scalar_fast_paths_enabled {
+            slot_backed_join_slots
+                .keys()
+                .filter(|name| {
+                    int_primary_vars.contains(name.as_str())
+                        || bool_primary_vars.contains(name.as_str())
+                })
+                .cloned()
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
 
         let _local_dec_ref = import_func_ref(
             &mut self.module,
@@ -4192,50 +4247,113 @@ impl SimpleBackend {
                 }
                 "checked_add" => {
                     // CheckedAdd from the overflow_peel transform. op.args =
-                    // [lhs, rhs] (raw i64 int-primary carriers — the peel's
-                    // repr seeding guarantees this), op.var = wrapping-sum
-                    // output (int-primary), op.out = overflow-flag output.
-                    // Hardware-exact signed-overflow detection via Cranelift
-                    // `sadd_overflow` (a single instruction pair on
-                    // x64/aarch64).
+                    // [lhs, rhs], op.var = wrapping-sum output, op.out =
+                    // overflow-flag output. A TOTAL function with two lanes:
                     //
-                    // SOUNDNESS: when the flag is set, the sum holds the
-                    // mathematically WRAPPED value — consumers may only
-                    // observe it on the flag=0 branch (the peel's CFG
-                    // enforces this; the overflow bridge is seeded from the
-                    // PRE-add operands). A non-raw operand reaching this arm
-                    // is a repr-seeding bug: fail loudly at compile time
-                    // rather than emit a raw add on a NaN-boxed word.
+                    // RAW lane (both operands int-primary): hardware-exact
+                    // signed-overflow detection via Cranelift `sadd_overflow`
+                    // (a single instruction pair on x64/aarch64). When the
+                    // flag is set, the sum holds the mathematically WRAPPED
+                    // value — consumers may only observe it on the flag=0
+                    // branch (the peel's CFG enforces this; the slow loop is
+                    // seeded from the PRE-iteration values).
+                    //
+                    // BOXED lane (any operand unproven): the carrier chain
+                    // refused the raw promotion, so the values are NaN-boxed
+                    // ints/BigInts. Dispatch through `molt_add` — BigInt-exact
+                    // by construction, so the sum can NEVER silently wrap and
+                    // the overflow flag is CONSTANT FALSE (the peel's slow
+                    // path is correctly dead; the "fast" loop IS the boxed
+                    // loop — same semantics, no speedup). This mirrors the
+                    // Luau lowering exactly.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let lhs_raw =
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]).expect(
-                            "checked_add: lhs must be a raw i64 int-primary carrier (repr seeding bug)",
-                        );
-                    let rhs_raw =
-                        int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]).expect(
-                            "checked_add: rhs must be a raw i64 int-primary carrier (repr seeding bug)",
-                        );
-                    let (sum, of) = builder.ins().sadd_overflow(lhs_raw, rhs_raw);
-                    if let Some(ref sum_name) = op.var {
+                    let lhs_raw = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0]);
+                    let rhs_raw = int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
+                    if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
+                        let (sum, of) = builder.ins().sadd_overflow(lhs_raw, rhs_raw);
+                        if let Some(ref sum_name) = op.var {
+                            // The chain can only admit the sum if it admitted
+                            // the operands feeding it — a raw sum slot with a
+                            // boxed def would truncate. Enforced here because
+                            // this IS the trusted-unbox boundary.
+                            assert!(
+                                int_primary_vars.contains(sum_name),
+                                "checked_add: raw operands but non-raw sum slot '{sum_name}' (carrier chain inconsistency)",
+                            );
+                            def_var_named(&mut builder, &vars, sum_name, sum);
+                        }
+                        if let Some(ref flag_name) = op.out {
+                            // `of` is an i8 0/1; widen to the I64 raw-bool
+                            // carrier convention.
+                            let of_wide = builder.ins().uextend(types::I64, of);
+                            def_raw_bool_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                flag_name,
+                                of_wide,
+                                &nbc,
+                            );
+                        }
+                    } else {
                         assert!(
-                            int_primary_vars.contains(sum_name),
-                            "checked_add: sum output '{sum_name}' must be an int-primary carrier (repr seeding bug)",
+                            op.var
+                                .as_ref()
+                                .is_none_or(|sum| !int_primary_vars.contains(sum)),
+                            "checked_add: boxed operands but raw sum slot (carrier chain inconsistency)",
                         );
-                        def_var_named(&mut builder, &vars, sum_name, sum);
-                    }
-                    if let Some(ref flag_name) = op.out {
-                        // `of` is an i8 0/1; widen to the I64 raw-bool
-                        // carrier convention (bool_primary stores raw 0/1,
-                        // everything else gets the NaN-boxed bool).
-                        let of_wide = builder.ins().uextend(types::I64, of);
-                        def_raw_bool_value(
+                        let lhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
                             &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
-                            &bool_primary_vars,
-                            flag_name,
-                            of_wide,
-                            &nbc,
+                            &args[0],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("checked_add: LHS not found");
+                        let rhs = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &args[1],
+                            &int_primary_vars,
+                            &float_primary_vars,
+                            box_int_mask_var,
+                            box_int_tag_var,
+                        )
+                        .expect("checked_add: RHS not found");
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
                         );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let sum_boxed = builder.inst_results(call)[0];
+                        if let Some(ref sum_name) = op.var {
+                            def_var_named(&mut builder, &vars, sum_name, sum_boxed);
+                        }
+                        if let Some(ref flag_name) = op.out {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            def_raw_bool_value(
+                                &mut builder,
+                                &vars,
+                                &bool_primary_vars,
+                                flag_name,
+                                zero,
+                                &nbc,
+                            );
+                        }
                     }
                 }
                 "inplace_add" => {
@@ -20816,6 +20934,27 @@ impl SimpleBackend {
                 }
                 "and" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    // Raw-bool fast lane: a Python value-select over two raw
+                    // 0/1 bools IS the boolean AND — a bare `band`, no boxing,
+                    // no refcount, no truthiness call. This is the lane the
+                    // overflow_peel break-condition chain rides
+                    // (`And(cond, Not(of))` every iteration).
+                    if let (Some(lhs_raw), Some(rhs_raw), Some(out__)) = (
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0]),
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[1]),
+                        op.out.as_deref(),
+                    ) {
+                        let res = builder.ins().band(lhs_raw, rhs_raw);
+                        def_raw_bool_value(
+                            &mut builder,
+                            &vars,
+                            &bool_primary_vars,
+                            out__,
+                            res,
+                            &nbc,
+                        );
+                        continue;
+                    }
                     let lhs = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
@@ -20887,6 +21026,26 @@ impl SimpleBackend {
                 }
                 "or" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    // Raw-bool fast lane: value-select over two raw 0/1
+                    // bools IS the boolean OR — a bare `bor` (see the
+                    // matching `and` lane above; this is the overflow_peel
+                    // flag fan-in `Or(f1, f2)` every iteration).
+                    if let (Some(lhs_raw), Some(rhs_raw), Some(out__)) = (
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0]),
+                        bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[1]),
+                        op.out.as_deref(),
+                    ) {
+                        let res = builder.ins().bor(lhs_raw, rhs_raw);
+                        def_raw_bool_value(
+                            &mut builder,
+                            &vars,
+                            &bool_primary_vars,
+                            out__,
+                            res,
+                            &nbc,
+                        );
+                        continue;
+                    }
                     let lhs = var_get_boxed_overflow_safe(
                         &mut self.module,
                         &mut self.import_ids,
@@ -35470,6 +35629,31 @@ impl SimpleBackend {
                             // No refcount ops needed -- raw bool is an inline scalar.
                             continue;
                         }
+                        // --- Raw-backed join slots ---
+                        // The slot carries RAW i64 / raw 0-1 bool (no NaN
+                        // box, no refcount — a raw scalar is never a heap
+                        // pointer). Checked BEFORE the boxing read below so
+                        // no dead box blocks are emitted. The carrier chain
+                        // only admits a name when every store source is
+                        // raw-closed, so a non-raw source here is a chain
+                        // inconsistency.
+                        if raw_backed_slot_names.contains(name)
+                            && let Some(&slot) = slot_backed_join_slots.get(name)
+                        {
+                            let raw_val = if bool_primary_vars.contains(name) {
+                                bool_raw_value(&mut builder, &vars, &bool_primary_vars, &args[0])
+                            } else {
+                                int_raw_value(&mut builder, &vars, &int_primary_vars, &args[0])
+                            }
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "store_var: raw-backed slot '{name}' fed by non-raw source '{}' (carrier chain inconsistency)",
+                                    args[0]
+                                )
+                            });
+                            builder.ins().stack_store(raw_val, slot, 0);
+                            continue;
+                        }
                         // --- Slot-backed join slots ---
                         let val = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -35580,6 +35764,54 @@ impl SimpleBackend {
                     // when available, falling back to Value-based shadow.
                     if let Some(ref var_name) = op.var {
                         if let Some(&slot) = slot_backed_join_slots.get(var_name) {
+                            // Raw-backed slot: the slot holds RAW i64 (or a
+                            // raw 0/1 bool) — no unbox, no refcount. A
+                            // raw-primary out takes the value verbatim; any
+                            // other out gets the overflow-safe box (NEVER
+                            // the trusted unboxed transport, which truncates
+                            // at 2^47).
+                            if raw_backed_slot_names.contains(var_name.as_str()) {
+                                let raw_val = builder.ins().stack_load(types::I64, slot, 0);
+                                if let Some(ref out_name) = op.out {
+                                    if bool_primary_vars.contains(var_name.as_str()) {
+                                        def_raw_bool_value(
+                                            &mut builder,
+                                            &vars,
+                                            &bool_primary_vars,
+                                            out_name,
+                                            raw_val,
+                                            &nbc,
+                                        );
+                                    } else if int_primary_vars.contains(out_name) {
+                                        def_var_named(&mut builder, &vars, out_name, raw_val);
+                                    } else {
+                                        let boxed = box_raw_i64_value_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            raw_val,
+                                            box_int_mask_var,
+                                            box_int_tag_var,
+                                        );
+                                        def_var_from_boxed_transport(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &vars,
+                                            &int_primary_vars,
+                                            &bool_primary_vars,
+                                            &float_primary_vars,
+                                            &nbc,
+                                            out_name,
+                                            boxed,
+                                        );
+                                    }
+                                }
+                                continue;
+                            }
                             let val = builder.ins().stack_load(types::I64, slot, 0);
                             emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
                             if let Some(ref out_name) = op.out {
@@ -35710,6 +35942,49 @@ impl SimpleBackend {
                         && !args.is_empty()
                     {
                         if let Some(&slot) = slot_backed_join_slots.get(&args[0]) {
+                            // Raw-backed slot (see the var-named arm above).
+                            if raw_backed_slot_names.contains(args[0].as_str()) {
+                                let raw_val = builder.ins().stack_load(types::I64, slot, 0);
+                                if let Some(ref out_name) = op.out {
+                                    if bool_primary_vars.contains(args[0].as_str()) {
+                                        def_raw_bool_value(
+                                            &mut builder,
+                                            &vars,
+                                            &bool_primary_vars,
+                                            out_name,
+                                            raw_val,
+                                            &nbc,
+                                        );
+                                    } else if int_primary_vars.contains(out_name) {
+                                        def_var_named(&mut builder, &vars, out_name, raw_val);
+                                    } else {
+                                        let boxed = box_raw_i64_value_overflow_safe(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &mut sealed_blocks,
+                                            raw_val,
+                                            box_int_mask_var,
+                                            box_int_tag_var,
+                                        );
+                                        def_var_from_boxed_transport(
+                                            &mut self.module,
+                                            &mut self.import_ids,
+                                            &mut builder,
+                                            &mut import_refs,
+                                            &vars,
+                                            &int_primary_vars,
+                                            &bool_primary_vars,
+                                            &float_primary_vars,
+                                            &nbc,
+                                            out_name,
+                                            boxed,
+                                        );
+                                    }
+                                }
+                                continue;
+                            }
                             let val = builder.ins().stack_load(types::I64, slot, 0);
                             emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
                             if let Some(ref out_name) = op.out {
@@ -36083,7 +36358,12 @@ impl SimpleBackend {
             builder.ins().call(trace_exit_fn, &[]);
         }
 
-        for slot in slot_backed_join_slots.values() {
+        for (name, slot) in slot_backed_join_slots.iter() {
+            // Raw-backed slots hold raw i64 scalars — never heap pointers,
+            // never refcounted, nothing to release.
+            if raw_backed_slot_names.contains(name) {
+                continue;
+            }
             let val = builder.ins().stack_load(types::I64, *slot, 0);
             builder.ins().call(local_dec_ref_obj, &[val]);
         }
