@@ -832,8 +832,12 @@ fn opcode_touches_memory(opcode: OpCode) -> bool {
             | OpCode::BoxVal
             | OpCode::UnboxVal
             | OpCode::TypeGuard
-            // Constant materialization.
+            // Constant materialization. ConstBigInt allocates, but the
+            // allocation is FRESH immutable memory invisible to any existing
+            // pointer — it can neither clobber nor be clobbered (same
+            // reasoning as ConstStr).
             | OpCode::ConstInt
+            | OpCode::ConstBigInt
             | OpCode::ConstFloat
             | OpCode::ConstStr
             | OpCode::ConstBool
@@ -918,7 +922,7 @@ mod tests {
             BuildTuple, BuildSet, BuildSlice, GetIter, IterNext, IterNextUnboxed, ForIter,
             AllocTask, StateSwitch, StateTransition, StateYield, ChanSendYield, ChanRecvYield,
             ClosureLoad, ClosureStore, Yield, YieldFrom, Raise, CheckException, ExceptionPending,
-            TryStart, TryEnd, StateBlockStart, StateBlockEnd, ConstInt, ConstFloat, ConstStr,
+            TryStart, TryEnd, StateBlockStart, StateBlockEnd, ConstInt, ConstBigInt, ConstFloat, ConstStr,
             ConstBool, ConstNone, ConstBytes, Copy, Import, ImportFrom, ModuleCacheGet,
             ModuleCacheSet, ModuleCacheDel, ModuleGetAttr, ModuleImportFrom, ModuleGetGlobal,
             ModuleGetName,
@@ -940,7 +944,7 @@ mod tests {
             | StateSwitch | StateTransition | StateYield | ChanSendYield | ChanRecvYield
             | ClosureLoad | ClosureStore | Yield | YieldFrom | Raise | CheckException
             | ExceptionPending | TryStart | TryEnd | StateBlockStart | StateBlockEnd | ConstInt
-            | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
+            | ConstBigInt | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
             | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
             | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
             | ModuleDelGlobalIfPresent | WarnStderr | ScfIf | ScfFor | ScfWhile | ScfYield

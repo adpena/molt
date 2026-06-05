@@ -854,7 +854,11 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::StateBlockEnd
         | OpCode::WarnStderr
         | OpCode::IncRef
-        | OpCode::DecRef => {
+        | OpCode::DecRef
+        // ConstBigInt needs a data segment + molt_bigint_from_str, which the
+        // LIR fast lane does not model — bail the function to the generic
+        // emitter (which handles `const_bigint` natively).
+        | OpCode::ConstBigInt => {
             for &operand in &tir_op.operands {
                 ctx.emit_get(operand);
             }

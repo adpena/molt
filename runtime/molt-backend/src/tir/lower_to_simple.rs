@@ -1374,6 +1374,17 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
+        // Arbitrary-precision int constant: decimal text in s_value. The
+        // module phase re-lifts every function from SimpleIR, so this op
+        // MUST round-trip (ssa.rs maps "const_bigint" back to ConstBigInt);
+        // as a Copy fallback the TIR-consuming LLVM backend silently left
+        // the result undefined (= the None sentinel).
+        OpCode::ConstBigInt => Some(OpIR {
+            kind: "const_bigint".to_string(),
+            s_value: attr_str(&op.attrs, "s_value"),
+            out: out_var,
+            ..OpIR::default()
+        }),
         OpCode::ConstBool => Some(OpIR {
             kind: "const_bool".to_string(),
             // Both the SSA lift and SCCP store ConstBool values as

@@ -585,7 +585,8 @@ fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::Has
 ///
 /// - A `Copy` result is safe iff its source operand is.
 /// - A block argument (phi) is safe iff *every* value passed to it on every
-///   incoming branch edge is safe.
+///   incoming branch edge **from a reachable block** is safe (dead-edge
+///   insensitivity — see the edge-collection comment in the body).
 ///
 /// Built upward from the seed (monotone — only ever adds safety), so the
 /// worklist terminates; back-edges resolve because a phi becomes safe only once
@@ -602,6 +603,18 @@ fn propagate_raw_i64_safe_values(
 
     // Collect block-argument incoming edges: (target block, arg index) -> list
     // of source values passed on each emitted branch edge.
+    //
+    // DEAD-EDGE-INSENSITIVE (the standard SCCP phi semantics): only edges
+    // whose source block is reachable from the entry (under the Full policy —
+    // terminator + exception edges) contribute incomings. A block no path can
+    // execute passes args no execution can deliver; counting them is not
+    // conservatism, it is analyzing a program that cannot run. Concretely:
+    // the SSA lift keeps a vestigial `loop_end → header` edge whose args are
+    // fabricated `ConstNone`s (the block is unreachable but preserved as loop
+    // metadata). Counting that edge failed the all-incomings rule for EVERY
+    // loop-header phi, silently demoting every frontend-peeled accumulator to
+    // the boxed `molt_add` lane on the value-keyed (WASM/LLVM) backends.
+    let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
     let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
     let mut add_edge = |target: BlockId, args: &[ValueId]| {
         for (index, &arg) in args.iter().enumerate() {
@@ -612,6 +625,9 @@ fn propagate_raw_i64_safe_values(
         }
     };
     for block in tir_func.blocks.values() {
+        if !reachable.contains(&block.id) {
+            continue;
+        }
         match &block.terminator {
             Terminator::Branch { target, args } => add_edge(*target, args),
             Terminator::CondBranch {
@@ -4432,6 +4448,154 @@ mod tests {
         assert!(
             !is_raw(&repr2, r),
             "an arbitrary runtime-call result must NOT be pre-seeded raw (only bounded GPU index intrinsics are)"
+        );
+    }
+
+    /// Build the live frontend-peeled accumulator shape: a CheckedAdd loop
+    /// whose header phi is fed by (a) a proven `ConstInt 0` init, (b) the
+    /// CheckedAdd wrapping sum (full-range raw seed), and (c) a vestigial
+    /// `LoopEnd` block passing a fabricated `ConstNone` — exactly the edge the
+    /// SSA lift keeps as loop metadata. `reachable_vestige` controls whether
+    /// that block is wired into the executable CFG or left detached.
+    fn checked_loop_with_none_vestige(reachable_vestige: bool) -> (TirFunction, ValueId, ValueId) {
+        let mut func = TirFunction::new("cl".into(), vec![], TirType::None);
+        let init = func.fresh_value();
+        let acc = func.fresh_value();
+        let cond = func.fresh_value();
+        let step = func.fresh_value();
+        let sum = func.fresh_value();
+        let of = func.fresh_value();
+        let none_v = func.fresh_value();
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let vestige = func.fresh_block();
+
+        for v in [init, acc, step, sum] {
+            func.value_types.insert(v, TirType::I64);
+        }
+        func.value_types.insert(of, TirType::Bool);
+        func.value_types.insert(none_v, TirType::None);
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![tir_cint(init, 0)];
+            entry.terminator = if reachable_vestige {
+                // Wire the vestige into the executable CFG: its None arg can
+                // now genuinely flow, so it MUST poison the phi.
+                Terminator::CondBranch {
+                    cond: init,
+                    then_block: header,
+                    then_args: vec![init],
+                    else_block: vestige,
+                    else_args: vec![],
+                }
+            } else {
+                Terminator::Branch {
+                    target: header,
+                    args: vec![init],
+                }
+            };
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: acc,
+                    ty: TirType::I64,
+                }],
+                ops: vec![tir_op(TirOpCode::Lt, vec![acc, init], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    tir_cint(step, -20_000_000),
+                    tir_op(TirOpCode::CheckedAdd, vec![acc, step], vec![sum, of]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![sum],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        // The vestigial loop-end: materializes a None and re-enters the header
+        // with it. In the live lift this block has NO executable predecessor —
+        // it survives purely as loop metadata.
+        func.blocks.insert(
+            vestige,
+            TirBlock {
+                id: vestige,
+                args: vec![],
+                ops: vec![tir_op(TirOpCode::ConstNone, vec![], vec![none_v])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![none_v],
+                },
+            },
+        );
+        func.loop_roles.insert(vestige, LoopRole::LoopEnd);
+        (func, acc, sum)
+    }
+
+    /// PERF (the boxed-lane OOM class): the vestigial UNREACHABLE
+    /// `loop_end → header` edge passing a fabricated `ConstNone` must NOT
+    /// poison the all-incomings phi rule — dead edges deliver no values
+    /// (standard SCCP phi semantics). Without dead-edge insensitivity every
+    /// frontend-peeled accumulator demotes to the boxed `molt_add` lane on the
+    /// value-keyed backends: 30M-iteration loops then leak a boxed int per
+    /// iteration (observed: 2.1GB RSS → OOM kill on `sum_negative` @ llvm).
+    #[test]
+    fn unreachable_none_vestige_does_not_poison_checked_loop_phi() {
+        let (func, acc, sum) = checked_loop_with_none_vestige(false);
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        assert!(
+            is_raw(&repr, sum),
+            "the CheckedAdd wrapping sum is the unconditional full-range seed"
+        );
+        assert!(
+            is_raw(&repr, acc),
+            "the header phi must be raised: its only REACHABLE incomings are the \
+             proven ConstInt init and the CheckedAdd sum; the unreachable \
+             ConstNone vestige delivers no value"
+        );
+    }
+
+    /// SOUNDNESS (the dual of the above): the SAME None-passing edge, made
+    /// executable, MUST poison the phi — a `None` can genuinely flow, and a
+    /// raw-i64 carrier fed a NaN-boxed None is the trusted-unbox miscompile
+    /// class. Reachability is the load-bearing distinction.
+    #[test]
+    fn reachable_none_edge_still_poisons_checked_loop_phi() {
+        let (func, acc, _sum) = checked_loop_with_none_vestige(true);
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        assert!(
+            !is_raw(&repr, acc),
+            "a REACHABLE None incoming must keep the phi boxed (MaybeBigInt floor)"
         );
     }
 

@@ -346,7 +346,12 @@ fn opcode_effects(opcode: OpCode) -> OpEffects {
         OpCode::BoxVal | OpCode::UnboxVal => OpEffects::PURE,
 
         // ── Constant materialization: pure, deterministic, nothrow. ──
+        // ConstBigInt allocates an immutable heap int from compiler-emitted
+        // decimal text — deterministic and effect-free like ConstStr (which
+        // allocates a str); the runtime's invalid-literal raise is
+        // unreachable for lexed int literals, so nothrow within its domain.
         OpCode::ConstInt
+        | OpCode::ConstBigInt
         | OpCode::ConstFloat
         | OpCode::ConstStr
         | OpCode::ConstBool
@@ -407,6 +412,7 @@ pub(super) fn opcode_is_type_gated_numberable(opcode: OpCode) -> bool {
         OpCode::BoxVal
             | OpCode::UnboxVal
             | OpCode::ConstInt
+            | OpCode::ConstBigInt
             | OpCode::ConstFloat
             | OpCode::ConstStr
             | OpCode::ConstBool
@@ -672,7 +678,7 @@ mod tests {
             | StateSwitch | StateTransition | StateYield | ChanSendYield | ChanRecvYield
             | ClosureLoad | ClosureStore | Yield | YieldFrom | Raise | CheckException
             | ExceptionPending | TryStart | TryEnd | StateBlockStart | StateBlockEnd | ConstInt
-            | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
+            | ConstBigInt | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
             | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
             | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
             | ModuleDelGlobalIfPresent | WarnStderr | ScfIf | ScfFor | ScfWhile | ScfYield
@@ -764,6 +770,7 @@ mod tests {
             StateBlockStart,
             StateBlockEnd,
             ConstInt,
+            ConstBigInt,
             ConstFloat,
             ConstStr,
             ConstBool,
@@ -824,6 +831,7 @@ mod tests {
         OpCode::Not,
         OpCode::Bool,
         OpCode::ConstInt,
+        OpCode::ConstBigInt,
         OpCode::ConstFloat,
         OpCode::ConstStr,
         OpCode::ConstBool,
