@@ -580,6 +580,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::ObjectNewBoundStack
                 | OpCode::Free
                 | OpCode::ConstInt
+                | OpCode::ConstBigInt
                 | OpCode::ConstFloat
                 | OpCode::ConstStr
                 | OpCode::ConstBool

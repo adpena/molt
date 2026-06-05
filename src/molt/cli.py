@@ -190,6 +190,7 @@ _BACKEND_REQUEST_ENV_KNOBS = (
     # Optimization-pass instruments + rollback levers (mirrors the backend's
     # DAEMON_REQUEST_ENV_KEYS — an instrument is useless if the CLI strips
     # its env key before the daemon sees it).
+    "MOLT_DEBUG_ARTIFACT_DIR",
     "MOLT_OVERFLOW_PEEL_STATS",
     "MOLT_DISABLE_OVERFLOW_PEEL",
     "MOLT_PROMOTE_DEBUG",

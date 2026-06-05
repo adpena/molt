@@ -1874,6 +1874,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "state_block_start" => OpCode::StateBlockStart,
         "state_block_end" => OpCode::StateBlockEnd,
         "const" | "const_int" | "load_const" => OpCode::ConstInt,
+        "const_bigint" => OpCode::ConstBigInt,
         "const_float" => OpCode::ConstFloat,
         "const_str" => OpCode::ConstStr,
         "const_bool" => OpCode::ConstBool,

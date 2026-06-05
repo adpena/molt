@@ -516,6 +516,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::StateBlockStart => "state_block_start",
         OpCode::StateBlockEnd => "state_block_end",
         OpCode::ConstInt => "const_int",
+        OpCode::ConstBigInt => "const_bigint",
         OpCode::ConstFloat => "const_float",
         OpCode::ConstStr => "const_str",
         OpCode::ConstBool => "const_bool",
