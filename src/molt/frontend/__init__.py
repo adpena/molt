@@ -8854,7 +8854,15 @@ class SimpleTIRGenerator(
                 last_def[out_name] = idx
         if not spill_names:
             return
-        for name in spill_names:
+        # `spill_names` is a set, whose iteration order is hash-seeded and so
+        # varies with PYTHONHASHSEED.  `_async_local_offset` assigns each new
+        # name the next `len(async_locals) * 8` slot, so iterating the set
+        # directly here would let the closure-slot offsets baked into the
+        # emitted IR depend on hash order — a non-determinism bug (#34).  Any
+        # iteration order that feeds IR emission MUST be deterministic, so we
+        # assign offsets in sorted name order (matching the `sorted(...)`
+        # used by the store/load emit loops below).
+        for name in sorted(spill_names):
             self._async_local_offset(name)
             hint = type_hints.get(name)
             if hint is not None:
