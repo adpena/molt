@@ -1792,6 +1792,50 @@ fn prune_and_partition_native_stdlib(
     (user_remaining, stdlib_funcs)
 }
 
+/// The names of the functions `externalize_shared_stdlib_partition` *will*
+/// externalize into `stdlib_shared.o` (their definitions live in the shared
+/// object; this app object must reference them as undefined externals).
+///
+/// Computed up front — BEFORE the module-phase inliner runs — so the inliner can
+/// treat these as **external-linkage** functions and refuse to inline them: a
+/// caller that does not own a callee's canonical definition (it lives in another
+/// object) must not splice in a private copy of its body. Doing so would (a)
+/// drop the external reference the linker resolves against `stdlib_shared.o`,
+/// breaking the partition contract, and (b) — once `externalize_*` later clears
+/// the in-app body — leave the app running a stale private fork of a function
+/// whose real definition is the shared one.
+///
+/// Returns an empty set when the partition is inactive (no `MOLT_STDLIB_OBJ`, no
+/// `MOLT_ENTRY_MODULE`, or the shared object file is absent), so the inliner is
+/// unconstrained in the common (non-partitioned) build. This mirrors the exact
+/// activation guards and `is_user_owned_symbol` predicate
+/// `externalize_shared_stdlib_partition` uses, so the do-not-inline set and the
+/// later externalized set are computed from one source of truth.
+#[cfg(feature = "native-backend")]
+fn shared_stdlib_external_symbols(ir: &SimpleIR) -> BTreeSet<String> {
+    let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
+        return BTreeSet::new();
+    };
+    let Ok(entry_module) = std::env::var("MOLT_ENTRY_MODULE") else {
+        return BTreeSet::new();
+    };
+    if !std::path::Path::new(&stdlib_obj_path).exists() {
+        return BTreeSet::new();
+    }
+    let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
+    ir.functions
+        .iter()
+        .filter(|f| {
+            !is_user_owned_symbol(
+                &f.name,
+                &entry_module,
+                explicit_stdlib_module_symbols.as_ref(),
+            )
+        })
+        .map(|f| f.name.clone())
+        .collect()
+}
+
 #[cfg(feature = "native-backend")]
 fn externalize_shared_stdlib_partition(ir: &mut SimpleIR) {
     let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
@@ -2638,8 +2682,23 @@ impl SimpleBackend {
                 );
                 let (mut tir_module, idx_map) =
                     crate::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
-                let module_analysis =
-                    crate::tir::run_module_pipeline(&mut tir_module, &native_tti);
+                // Functions the shared-stdlib partition will externalize into
+                // `stdlib_shared.o` have external linkage: the inliner must keep
+                // the external reference rather than fork a private copy of a body
+                // this app object does not own (computed BEFORE `externalize_*`
+                // clears their ops, from the same predicate it uses).
+                let external_symbols = if self.skip_shared_stdlib_partition {
+                    BTreeSet::new()
+                } else {
+                    shared_stdlib_external_symbols(&ir)
+                };
+                let non_inlinable: std::collections::HashSet<String> =
+                    external_symbols.into_iter().collect();
+                let module_analysis = crate::tir::run_module_pipeline(
+                    &mut tir_module,
+                    &native_tti,
+                    &non_inlinable,
+                );
                 let changed: std::collections::HashSet<&str> = module_analysis
                     .changed_functions
                     .iter()
@@ -2774,12 +2833,25 @@ impl SimpleBackend {
                 .iter()
                 .map(|func| {
                     let mut tir_func = lower_to_tir(func);
-                    // Run the full TIR optimization pipeline — same as Cranelift/WASM.
-                    // Without this, all values stay DynBox and every operation
-                    // dispatches through the runtime instead of emitting native ops.
-                    crate::tir::type_refine::refine_types(&mut tir_func);
-                    let _stats = crate::tir::passes::run_pipeline(&mut tir_func, &llvm_tti);
-                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    // Extern functions (e.g. shared-stdlib-partition symbols
+                    // externalized by `externalize_shared_stdlib_partition`) have
+                    // had their bodies cleared: they are declaration-only and live
+                    // in `stdlib_shared.o`. They lower to a bodyless TIR function
+                    // (no blocks, hence no entry block), which would fail the TIR
+                    // verifier the moment the optimization pipeline ran on it. They
+                    // are *declared* below (`declare_tir_function`) for call
+                    // resolution but never *defined*, so there is nothing to
+                    // optimize. Mirror the Cranelift per-function pipeline, which
+                    // skips extern functions for the same reason. Lower for the
+                    // signature only.
+                    if !func.is_extern {
+                        // Run the full TIR optimization pipeline — same as Cranelift/WASM.
+                        // Without this, all values stay DynBox and every operation
+                        // dispatches through the runtime instead of emitting native ops.
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                        let _stats = crate::tir::passes::run_pipeline(&mut tir_func, &llvm_tti);
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                    }
                     (func.is_extern, tir_func)
                 })
                 .collect();
@@ -3875,6 +3947,26 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// Acquire the process-env serialization lock, tolerating a poisoned mutex.
+    ///
+    /// The guarded value is `()` — the lock exists only to *serialize* tests
+    /// that mutate process-global env vars (`MOLT_BACKEND`, `MOLT_STDLIB_OBJ`,
+    /// …) so they do not race. Each such test snapshots and restores the env
+    /// vars it touches itself; the mutex protects no shared in-memory invariant.
+    /// When one test panics while holding the guard, the mutex is *poisoned*,
+    /// but there is no corrupted state to guard against — the only thing the
+    /// poison flag would do is convert that single panic into a cascade of
+    /// `PoisonError` panics in every later test that takes the lock, hiding the
+    /// real failure behind noise. Recovering the guard via `into_inner()` keeps
+    /// the mutual-exclusion guarantee intact while letting the genuine failure
+    /// stand alone. This is the textbook-sound use of poison recovery: the
+    /// protected data carries no invariant the poison could have broken.
+    fn acquire_backend_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        backend_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn op_shapes(
         ops: &[OpIR],
     ) -> Vec<(
@@ -4286,7 +4378,7 @@ mod tests {
     }
 
     fn compile_trace_probe_object(emit_traces_env: Option<&str>) -> Vec<u8> {
-        let _guard = backend_env_lock().lock().expect("env lock poisoned");
+        let _guard = acquire_backend_env_lock();
         match emit_traces_env {
             Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_EMIT_TRACES", value) },
             None => unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") },
@@ -4924,7 +5016,7 @@ mod tests {
 
     #[test]
     fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
-        let _guard = backend_env_lock().lock().expect("env lock poisoned");
+        let _guard = acquire_backend_env_lock();
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 name: "molt_main".to_string(),
@@ -5271,7 +5363,7 @@ mod tests {
     #[cfg(feature = "llvm")]
     #[test]
     fn llvm_backend_keeps_shared_stdlib_partition_external() {
-        let _guard = backend_env_lock().lock().expect("env lock poisoned");
+        let _guard = acquire_backend_env_lock();
         let tmp_dir = std::env::temp_dir().join(format!(
             "molt-llvm-stdlib-extern-{}-{}",
             std::process::id(),
