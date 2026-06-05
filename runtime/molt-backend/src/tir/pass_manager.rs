@@ -376,6 +376,25 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         pass("copy_prop", OpsOnly, |f, _am, _tti| passes::copy_prop::run(f)),
         pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
+        // ── RC drop insertion (design 20) ───────────────────────────────────
+        // NOT YET WIRED INTO THE PRODUCTION PIPELINE. The pass + its
+        // refcount_elim_post elision step are complete and unit-tested
+        // primitives (see `drop_insertion.rs` / `refcount_elim::run_post_drop`),
+        // but ACTIVATION is blocked on a structural prerequisite: the legacy
+        // native TIR→SimpleIR→Cranelift codegen path cannot soundly consume a
+        // `DecRef` on an arbitrary SSA value. Its `dec_ref` handler resolves the
+        // operand through the name-keyed `var_get_boxed_overflow_safe`, which
+        // only yields a correctly-boxed live value for the narrow set the
+        // ad-hoc `loop_reassign_old_val` path and escape-analysis target (named
+        // loop locals / Alloc results). For a general drop temporary the name
+        // resolves to a stale or raw-i64 slot → a garbage pointer reaches
+        // `molt_dec_ref_obj` → `invalid object header` abort (observed on the
+        // memory corpus). Sound activation requires the typed-IR convergence
+        // (one value-keyed raw/heap carrier source of truth shared by the drop
+        // filter AND native codegen), which is a separate arc. See the
+        // baton-pass note for the exact activation plan. To activate, append:
+        //   pass("drop_insertion", OpsOnly, |f, am, _tti| passes::drop_insertion::run(f, am)),
+        //   pass("refcount_elim_post", OpsOnly, |f, am, _tti| passes::refcount_elim::run_post_drop(f, am)),
     ];
     PassManager::new(passes, target_info)
 }
@@ -424,6 +443,7 @@ fn assert_analyses_fresh(func: &TirFunction, am: &mut AnalysisManager, after_pas
             AnalysisId::ValueRange => check!(super::passes::value_range::ValueRange),
             AnalysisId::AliasAnalysis => check!(super::passes::alias_analysis::AliasAnalysis),
             AnalysisId::MemorySSA => check!(super::passes::memory_ssa::MemorySSA),
+            AnalysisId::Liveness => check!(super::passes::liveness::TirLiveness),
         }
     }
 }
@@ -685,7 +705,9 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 28 pass invocations ran.
+        // All 28 pass invocations ran. (The RC drop-insertion pass, design 20,
+        // is intentionally NOT in this pipeline yet — see the activation note in
+        // `build_default_pipeline`.)
         assert_eq!(stats.len(), 28);
     }
 }

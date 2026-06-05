@@ -251,6 +251,24 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
 
     let mut out = Vec::new();
 
+    // RC drop-insertion substrate (design 20, R1 guard): function-level attrs do
+    // NOT round-trip through `FunctionIR` (it has no attr field), so the
+    // `drop_inserted` marker is carried as a leading no-op `OpIR`. The native
+    // backend's preanalysis reads it to DISABLE the ad-hoc `loop_reassign_old_val`
+    // dec-ref path (which would otherwise double-drop the same loop-carried value
+    // the TIR drop pass already releases). Codegen's op-kind match ignores the
+    // marker (`_ => {}` default arm). Emitted first so the preanalysis sees it
+    // before scanning the body.
+    if matches!(
+        func.attrs.get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+        Some(AttrValue::Bool(true))
+    ) {
+        out.push(OpIR {
+            kind: crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.to_string(),
+            ..OpIR::default()
+        });
+    }
+
     // Compute block visit order (reverse-postorder from entry).
     let rpo = reverse_postorder(func);
     let debug_lower_func = std::env::var("MOLT_DEBUG_LOWER_FUNC").ok();

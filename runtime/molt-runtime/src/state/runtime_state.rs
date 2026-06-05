@@ -699,6 +699,13 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
                 let state = unsafe { &*ptr };
                 let py = gil.token();
                 crate::object::ops::profile_dump_with_gil(&py);
+                // RC drop-insertion substrate (design 20): the MOLT_ASSERT_NO_LEAK
+                // gate. Runs BEFORE teardown (teardown frees the immortal roots,
+                // which would zero `live` and hide a real leak). When more than
+                // EXPECTED_LIVE_OBJECTS objects survive, print the per-type
+                // breakdown and abort with a non-zero code so the differential
+                // harness catches the regression.
+                crate::object::ops::assert_no_leak_at_exit(&py);
                 runtime_teardown_for_process_exit(&py, state);
             }
         }
