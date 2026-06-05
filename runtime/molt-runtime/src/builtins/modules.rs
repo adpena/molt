@@ -29,6 +29,17 @@ use crate::{
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
+// `molt_isolate_import` is APP-OWNED (emitted by the compiler into the user
+// module / provided by the embedding host). On native targets it resolves at
+// static link; on wasm32 the shared-runtime cdylib must declare it as an
+// `env` import (the molt_call_indirect* pattern in lib.rs) — a plain extern
+// is an undefined symbol at rust-lld time and breaks the wasm runtime build.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe extern "C" {
+    fn molt_isolate_import(name_bits: u64) -> u64;
+}
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn molt_isolate_import(name_bits: u64) -> u64;
 }
