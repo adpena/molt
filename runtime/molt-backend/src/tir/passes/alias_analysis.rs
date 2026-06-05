@@ -217,6 +217,22 @@ fn classify_load(op: &TirOp) -> LoadPurity {
 /// object through a chain of transparent copies. Promoted verbatim from
 /// `dead_store_elim`'s former inline `AliasState`, now the single home for
 /// SSA-copy alias roots.
+/// Build the transparent-alias union-find for `func` via a single forward scan
+/// over every op (Phase A of [`AliasAnalysisResult::compute`]). Exposed so the
+/// liveness analysis (RC drop-insertion substrate, design 20) can canonicalize
+/// values to their alias root WITHOUT computing the (heavier) escape/points-to
+/// half: a `Copy`/`TypeGuard` borrow alias holds no new reference, so ownership
+/// — and therefore drop placement — is per alias root, not per SSA value.
+pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
+    let mut aliases = AliasUnionFind::default();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            aliases.record_transparent_aliases(op);
+        }
+    }
+    aliases
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AliasUnionFind {
     parent: HashMap<ValueId, ValueId>,
@@ -540,12 +556,7 @@ impl AliasAnalysisResult {
     /// through `am.get::<AliasAnalysis>()` for caching.
     pub(crate) fn compute(func: &TirFunction) -> Self {
         // Phase A: build the transparent-alias union-find with a forward scan.
-        let mut aliases = AliasUnionFind::default();
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                aliases.record_transparent_aliases(op);
-            }
-        }
+        let aliases = build_alias_union_find(func);
 
         // Phase B: the escape / points-to map. This is the former
         // `escape_analysis::analyze`, anchored here as the points-to half of the
