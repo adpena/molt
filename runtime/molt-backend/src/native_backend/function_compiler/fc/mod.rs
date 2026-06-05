@@ -38,6 +38,11 @@ pub(in crate::native_backend::function_compiler) enum OpFlow {
 }
 
 pub(in crate::native_backend::function_compiler) mod vec_reductions;
+pub(in crate::native_backend::function_compiler) mod generators;
+pub(in crate::native_backend::function_compiler) mod callargs;
+pub(in crate::native_backend::function_compiler) mod statistics;
+pub(in crate::native_backend::function_compiler) mod dataclass;
+pub(in crate::native_backend::function_compiler) mod memoryview_buffer;
 pub(in crate::native_backend::function_compiler) mod parse_ops;
 pub(in crate::native_backend::function_compiler) mod future_promise;
 pub(in crate::native_backend::function_compiler) mod type_checks;
