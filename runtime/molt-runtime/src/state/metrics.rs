@@ -1,5 +1,32 @@
 // On wasm32 we still support logical runtime counters when MOLT_PROFILE=1, but
 // RSS sampling remains unavailable in the host-agnostic wasm runtime.
+
+/// RC drop-insertion substrate (design 20): true iff `MOLT_ASSERT_NO_LEAK` is
+/// set to a truthy value. When set, the alloc/dealloc profile counters are
+/// force-enabled (so the `live = alloc - dealloc` gauge is populated even
+/// without `MOLT_PROFILE`), and a process-exit assertion fires if more than
+/// `EXPECTED_LIVE_OBJECTS` objects survive. The single source of truth consulted
+/// by both the wasm and native `profile_env_enabled`.
+pub(crate) fn leak_assertion_enabled() -> bool {
+    std::env::var("MOLT_ASSERT_NO_LEAK")
+        .map(|val| !val.is_empty() && val != "0")
+        .unwrap_or(false)
+}
+
+/// The count of immortal bootstrap objects (module dicts, builtin type objects,
+/// interned singletons) that legitimately survive to process exit and so are NOT
+/// leaks. Measured on a hello-world program at the end of Phase 1 / Phase 3
+/// bring-up and encoded here; the leak report subtracts it and
+/// `MOLT_ASSERT_NO_LEAK` gates on `live <= EXPECTED_LIVE_OBJECTS`. A program that
+/// frees every expression temporary will report `live` at or near this floor.
+///
+/// This is an UPPER-BOUND ceiling, not an exact equality target: the immortal
+/// bootstrap set varies slightly with which stdlib modules a program imports
+/// (each module's init allocates a handful of immortal singletons). The ceiling
+/// is sized so a non-leaking program passes and a per-iteration leak (which
+/// grows `live` without bound) fails decisively.
+pub(crate) const EXPECTED_LIVE_OBJECTS: u64 = 200_000;
+
 #[cfg(target_arch = "wasm32")]
 mod wasm_stubs {
     use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
@@ -10,9 +37,11 @@ mod wasm_stubs {
     static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
 
     fn profile_env_enabled() -> bool {
-        std::env::var("MOLT_PROFILE")
+        let direct = std::env::var("MOLT_PROFILE")
             .map(|val| !val.is_empty() && val != "0")
-            .unwrap_or(false)
+            .unwrap_or(false);
+        // MOLT_ASSERT_NO_LEAK force-enables counting so the leak gauge is live.
+        direct || super::leak_assertion_enabled()
     }
 
     pub(crate) fn init_profile_enabled_from_env() {
@@ -111,9 +140,11 @@ mod native {
     static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
 
     fn profile_env_enabled() -> bool {
-        std::env::var("MOLT_PROFILE")
+        let direct = std::env::var("MOLT_PROFILE")
             .map(|val| !val.is_empty() && val != "0")
-            .unwrap_or(false)
+            .unwrap_or(false);
+        // MOLT_ASSERT_NO_LEAK force-enables counting so the leak gauge is live.
+        direct || super::leak_assertion_enabled()
     }
 
     pub(crate) fn init_profile_enabled_from_env() {

@@ -12,8 +12,8 @@ pub(crate) use lifecycle::{
     runtime_teardown_for_process_exit, runtime_teardown_isolate, touch_tls_guard,
 };
 pub(crate) use metrics::{
-    current_rss_bytes, profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked,
-    sample_peak_rss,
+    EXPECTED_LIVE_OBJECTS, current_rss_bytes, leak_assertion_enabled, profile_enabled, profile_hit,
+    profile_hit_bytes, profile_hit_unchecked, sample_peak_rss,
 };
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]

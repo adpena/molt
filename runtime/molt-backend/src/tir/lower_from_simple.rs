@@ -77,6 +77,12 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     } else {
         rewritten_ops
     };
+    // RC drop-insertion substrate (design 20, R1 guard): the `drop_inserted`
+    // marker is a SimpleIR-transport-only signal (it tells the native backend's
+    // preanalysis to disable the ad-hoc loop dec-ref path). It carries no
+    // semantics into TIR — strip it before lifting so it never becomes a TIR op
+    // (the leaf-analysis re-lift path would otherwise see an unmodeled op kind).
+    working_ops.retain(|op| op.kind != crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
     // Memory SSA: rewrite cell-based locals (store_index/index on a 1-elem
     // list "cell") to store_var/load_var so SSA generates proper phi nodes
     // at loop headers for cell variables. Always-on; no env gate.

@@ -1400,6 +1400,13 @@ struct FunctionPreanalysis {
     /// and known non-heap values, so codegen can skip refcount, profiling,
     /// header-flag, and pointer-tag slow-path scaffolding.
     direct_field_store_ops: BTreeSet<usize>,
+    /// RC drop-insertion substrate (design 20, R1 guard): true when the TIR
+    /// drop-insertion pass processed this function (detected via the leading
+    /// `drop_inserted` marker op). When set, the ad-hoc `loop_reassign_old_val`
+    /// per-iteration dec-ref path is DISABLED — the TIR pass already inserted the
+    /// loop-carried DecRef, and running both would double-drop (refcount
+    /// underflow → use-after-free / abort).
+    drop_inserted: bool,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1680,6 +1687,10 @@ fn preanalyze_function_ir(
 ) -> FunctionPreanalysis {
     let mut has_ret = false;
     let mut stateful = false;
+    // RC drop-insertion substrate (design 20, R1 guard): set by the leading
+    // `drop_inserted` marker op the TIR back-conversion emits for drop-processed
+    // functions.
+    let mut drop_inserted = false;
     let mut var_names: BTreeSet<String> = BTreeSet::new();
     let mut last_use = BTreeMap::new();
     let mut alias_roots = BTreeMap::new();
@@ -1709,6 +1720,7 @@ fn preanalyze_function_ir(
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
             "ret" => has_ret = true,
+            "drop_inserted" => drop_inserted = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,
             "store" => {}
@@ -2155,6 +2167,7 @@ fn preanalyze_function_ir(
         arena_eligible_outs,
         scalar_slot_exclusion_unsafe,
         direct_field_store_ops,
+        drop_inserted,
     }
 }
 
@@ -2428,6 +2441,7 @@ impl SimpleBackend {
             arena_eligible_outs: _arena_eligible_outs,
             scalar_slot_exclusion_unsafe,
             direct_field_store_ops,
+            drop_inserted,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries, &representation_plan);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -3575,6 +3589,10 @@ impl SimpleBackend {
             // value is the None-sentinel (0) we initialized before the loop
             // header, which molt_dec_ref_obj safely ignores (non-pointer).
             let loop_reassign_old_val: Option<Value> = if loop_depth > 0
+                // RC drop-insertion substrate (design 20, R1 guard): when the TIR
+                // drop pass processed this function it already inserted the
+                // loop-carried DecRef; the ad-hoc path below would double-drop.
+                && !drop_inserted
                 && !is_block_filled
                 && let Some(ref name) = out_name
                 && name != "none"

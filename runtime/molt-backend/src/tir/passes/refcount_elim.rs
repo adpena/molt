@@ -109,8 +109,39 @@ fn build_heap_exposed_set(func: &TirFunction) -> HashSet<ValueId> {
     heap_exposed
 }
 
-/// Eliminate redundant IncRef/DecRef pairs.
+/// Eliminate redundant IncRef/DecRef pairs (the in-pipeline pass-12 invocation).
+///
+/// Runs the full elision: balanced-pair removal (Steps 2–4), the deferred-RC
+/// non-heap-exposed removal (Step 5), and the unique-ownership DecRef→Free
+/// promotion (Step 6).
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+    run_with(func, am, false)
+}
+
+/// Post-drop-insertion elision (the `refcount_elim_post` invocation, design 20
+/// §3.1). Runs ONLY the balance-preserving steps: stack-value RC removal (Step
+/// 2a), adjacent / cross-block / loop-invariant **paired** IncRef+DecRef removal
+/// (Steps 2b–4).
+///
+/// It deliberately SKIPS Step 5 and Step 6. Both key on the `build_heap_exposed_set`
+/// "non-heap-exposed ⇒ pure stack reference" premise (Deutsch–Bobrow). That
+/// premise is FALSE for the drop-insertion pass's output: the drop pass inserts a
+/// LONE ownership-release `DecRef` for every heap-allocated owned temporary —
+/// including BigInt / string temps that are used only in arithmetic and so never
+/// reach a `Call`/`Store`/`Return`/`Build`. Step 5 would delete exactly those
+/// releases (re-introducing the leak this substrate exists to fix); Step 6 would
+/// mis-promote them. The balanced-pair steps remain sound: they only remove an
+/// IncRef *together with* a matching DecRef, preserving the net refcount, so they
+/// can run safely after insertion to elide the redundant pairs the inserter (and
+/// the suspension IncRef) place across barriers.
+pub fn run_post_drop(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+    run_with(func, am, true)
+}
+
+/// Shared body of [`run`] / [`run_post_drop`]. When `post_drop` is true, the
+/// deferred-RC (Step 5) and DecRef→Free (Step 6) phases — which are unsound in
+/// the presence of lone ownership-release DecRefs — are skipped.
+fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -> PassStats {
     let mut stats = PassStats {
         name: "refcount_elim",
         ..Default::default()
@@ -516,6 +547,13 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
             }
         }
+    }
+
+    // Steps 5 and 6 are SKIPPED in the post-drop-insertion mode: both rely on
+    // the "non-heap-exposed ⇒ removable" premise, which is false for the drop
+    // pass's lone ownership-release DecRefs (see `run_post_drop`).
+    if post_drop {
+        return stats;
     }
 
     // -----------------------------------------------------------------------

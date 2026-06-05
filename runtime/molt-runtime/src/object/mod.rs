@@ -86,7 +86,9 @@ use crate::provenance::{release_ptr, resolve_ptr};
 use crate::{
     ALLOC_BYTES_DICT, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING, ALLOC_BYTES_TOTAL, ALLOC_BYTES_TUPLE,
     ALLOC_CALLARGS_COUNT, ALLOC_COUNT, ALLOC_DICT_COUNT, ALLOC_EXCEPTION_COUNT, ALLOC_OBJECT_COUNT,
-    ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET,
+    ALLOC_STRING_COUNT, ALLOC_TUPLE_COUNT, DEALLOC_BIGINT_COUNT, DEALLOC_BYTES_TOTAL, DEALLOC_COUNT,
+    DEALLOC_DICT_COUNT, DEALLOC_OBJECT_COUNT, DEALLOC_STRING_COUNT, DEALLOC_TUPLE_COUNT,
+    GEN_CLOSED_OFFSET, GEN_EXC_DEPTH_OFFSET,
     GEN_SEND_OFFSET, GEN_THROW_OFFSET, PyToken, TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT,
     TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY, TYPE_ID_CALL_ITER, TYPE_ID_CALLARGS,
     TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT,
@@ -1271,6 +1273,22 @@ fn profile_alloc_type_bytes(_py: &PyToken<'_>, type_id: u32, total_size: usize) 
     }
 }
 
+/// Per-type dealloc counter dispatch (RC drop-insertion substrate, design 20).
+/// Mirrors [`profile_alloc_type`]: called from the `dec_ref_ptr` zero-transition
+/// so a leak in the `live = alloc - dealloc` gauge can be attributed to a
+/// concrete object family.
+#[cfg_attr(target_arch = "wasm32", inline(always))]
+fn profile_dealloc_type(_py: &PyToken<'_>, type_id: u32) {
+    match type_id {
+        TYPE_ID_OBJECT => profile_hit(_py, &DEALLOC_OBJECT_COUNT),
+        TYPE_ID_BIGINT => profile_hit(_py, &DEALLOC_BIGINT_COUNT),
+        TYPE_ID_STRING => profile_hit(_py, &DEALLOC_STRING_COUNT),
+        TYPE_ID_DICT => profile_hit(_py, &DEALLOC_DICT_COUNT),
+        TYPE_ID_TUPLE => profile_hit(_py, &DEALLOC_TUPLE_COUNT),
+        _ => {}
+    }
+}
+
 #[inline(always)]
 pub(crate) unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { (*header_from_obj_ptr(ptr)).type_id }
@@ -1819,6 +1837,19 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 return;
             }
             MoltRefCount::acquire_fence();
+            // RC drop-insertion substrate (design 20): this is the single actual
+            // deallocation path (the rc=1→0 transition, past the immortal/rooted
+            // early-returns above). Count it so `live = alloc - dealloc` is the
+            // process leak gauge. The byte total uses the header size class; for
+            // oversized objects `total_size_from_header_fields` reads the cold
+            // header's `extended_size` (mirrors the alloc-side `plan.alloc_size`).
+            profile_hit(py, &DEALLOC_COUNT);
+            profile_hit_bytes(
+                py,
+                &DEALLOC_BYTES_TOTAL,
+                total_size_from_header_fields(header_size_class, header_cold_idx) as u64,
+            );
+            profile_dealloc_type(py, type_id);
             if debug_dec_ref_zero() {
                 eprintln!(
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",

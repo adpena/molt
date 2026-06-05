@@ -574,6 +574,14 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     let alloc_bytes_dict = ALLOC_BYTES_DICT.load(AtomicOrdering::Relaxed);
     let alloc_bytes_tuple = ALLOC_BYTES_TUPLE.load(AtomicOrdering::Relaxed);
     let alloc_bytes_list = ALLOC_BYTES_LIST.load(AtomicOrdering::Relaxed);
+    // RC drop-insertion substrate (design 20): the leak gauge.
+    let deallocs = DEALLOC_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_bytes_total = DEALLOC_BYTES_TOTAL.load(AtomicOrdering::Relaxed);
+    let dealloc_objects = DEALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_bigints = DEALLOC_BIGINT_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_strings = DEALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_dicts = DEALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_tuples = DEALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
     // Take a final RSS sample before dumping.
     sample_peak_rss();
     let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
@@ -627,6 +635,33 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
         peak_rss,
         current_rss,
     );
+    // RC drop-insertion substrate (design 20): the leak report. `live` is the
+    // count of objects whose final dec-ref never fired by process exit — the
+    // immortal bootstrap roots (module dict, builtin types) legitimately survive
+    // (`EXPECTED_LIVE_OBJECTS`), so a healthy program reports `live ≈
+    // EXPECTED_LIVE_OBJECTS` and a leaking one reports far more.
+    let live_objects = allocs.saturating_sub(deallocs);
+    let live_bytes = alloc_bytes_total.saturating_sub(dealloc_bytes_total);
+    eprintln!(
+        "molt_profile_mem dealloc_count={} dealloc_bytes_total={} dealloc_object={} dealloc_bigint={} dealloc_string={} dealloc_dict={} dealloc_tuple={} live_objects={} live_bytes={} expected_live={}",
+        deallocs,
+        dealloc_bytes_total,
+        dealloc_objects,
+        dealloc_bigints,
+        dealloc_strings,
+        dealloc_dicts,
+        dealloc_tuples,
+        live_objects,
+        live_bytes,
+        crate::EXPECTED_LIVE_OBJECTS,
+    );
+    if live_objects > crate::EXPECTED_LIVE_OBJECTS {
+        eprintln!(
+            "[MOLT_PROFILE] LEAK WARNING: {} objects not freed at process exit (expected_live={})",
+            live_objects.saturating_sub(crate::EXPECTED_LIVE_OBJECTS),
+            crate::EXPECTED_LIVE_OBJECTS,
+        );
+    }
     let payload = serde_json::json!({
         "schema_version": 1,
         "kind": "runtime_feedback",
@@ -702,6 +737,68 @@ pub extern "C" fn molt_profile_dump() {
     crate::with_gil_entry_nopanic!(_py, {
         profile_dump_with_gil(_py);
     })
+}
+
+/// RC drop-insertion substrate (design 20): the `MOLT_ASSERT_NO_LEAK` gate.
+///
+/// When `MOLT_ASSERT_NO_LEAK` is set, the alloc/dealloc counters are
+/// force-enabled (see `metrics::profile_env_enabled`). At process exit — BEFORE
+/// the immortal roots are torn down — this asserts that no more than
+/// `EXPECTED_LIVE_OBJECTS` objects survived. A per-iteration leak grows `live`
+/// without bound, so it fails decisively; a healthy program reports `live` at or
+/// near the immortal-bootstrap floor. On failure it prints the per-type
+/// breakdown and aborts with a non-zero exit (`process::exit(137)` to mirror the
+/// `safe_run.py` RSS-cap convention the harness keys on).
+pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
+    if !crate::leak_assertion_enabled() {
+        return;
+    }
+    let allocs = ALLOC_COUNT.load(AtomicOrdering::Relaxed);
+    let deallocs = DEALLOC_COUNT.load(AtomicOrdering::Relaxed);
+    let live = allocs.saturating_sub(deallocs);
+    if live <= crate::EXPECTED_LIVE_OBJECTS {
+        return;
+    }
+    let dealloc_objects = DEALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_bigints = DEALLOC_BIGINT_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_strings = DEALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_dicts = DEALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
+    let dealloc_tuples = DEALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_objects = ALLOC_OBJECT_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_strings = ALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_dicts = ALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
+    let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
+    eprintln!(
+        "[MOLT_ASSERT_NO_LEAK] FAIL: live_objects={} exceeds expected_live={} \
+         (alloc={} dealloc={})",
+        live,
+        crate::EXPECTED_LIVE_OBJECTS,
+        allocs,
+        deallocs,
+    );
+    eprintln!(
+        "[MOLT_ASSERT_NO_LEAK] per-type (alloc/dealloc/live): \
+         object={}/{}/{} string={}/{}/{} dict={}/{}/{} tuple={}/{}/{} bigint=?/{}/?",
+        alloc_objects,
+        dealloc_objects,
+        alloc_objects.saturating_sub(dealloc_objects),
+        alloc_strings,
+        dealloc_strings,
+        alloc_strings.saturating_sub(dealloc_strings),
+        alloc_dicts,
+        dealloc_dicts,
+        alloc_dicts.saturating_sub(dealloc_dicts),
+        alloc_tuples,
+        dealloc_tuples,
+        alloc_tuples.saturating_sub(dealloc_tuples),
+        dealloc_bigints,
+    );
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+    }
+    std::process::exit(137);
 }
 
 // ---------------------------------------------------------------------------
