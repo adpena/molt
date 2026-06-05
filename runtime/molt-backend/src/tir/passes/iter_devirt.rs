@@ -450,12 +450,29 @@ fn apply_transform(func: &mut TirFunction, c: &ListLoopCandidate, stats: &mut Pa
 
         if let Some(block) = func.blocks.get_mut(&back_bid) {
             // Insert Add(idx_var, 1) -> next_val at end of block (before terminator).
+            //
+            // This `+1` index counter provably cannot overflow a signed i64:
+            // the header guard `Lt(idx_var, len_val)` ensures the body (and so
+            // this back-edge) executes only when `idx_var <= len_val - 1`, and
+            // `len_val = len(container) >= 0` is bounded by `isize::MAX < i64::MAX`.
+            // Hence `idx_var + 1 <= len_val <= i64::MAX` — no wrap. Tagging the
+            // increment `no_signed_wrap` lets SCEV form the IV's `AddRec`, which
+            // is the seed the value-range analysis needs to prove the IV (and
+            // every value derived from it) stays within the inline window —
+            // exactly the same justification range_devirt uses for its `±1`
+            // counted-loop increment. Without this tag the canonical
+            // `for x in seq:` index counter has no proven range, blocking SROA
+            // hot-loop field promotion and BCE on devirtualized iterators.
             let add_op = TirOp {
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![idx_var, one_val],
                 results: vec![next_val],
-                attrs: AttrDict::new(),
+                attrs: {
+                    let mut a = AttrDict::new();
+                    a.insert("no_signed_wrap".to_string(), AttrValue::Bool(true));
+                    a
+                },
                 source_span: None,
             };
             block.ops.push(add_op);
