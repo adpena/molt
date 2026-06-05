@@ -1,0 +1,2314 @@
+"""Static-typing Protocol for SimpleTIRGenerator (F1 decomposition).
+
+GENERATED from frontend/__init__.py by tmp/gen_protocol.py. Enumerates the full
+method + attribute surface of the assembled generator so that visitor/lowering
+mixins can annotate ``self`` as ``_GeneratorProtocol`` and have cross-mixin
+``self.<method>`` / ``self.<attr>`` references type-check (the single-class form
+had this implicitly; the Protocol restores it across files).
+
+This module is import-only under TYPE_CHECKING; it has no runtime effect.
+"""
+
+from __future__ import annotations
+
+import ast
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Protocol,
+    Sequence,
+    TYPE_CHECKING,
+)
+
+from molt.frontend._types import (
+    ActiveException,
+    CFGGraph,
+    CanonicalizationState,
+    ClassInfo,
+    ControlMaps,
+    FallbackPolicy,
+    FormatParseState,
+    FormatToken,
+    FuncInfo,
+    IntrinsicHandleClassConstructorSpec,
+    LoopBoundFact,
+    MethodInfo,
+    MidendEnvConfig,
+    MidendFunctionPolicy,
+    MidendProfile,
+    MidendTier,
+    MidendTierClassification,
+    MoltOp,
+    MoltValue,
+    SCCPResult,
+    TryScope,
+    _TrackedOpsList,
+)
+
+if TYPE_CHECKING:
+    from molt.type_facts import TypeFacts
+
+
+class _GeneratorProtocol(Protocol):
+    _RAISING_OP_KINDS: Any
+    _STUB_IMPORT_MODULES: frozenset[str]
+    _active_classcell_cell: MoltValue | None
+    _active_midend_function_name: Any
+    _deferred_runtime_warnings: list[str]
+    _emitted_syntax_warnings: set[tuple[str, int, str]]
+    _expr_col: tuple[int, int] | None
+    _inline_super_must_fold: bool
+    _midend_env_snapshot: Any
+    _midend_stats_reported: Any
+    _module_attr_type_hints: dict[str, str]
+    _module_cache_values: dict[str, MoltValue]
+    _module_pressure_funcs_map_ref: Any
+    _module_pressure_function_count: Any
+    _module_pressure_total_ops: Any
+    _source_is_stdlib_module: Any
+    _typing_import_aliases: set[str]
+    active_exceptions: list[ActiveException]
+    annotation_name_counter: Any
+    annotation_type_params: dict[str, MoltValue]
+    async_closure_offset: int | None
+    async_context: Any
+    async_index_loop_stack: list[int]
+    async_internal_locals: set[str]
+    async_local_hints: dict[str, str]
+    async_locals: dict[str, int]
+    async_locals_base: int
+    async_public_locals: set[str]
+    block_terminated: Any
+    boxed_local_hints: dict[str, str]
+    boxed_locals: dict[str, MoltValue]
+    bytearray_len_hints: dict[str, int]
+    class_annotation_exec_counter: Any
+    class_annotation_exec_map: MoltValue | None
+    class_annotation_exec_name: str | None
+    class_annotation_items: list[tuple[str, ast.expr, int]]
+    class_definition_pending: set[str]
+    classes: dict[str, ClassInfo]
+    closure_locals: set[str]
+    code_id_counter: Any
+    code_slots_emitted: Any
+    comp_shadow_locals: set[str]
+    compat: Any
+    const_ints: dict[str, int]
+    container_elem_hints: dict[str, str]
+    context_depth: Any
+    control_flow_depth: Any
+    current_class: str | None
+    current_func_name: str
+    current_gpu_kernel_context: bool
+    current_line: int | None
+    current_method_first_param: str | None
+    current_ops: list[MoltOp]
+    defer_module_attrs: Any
+    deferred_module_attrs: set[str]
+    del_targets: set[str]
+    dict_key_hints: dict[str, str]
+    dict_value_hints: dict[str, str]
+    eager_annotations: Any
+    enable_phi: Any
+    entry_module: Any
+    exact_builtin_locals: dict[str, str]
+    exact_locals: dict[str, str]
+    exception_stack_depth_baseline: MoltValue | None
+    exception_stack_prev_baseline: MoltValue | None
+    explicit_type_hints: dict[str, str]
+    fallback_policy: Any
+    finally_depth: Any
+    format_token_cache: dict[tuple[str, int, tuple[str, ...]], list[FormatToken]]
+    free_var_hints: dict[str, str]
+    free_vars: dict[str, int]
+    func_aliases: dict[str, str]
+    func_code_ids: dict[str, int]
+    func_default_specs: dict[str, dict[str, Any]]
+    func_symbol_names: dict[str, str]
+    funcs_map: dict[str, FuncInfo]
+    function_exception_label: int | None
+    future_annotations: Any
+    genexpr_counter: Any
+    global_decls: set[str]
+    global_dict_key_hints: dict[str, str]
+    global_dict_value_hints: dict[str, str]
+    global_elem_hints: dict[str, str]
+    global_imported_attr_names: dict[str, str]
+    global_imported_modules: dict[str, str]
+    global_imported_names: dict[str, str]
+    globals: dict[str, MoltValue]
+    globals_builtin_emitted: Any
+    globals_builtin_val: MoltValue | None
+    gpu_kernel_symbols_by_name: dict[str, str]
+    imported_attr_names: dict[str, str]
+    imported_modules: dict[str, str]
+    imported_names: dict[str, str]
+    in_annotation: Any
+    in_generator: Any
+    instance_attr_mutations: dict[str, set[str]]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_modules: Any
+    lambda_counter: Any
+    local_class_names: set[str]
+    local_intrinsic_wrappers: set[str]
+    locals: dict[str, MoltValue]
+    locals_cache_val: MoltValue | None
+    loop_break_counter: Any
+    loop_break_flags: list[int | str | None]
+    loop_guard_assumptions: list[dict[str, tuple[str, bool]]]
+    loop_layout_guards: list[dict[str, tuple[str, MoltValue]]]
+    loop_static_class_counter: Any
+    loop_static_class_eager_refs: list[set[str]]
+    loop_static_class_refs: list[dict[str, MoltValue]]
+    loop_try_depths: list[int]
+    midend_env: Any
+    midend_hot_functions: set[str]
+    midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
+    midend_policy_outcomes_by_function: dict[str, dict[str, Any]]
+    midend_stats: dict[str, int]
+    midend_stats_by_function: dict[str, dict[str, int]]
+    module_annotation_emitted: Any
+    module_annotation_exec_counter: Any
+    module_annotation_exec_map: MoltValue | None
+    module_annotation_exec_name: str | None
+    module_annotation_ids: dict[int, int]
+    module_annotation_items: list[tuple[str, ast.expr, int]]
+    module_annotations: MoltValue | None
+    module_annotations_conditional: Any
+    module_chunk_counter: Any
+    module_chunk_globals: set[str]
+    module_chunk_max_ops: Any
+    module_chunk_symbols: list[str]
+    module_chunking: Any
+    module_class_bases: dict[str, list[list[str]]]
+    module_const_dicts: dict[str, dict[str, Any]]
+    module_declared_classes: set[str]
+    module_declared_funcs: dict[str, str]
+    module_defined_funcs: set[str]
+    module_frame_code_id: int | None
+    module_frame_emitted: Any
+    module_frame_entered: Any
+    module_frame_exited: Any
+    module_func_defaults: dict[str, dict[str, Any]]
+    module_global_mutations: set[str]
+    module_globals_dict_escaped: Any
+    module_intrinsic_globals: dict[str, str]
+    module_is_namespace: Any
+    module_is_package: Any
+    module_name: Any
+    module_obj: MoltValue | None
+    module_package_override: str | None
+    module_package_override_set: Any
+    module_prefix: Any
+    module_spec_name: Any
+    module_spec_override: str | None
+    module_spec_override_is_package: bool | None
+    module_spec_override_set: Any
+    module_stmt_offsets: list[int]
+    module_subclassed_names: set[str]
+    mutated_classes: set[str]
+    nonlocal_decls: set[str]
+    optimization_profile: MidendProfile
+    parse_codec: Any
+    qualname_stack: list[tuple[str, bool]]
+    range_loop_stack: list[tuple[MoltValue, MoltValue]]
+    reserved_external_func_symbols: set[str]
+    reserved_func_symbols: dict[str, str]
+    return_label: int | None
+    return_slot: MoltValue | None
+    return_slot_index: MoltValue | None
+    return_slot_offset: int | None
+    return_unwind_depth: Any
+    return_unwind_popped_scopes: Any
+    scope_assigned: set[str]
+    source_path: Any
+    stable_module_classes: set[str]
+    stable_module_funcs: set[str]
+    state_count: int
+    stdlib_allowlist: Any
+    stdlib_hint_trust: Any
+    try_end_labels: list[int]
+    try_handler_scopes: list[TryScope]
+    try_scopes: list[TryScope]
+    try_suppress_depth: int | None
+    type_facts: Any
+    type_facts_module: Any
+    type_hint_policy: Any
+    unbound_check_names: set[str]
+    var_count: int
+
+    def __init__(
+        self,
+        parse_codec: Literal["msgpack", "cbor", "json"] = "msgpack",
+        type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
+        fallback_policy: FallbackPolicy = "error",
+        source_path: str | None = None,
+        type_facts: "TypeFacts | None" = None,
+        type_facts_module: str | None = None,
+        module_name: str | None = None,
+        module_spec_name: str | None = None,
+        module_is_namespace: bool = False,
+        entry_module: str | None = None,
+        enable_phi: bool = True,
+        known_modules: set[str] | None = None,
+        known_classes: dict[str, ClassInfo] | None = None,
+        stdlib_allowlist: set[str] | None = None,
+        known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
+        module_chunking: bool = False,
+        module_chunk_max_ops: int = 0,
+        optimization_profile: MidendProfile = "release",
+        pgo_hot_functions: set[str] | None = None,
+    ) -> None: ...
+
+    def _emit_module_metadata(self) -> None: ...
+
+    def _emit_module_frame_enter(self, node: ast.Module) -> None: ...
+
+    def _emit_module_frame_exit(self) -> None: ...
+
+    def _function_needs_frame_trace(self, name: str | None = None) -> bool: ...
+
+    def _module_chunk_param_value(self) -> MoltValue: ...
+
+    def _new_module_chunk_symbol(self) -> str: ...
+
+    def _reset_module_chunk_state(self) -> None: ...
+
+    def _module_chunk_stmt_cost(self, stmt: ast.stmt) -> int: ...
+
+    def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None: ...
+
+    def _class_mro_names(self, name: str) -> list[str]: ...
+
+    def _class_is_exception_subclass(
+        self, class_name: str, class_info: ClassInfo
+    ) -> bool: ...
+
+    def _class_new_policy(
+        self, class_name: str, class_info: ClassInfo
+    ) -> tuple[bool, bool]: ...
+
+    def _resolve_method_info(
+        self, class_name: str, method: str
+    ) -> tuple[MethodInfo | None, str | None]: ...
+
+    def _static_class_bases(self, class_name: str) -> list[str] | None: ...
+
+    def _static_mro_names(
+        self, class_name: str, _stack: tuple[str, ...] = ()
+    ) -> list[str] | None: ...
+
+    def _static_method_owner_after(
+        self, mro: list[str], start: str, method: str
+    ) -> str | None: ...
+
+    def _visible_subclasses_of(self, class_name: str) -> list[str] | None: ...
+
+    def _reachable_base_names(
+        self, class_name: str, _seen: set[str] | None = None
+    ) -> set[str]: ...
+
+    def _super_fold_is_sound(self, class_name: str, method: str) -> bool: ...
+
+    def _resolve_super_method_info(
+        self, class_name: str, method: str
+    ) -> tuple[MethodInfo | None, str | None]: ...
+
+    def visit(self, node: ast.AST) -> Any: ...
+
+    def next_var(self) -> str: ...
+
+    def next_label(self) -> int: ...
+
+    def _suppress_check_exception(self, *, emit_on_exit: bool = True) -> Any: ...
+
+    def emit(self, op: MoltOp) -> None: ...
+
+    def _emit_line_marker(
+        self,
+        lineno: int,
+        col_offset: int | None = None,
+        end_col_offset: int | None = None,
+    ) -> None: ...
+
+    def _emit_line_marker_force(self) -> None: ...
+
+    def _fast_int_enabled(self) -> bool: ...
+
+    def _hints_enabled(self) -> bool: ...
+
+    def _should_fast_int(self, op: MoltOp) -> bool: ...
+
+    def _should_fast_float(self, op: MoltOp) -> bool: ...
+
+    def _emit_bridge_unavailable(self, message: str) -> MoltValue: ...
+
+    def _emit_deprecation_warning(self, node: ast.AST, message: str) -> None: ...
+
+    def _prescan_compile_warnings(self, module_node: ast.Module) -> None: ...
+
+    def _emit_deferred_warnings(self) -> None: ...
+
+    def _emit_syntax_warning(self, node: ast.AST, message: str) -> None: ...
+
+    def _bridge_fallback(
+        self,
+        node: ast.AST,
+        feature: str,
+        *,
+        impact: Literal["low", "medium", "high"] = "high",
+        alternative: str | None = None,
+        detail: str | None = None,
+    ) -> MoltValue: ...
+
+    def _emit_nullcontext(self, payload: MoltValue) -> MoltValue: ...
+
+    def _emit_closing(self, payload: MoltValue) -> MoltValue: ...
+
+    def _emit_open_call(self, node: ast.Call) -> MoltValue: ...
+
+    def _emit_asyncio_sleep(
+        self, args: list[ast.expr], keywords: list[ast.keyword]
+    ) -> MoltValue: ...
+
+    def _is_contextmanager_decorator(self, deco: ast.expr) -> bool: ...
+
+    @staticmethod
+    def _is_gpu_kernel_decorator(deco: ast.expr) -> bool: ...
+
+    @staticmethod
+    def _is_gpu_intrinsic_call(node: ast.Call) -> str | None: ...
+
+    def _has_gpu_kernel_decorator(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool: ...
+
+    def _emit_gpu_kernel_intrinsic_op(self, gpu_intrinsic: str) -> MoltValue: ...
+
+    def _parse_gpu_launch_config_expr(
+        self, config_expr: ast.expr
+    ) -> tuple[MoltValue, MoltValue] | None: ...
+
+    def _lower_gpu_kernel_launch_call(self, node: ast.Call) -> MoltValue | None: ...
+
+    @staticmethod
+    def _sanitize_module_name(name: str) -> str: ...
+
+    @classmethod
+    def module_init_symbol(cls, name: str) -> str: ...
+
+    @staticmethod
+    def _function_contains_yield(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool: ...
+
+    @staticmethod
+    def _function_contains_locals_call(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool: ...
+
+    @staticmethod
+    def _expr_contains_locals_call(node: ast.AST) -> bool: ...
+
+    @staticmethod
+    def _async_generator_contains_yield_from(node: ast.AsyncFunctionDef) -> bool: ...
+
+    @staticmethod
+    def _async_generator_contains_return_value(node: ast.AsyncFunctionDef) -> bool: ...
+
+    @staticmethod
+    def _function_contains_return(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool: ...
+
+    @staticmethod
+    def _body_has_exception_handlers(body: list[ast.stmt]) -> bool: ...
+
+    @staticmethod
+    def _block_needs_context_unwind(body: list[ast.stmt]) -> bool: ...
+
+    def _signature_contains_yield(
+        self,
+        *,
+        decorators: list[ast.expr],
+        args: ast.arguments,
+        returns: ast.expr | None,
+    ) -> bool: ...
+
+    def _has_typing_overload_decorator(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool: ...
+
+    def _function_symbol(self, name: str) -> str: ...
+
+    def _reserve_function_symbol(self, name: str) -> str: ...
+
+    def _function_symbol_for_reference(self, name: str) -> str: ...
+
+    def _lambda_symbol(self) -> str: ...
+
+    def _genexpr_symbol(self) -> str: ...
+
+    def _register_code_symbol(self, symbol: str) -> int: ...
+
+    def _code_symbol_for_value(self, func_val: MoltValue) -> str | None: ...
+
+    def _qualname_prefix(self) -> str: ...
+
+    def _qualname_for_def(self, name: str) -> str: ...
+
+    def _push_qualname(self, name: str, is_function: bool) -> None: ...
+
+    def _pop_qualname(self) -> None: ...
+
+    def start_function(
+        self,
+        name: str,
+        params: list[str] | None = None,
+        param_types: list[str] | None = None,
+        type_facts_name: str | None = None,
+        needs_return_slot: bool = False,
+        has_exception_handlers: bool = True,
+    ) -> None: ...
+
+    def _module_can_defer_attrs(self, node: ast.Module) -> bool: ...
+
+    def _module_has_future_annotations(self, node: ast.Module) -> bool: ...
+
+    def _collect_module_annotation_items(
+        self, node: ast.Module
+    ) -> tuple[list[tuple[str, ast.expr, int]], dict[int, int]]: ...
+
+    def _collect_global_rebinds(self, node: ast.AST) -> set[str]: ...
+
+    def _collect_module_assignments(
+        self, node: ast.Module
+    ) -> tuple[dict[str, int], set[str], bool]: ...
+
+    @classmethod
+    def _collect_module_func_defaults(
+        cls, node: ast.Module
+    ) -> dict[str, dict[str, Any]]: ...
+
+    @staticmethod
+    def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]: ...
+
+    @classmethod
+    def _default_specs_from_args(cls, args: ast.arguments) -> list[dict[str, Any]]: ...
+
+    def _record_func_default_specs(
+        self, func_symbol: str, args: ast.arguments
+    ) -> None: ...
+
+    def _normalized_return_hint(self, returns: ast.expr | None) -> str | None: ...
+
+    def _function_result_hint(self, func_symbol: str) -> str: ...
+
+    def _module_stable_funcs(self, node: ast.Module) -> set[str]: ...
+
+    def _collect_module_func_kinds(self, node: ast.Module) -> dict[str, str]: ...
+
+    def _collect_module_class_names(self, node: ast.Module) -> set[str]: ...
+
+    def _collect_module_class_graph(
+        self, node: ast.Module
+    ) -> tuple[dict[str, list[list[str]]], set[str]]: ...
+
+    def _collect_module_class_mutations(self, node: ast.Module) -> set[str]: ...
+
+    @staticmethod
+    def _collect_module_const_dicts(node: ast.Module) -> dict[str, dict[str, Any]]: ...
+
+    def _record_instance_attr_mutation(self, class_name: str, attr: str) -> None: ...
+
+    def _instance_attr_mutated(self, class_name: str, attr: str) -> bool: ...
+
+    def _flush_deferred_module_attrs(self) -> None: ...
+
+    def _capture_function_state(self) -> dict[str, Any]: ...
+
+    def _restore_function_state(self, state: dict[str, Any]) -> None: ...
+
+    def visit_Module(self, node: ast.Module) -> None: ...
+
+    def _init_return_slot(self) -> None: ...
+
+    def _store_return_slot_for_stateful(self) -> None: ...
+
+    def _load_return_slot(self) -> MoltValue | None: ...
+
+    def _load_return_slot_index(self) -> MoltValue: ...
+
+    def _emit_return_value(self, value: MoltValue) -> None: ...
+
+    def _emit_return_label(self) -> None: ...
+
+    def _emit_boxed_locals_cleanup(self) -> None: ...
+
+    def _emit_restore_exception_stack_depth(
+        self, *, exit_baseline: bool = True
+    ) -> None: ...
+
+    def _emit_function_exception_handler(
+        self, *, clear_handlers: bool = False
+    ) -> None: ...
+
+    def _ends_with_return_jump(self) -> bool: ...
+
+    def resume_function(self, name: str) -> None: ...
+
+    def is_async(self) -> bool: ...
+
+    def is_async_context(self) -> bool: ...
+
+    def _parse_container_hint(self, hint: str) -> tuple[str, str | None]: ...
+
+    def _parse_dict_hint(self, hint: str) -> tuple[str | None, str | None]: ...
+
+    def _expr_is_data_descriptor(self, expr: ast.expr) -> bool: ...
+
+    def _property_field_from_method(self, node: ast.FunctionDef) -> str | None: ...
+
+    def _class_attr_is_data_descriptor(self, class_name: str, attr: str) -> bool: ...
+
+    def _class_layout_version(
+        self,
+        class_name: str,
+        class_attrs: dict[str, ast.expr],
+        methods: dict[str, MethodInfo] | None = None,
+        method_count: int | None = None,
+    ) -> int: ...
+
+    def _class_layout_stable(self, class_name: str) -> bool: ...
+
+    def _class_constructor_fold_safe(
+        self, class_name: str, class_info: ClassInfo
+    ) -> bool: ...
+
+    def _builtin_min_layout(self, mro_names: list[str]) -> int: ...
+
+    def _class_reserved_tail_size(self, mro_names: list[str]) -> int: ...
+
+    def _async_local_offset(self, name: str) -> int: ...
+
+    def _async_locals_public_entries(self) -> list[tuple[str, int]]: ...
+
+    def _task_closure_size(
+        self, payload_slots: int, *, include_gen_control: bool
+    ) -> int: ...
+
+    def _init_scope_async_locals(self, arg_nodes: list[ast.arg]) -> None: ...
+
+    def _apply_hint_to_value(
+        self, _name: str | None, value: MoltValue, hint: str
+    ) -> None: ...
+
+    def _propagate_container_hints(self, dest: str, src: MoltValue) -> None: ...
+
+    def _record_list_element_write(
+        self, target: MoltValue, target_name: str | None, elem_hint: str | None
+    ) -> None: ...
+
+    def _record_container_elem_hint(
+        self, target: MoltValue, elem_hint: str | None
+    ) -> None: ...
+
+    def _remember_bytearray_len_hint(
+        self, value: MoltValue, length: int | None
+    ) -> None: ...
+
+    def _bytearray_len_hint_for(
+        self, name: str | None, value: MoltValue | None
+    ) -> int | None: ...
+
+    def _invalidate_bytearray_len_hint(
+        self, name: str | None, value: MoltValue | None = None
+    ) -> None: ...
+
+    def _copy_container_hints_for_name_load(
+        self, var_name: str, ssa_name: str
+    ) -> None: ...
+
+    def _container_elem_hint(self, value: MoltValue) -> str | None: ...
+
+    def _dict_key_hint(self, value: MoltValue) -> str | None: ...
+
+    def _iterable_element_hint(self, iterable: MoltValue) -> str | None: ...
+
+    def _reduction_acc_numeric_hint(
+        self, name: str, value: MoltValue
+    ) -> str | None: ...
+
+    def _dict_value_hint(self, value: MoltValue) -> str | None: ...
+
+    def _apply_type_facts(self, func_name: str) -> None: ...
+
+    def _annotation_to_hint(self, node: ast.expr | None) -> str | None: ...
+
+    def _annotation_source(self, node: ast.expr) -> str: ...
+
+    def _emit_annotation_value(
+        self, node: ast.expr, *, stringize: bool | None = None
+    ) -> MoltValue: ...
+
+    def _annotation_exec_name(self, owner: str) -> str: ...
+
+    def _annotation_exec_id(self, *, is_module: bool) -> int: ...
+
+    def _collect_annotation_free_vars(self, node: ast.AST) -> list[str]: ...
+
+    def _annotate_qualname(self) -> str: ...
+
+    def _ensure_module_annotation_exec_map(self) -> MoltValue: ...
+
+    def _ensure_class_annotation_exec_map(self, class_name: str) -> MoltValue: ...
+
+    def _emit_annotation_exec_mark(self, exec_map: MoltValue, exec_id: int) -> None: ...
+
+    def _rewrite_class_annotation_expr(
+        self, expr: ast.expr, class_name: str, class_scope: set[str]
+    ) -> ast.expr: ...
+
+    def _emit_module_annotations_dict(self) -> MoltValue: ...
+
+    def _emit_module_annotations_dict_dynamic(self) -> MoltValue: ...
+
+    def _annotation_items_for_function(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> list[tuple[str, ast.expr]]: ...
+
+    def _emit_type_params_values(
+        self, type_params: Sequence[ast.AST | ast.type_param] | None
+    ) -> tuple[list[MoltValue], dict[str, MoltValue]]: ...
+
+    def _emit_attach_type_params(
+        self, owner: MoltValue, type_params: list[MoltValue]
+    ) -> None: ...
+
+    def _emit_annotate_function_obj(
+        self,
+        *,
+        items: list[tuple[str, ast.expr, int]],
+        exec_map_name: str | None,
+        stringize: bool,
+        module_override: str | None = None,
+    ) -> MoltValue: ...
+
+    def _emit_function_annotate(
+        self, func_val: MoltValue, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None: ...
+
+    def _guard_tag_for_hint(self, hint: str) -> int | None: ...
+
+    def _emit_guard_type(self, value: MoltValue, hint: str) -> None: ...
+
+    def _get_or_emit_module_cache(
+        self, module_name: str, *, effect_proof: str | None = None
+    ) -> MoltValue: ...
+
+    def _emit_module_attr_set(
+        self, name: str, value: MoltValue, *, defer: bool = True
+    ) -> None: ...
+
+    def _emit_module_attr_set_on(
+        self, module_val: MoltValue, name: str, value: MoltValue
+    ) -> None: ...
+
+    def _emit_module_global_del(self, name: str) -> None: ...
+
+    def _emit_module_global_del_safe(self, name: str) -> None: ...
+
+    def _emit_function_default_values(
+        self,
+        func_val: MoltValue,
+        default_exprs: list[ast.expr],
+        kw_default_exprs: list[ast.expr | None],
+        kwonly_params: list[str],
+    ) -> tuple[MoltValue, MoltValue, MoltValue]: ...
+
+    def _emit_function_defaults(
+        self,
+        func_val: MoltValue,
+        default_exprs: list[ast.expr],
+        kw_default_exprs: list[ast.expr | None],
+        kwonly_params: list[str],
+    ) -> MoltValue: ...
+
+    def _emit_function_metadata(
+        self,
+        func_val: MoltValue,
+        *,
+        name: str,
+        qualname: str,
+        trace_filename: str | None = None,
+        trace_lineno: int | None = None,
+        trace_name: str | None = None,
+        posonly_params: list[str],
+        pos_or_kw_params: list[str],
+        kwonly_params: list[str],
+        vararg: str | None,
+        varkw: str | None,
+        default_exprs: list[ast.expr],
+        kw_default_exprs: list[ast.expr | None],
+        docstring: str | None,
+        module_override: str | None = None,
+        is_coroutine: bool = False,
+        is_generator: bool = False,
+        is_async_generator: bool = False,
+        bind_kind: int | None = None,
+        poll_fn_symbol: str | None = None,
+        emit_code: bool = True,
+        varnames: list[str] | None = None,
+    ) -> None: ...
+
+    def _build_gpu_kernel_descriptor_json(
+        self, *, func_symbol: str, func_name: str
+    ) -> str: ...
+
+    @staticmethod
+    def _split_function_args(
+        args: ast.arguments,
+    ) -> tuple[list[ast.arg], list[ast.arg], list[ast.arg], str | None, str | None]: ...
+
+    @classmethod
+    def _function_param_names(cls, args: ast.arguments) -> list[str]: ...
+
+    def _emit_module_attr_get(
+        self, name: str, *, effect_proof: str | None = None
+    ) -> MoltValue: ...
+
+    def _emit_class_ref(self, class_name: str) -> MoltValue: ...
+
+    def _current_module_static_class_ref(self, class_name: str) -> MoltValue | None: ...
+
+    def _emit_global_get(self, name: str) -> MoltValue: ...
+
+    def _name_resolves_to_builtin(self, name: str) -> bool: ...
+
+    def _emit_globals_dict(self) -> MoltValue: ...
+
+    def _emit_globals_builtin_obj(self) -> MoltValue: ...
+
+    def _ensure_globals_builtin(self) -> None: ...
+
+    def _emit_globals_builtin_ref(self) -> MoltValue: ...
+
+    def _init_locals_cache(self) -> None: ...
+
+    def _init_locals_cache_and_pin(self) -> None: ...
+
+    def _emit_locals_dict(self) -> MoltValue: ...
+
+    @staticmethod
+    def _normalize_allowlist_module(module_name: str | None) -> str | None: ...
+
+    @staticmethod
+    def _spec_parent(spec_name: str, is_package: bool) -> str: ...
+
+    def _relative_import_package(self) -> str: ...
+
+    def _resolve_relative_import(
+        self, module: str | None, level: int
+    ) -> tuple[str | None, str | None]: ...
+
+    def _emit_relative_import_error(self, kind: str | None) -> None: ...
+
+    def _should_track_module_overrides(self) -> bool: ...
+
+    @staticmethod
+    def _is_modulespec_ctor(node: ast.AST) -> bool: ...
+
+    def _parse_modulespec_override(
+        self, value: ast.AST
+    ) -> tuple[str, bool | None] | None: ...
+
+    def _record_module_override(self, target: ast.AST, value: ast.AST) -> None: ...
+
+    def _maybe_record_module_overrides(
+        self, targets: Sequence[ast.AST], value: ast.AST
+    ) -> None: ...
+
+    @staticmethod
+    def _is_internal_module(module_name: str | None) -> bool: ...
+
+    def _is_known_project_module(self, module_name: str | None) -> bool: ...
+
+    @staticmethod
+    def _display_allowlist_module(module_name: str) -> str: ...
+
+    def _call_allowlist_suggestion(
+        self, func_id: str, imported_from: str | None
+    ) -> str | None: ...
+
+    def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None: ...
+
+    def _should_attempt_runtime_module_import(self, module_name: str) -> bool: ...
+
+    def _emit_module_load(self, module_name: str) -> MoltValue: ...
+
+    def _lookup_func_defaults(
+        self, module_name: str | None, func_id: str
+    ) -> dict[str, Any] | None: ...
+
+    def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue: ...
+
+    def _emit_module_attr_get_default_on(
+        self, module_name: str, name: str, default_val: MoltValue
+    ) -> MoltValue: ...
+
+    def _emit_function_defaults_tuple(self, func_obj: MoltValue) -> MoltValue: ...
+
+    def _emit_function_kwdefaults_dict(self, func_obj: MoltValue) -> MoltValue: ...
+
+    def _emit_bound_method_func(self, method_obj: MoltValue) -> MoltValue: ...
+
+    def _emit_class_method_func(
+        self, class_obj: MoltValue, method_name: str
+    ) -> MoltValue: ...
+
+    def _apply_default_specs(
+        self,
+        total_params: int | None,
+        default_specs: list[dict[str, Any]],
+        args: list[MoltValue],
+        node: ast.AST,
+        *,
+        call_name: str,
+        func_obj: MoltValue | None = None,
+        implicit_self: bool = False,
+        positional_limit: int | None = None,
+    ) -> list[MoltValue] | None: ...
+
+    def _emit_const_value(self, value: object) -> MoltValue: ...
+
+    def _apply_direct_call_defaults(
+        self,
+        module_name: str | None,
+        func_id: str,
+        args: list[MoltValue],
+        node: ast.AST,
+    ) -> list[MoltValue] | None: ...
+
+    def _emit_direct_call_args(
+        self, module_name: str | None, func_id: str, node: ast.Call
+    ) -> list[MoltValue] | None: ...
+
+    def _emit_direct_call_args_for_symbol(
+        self, func_symbol: str, node: ast.Call, func_obj: MoltValue | None = None
+    ) -> tuple[list[MoltValue] | None, MoltValue | None]: ...
+
+    def _emit_dataclasses_field_call(
+        self, module_name: str, node: ast.Call
+    ) -> MoltValue: ...
+
+    def _emit_module_load_with_parents(self, module_name: str) -> MoltValue: ...
+
+    def _emit_import_guard(self, module_val: MoltValue, module_name: str) -> None: ...
+
+    def _emit_exception_class(self, name: str) -> MoltValue: ...
+
+    def _emit_exception_new_from_args(
+        self, kind: str, args: list[MoltValue]
+    ) -> MoltValue: ...
+
+    def _emit_exception_new_from_class(
+        self, class_val: MoltValue, args: list[MoltValue]
+    ) -> MoltValue: ...
+
+    def _emit_exception_new(self, kind: str, message: str | MoltValue) -> MoltValue: ...
+
+    def _emit_missing_value(self) -> MoltValue: ...
+
+    def _emit_unbound_local_guard(self, value: MoltValue, name: str) -> None: ...
+
+    def _emit_unbound_free_guard(self, value: MoltValue, name: str) -> None: ...
+
+    def _emit_type_error_value(
+        self, message: str, type_hint: str = "Any"
+    ) -> MoltValue: ...
+
+    def _emit_type_error(self, message: str | MoltValue) -> None: ...
+
+    def _emit_stop_iteration_from_value(self, value: MoltValue) -> None: ...
+
+    def _emit_exception_match(
+        self, handler: ast.ExceptHandler, exc_val: MoltValue
+    ) -> MoltValue: ...
+
+    def _apply_explicit_hint(self, name: str, value: MoltValue) -> None: ...
+
+    def _emit_builtin_function(self, func_id: str) -> MoltValue: ...
+
+    def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue: ...
+
+    def _emit_optional_intrinsic_lookup_value(self, runtime_name: str) -> MoltValue: ...
+
+    def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue: ...
+
+    def _emit_runtime_function_with_none_defaults(
+        self, runtime_name: str, arity: int, *, default_count: int
+    ) -> MoltValue: ...
+
+    def _static_expr_type_hint_without_emitting(self, expr: ast.expr) -> str | None: ...
+
+    def _try_emit_intrinsic_handle_class_constructor(
+        self, target_module: str, attr_name: str, node: ast.Call
+    ) -> MoltValue | None: ...
+
+    def _intrinsic_handle_class_spec_for_value(
+        self, value: MoltValue | None
+    ) -> IntrinsicHandleClassConstructorSpec | None: ...
+
+    def _emit_intrinsic_handle_class_call(
+        self,
+        obj: MoltValue,
+        spec: IntrinsicHandleClassConstructorSpec,
+        intrinsic_name: str,
+        args: list[MoltValue],
+        *,
+        result_hint: str,
+    ) -> MoltValue: ...
+
+    @staticmethod
+    def _is_intrinsics_module_name(module_name: str | None) -> bool: ...
+
+    def _try_lower_intrinsic_lookup_call(
+        self, *, func_id: str, imported_from: str | None, node: ast.Call
+    ) -> MoltValue | None: ...
+
+    @staticmethod
+    def _is_safe_intrinsic_namespace_expr(expr: ast.expr) -> bool: ...
+
+    def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None: ...
+
+    def _try_lower_local_intrinsic_wrapper_call(
+        self, *, func_id: str, node: ast.Call
+    ) -> MoltValue | None: ...
+
+    @staticmethod
+    def _match_optional_intrinsic_loader_expr(expr: ast.AST) -> str | None: ...
+
+    def _collect_module_optional_intrinsic_globals(
+        self, node: ast.Module
+    ) -> dict[str, str]: ...
+
+    def _emit_builtin_type_value(self, type_name: str) -> MoltValue: ...
+
+    def _emit_name_from_obj(self, obj: MoltValue) -> MoltValue: ...
+
+    def _emit_type_name(self, value: MoltValue) -> MoltValue: ...
+
+    def visit_Name(self, node: ast.Name) -> Any: ...
+
+    def visit_Global(self, node: ast.Global) -> None: ...
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None: ...
+
+    def _box_local(self, name: str) -> None: ...
+
+    def _load_boxed_cell(self, name: str) -> MoltValue | None: ...
+
+    def _closure_cells_for(self, names: Sequence[str]) -> list[MoltValue]: ...
+
+    def _collect_pattern_capture_names(self, pattern: ast.pattern) -> set[str]: ...
+
+    def _collect_assigned_names(self, nodes: list[ast.stmt]) -> set[str]: ...
+
+    def _collect_assigned_names_ordered(self, nodes: list[ast.stmt]) -> list[str]: ...
+
+    def _varnames_from_params(
+        self,
+        *,
+        posonly_params: list[str],
+        pos_or_kw_params: list[str],
+        kwonly_params: list[str],
+        vararg: str | None,
+        varkw: str | None,
+    ) -> list[str]: ...
+
+    def _collect_varnames_for_body(
+        self,
+        *,
+        posonly_params: list[str],
+        pos_or_kw_params: list[str],
+        kwonly_params: list[str],
+        vararg: str | None,
+        varkw: str | None,
+        body: list[ast.stmt],
+    ) -> list[str]: ...
+
+    @staticmethod
+    def _is_type_checking_test(expr: ast.expr) -> bool: ...
+
+    @staticmethod
+    def _static_test_truthiness(expr: ast.expr) -> bool | None: ...
+
+    @staticmethod
+    def _static_if_live_branch(node: ast.If) -> list[ast.stmt] | None: ...
+
+    def _collect_namedexpr_names(self, node: ast.AST) -> set[str]: ...
+
+    def _collect_deleted_names(self, nodes: list[ast.stmt]) -> set[str]: ...
+
+    def _collect_free_vars(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> list[str]: ...
+
+    def _collect_free_vars_expr(self, node: ast.Lambda) -> list[str]: ...
+
+    def _collect_free_vars_raw(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> set[str]: ...
+
+    def _collect_free_vars_expr_raw(self, node: ast.Lambda) -> set[str]: ...
+
+    def _collect_free_vars_comprehension(
+        self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
+    ) -> list[str]: ...
+
+    def _collect_nested_free_vars(self, nodes: Sequence[ast.AST]) -> set[str]: ...
+
+    def _collect_nested_free_vars_raw(self, nodes: Sequence[ast.AST]) -> set[str]: ...
+
+    def _collect_comprehension_cell_vars(
+        self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
+    ) -> list[str]: ...
+
+    def _collect_comprehension_target_names(
+        self, nodes: Sequence[ast.AST]
+    ) -> set[str]: ...
+
+    def _collect_namedexpr_targets_comprehension(
+        self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
+    ) -> set[str]: ...
+
+    def _collect_scope_cell_vars(
+        self, body: Sequence[ast.stmt], local_candidates: set[str]
+    ) -> set[str]: ...
+
+    def _prebox_scope_cell_vars(
+        self, *, body: Sequence[ast.stmt], arg_nodes: Sequence[ast.arg]
+    ) -> None: ...
+
+    def _emit_free_var_load(self, name: str) -> MoltValue | None: ...
+
+    def _emit_free_var_store(self, name: str, value: MoltValue) -> bool: ...
+
+    def _load_free_var_cell(self, name: str) -> MoltValue | None: ...
+
+    def _collect_static_attributes(
+        self, class_node: ast.ClassDef
+    ) -> tuple[str, ...]: ...
+
+    def _collect_class_mutations(self, nodes: list[ast.stmt]) -> set[str]: ...
+
+    def _collect_loop_guard_candidates(
+        self, body: list[ast.stmt]
+    ) -> dict[str, str]: ...
+
+    def _collect_loop_static_class_candidates(
+        self, body: list[ast.stmt]
+    ) -> list[str]: ...
+
+    def _push_loop_static_class_refs(self, body: list[ast.stmt]) -> None: ...
+
+    def _pop_loop_static_class_refs(self) -> None: ...
+
+    def _emit_loop_static_class_ref(self, class_name: str) -> MoltValue | None: ...
+
+    def _collect_target_names(self, target: ast.AST) -> set[str]: ...
+
+    def _collect_global_decls(self, nodes: list[ast.stmt]) -> set[str]: ...
+
+    def _module_globals_dict_escapes(self, node: ast.Module) -> bool: ...
+
+    def _collect_stable_module_classes(self, node: ast.Module) -> set[str]: ...
+
+    def _collect_nonlocal_decls(self, nodes: list[ast.stmt]) -> set[str]: ...
+
+    def _class_id_from_call(self, node: ast.Call) -> str | None: ...
+
+    def _builtin_exact_type_from_expr(self, value: ast.AST | None) -> str | None: ...
+
+    def _update_exact_local(self, name: str, value: ast.AST | None) -> None: ...
+
+    def _has_exact_builtin_receiver(
+        self, node: ast.AST, receiver: MoltValue, expected_type: str
+    ) -> bool: ...
+
+    def _propagate_func_type_hint(
+        self, value_node: MoltValue, source_expr: ast.AST | None
+    ) -> None: ...
+
+    def _load_local_value(self, name: str) -> MoltValue | None: ...
+
+    def _load_local_value_unchecked(self, name: str) -> MoltValue | None: ...
+
+    def _store_local_value(self, name: str, value: MoltValue) -> None: ...
+
+    def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None: ...
+
+    def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool: ...
+
+    def _iterable_is_indexable_for_loop(self, iterable: MoltValue | None) -> bool: ...
+
+    def _expr_may_yield(self, node: ast.AST) -> bool: ...
+
+    def _expr_needs_async(self, node: ast.AST) -> bool: ...
+
+    def _expr_contains_yield(self, node: ast.AST) -> bool: ...
+
+    def _spill_async_value(self, value: MoltValue, name: str) -> int: ...
+
+    def _reload_async_value(self, offset: int, hint: str) -> MoltValue: ...
+
+    def _maybe_spill_receiver(
+        self, receiver: MoltValue, args: list[ast.expr]
+    ) -> tuple[MoltValue, int | None]: ...
+
+    def _spill_async_temporaries(self) -> None: ...
+
+    def _active_exception_value(self, exc: ActiveException) -> MoltValue: ...
+
+    def _emit_exception_handler_exit_cleanup(
+        self, exc: ActiveException | None = None
+    ) -> None: ...
+
+    def _emit_active_handler_name_deletes(
+        self, handlers: list["ActiveException"]
+    ) -> None: ...
+
+    def _emit_escaping_handler_name_deletes(self) -> None: ...
+
+    def _emit_expr_list(self, exprs: list[ast.expr]) -> list[MoltValue]: ...
+
+    def _emit_call_args(self, args: list[ast.expr]) -> list[MoltValue]: ...
+
+    def _try_emit_static_dataclass_constructor(
+        self, node: ast.Call, class_id: str, class_info: ClassInfo, class_ref: MoltValue
+    ) -> MoltValue | None: ...
+
+    @staticmethod
+    def _call_needs_bind(node: ast.Call) -> bool: ...
+
+    def _emit_call_args_builder(self, node: ast.Call) -> MoltValue: ...
+
+    def _emit_print_call_args_builder(
+        self, node: ast.Call
+    ) -> tuple[MoltValue, bool]: ...
+
+    def _match_vector_reduction_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str] | None: ...
+
+    def _range_start_expr(self, node: ast.expr) -> ast.expr | None: ...
+
+    def _match_indexed_vector_reduction_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str, ast.expr | None] | None: ...
+
+    def _subscript_matches(
+        self, node: ast.expr, seq_name: str, idx_name: str
+    ) -> bool: ...
+
+    def _match_indexed_vector_minmax_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str, ast.expr | None] | None: ...
+
+    def _match_iter_vector_reduction_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str, ast.expr | None] | None: ...
+
+    def _match_iter_vector_minmax_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str, ast.expr | None] | None: ...
+
+    def _match_vector_minmax_loop(
+        self, node: ast.For
+    ) -> tuple[str, str, str] | None: ...
+
+    def _emit_iter_loop(
+        self,
+        node: ast.For,
+        iterable: MoltValue,
+        loop_break_flag: int | str | None = None,
+    ) -> None: ...
+
+    def _emit_index_loop(
+        self,
+        node: ast.For,
+        iterable: MoltValue,
+        loop_break_flag: int | str | None = None,
+    ) -> None: ...
+
+    def _parse_range_call(
+        self, node: ast.AST
+    ) -> tuple[MoltValue, MoltValue, MoltValue, bool] | None: ...
+
+    def _emit_range_obj_from_args(
+        self, start: MoltValue, stop: MoltValue, step: MoltValue
+    ) -> MoltValue: ...
+
+    def _emit_range_step_zero_guard(
+        self, step: MoltValue, step_const: int | None
+    ) -> None: ...
+
+    def _emit_range_loop(
+        self,
+        node: ast.For,
+        start: MoltValue,
+        stop: MoltValue,
+        step: MoltValue,
+        loop_break_flag: int | str | None = None,
+    ) -> None: ...
+
+    def _emit_range_list(
+        self, start: MoltValue, stop: MoltValue, step: MoltValue
+    ) -> MoltValue: ...
+
+    def _emit_list_int_filled(self, count: MoltValue, fill: MoltValue) -> MoltValue: ...
+
+    def _emit_list_filled(
+        self, count: MoltValue, fill: MoltValue, elem_hint: str | None
+    ) -> MoltValue: ...
+
+    def _match_simple_range_list_comp(
+        self, node: ast.ListComp
+    ) -> tuple[MoltValue, MoltValue, MoltValue] | None: ...
+
+    def _match_const_int_range_list_comp(self, node: ast.ListComp) -> int | None: ...
+
+    def _match_const_range_list_comp(
+        self, node: ast.ListComp
+    ) -> ast.Constant | None: ...
+
+    def _emit_const_int_range_list_comp(
+        self, node: ast.ListComp, fill_value: int
+    ) -> MoltValue: ...
+
+    def _emit_const_range_list_comp(
+        self, node: ast.ListComp, fill_node: ast.Constant
+    ) -> MoltValue: ...
+
+    def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue: ...
+
+    def _emit_list_from_aiter(self, iterable: MoltValue) -> MoltValue: ...
+
+    def _emit_tuple_from_iter(self, iterable: MoltValue) -> MoltValue: ...
+
+    def _emit_set_from_iter(
+        self, iterable: MoltValue, probe: bool = False
+    ) -> MoltValue: ...
+
+    def _emit_set_from_aiter(self, iterable: MoltValue) -> MoltValue: ...
+
+    def _emit_dict_fill_from_iter(
+        self, target: MoltValue, iterable: MoltValue
+    ) -> None: ...
+
+    def _emit_dict_fill_from_aiter(
+        self, target: MoltValue, iterable: MoltValue
+    ) -> MoltValue: ...
+
+    def _emit_set_update_from_iter(
+        self, target: MoltValue, iterable: MoltValue
+    ) -> None: ...
+
+    def _emit_frozenset_from_iter(self, iterable: MoltValue) -> MoltValue: ...
+
+    def _emit_intarray_from_seq(self, seq: MoltValue) -> MoltValue: ...
+
+    def _is_flat_list_int_container(self, value: MoltValue) -> bool: ...
+
+    def _emit_iter_new(self, iterable: MoltValue) -> MoltValue: ...
+
+    def _emit_iter_next_checked(self, iter_obj: MoltValue) -> MoltValue: ...
+
+    def _emit_guarded_setattr(
+        self,
+        obj: MoltValue,
+        attr: str,
+        value: MoltValue,
+        expected_class: str,
+        *,
+        use_init: bool = False,
+        assume_exact: bool = False,
+        obj_name: str | None = None,
+    ) -> None: ...
+
+    def _emit_guarded_getattr(
+        self,
+        obj: MoltValue,
+        attr: str,
+        expected_class: str,
+        *,
+        assume_exact: bool = False,
+        obj_name: str | None = None,
+    ) -> MoltValue: ...
+
+    def _emit_layout_guard(self, obj: MoltValue, expected_class: str) -> MoltValue: ...
+
+    def _emit_guard_dict_shape(self, obj: MoltValue) -> MoltValue: ...
+
+    def _emit_inc_ref(self, value: MoltValue) -> MoltValue: ...
+
+    def _emit_dec_ref(self, value: MoltValue) -> MoltValue: ...
+
+    def _emit_borrow(self, value: MoltValue) -> MoltValue: ...
+
+    def _emit_release(self, value: MoltValue) -> MoltValue: ...
+
+    def _emit_box(self, value: MoltValue, *, hint: str | None = None) -> MoltValue: ...
+
+    def _emit_unbox(
+        self, value: MoltValue, *, hint: str | None = None
+    ) -> MoltValue: ...
+
+    def _emit_cast(self, value: MoltValue, *, hint: str | None = None) -> MoltValue: ...
+
+    def _emit_widen(
+        self, value: MoltValue, *, hint: str | None = None
+    ) -> MoltValue: ...
+
+    def _loop_guard_assumption(
+        self, obj_name: str, expected_class: str
+    ) -> bool | None: ...
+
+    def _push_loop_guard_assumptions(
+        self, guard_map: dict[str, tuple[str, MoltValue]], assume_true: bool
+    ) -> None: ...
+
+    def _pop_loop_guard_assumptions(self) -> None: ...
+
+    def _loop_guard_for(
+        self, obj: MoltValue, expected_class: str, *, obj_name: str | None = None
+    ) -> MoltValue | None: ...
+
+    def _invalidate_loop_guard(self, name: str) -> None: ...
+
+    def _invalidate_loop_guards_for_class(self, class_name: str) -> None: ...
+
+    def _emit_hoisted_loop_guards(
+        self, body: list[ast.stmt]
+    ) -> dict[str, tuple[str, MoltValue]]: ...
+
+    def _emit_guard_map_condition(
+        self, guard_map: dict[str, tuple[str, MoltValue]]
+    ) -> MoltValue: ...
+
+    def _emit_guarded_field_get_with_guard(
+        self,
+        obj: MoltValue,
+        fast_attr: str,
+        fallback_attr: str,
+        expected_class: str,
+        guard: MoltValue,
+    ) -> MoltValue: ...
+
+    def _emit_guarded_property_get(
+        self,
+        obj: MoltValue,
+        attr: str,
+        getter_symbol: str,
+        expected_class: str,
+        return_hint: str | None,
+        *,
+        obj_name: str | None = None,
+    ) -> MoltValue: ...
+
+    def _emit_aiter(self, iterable: MoltValue) -> MoltValue: ...
+
+    def _emit_for_loop(
+        self,
+        node: ast.For,
+        iterable: MoltValue,
+        loop_break_flag: int | str | None = None,
+    ) -> None: ...
+
+    def _prepare_mutable_control_flow_bindings(self, names: set[str]) -> None: ...
+
+    def _emit_loop_orelse(self, break_name: str, orelse: list[ast.stmt]) -> None: ...
+
+    def _match_counted_while(
+        self, node: ast.While
+    ) -> tuple[str, int, list[ast.stmt]] | None: ...
+
+    def _const_int_from_expr(self, node: ast.expr) -> int | None: ...
+
+    def _const_int_for_local(self, name: str) -> int | None: ...
+
+    def _match_bytearray_fill_counted_while(
+        self, index_name: str, bound: int, body: list[ast.stmt]
+    ) -> tuple[str, int, int, int] | None: ...
+
+    def _match_counted_while_sum(
+        self, index_name: str, body: list[ast.stmt]
+    ) -> str | None: ...
+
+    def _match_const_increment(self, stmt: ast.stmt) -> tuple[str, int] | None: ...
+
+    def _match_counted_while_const_increment(
+        self, body: list[ast.stmt]
+    ) -> tuple[str, int] | None: ...
+
+    def _is_unit_increment(self, stmt: ast.stmt, name: str) -> bool: ...
+
+    def _emit_counted_while(
+        self, index_name: str, bound: int, body: list[ast.stmt]
+    ) -> None: ...
+
+    @staticmethod
+    def _try_extract_const_str(node: ast.expr) -> str | None: ...
+
+    def visit_BinOp(self, node: ast.BinOp) -> Any: ...
+
+    def visit_Constant(self, node: ast.Constant) -> Any: ...
+
+    def _emit_str_from_obj(self, value: MoltValue) -> MoltValue: ...
+
+    def _builtin_str_single_object_arg(self, node: ast.AST) -> ast.AST | None: ...
+
+    def _emit_repr_from_obj(self, value: MoltValue) -> MoltValue: ...
+
+    def _emit_ascii_from_obj(self, value: MoltValue) -> MoltValue: ...
+
+    def _emit_string_join(self, parts: list[MoltValue]) -> MoltValue: ...
+
+    def _emit_string_format_value(
+        self, value: MoltValue, spec: MoltValue
+    ) -> MoltValue: ...
+
+    def _emit_string_format(self, value: MoltValue, spec: str) -> MoltValue: ...
+
+    def _split_format_field_name(
+        self, field_name: str
+    ) -> tuple[int | str, list[tuple[bool, int | str]]] | None: ...
+
+    def _parse_format_tokens(
+        self, text: str, arg_count: int, kw_names: set[str], state: FormatParseState
+    ) -> list[FormatToken] | None: ...
+
+    def _emit_format_tokens(
+        self,
+        tokens: list[FormatToken],
+        args: list[MoltValue],
+        kwargs: dict[str, MoltValue],
+    ) -> MoltValue: ...
+
+    def _lower_string_format_call(
+        self, node: ast.Call, format_str: str
+    ) -> MoltValue | None: ...
+
+    def _emit_not(self, value: MoltValue) -> MoltValue: ...
+
+    def _emit_contains(self, container: MoltValue, item: MoltValue) -> MoltValue: ...
+
+    def _emit_compare_op(
+        self, op: ast.cmpop, left: MoltValue, right: MoltValue
+    ) -> MoltValue: ...
+
+    def _emit_format_spec_value(self, node: ast.expr) -> MoltValue: ...
+
+    def _parse_molt_buffer_call(
+        self, node: ast.Call, name: str
+    ) -> list[ast.expr] | None: ...
+
+    def _match_matmul_loop(self, node: ast.For) -> tuple[str, str, str] | None: ...
+
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> Any: ...
+
+    def _emit_template_interpolation(self, node: Any) -> MoltValue: ...
+
+    def visit_TemplateStr(self, node: Any) -> Any: ...
+
+    def _build_comprehension_body(
+        self, generators: list[ast.comprehension], inner: list[ast.stmt]
+    ) -> list[ast.stmt]: ...
+
+    def _comprehension_requires_async(
+        self, generators: list[ast.comprehension], exprs: list[ast.AST | None]
+    ) -> bool: ...
+
+    def _inline_simple_comp_exprs(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp
+    ) -> list[ast.AST]: ...
+
+    def _can_inline_simple_comp(
+        self, generators: list[ast.comprehension], exprs: Sequence[ast.AST]
+    ) -> bool: ...
+
+    def _can_inline_list_comp(self, node: ast.ListComp) -> bool: ...
+
+    def _can_inline_set_comp(self, node: ast.SetComp) -> bool: ...
+
+    def _can_inline_dict_comp(self, node: ast.DictComp) -> bool: ...
+
+    def _inline_simple_comp_target(
+        self, comp: ast.comprehension, temp_prefix: str
+    ) -> tuple[str, list[str] | None]: ...
+
+    def _collect_inline_comp_walrus_names(
+        self, exprs: Sequence[ast.AST], ifs: Sequence[ast.AST]
+    ) -> set[str]: ...
+
+    def _collect_inline_comp_lambda_free_vars(
+        self, exprs: Sequence[ast.AST], ifs: Sequence[ast.AST]
+    ) -> set[str]: ...
+
+    def _emit_inline_simple_comp(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp,
+        *,
+        result_type_hint: str,
+        result_op: str,
+        temp_prefix: str,
+        emit_result_values: Callable[[MoltValue, list[MoltValue]], None],
+    ) -> MoltValue: ...
+
+    def _emit_inline_list_comp(self, node: ast.ListComp) -> MoltValue: ...
+
+    def _emit_inline_set_comp(self, node: ast.SetComp) -> MoltValue: ...
+
+    def _emit_inline_dict_comp(self, node: ast.DictComp) -> MoltValue: ...
+
+    def _can_inline_sum_genexpr(self, node: ast.GeneratorExp) -> bool: ...
+
+    @staticmethod
+    def _can_inline_any_all_genexpr(node: ast.GeneratorExp) -> bool: ...
+
+    @staticmethod
+    def _sum_add_result_hint(acc: MoltValue, value: MoltValue) -> str: ...
+
+    def _try_emit_inline_sum_genexpr(self, node: ast.Call) -> MoltValue | None: ...
+
+    def visit_ListComp(self, node: ast.ListComp) -> Any: ...
+
+    def visit_SetComp(self, node: ast.SetComp) -> Any: ...
+
+    def visit_DictComp(self, node: ast.DictComp) -> Any: ...
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> Any: ...
+
+    def visit_List(self, node: ast.List) -> Any: ...
+
+    def visit_Tuple(self, node: ast.Tuple) -> Any: ...
+
+    def visit_Set(self, node: ast.Set) -> Any: ...
+
+    def visit_Dict(self, node: ast.Dict) -> Any: ...
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None: ...
+
+    def _emit_dynamic_call(
+        self, node: ast.Call, callee: MoltValue, needs_bind: bool
+    ) -> MoltValue: ...
+
+    def _function_needs_classcell(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool: ...
+
+    def _method_needs_classcell_closure(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool: ...
+
+    def _compute_method_closure(
+        self, item: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[list[str], dict[str, str], MoltValue | None, bool]: ...
+
+    def _lower_statistics_slice_call(
+        self, func_id: str, node: ast.Call
+    ) -> MoltValue | None: ...
+
+    def _try_emit_super_static_call(self, node: ast.Call) -> "MoltValue | None": ...
+
+    def _fold_bare_super_static(
+        self, node: ast.Call, method_name: str
+    ) -> "MoltValue | None": ...
+
+    def _method_inline_closure_ok(
+        self, free_vars: list[str], item: "ast.FunctionDef | ast.AsyncFunctionDef"
+    ) -> bool: ...
+
+    def _extract_inline_return(
+        self, item: "ast.FunctionDef", params: list[str]
+    ) -> "ast.expr | None": ...
+
+    def _extract_inline_init_assigns(
+        self, item: "ast.FunctionDef", params: list[str]
+    ) -> "list[tuple[str, ast.expr]] | None": ...
+
+    def _try_inline_method_call(
+        self, method_info: MethodInfo, receiver: MoltValue, call_args: list[MoltValue]
+    ) -> MoltValue | None: ...
+
+    def _try_inline_init_assigns(
+        self,
+        init_assigns: "list[tuple[str, ast.expr]]",
+        inline_params: list[str],
+        receiver: "MoltValue",
+        call_args: list,
+    ) -> bool: ...
+
+    def _try_emit_user_method_static_call(
+        self, node: ast.Call
+    ) -> "MoltValue | None": ...
+
+    def _local_name_shadows_import_binding(self, name: str) -> bool: ...
+
+    def _literal_importlib_import_module_target(self, node: ast.Call) -> str | None: ...
+
+    def _try_emit_importlib_import_module_literal_call(
+        self, node: ast.Call
+    ) -> MoltValue | None: ...
+
+    def visit_Call(self, node: ast.Call) -> Any: ...
+
+    def visit_Subscript(self, node: ast.Subscript) -> Any: ...
+
+    def visit_Slice(self, node: ast.Slice) -> Any: ...
+
+    def _emit_attribute_load(
+        self,
+        node: ast.Attribute,
+        obj: MoltValue,
+        obj_name: str | None,
+        exact_class: str | None,
+    ) -> MoltValue: ...
+
+    def _emit_attribute_load_inner(
+        self,
+        node: ast.Attribute,
+        obj: MoltValue,
+        obj_name: str | None,
+        exact_class: str | None,
+    ) -> MoltValue: ...
+
+    def visit_Attribute(self, node: ast.Attribute) -> Any: ...
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None: ...
+
+    def visit_TypeAlias(self, node: ast.TypeAlias) -> None: ...
+
+    def _emit_unpack_assign(
+        self, target: ast.Tuple | ast.List, value_node: MoltValue | None
+    ) -> None: ...
+
+    def _emit_attribute_store(
+        self,
+        obj: MoltValue | None,
+        obj_expr: ast.AST | None,
+        obj_name: str | None,
+        exact_class: str | None,
+        attr: str,
+        value_node: MoltValue,
+    ) -> None: ...
+
+    def _emit_assign_target(
+        self, target: ast.AST, value_node: MoltValue | None, source_expr: ast.AST | None
+    ) -> None: ...
+
+    def visit_Assign(self, node: ast.Assign) -> None: ...
+
+    def _match_dict_increment_assign(
+        self, node: ast.Assign
+    ) -> tuple[ast.expr, ast.expr, ast.expr] | None: ...
+
+    def _dict_increment_key_is_single_eval_safe(self, key: ast.expr) -> bool: ...
+
+    def _match_split_dict_increment_for_loop(
+        self, node: ast.For
+    ) -> tuple[ast.expr, ast.expr, ast.expr | None, ast.expr] | None: ...
+
+    def _emit_split_dict_increment_for_loop(self, node: ast.For) -> bool: ...
+
+    def _is_taq_header_guard(self, stmt: ast.stmt) -> str | None: ...
+
+    def _match_taq_ingest_loop_body(
+        self, body: list[ast.stmt]
+    ) -> tuple[str | None, str, str, str, ast.expr] | None: ...
+
+    def _emit_taq_ingest_loop_body(self, body: list[ast.stmt]) -> bool: ...
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> Any: ...
+
+    def visit_Delete(self, node: ast.Delete) -> None: ...
+
+    def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None: ...
+
+    def _augassign_op_kind(self, op: ast.operator) -> str: ...
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None: ...
+
+    def visit_Compare(self, node: ast.Compare) -> Any: ...
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> Any: ...
+
+    def visit_IfExp(self, node: ast.IfExp) -> Any: ...
+
+    def _emit_match_cell(self, initial: bool) -> tuple[MoltValue, MoltValue]: ...
+
+    def _emit_match_load(self, cell: MoltValue, idx: MoltValue) -> MoltValue: ...
+
+    def _emit_match_store(
+        self, cell: MoltValue, idx: MoltValue, value: MoltValue
+    ) -> None: ...
+
+    def _emit_match_and(
+        self, cell: MoltValue, idx: MoltValue, compute: Callable[[], MoltValue]
+    ) -> None: ...
+
+    def _emit_match_capture(
+        self,
+        name: str | None,
+        value: MoltValue,
+        match_cell: MoltValue,
+        match_idx: MoltValue,
+        capture_map: dict[str, str],
+    ) -> None: ...
+
+    def _match_irrefutable_reason(
+        self, pattern: ast.pattern
+    ) -> tuple[str, str | None] | None: ...
+
+    def _validate_match_pattern(self, pattern: ast.pattern) -> None: ...
+
+    def _emit_match_or(
+        self,
+        pattern: ast.MatchOr,
+        subject: MoltValue,
+        match_cell: MoltValue,
+        match_idx: MoltValue,
+        capture_map: dict[str, str],
+    ) -> None: ...
+
+    def _emit_match_sequence(
+        self,
+        pattern: ast.MatchSequence,
+        subject: MoltValue,
+        match_cell: MoltValue,
+        match_idx: MoltValue,
+        capture_map: dict[str, str],
+    ) -> None: ...
+
+    def _emit_match_mapping(
+        self,
+        pattern: ast.MatchMapping,
+        subject: MoltValue,
+        match_cell: MoltValue,
+        match_idx: MoltValue,
+        capture_map: dict[str, str],
+    ) -> None: ...
+
+    def _emit_match_class(
+        self,
+        pattern: ast.MatchClass,
+        subject: MoltValue,
+        match_cell: MoltValue,
+        match_idx: MoltValue,
+        capture_map: dict[str, str],
+    ) -> None: ...
+
+    def _emit_match_pattern(
+        self,
+        pattern: ast.pattern,
+        subject: MoltValue,
+        match_cell: MoltValue,
+        match_idx: MoltValue,
+        capture_map: dict[str, str],
+    ) -> None: ...
+
+    def _raise_syntax_error(self, msg: str, node: ast.AST) -> None: ...
+
+    def visit_Match(self, node: ast.Match) -> None: ...
+
+    def _emit_static_if_live_branch(self, branch: list[ast.stmt]) -> None: ...
+
+    def visit_If(self, node: ast.If) -> None: ...
+
+    def visit_With(self, node: ast.With) -> None: ...
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None: ...
+
+    def visit_For(self, node: ast.For) -> None: ...
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None: ...
+
+    def visit_While(self, node: ast.While) -> None: ...
+
+    def _visit_block(self, body: list[ast.stmt]) -> bool: ...
+
+    def _visit_loop_body(
+        self,
+        body: list[ast.stmt],
+        prefill: dict[str, tuple[str, MoltValue]] | None = None,
+        loop_break_flag: int | str | None = None,
+    ) -> bool: ...
+
+    def _emit_guarded_body(
+        self, body: list[ast.stmt], baseline_exc: ActiveException | None
+    ) -> None: ...
+
+    def _emit_finalbody(
+        self,
+        finalbody: list[ast.stmt],
+        baseline_exc: ActiveException | None,
+        *,
+        popped_scopes: int = 0,
+    ) -> None: ...
+
+    def _ctx_mark_arg(self, scope: TryScope) -> MoltValue: ...
+
+    def _emit_context_unwind_to(self, scope: TryScope, exc_val: MoltValue) -> None: ...
+
+    def _emit_control_flow_scope_unwind(self, scopes: Sequence[TryScope]) -> None: ...
+
+    def _emit_raise_exit(self) -> None: ...
+
+    def _emit_raise_if_pending(
+        self,
+        *,
+        emit_exit: bool = False,
+        clear_handlers: bool = False,
+        force_exit: bool = False,
+    ) -> None: ...
+
+    def _emit_call_bound_or_func(
+        self, callee: MoltValue, args: list[MoltValue]
+    ) -> MoltValue: ...
+
+    def _emit_sync_try_except_split(
+        self,
+        node: ast.Try,
+        scope: TryScope,
+        unbound_snapshot_try: set[str],
+        prior_terminated: bool,
+    ) -> None: ...
+
+    def visit_Try(self, node: ast.Try) -> None: ...
+
+    def visit_TryStar(self, node: ast.TryStar) -> None: ...
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> Any: ...
+
+    def visit_Raise(self, node: ast.Raise) -> None: ...
+
+    def visit_Assert(self, node: ast.Assert) -> None: ...
+
+    def _emit_loop_unwind(self) -> None: ...
+
+    def visit_Break(self, node: ast.Break) -> None: ...
+
+    def visit_Continue(self, node: ast.Continue) -> None: ...
+
+    def visit_Return(self, node: ast.Return) -> None: ...
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None: ...
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None: ...
+
+    def visit_Lambda(self, node: ast.Lambda) -> MoltValue: ...
+
+    def visit_Import(self, node: ast.Import) -> None: ...
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None: ...
+
+    def _emit_await_anext(
+        self, iter_obj: MoltValue, *, default_val: MoltValue | None, has_default: bool
+    ) -> MoltValue: ...
+
+    def visit_Await(self, node: ast.Await) -> Any: ...
+
+    def _emit_awaitable_transform(self, awaitable: MoltValue) -> MoltValue: ...
+
+    def _emit_await_value(
+        self, awaitable: MoltValue, *, raise_pending: bool = True
+    ) -> MoltValue: ...
+
+    def visit_Yield(self, node: ast.Yield) -> Any: ...
+
+    def visit_YieldFrom(self, node: ast.YieldFrom) -> Any: ...
+
+    @staticmethod
+    def _scalarize_string_split_fields_json(
+        json_ops: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]: ...
+
+    @staticmethod
+    def _fuse_string_split_field_consumers_json(
+        json_ops: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]: ...
+
+    def map_ops_to_json(
+        self, ops: list[MoltOp], *, function_name: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]: ...
+
+    def _midend_function_stats(self) -> dict[str, int]: ...
+
+    def _midend_pass_stats(self, pass_name: str) -> dict[str, Any]: ...
+
+    @staticmethod
+    def _midend_csv_tokens(value: str) -> set[str]: ...
+
+    @staticmethod
+    def _midend_float_env(name: str, default: float) -> float: ...
+
+    @staticmethod
+    def _midend_positive_int_env(
+        name: str, default: int, *, minimum: int = 1
+    ) -> int: ...
+
+    def _resolve_midend_env_config(self) -> MidendEnvConfig: ...
+
+    @staticmethod
+    def _capture_midend_env_snapshot() -> tuple[str | None, ...]: ...
+
+    def _adjust_module_pressure_counts(
+        self, *, function_delta: int = 0, ops_delta: int = 0
+    ) -> None: ...
+
+    def _sync_module_pressure_counts_from_funcs_map(self) -> None: ...
+
+    def _current_module_pressure_snapshot(self) -> tuple[int, int, int]: ...
+
+    def _new_tracked_ops(
+        self, initial: list[MoltOp] | None = None, *, count_function: bool = False
+    ) -> _TrackedOpsList: ...
+
+    def _refresh_midend_env_config_if_needed(self) -> None: ...
+
+    def _midend_hot_function_match(self, function_name: str) -> str | None: ...
+
+    @staticmethod
+    def _promote_midend_tier_one_step(tier: MidendTier) -> MidendTier: ...
+
+    def _classify_midend_tier(
+        self, function_name: str, ops: list[MoltOp]
+    ) -> MidendTierClassification: ...
+
+    def _resolve_midend_function_policy(
+        self,
+        ops: list[MoltOp],
+        *,
+        function_name: str | None = None,
+        block_count: int = 1,
+    ) -> MidendFunctionPolicy: ...
+
+    def _record_midend_pass_sample(
+        self,
+        pass_name: str,
+        *,
+        elapsed_ms: float,
+        accepted: bool,
+        degraded: bool = False,
+    ) -> None: ...
+
+    @staticmethod
+    def _pass_stat_p95(samples: list[float]) -> float: ...
+
+    def _record_midend_policy_outcome(
+        self,
+        *,
+        policy: MidendFunctionPolicy,
+        spent_ms: float,
+        degraded: bool,
+        degrade_events: list[dict[str, Any]],
+        round_snapshots: list[dict[str, Any]] | None = None,
+    ) -> None: ...
+
+    def _log_degrade_levels(
+        self, degrade_level: int, reasons: list[str], budget_ms: float
+    ) -> None: ...
+
+    def _maybe_report_midend_stats(self) -> None: ...
+
+    def _resolve_alias_value(
+        self, value: MoltValue, aliases: dict[str, MoltValue]
+    ) -> MoltValue: ...
+
+    def _rewrite_aliases_in_arg(
+        self, value: Any, aliases: dict[str, MoltValue]
+    ) -> Any: ...
+
+    def _is_canonicalization_barrier_op(self, op_kind: str) -> bool: ...
+
+    def _const_type_tag(self, op: MoltOp) -> int | None: ...
+
+    def _empty_canonicalization_state(self) -> CanonicalizationState: ...
+
+    def _clone_canonicalization_state(
+        self, state: CanonicalizationState
+    ) -> CanonicalizationState: ...
+
+    def _invalidate_canonicalization_state_signature(
+        self, state: CanonicalizationState
+    ) -> None: ...
+
+    def _const_cache_key_for_op(self, op: MoltOp) -> tuple[Any, ...] | None: ...
+
+    def _op_effect_class(self, op_kind: str) -> str: ...
+
+    def _is_pure_op_for_global_cse(self, op_kind: str) -> bool: ...
+
+    def _is_cse_eligible_op(self, op_kind: str) -> bool: ...
+
+    def _normalize_value_operand_key(
+        self, value: Any, const_int_values: dict[str, int]
+    ) -> tuple[str, Any] | None: ...
+
+    def _normalize_operand_key_for_value_numbering(
+        self, value: Any, const_int_values: dict[str, int]
+    ) -> tuple[str, Any] | None: ...
+
+    def _const_type_tag_for_lattice_value(self, value: Any) -> int | None: ...
+
+    def _heap_alias_class_for_read_op(
+        self, op: MoltOp, value_type_tags: dict[str, int]
+    ) -> str | None: ...
+
+    def _is_uncertain_heap_boundary(self, op_kind: str) -> bool: ...
+
+    def _heap_alias_classes_for_write_op(
+        self, op: MoltOp, value_type_tags: dict[str, int]
+    ) -> set[str]: ...
+
+    def _is_heap_read_key(self, key: tuple[Any, ...]) -> bool: ...
+
+    def _heap_read_key_class(self, key: tuple[Any, ...]) -> str | None: ...
+
+    def _is_read_key_invalidated_by_alias_classes(
+        self, key: tuple[Any, ...], alias_classes: set[str]
+    ) -> bool: ...
+
+    def _int_const_from_definition(
+        self, name: str, definitions: dict[str, MoltOp]
+    ) -> int | None: ...
+
+    def _compare_int_truth(self, op_kind: str, lhs: int, rhs: int) -> bool | None: ...
+
+    def _detect_induction_step_from_recurrence(
+        self, phi_name: str, recurrence: MoltOp, definitions: dict[str, MoltOp]
+    ) -> int | None: ...
+
+    def _normalize_compare_for_induction(
+        self, compare_op: str, lhs_is_iv: bool
+    ) -> str | None: ...
+
+    def _prove_monotonic_loop_compare(self, fact: LoopBoundFact) -> bool | None: ...
+
+    def _analyze_loop_bound_facts(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> dict[int, LoopBoundFact]: ...
+
+    def _analyze_affine_loop_compare_truth(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> dict[int, bool]: ...
+
+    def _analyze_loop_induction_steps(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> dict[str, int]: ...
+
+    def _value_number_key_for_op(
+        self,
+        op: MoltOp,
+        const_int_values: dict[str, int],
+        value_type_tags: dict[str, int],
+        induction_steps: dict[str, int],
+        *,
+        alias_epochs: dict[str, int],
+        object_epochs: dict[str, int],
+        memory_epoch: int,
+    ) -> tuple[Any, ...] | None: ...
+
+    def _kill_value_in_canonicalization_state(
+        self, state: CanonicalizationState, name: str
+    ) -> None: ...
+
+    def _intersect_canonicalization_state(
+        self, left: CanonicalizationState, right: CanonicalizationState
+    ) -> CanonicalizationState: ...
+
+    def _intersect_canonicalization_states(
+        self, states: list[CanonicalizationState]
+    ) -> CanonicalizationState: ...
+
+    def _canonicalization_state_signature(
+        self, state: CanonicalizationState
+    ) -> tuple[
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, int], ...],
+        tuple[tuple[str, int], ...],
+        tuple[tuple[tuple[Any, ...], str], ...],
+        tuple[tuple[str, tuple[str, str]], ...],
+        tuple[tuple[str, int], ...],
+        tuple[tuple[str, int], ...],
+        int,
+    ]: ...
+
+    def _canonicalize_block_with_state(
+        self,
+        ops: list[MoltOp],
+        in_state: CanonicalizationState,
+        *,
+        induction_steps: dict[str, int],
+    ) -> tuple[list[MoltOp], CanonicalizationState]: ...
+
+    def _collect_arg_value_names(self, value: Any, out: set[str]) -> None: ...
+
+    def _compute_block_use_def(
+        self, ops: list[MoltOp]
+    ) -> tuple[set[str], set[str]]: ...
+
+    def _collect_defined_value_names(self, ops: list[MoltOp]) -> set[str]: ...
+
+    def _find_unbound_value_uses(
+        self, ops: list[MoltOp], *, params: Sequence[str] = ()
+    ) -> list[tuple[int, str, str]]: ...
+
+    def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]: ...
+
+    def _verify_definite_assignment_in_ops(
+        self, ops: list[MoltOp], *, predefined_value_names: set[str] | None = None
+    ) -> list[tuple[int, str, str]]: ...
+
+    def _dead_op_lattice_class(self, op_kind: str) -> str: ...
+
+    def _eliminate_dead_trivial_consts(self, ops: list[MoltOp]) -> list[MoltOp]: ...
+
+    def _op_may_raise_for_sccp(self, op_kind: str) -> bool: ...
+
+    def _compute_sccp(
+        self, ops: list[MoltOp], cfg: CFGGraph, *, max_iters_override: int | None = None
+    ) -> SCCPResult: ...
+
+    def _sccp_in_const_int_values(
+        self, sccp: SCCPResult
+    ) -> dict[int, dict[str, int]]: ...
+
+    def _trim_phi_args_by_executable_edges(
+        self, ops: list[MoltOp], cfg: CFGGraph, executable_edges: set[tuple[int, int]]
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _align_phi_args_to_cfg_predecessors(
+        self, ops: list[MoltOp], cfg: CFGGraph
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _canonicalize_cfg_before_optimization(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _can_hoist_guard_pair(self, first: MoltOp, second: MoltOp) -> bool: ...
+
+    def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None: ...
+
+    def _collect_branch_defined_names(self, ops: list[MoltOp]) -> set[str]: ...
+
+    def _collect_movable_common_guards(
+        self, then_ops: list[MoltOp], else_ops: list[MoltOp]
+    ) -> list[MoltOp]: ...
+
+    def _clear_invalidated_guard_signatures(
+        self, available: set[tuple[Any, ...]], op: MoltOp
+    ) -> None: ...
+
+    def _eliminate_redundant_fused_dict_increment_guards(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _eliminate_redundant_guards_cfg(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int, int, int]: ...
+
+    def _op_equal_for_tail_merge(self, left: MoltOp, right: MoltOp) -> bool: ...
+
+    def _can_tail_merge_op(self, op: MoltOp) -> bool: ...
+
+    def _rewrite_structured_if_regions(
+        self,
+        ops: list[MoltOp],
+        *,
+        control: ControlMaps,
+        branch_choice_by_if_index: dict[int, bool],
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _canonicalize_structured_regions_pre_sccp(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _compute_postdominators_for_cfg(self, cfg: CFGGraph) -> dict[int, set[int]]: ...
+
+    def _rewrite_loop_try_edge_threading(
+        self,
+        ops: list[MoltOp],
+        *,
+        cfg: CFGGraph,
+        control: ControlMaps,
+        executable_edges: set[tuple[int, int]],
+        loop_break_choice_by_index: dict[int, bool],
+        try_exception_possible_by_start: dict[int, bool],
+        try_normal_possible_by_start: dict[int, bool],
+        guard_fail_indices: set[int],
+    ) -> tuple[list[MoltOp], int, int, int, int, int, int]: ...
+
+    def _range_overlaps_executable_blocks(
+        self,
+        cfg: CFGGraph,
+        *,
+        start: int,
+        end_inclusive: int,
+        executable_blocks: set[int],
+    ) -> bool: ...
+
+    def _prune_unreachable_cfg_regions(
+        self, ops: list[MoltOp], *, cfg: CFGGraph, executable_blocks: set[int]
+    ) -> tuple[list[MoltOp], int, int]: ...
+
+    def _control_label_key(self, value: Any) -> str | None: ...
+
+    def _coerce_control_label_like(self, exemplar: Any, key: str) -> Any: ...
+
+    def _ensure_structural_cfg_validity(
+        self, ops: list[MoltOp], *, stage: str
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _normalize_try_except_join_labels(
+        self, ops: list[MoltOp], *, cfg: CFGGraph
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _prune_dead_labels_and_noop_jumps(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int, int]: ...
+
+    def _hoist_loop_invariant_pure_ops(
+        self, ops: list[MoltOp]
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _run_cse_canonicalization_round(
+        self,
+        ops: list[MoltOp],
+        *,
+        allow_cross_block_const_dedupe: bool,
+        max_cse_iterations_override: int | None = None,
+        sccp_iter_cap_override: int | None = None,
+    ) -> tuple[list[MoltOp], int]: ...
+
+    def _canonicalize_control_aware_ops_impl(
+        self, ops: list[MoltOp], *, allow_cross_block_const_dedupe: bool
+    ) -> list[MoltOp]: ...
+
+    def _canonicalize_control_aware_ops(self, ops: list[MoltOp]) -> list[MoltOp]: ...
+
+    def _coalesce_check_exception_ops(self, ops: list[MoltOp]) -> list[MoltOp]: ...
+
+    def _finalize_code_ids(self) -> None: ...
+
+    def _ensure_code_slots_init(self) -> None: ...
+
+    @staticmethod
+    def _analyze_borrowing(
+        params: list[str], ops: list[dict[str, Any]]
+    ) -> list[int]: ...
+
+    def to_json(self) -> dict[str, Any]: ...
