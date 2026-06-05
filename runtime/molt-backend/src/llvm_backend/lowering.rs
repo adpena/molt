@@ -234,6 +234,70 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
     }
 }
 
+/// Unbox a NaN-boxed (`DynBox`) value into the raw machine representation a
+/// function parameter typed `target_ty` expects. The builder-parameterized
+/// twin of [`FunctionLowering::unbox_from_dynbox`] — same payload decode — used
+/// by the trampoline, whose entry runs on a local builder, not
+/// `self.backend.builder`.
+///
+/// The dynamic calling convention (`molt_call_func_fast2` → trampoline →
+/// args-array) carries every argument as a NaN-boxed `i64`. A target function
+/// whose parameters were typed by the representation plan as raw `I64`/`Bool`/
+/// `F64` reads those parameters as raw machine values (the in-body lowering
+/// re-boxes an `I64` param before any boxed-domain runtime call). Passing the
+/// boxed bits straight through (as the old trampoline did) made the body decode
+/// a NaN-box pointer/tag as a raw integer — silently truncating a heap BigInt to
+/// garbage (the trusted-unbox bug-class), or misreading a bool/float. This is
+/// the exact dual of the direct-call path's [`FunctionLowering::coerce_to_tir_type`]
+/// arg coercion, applied at the dynamic-dispatch boundary instead.
+#[cfg(feature = "llvm")]
+fn unbox_dynbox_to_param_ty_with_builder<'ctx>(
+    builder: &inkwell::builder::Builder<'ctx>,
+    context: &'ctx inkwell::context::Context,
+    raw: inkwell::values::IntValue<'ctx>,
+    target_ty: &TirType,
+) -> inkwell::values::IntValue<'ctx> {
+    let i64_ty = context.i64_type();
+    match target_ty {
+        TirType::I64 => {
+            // Sign-extend the 47-bit inline payload back into a full i64. Mirrors
+            // `unbox_from_dynbox`'s `I64` arm exactly.
+            let masked = builder
+                .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "payload")
+                .unwrap();
+            let sign_test = builder
+                .build_and(
+                    masked,
+                    i64_ty.const_int(nanbox::INT_SIGN_BIT, false),
+                    "sign_test",
+                )
+                .unwrap();
+            let is_neg = builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    sign_test,
+                    i64_ty.const_zero(),
+                    "is_neg",
+                )
+                .unwrap();
+            let extended = builder
+                .build_or(masked, i64_ty.const_int(!nanbox::INT_MASK, false), "sign_extend")
+                .unwrap();
+            builder
+                .build_select(is_neg, extended, masked, "unbox_i64")
+                .unwrap()
+                .into_int_value()
+        }
+        TirType::Bool => builder
+            .build_and(raw, i64_ty.const_int(1, false), "bool_payload")
+            .unwrap(),
+        // `F64` and every reference/boxed carrier are already in the raw i64 the
+        // direct ABI expects (an `F64` param's LLVM type is i64-carried bits; the
+        // body bitcasts as needed). No payload decode.
+        _ => raw,
+    }
+}
+
 // ── LLVM fast-math flag constants (from llvm-sys LLVMFastMath* definitions) ──
 //
 // AllowReassoc | NoNaNs | NoInfs | NoSignedZeros | AllowReciprocal
@@ -856,7 +920,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.get_undef_for_type(lower_type(self.backend.context, &arg.ty))
                 });
                 self.values.insert(arg.id, value);
-                self.value_types.insert(arg.id, arg.ty.clone());
+                // An `int` parameter the plan does NOT prove overflow-safe is
+                // carried BOXED (`DynBox`), exactly as a non-entry phi is (see
+                // the `else` arm). The calling convention passes every argument
+                // NaN-boxed; an unprovable-range int param therefore receives a
+                // boxed value (an inline int OR a heap-BigInt pointer) and the
+                // body must treat it as `DynBox` — using it directly in the
+                // boxed-runtime arithmetic path. Declaring it raw `I64` instead
+                // made the body decode the boxed bits as a raw integer and
+                // re-box them, silently truncating a heap BigInt to its low 47
+                // bits (the trusted-unbox bug-class, at the parameter ABI). Only
+                // a value-range-proven param stays raw `I64`; for it the
+                // caller/trampoline unboxes the inline payload, which is sound
+                // because the range proof guarantees it fits. The LLVM parameter
+                // type is i64 either way, so this changes only the semantic
+                // carrier the body reasons about — matching the native lane,
+                // whose `int` params are likewise boxed words.
+                let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
+                self.value_types.insert(arg.id, effective_ty);
             }
         } else {
             // Non-entry blocks: create phi nodes for block arguments.
@@ -6206,6 +6287,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let args_ptr = builder
             .build_int_to_ptr(args_bits, ptr_ty, "trampoline_args_ptr")
             .unwrap();
+
+        // The target function's parameter SEMANTIC types (the representation
+        // plan's `TirType` per param), used to decode each NaN-boxed argument
+        // into the raw machine representation the direct ABI expects. Indexed
+        // 1:1 with the LLVM params: when `has_closure`, index 0 is the closure
+        // object (a boxed reference — no payload decode). A raw-`I64` param must
+        // be sign-extended out of its 47-bit inline NaN-box payload; passing the
+        // boxed bits straight through (as this trampoline did before) made the
+        // callee body decode a NaN-box tag/pointer as a raw integer — the
+        // trusted-unbox truncation bug-class for a heap-BigInt argument. This is
+        // the dynamic-dispatch dual of the direct-call arg coercion
+        // (`coerce_to_tir_type`).
+        let param_tir_types = self.backend.function_param_types.get(name);
         let coerce_trampoline_arg = |bits: inkwell::values::IntValue<'ctx>,
                                      target_ty: inkwell::types::BasicTypeEnum<'ctx>,
                                      name: &str|
@@ -6269,8 +6363,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .build_load(i64_ty, elem_ptr, &format!("trampoline_arg_{idx}"))
                 .unwrap()
                 .into_int_value();
+            // Decode the NaN-boxed argument into the raw representation the
+            // target parameter expects, BEFORE the LLVM-type cast. The args
+            // array always carries `DynBox` (NaN-boxed) values; a raw-`I64`
+            // param needs its 47-bit payload sign-extended back, a `Bool` its
+            // low payload bit. `F64`/reference params are already the raw bits.
+            let param_index = idx + usize::from(has_closure);
+            let arg = match param_tir_types.and_then(|tys| tys.get(param_index)) {
+                Some(param_ty) => unbox_dynbox_to_param_ty_with_builder(
+                    &builder,
+                    self.backend.context,
+                    arg,
+                    param_ty,
+                ),
+                None => arg,
+            };
             let target_ty = target_fn
-                .get_nth_param((idx + usize::from(has_closure)) as u32)
+                .get_nth_param(param_index as u32)
                 .map(|param| param.get_type())
                 .unwrap_or_else(|| i64_ty.into());
             call_args.push(coerce_trampoline_arg(
@@ -8881,8 +8990,107 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            _ => false,
+
+            // ── Arithmetic / comparison / bitwise carried as preserved `Copy`
+            //    ops ──
+            //
+            // The SimpleIR→TIR lift (`kind_to_opcode`) maps some operator kinds
+            // the frontend emits — `floordiv`, `invert`, `contains`, the
+            // `inplace_bit_*` family, `matmul`, `pow_mod` — to `OpCode::Copy`
+            // with `_original_kind` preserved, rather than to their dedicated
+            // opcodes. The native/Cranelift and WASM lanes consume SimpleIR
+            // directly (where these are real op kinds) and are unaffected, but
+            // the LLVM lane lowers the TIR, where these arrive as `Copy`. Without
+            // this arm the generic `Copy` handler falls through to "pass through
+            // operand 0", silently replacing e.g. `a // b` with `a` (and dropping
+            // any exception the operator would raise) — a silent miscompile of
+            // every such operator on the LLVM lane.
+            //
+            // Each kind is lowered with the SAME emit helper its dedicated opcode
+            // uses (the helpers take the operator name as a parameter and do not
+            // read `op.opcode`; `emit_containment` checks only for `NotIn`, so the
+            // `Copy`-carried `in`/`contains` correctly take the non-negated path).
+            // `matmul`/`pow_mod` have no dedicated opcode or arith-specialized
+            // path, so they lower to their boxed runtime calls (mirroring WASM).
+            "floordiv" => {
+                self.emit_binary_arith(op, "floordiv");
+                true
+            }
+            "invert" => {
+                self.emit_unary(op, "invert");
+                true
+            }
+            "contains" => {
+                // `x in y`. `emit_containment` negates only for `OpCode::NotIn`;
+                // a `Copy`-carried `contains` is the affirmative membership test.
+                self.emit_containment(op);
+                true
+            }
+            "inplace_bit_and" => {
+                self.emit_bitwise(op, "bit_and");
+                true
+            }
+            "inplace_bit_or" => {
+                self.emit_bitwise(op, "bit_or");
+                true
+            }
+            "inplace_bit_xor" => {
+                self.emit_bitwise(op, "bit_xor");
+                true
+            }
+
+            // Generic preserved-op runtime-call fallback. Every other operator /
+            // conversion kind the frontend emits that has no dedicated TIR opcode
+            // (the `*_from_obj`/`*_from_str` conversion family, `matmul`,
+            // `pow_mod`, …) is lifted to `OpCode::Copy` with `_original_kind`
+            // preserved. The native/Cranelift and WASM lanes restore it to a
+            // SimpleIR op and lower it as the runtime call `molt_<kind>`
+            // (operands map 1:1 to the runtime ABI's positional i64 args). The
+            // LLVM lane lowers the TIR directly, so it does the same here: when
+            // `molt_<kind>` is a real symbol in the linked staticlib's intrinsic
+            // surface, emit the boxed-operand runtime call. Anything else returns
+            // `false` so the `Copy` fail-loud guard turns a genuinely unmappable
+            // value-producing op into a build error rather than a silent
+            // operand-0 pass-through (the `floordiv`-as-`Copy` bug-class).
+            _ => self.try_lower_preserved_runtime_call(op, kind),
         }
+    }
+
+    /// Lower an unhandled preserved SimpleIR op (`Copy` with `_original_kind`)
+    /// as the runtime call `molt_<kind>(boxed operands...)`, the same entry the
+    /// SimpleIR-consuming backends dispatch to. Returns `false` (declining) when
+    /// `molt_<kind>` is not a defined runtime intrinsic for the active profile —
+    /// the op then hits the `Copy` fail-loud guard, which refuses to emit wrong
+    /// code. The operand→arg mapping is positional (each operand a NaN-boxed
+    /// i64), matching the runtime ABI for these `extern "C"` conversion/operator
+    /// functions; the result is the boxed return value.
+    fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: &str) -> bool {
+        // Only value-producing ops route here — a result-less preserved op is an
+        // annotation/side-effect form handled by the result-less arm of the
+        // `Copy` lowering, not a runtime-call value producer.
+        let Some(&result_id) = op.results.first() else {
+            return false;
+        };
+        let symbol = format!("molt_{kind}");
+        if !self.backend.runtime_intrinsic_symbols.contains(&symbol) {
+            return false;
+        }
+        let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
+            .operands
+            .iter()
+            .map(|&id| self.materialize_dynbox_operand(id).into())
+            .collect();
+        let func = self.ensure_runtime_i64_fn(&symbol, op.operands.len());
+        let result = self
+            .backend
+            .builder
+            .build_call(func, &arg_bits, &symbol)
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic();
+        self.values.insert(result_id, result);
+        self.value_types.insert(result_id, TirType::DynBox);
+        true
     }
 
     fn emit_call_bind_runtime(
@@ -9558,9 +9766,16 @@ mod tests {
         // emit a raw machine `add` instead of routing through the runtime.
         let (func, v_sum) = build_i64_add_func();
         let mut facts = crate::representation_plan::LlvmReprFacts::default();
-        facts
-            .repr_by_value
-            .insert(v_sum, crate::representation_plan::Repr::RawI64Safe);
+        // A native machine `add` is sound only when BOTH operands and the result
+        // are value-range-proven exact-i64 carriers. The two `i64` parameters
+        // (entry args %0/%1) carry as boxed `DynBox` unless proven overflow-safe
+        // (the parameter-ABI carrier rule), so prove all three here — the
+        // realistic shape under which the plan admits raw machine arithmetic.
+        for v in [ValueId(0), ValueId(1), v_sum] {
+            facts
+                .repr_by_value
+                .insert(v, crate::representation_plan::Repr::RawI64Safe);
+        }
         backend
             .function_repr_facts
             .insert(func.name.clone(), facts);
@@ -10470,7 +10685,7 @@ mod tests {
     #[test]
     fn lower_i64_comparison() {
         let ctx = Context::create();
-        let backend = make_backend(&ctx);
+        let mut backend = make_backend(&ctx);
 
         // Build: fn lt(a: i64, b: i64) -> bool { return a < b }
         let mut func = TirFunction::new(
@@ -10492,6 +10707,17 @@ mod tests {
             values: vec![v_result],
         };
 
+        // The raw `icmp slt` path needs both operands proven exact-i64 carriers;
+        // an unproven `i64` parameter carries boxed (`DynBox`) and dispatches the
+        // comparison through the runtime. Prove the two parameters here.
+        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+        for v in [ValueId(0), ValueId(1)] {
+            facts
+                .repr_by_value
+                .insert(v, crate::representation_plan::Repr::RawI64Safe);
+        }
+        backend.function_repr_facts.insert(func.name.clone(), facts);
+
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
 
@@ -10505,7 +10731,7 @@ mod tests {
     #[test]
     fn lower_box_i64() {
         let ctx = Context::create();
-        let backend = make_backend(&ctx);
+        let mut backend = make_backend(&ctx);
 
         // Build: fn box_it(x: i64) -> DynBox { return box(x) }
         let mut func = TirFunction::new("box_i64".into(), vec![TirType::I64], TirType::DynBox);
@@ -10522,6 +10748,15 @@ mod tests {
         entry.terminator = Terminator::Return {
             values: vec![v_boxed],
         };
+
+        // `box(x)` emits the NaN-boxing arithmetic only when `x` is a RAW i64.
+        // An unproven `i64` parameter carries already-boxed (`DynBox`), for which
+        // `box` is a no-op; prove the parameter raw so the box path is exercised.
+        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+        facts
+            .repr_by_value
+            .insert(ValueId(0), crate::representation_plan::Repr::RawI64Safe);
+        backend.function_repr_facts.insert(func.name.clone(), facts);
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
