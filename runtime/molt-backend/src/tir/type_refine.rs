@@ -1093,6 +1093,11 @@ fn infer_single_result_type_with_attrs(
     match opcode {
         // Constants — always produce a known type regardless of operands.
         OpCode::ConstInt => Some(TirType::I64),
+        // ConstBigInt is semantically `int` but its value exceeds the raw
+        // i64 window — the carrier is ALWAYS boxed (DynBox; repr axis says
+        // MaybeBigInt). Typing it I64 would license trusted-unbox on a heap
+        // BigInt pointer, the exact bug class the Repr lattice forbids.
+        OpCode::ConstBigInt => Some(TirType::DynBox),
         OpCode::ConstFloat => Some(TirType::F64),
         OpCode::ConstStr => Some(TirType::Str),
         OpCode::ConstBool => Some(TirType::Bool),

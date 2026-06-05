@@ -164,6 +164,15 @@ pub enum OpCode {
     StateBlockEnd,
     // Constants
     ConstInt,
+    /// Arbitrary-precision integer constant whose value does not fit the
+    /// raw i64 fast-path window. The decimal text lives in the `s_value`
+    /// attr; lowering materializes it via `molt_bigint_from_str(ptr, len)`
+    /// and the result is ALWAYS a boxed heap int (`DynBox` carrier — never
+    /// `I64`, never RawI64Safe). First-class (not a `Copy` fallback) so the
+    /// TIR-consuming LLVM backend defines the result value: as a fallback
+    /// `Copy` with zero operands the result was silently left undefined and
+    /// resolved to the `None` sentinel — a miscompile, not an error.
+    ConstBigInt,
     ConstFloat,
     ConstStr,
     ConstBool,

@@ -931,6 +931,69 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(result_id, result);
                 self.value_types.insert(result_id, TirType::Str);
             }
+            OpCode::ConstBigInt => {
+                // Arbitrary-precision int constant: the decimal text lives in
+                // s_value and is materialized through
+                // `molt_bigint_from_str(ptr, len) -> bits`. The result is a
+                // BOXED value (inline int or heap BigInt) — DynBox carrier,
+                // never raw I64. A missing arm here is a silent miscompile:
+                // the fallback `Copy` lowering left the result undefined and
+                // it resolved to the None sentinel.
+                let result_id = op.results[0];
+                let i64_ty = self.backend.context.i64_type();
+
+                let digits: Vec<u8> = match op.attrs.get("s_value") {
+                    Some(AttrValue::Str(s)) => s.as_bytes().to_vec(),
+                    other => panic!("ConstBigInt missing s_value attribute: {:?}", other),
+                };
+
+                let byte_array_ty = self
+                    .backend
+                    .context
+                    .i8_type()
+                    .array_type(digits.len() as u32);
+                let global = self.backend.module.add_global(
+                    byte_array_ty,
+                    None,
+                    &format!("__const_bigint_{}", self.const_str_counter),
+                );
+                self.const_str_counter += 1;
+                global.set_linkage(inkwell::module::Linkage::Private);
+                global.set_initializer(&self.backend.context.const_string(&digits, false));
+                global.set_constant(true);
+                global.set_unnamed_addr(true);
+
+                let bfs_fn = if let Some(f) =
+                    self.backend.module.get_function("molt_bigint_from_str")
+                {
+                    f
+                } else {
+                    let ptr_ty = self
+                        .backend
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default());
+                    let fn_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+                    self.backend.module.add_function(
+                        "molt_bigint_from_str",
+                        fn_ty,
+                        Some(inkwell::module::Linkage::External),
+                    )
+                };
+
+                let ptr_val = global.as_pointer_value();
+                let len_val = i64_ty.const_int(digits.len() as u64, false);
+                let call = self
+                    .backend
+                    .builder
+                    .build_call(bfs_fn, &[ptr_val.into(), len_val.into()], "bigint_bits")
+                    .unwrap();
+                let result = call
+                    .try_as_basic_value()
+                    .basic()
+                    .expect("molt_bigint_from_str returns i64 bits");
+                self.values.insert(result_id, result);
+                self.value_types.insert(result_id, TirType::DynBox);
+            }
             OpCode::ConstBytes => {
                 let result_id = op.results[0];
                 let i64_ty = self.backend.context.i64_type();
@@ -1925,34 +1988,41 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .get_insert_block()
                             .expect("direct call must be emitted inside a basic block");
                         // Direct call — all operands are positional args.
+                        // Every direct-call argument must be coerced from its
+                        // SOURCE TirType to the CALLEE's declared param TirType
+                        // (DynBox = the boxed molt ABI default). This was
+                        // previously gated on `call_guarded` only — a plain
+                        // `call`/`call_internal` passed an I64-typed value (or
+                        // constant) RAW into a NaN-boxed parameter, where the
+                        // raw bits decode as a garbage float (e.g.
+                        // `compute(1000000)` received ~4.9e-318 and the loop
+                        // exited after one iteration). The LLVM-type coercion
+                        // below is a bitcast-level cast and cannot substitute
+                        // for representation boxing.
                         let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                             direct_operands
                                 .iter()
                                 .enumerate()
                                 .map(|(idx, &id)| {
                                     let v = self.resolve(id);
-                                    let v = if matches!(original_kind, Some("call_guarded")) {
-                                        let source_tir_ty = self
-                                            .value_types
-                                            .get(&id)
-                                            .cloned()
-                                            .unwrap_or(TirType::DynBox);
-                                        let target_tir_ty = self
-                                            .backend
-                                            .function_param_types
-                                            .get(target_name.as_str())
-                                            .and_then(|tys| tys.get(idx))
-                                            .cloned()
-                                            .unwrap_or(TirType::DynBox);
-                                        self.coerce_to_tir_type(
-                                            v,
-                                            &source_tir_ty,
-                                            &target_tir_ty,
-                                            current_bb,
-                                        )
-                                    } else {
-                                        v
-                                    };
+                                    let source_tir_ty = self
+                                        .value_types
+                                        .get(&id)
+                                        .cloned()
+                                        .unwrap_or(TirType::DynBox);
+                                    let target_tir_ty = self
+                                        .backend
+                                        .function_param_types
+                                        .get(target_name.as_str())
+                                        .and_then(|tys| tys.get(idx))
+                                        .cloned()
+                                        .unwrap_or(TirType::DynBox);
+                                    let v = self.coerce_to_tir_type(
+                                        v,
+                                        &source_tir_ty,
+                                        &target_tir_ty,
+                                        current_bb,
+                                    );
                                     let target_ty = target_fn
                                         .get_nth_param(idx as u32)
                                         .map(|param| param.get_type())
@@ -2012,12 +2082,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .builder
                             .get_insert_block()
                             .expect("direct call must be emitted inside a basic block");
+                        // Forward-declared target: the callee's TIR param
+                        // types are unknown, so the boxed molt ABI (DynBox) is
+                        // the contract — box every non-DynBox source (see the
+                        // resolved-target path above for the raw-bits-as-float
+                        // miscompile this prevents).
                         let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                             direct_operands
                                 .iter()
                                 .enumerate()
                                 .map(|(idx, &id)| {
                                     let v = self.resolve(id);
+                                    let source_tir_ty = self
+                                        .value_types
+                                        .get(&id)
+                                        .cloned()
+                                        .unwrap_or(TirType::DynBox);
+                                    let v = self.coerce_to_tir_type(
+                                        v,
+                                        &source_tir_ty,
+                                        &TirType::DynBox,
+                                        current_bb,
+                                    );
                                     let target_ty = target_fn
                                         .get_nth_param(idx as u32)
                                         .map(|param| param.get_type())

@@ -235,6 +235,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             let expected_results = match op.opcode {
                 // These produce exactly one result.
                 OpCode::ConstInt
+                | OpCode::ConstBigInt
                 | OpCode::ConstFloat
                 | OpCode::ConstStr
                 | OpCode::ConstBool

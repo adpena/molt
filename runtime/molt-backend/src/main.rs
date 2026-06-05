@@ -58,6 +58,11 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     // Optimization-pass instruments + rollback levers. Every optimization
     // lands WITH a firing/refusal instrument (the L4/needs_inlining lesson);
     // those instruments are useless if the daemon strips their env keys.
+    // Debug-artifact routing: without these the daemon writes artifacts
+    // (TIR dumps, llvm/before_opt.ll, pass refusal reports) under its own
+    // CWD where nobody finds them.
+    "MOLT_DEBUG_ARTIFACT_DIR",
+    "MOLT_EXT_ROOT",
     "MOLT_OVERFLOW_PEEL_STATS",
     "MOLT_DISABLE_OVERFLOW_PEEL",
     "MOLT_PROMOTE_DEBUG",
