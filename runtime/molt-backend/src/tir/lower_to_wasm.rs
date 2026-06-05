@@ -75,7 +75,22 @@ pub struct WasmFunctionOutput {
     pub locals: Vec<ValType>,
     /// WASM instruction sequence (function body).
     pub instructions: Vec<Instruction<'static>>,
+    /// Runtime imports this body calls, in EMISSION ORDER. Each entry pairs
+    /// positionally with one `Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)`
+    /// in `instructions`; the module assembler walks the stream and replaces
+    /// the k-th placeholder with the import index of `runtime_calls[k]`.
+    /// Positional (not index-keyed) because the peephole pass rewrites the
+    /// stream and shifts instruction indexes. Distinct from the `Call(0)`
+    /// BAIL sentinel (reject-this-function) and the `u32::MAX`
+    /// skipped-import sentinel.
+    pub runtime_calls: Vec<&'static str>,
 }
+
+/// Placeholder callee index for a NAMED runtime call recorded in
+/// [`WasmFunctionOutput::runtime_calls`]. Resolved to a real import index by
+/// the module assembler. `u32::MAX - 1` so it can never collide with the
+/// `Call(0)` bail sentinel or the `u32::MAX` skipped-import sentinel.
+pub const NAMED_RUNTIME_CALL_PLACEHOLDER: u32 = u32::MAX - 1;
 
 // ---------------------------------------------------------------------------
 // Main entry point
@@ -114,6 +129,9 @@ struct LirLowerCtx<'a> {
     local_types: HashMap<u32, ValType>,
     next_local: u32,
     instructions: Vec<Instruction<'static>>,
+    /// Named runtime calls in emission order (see
+    /// [`WasmFunctionOutput::runtime_calls`]).
+    runtime_calls: Vec<&'static str>,
     rpo: Vec<BlockId>,
     block_index: HashMap<BlockId, usize>,
 }
@@ -134,9 +152,21 @@ impl<'a> LirLowerCtx<'a> {
             local_types: HashMap::new(),
             next_local: local_base,
             instructions: Vec::new(),
+            runtime_calls: Vec::new(),
             rpo,
             block_index,
         }
+    }
+
+    /// Emit a NAMED runtime-import call: a placeholder `Call` paired
+    /// positionally with `name` in `runtime_calls`, resolved to the real
+    /// import index by the module assembler. This is how the LIR fast lane
+    /// reaches runtime helpers (e.g. `int_from_i64` for the overflow-safe
+    /// box) without bailing the whole function the way `Call(0)` does.
+    fn emit_runtime_call(&mut self, name: &'static str) {
+        self.instructions
+            .push(Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER));
+        self.runtime_calls.push(name);
     }
 
     fn local_for(&mut self, value: &LirValue) -> u32 {
@@ -318,6 +348,7 @@ pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmFunctionOutput {
         result_types,
         locals,
         instructions,
+        runtime_calls: ctx.runtime_calls,
     }
 }
 
@@ -327,6 +358,21 @@ pub fn lower_tir_to_wasm_boxed_i64_abi(
     repr: ReprOverride<'_>,
 ) -> Option<WasmFunctionOutput> {
     let lir = lower_function_to_lir(func, repr);
+    lower_lir_to_wasm_boxed_i64_abi(&lir)
+}
+
+/// [`lower_tir_to_wasm_boxed_i64_abi`] with the value-range proof threaded
+/// to the LIR lowering (gates the checked-i64 triple — see
+/// `lower_function_to_lir_with_inline_proof`). The production WASM fast
+/// lane must use this entry so full-range `RawI64Safe` carriers can never
+/// take the 47-bit-window triple.
+#[cfg(feature = "wasm-backend")]
+pub fn lower_tir_to_wasm_boxed_i64_abi_with_proof(
+    func: &TirFunction,
+    repr: ReprOverride<'_>,
+    inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
+) -> Option<WasmFunctionOutput> {
+    let lir = super::lower_to_lir::lower_function_to_lir_with_inline_proof(func, repr, inline_proof);
     lower_lir_to_wasm_boxed_i64_abi(&lir)
 }
 
@@ -447,6 +493,7 @@ pub fn lower_lir_to_wasm_boxed_i64_abi(func: &LirFunction) -> Option<WasmFunctio
         result_types,
         locals,
         instructions,
+        runtime_calls: ctx.runtime_calls,
     })
 }
 
@@ -854,6 +901,9 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
         ctx.instructions.push(Instruction::I32Const(0));
         ctx.emit_set(overflow_flag);
         ctx.instructions.push(Instruction::Else);
+        // Inline boxing is sound here: the checked-triple gate
+        // (`lowers_to_checked_i64_arithmetic`) only fires when BOTH operands
+        // are value-range-proven inside the 47-bit inline window.
         emit_box_inline_i64(ctx, lhs);
         emit_box_inline_i64(ctx, rhs);
         ctx.instructions.push(Instruction::Call(0));
@@ -865,6 +915,13 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
     }
     let lhs_repr = ctx.repr_of(lhs);
     let rhs_repr = ctx.repr_of(rhs);
+    // LIR-lowering marked this op as requiring the boxed runtime dispatch
+    // (raw-i64 operands without the inline-window proof — a bare machine op
+    // could wrap at 2^63). Honor it before any repr-keyed arm.
+    let boxed_dispatch = matches!(
+        tir_op.attrs.get("lir.boxed_dispatch"),
+        Some(AttrValue::Bool(true))
+    );
     // Phase 1 introduces *mixed* reprs (e.g. a proven `RawI64Safe` operand and an
     // unproven `MaybeBigInt`/`DynBox` operand). The boxed fallthrough dispatches
     // through the BigInt-correct runtime helper, which expects NaN-boxed
@@ -872,8 +929,16 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
     // homogeneous unboxed arms and BOXED for the runtime-call arm. Pushing raw
     // before the match (the pre-Phase-1 shape) would feed a raw i64 word to
     // `molt_add` on the mixed case → a hard miscompile.
+    let result_repr = op.result_values[0].repr;
     match (lhs_repr, rhs_repr) {
-        (LirRepr::I64, LirRepr::I64) => {
+        // Bare machine arithmetic requires the RESULT to be a raw carrier
+        // too. `RawI64Safe` operands are FULL-RANGE i64 (CheckedAdd sums /
+        // overflow_peel accumulators) — when the result is unproven (boxed
+        // repr), a bare op would silently wrap at 2^63 AND deposit a raw
+        // word in a DynBox-typed local; such ops take the boxed runtime
+        // dispatch below instead. `boxed_dispatch` (proof-driven, set at
+        // LIR-lowering) likewise forces the runtime path.
+        (LirRepr::I64, LirRepr::I64) if result_repr == LirRepr::I64 && !boxed_dispatch => {
             ctx.emit_get(lhs);
             ctx.emit_get(rhs);
             ctx.instructions.push(match arith {
@@ -925,12 +990,21 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
             }
         }
         _ => {
-            // Heterogeneous / boxed operands: dispatch through the runtime helper
-            // with both operands NaN-boxed. A raw-i64-repr operand is boxed via
-            // the inline-int box; an already-boxed operand passes through.
+            // Heterogeneous / boxed operands: dispatch through the runtime
+            // helper with both operands NaN-boxed (overflow-safely — a
+            // raw-i64 operand may be full-range). A NAMED runtime call keeps
+            // the function in the LIR fast lane (Call(0) is the
+            // reject-this-function bail sentinel).
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
-            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_runtime_call(match arith {
+                ArithOp::Add => "add",
+                ArithOp::Sub => "sub",
+                ArithOp::Mul => "mul",
+                ArithOp::Div => "div",
+                ArithOp::FloorDiv => "floordiv",
+                ArithOp::Mod => "mod",
+            });
             ctx.emit_set(dst);
             return;
         }
@@ -953,7 +1027,10 @@ fn emit_lir_binary_arith(ctx: &mut LirLowerCtx, op: &LirOp, arith: ArithOp) {
 #[cfg(feature = "wasm-backend")]
 fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
     match ctx.repr_of(v) {
-        LirRepr::I64 => emit_box_inline_i64(ctx, v),
+        // OVERFLOW-SAFE: `RawI64Safe` is a full-range i64 carrier contract
+        // (CheckedAdd sums / overflow_peel accumulators are unbounded); the
+        // unchecked inline box truncates mod 2^47.
+        LirRepr::I64 => emit_box_i64_overflow_safe(ctx, v),
         LirRepr::Bool1 => {
             ctx.emit_get(v);
             ctx.instructions.push(Instruction::I64ExtendI32U);
@@ -1039,9 +1116,25 @@ fn emit_lir_comparison(ctx: &mut LirLowerCtx, op: &LirOp, cmp: CmpOp) {
             });
         }
         _ => {
+            // Boxed dispatch through the NAMED runtime comparison (keeps the
+            // function in the LIR fast lane; Call(0) is the bail sentinel).
+            // The helper returns a NaN-BOXED bool (i64); a Bool1 destination
+            // local is i32, so extract bit 0 and wrap.
             emit_get_boxed_for_repr(ctx, lhs);
             emit_get_boxed_for_repr(ctx, rhs);
-            ctx.instructions.push(Instruction::Call(0));
+            ctx.emit_runtime_call(match cmp {
+                CmpOp::Eq => "eq",
+                CmpOp::Ne => "ne",
+                CmpOp::Lt => "lt",
+                CmpOp::Le => "le",
+                CmpOp::Gt => "gt",
+                CmpOp::Ge => "ge",
+            });
+            if op.result_values[0].repr == LirRepr::Bool1 {
+                ctx.instructions.push(Instruction::I64Const(1));
+                ctx.instructions.push(Instruction::I64And);
+                ctx.instructions.push(Instruction::I32WrapI64);
+            }
             ctx.emit_set(dst);
             return;
         }
@@ -1105,6 +1198,38 @@ fn emit_box_inline_i64(ctx: &mut LirLowerCtx, src: ValueId) {
     ctx.instructions.push(Instruction::I64Or);
 }
 
+/// Box a raw-i64 carrier OVERFLOW-SAFELY: fits-inline-47 fast path (the
+/// band/bor NaN box) with a cold `int_from_i64` runtime call (heap BigInt)
+/// for values outside `[-2^46, 2^46)`.
+///
+/// This is the wasm twin of native `ensure_boxed_overflow_safe` /
+/// `box_raw_i64_value_overflow_safe` and the LLVM
+/// `box_i64_overflow_safe_with_builder`. It exists because `RawI64Safe` is a
+/// FULL-RANGE i64 contract (the overflow_peel accumulators are genuinely
+/// unbounded); the unchecked [`emit_box_inline_i64`] silently truncates mod
+/// 2^47 — the silent-integer-miscompile class — and is only sound when the
+/// value-range analysis proves the inline window.
+#[cfg(feature = "wasm-backend")]
+fn emit_box_i64_overflow_safe(ctx: &mut LirLowerCtx, src: ValueId) {
+    // fits = (src + 2^46) <u 2^47
+    ctx.emit_get(src);
+    ctx.instructions.push(Instruction::I64Const(1 << 46));
+    ctx.instructions.push(Instruction::I64Add);
+    ctx.instructions.push(Instruction::I64Const(1 << 47));
+    ctx.instructions.push(Instruction::I64LtU);
+    ctx.instructions
+        .push(Instruction::If(BlockType::Result(ValType::I64)));
+    ctx.emit_get(src);
+    ctx.instructions.push(Instruction::I64Const(INT_MASK));
+    ctx.instructions.push(Instruction::I64And);
+    ctx.instructions.push(Instruction::I64Const(QNAN | TAG_INT));
+    ctx.instructions.push(Instruction::I64Or);
+    ctx.instructions.push(Instruction::Else);
+    ctx.emit_get(src);
+    ctx.emit_runtime_call("int_from_i64");
+    ctx.instructions.push(Instruction::End);
+}
+
 #[cfg(feature = "wasm-backend")]
 fn emit_box_none(ctx: &mut LirLowerCtx) {
     ctx.instructions
@@ -1114,7 +1239,9 @@ fn emit_box_none(ctx: &mut LirLowerCtx) {
 #[cfg(feature = "wasm-backend")]
 fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
     match ctx.repr_of(value) {
-        LirRepr::I64 => emit_box_inline_i64(ctx, value),
+        // OVERFLOW-SAFE: return-value boxing of a full-range raw carrier
+        // (see emit_get_boxed_for_repr).
+        LirRepr::I64 => emit_box_i64_overflow_safe(ctx, value),
         LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_get(value),
         LirRepr::Bool1 => {
             ctx.emit_get(value);
@@ -1834,6 +1961,67 @@ mod tests {
         func
     }
 
+    /// Full-range raw carriers must box through the OVERFLOW-SAFE path: a
+    /// `RawI64Safe` value with no inline-window range proof (the CheckedAdd
+    /// sum / overflow_peel accumulator case) boxed at a runtime-call or
+    /// return site must emit the fits-check + named `int_from_i64` cold
+    /// call, never the bare 47-bit mask (which truncates mod 2^47).
+    #[test]
+    fn full_range_raw_carrier_boxes_overflow_safe_with_named_call() {
+        let func = make_add_two_params_func();
+        // Both operands raw, result raw — but NO value-range proof is
+        // supplied, so the checked-overflow triple is REFUSED (its raw
+        // i64.add + inline-window arms assume the 47-bit proof) and the add
+        // takes the boxed runtime path, boxing both raw operands.
+        let repr: HashMap<ValueId, Repr> = HashMap::from([
+            (ValueId(0), Repr::RawI64Safe),
+            (ValueId(1), Repr::RawI64Safe),
+            (ValueId(2), Repr::RawI64Safe),
+        ]);
+        let lir = super::super::lower_to_lir::lower_function_to_lir_with_inline_proof(
+            &func,
+            Some(&repr),
+            None,
+        );
+        // Triple refused without the proof: no op carries lir.checked_overflow.
+        let has_triple = lir.blocks.values().flat_map(|b| b.ops.iter()).any(|op| {
+            matches!(
+                op.tir_op.attrs.get("lir.checked_overflow"),
+                Some(crate::tir::ops::AttrValue::Bool(true))
+            )
+        });
+        assert!(
+            !has_triple,
+            "checked-i64 triple must be refused without a value-range proof"
+        );
+
+        let output = lower_lir_to_wasm(&lir);
+        // The raw operands are boxed overflow-safely: the cold arm is a
+        // NAMED int_from_i64 runtime call recorded in runtime_calls.
+        assert!(
+            output
+                .runtime_calls
+                .iter()
+                .filter(|name| **name == "int_from_i64")
+                .count()
+                >= 2,
+            "both full-range raw operands must box through the int_from_i64 cold path; got {:?}",
+            output.runtime_calls
+        );
+        // And the placeholder pairing invariant holds: one placeholder per
+        // recorded name.
+        let placeholders = output
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)))
+            .count();
+        assert_eq!(
+            placeholders,
+            output.runtime_calls.len(),
+            "named-call placeholders must pair 1:1 with runtime_calls entries"
+        );
+    }
+
     /// Count occurrences of the inline-int NaN-box packing
     /// (`emit_box_inline_i64`): `i64.const INT_MASK; i64.and; i64.const
     /// (QNAN|TAG_INT); i64.or`. This is how a proven raw-i64 operand is boxed
@@ -1871,15 +2059,24 @@ mod tests {
         let lir = lower_function_to_lir(&func, Some(&repr));
         let output = lower_lir_to_wasm(&lir);
 
-        // No bare i64.add: a raw machine add on a possibly-heap-BigInt operand is
-        // exactly the truncation bug-class this phase makes un-emittable.
-        assert!(
-            !output
-                .instructions
-                .iter()
-                .any(|i| matches!(i, Instruction::I64Add)),
-            "mixed-repr add must NOT emit bare i64.add (operand may be a heap BigInt)"
-        );
+        // No bare OPERAND i64.add: a raw machine add on a possibly-heap-BigInt
+        // operand is exactly the truncation bug-class this phase makes
+        // un-emittable. The overflow-safe box legitimately contains an
+        // `i64.add` (the `src + 2^46` fits-inline bias), so the precise
+        // invariant is: every I64Add in the stream is a fits-check add —
+        // immediately followed by the `2^47` window-limit const — never an
+        // operand-pair add.
+        for (idx, inst) in output.instructions.iter().enumerate() {
+            if matches!(inst, Instruction::I64Add) {
+                assert!(
+                    matches!(
+                        output.instructions.get(idx + 1),
+                        Some(Instruction::I64Const(c)) if *c == (1i64 << 47)
+                    ),
+                    "mixed-repr add emitted a bare operand i64.add at {idx} (operand may be a heap BigInt)"
+                );
+            }
+        }
         // Runtime dispatch through the boxed helper (placeholder Call(0)).
         assert!(
             output

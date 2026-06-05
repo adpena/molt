@@ -147,6 +147,10 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     // ── INTERNAL: Arithmetic ──
     ("abs_builtin", 2),
     ("add", 3),
+    // Full-range i64 → boxed int (heap BigInt outside the 47-bit inline
+    // window). The LIR fast lane's overflow-safe box cold path
+    // (emit_box_i64_overflow_safe) reaches this via a NAMED runtime call.
+    ("int_from_i64", 2),
     ("str_concat", 3),
     ("str_contains", 3),
     ("bit_and", 3),
