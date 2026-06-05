@@ -17685,7 +17685,6 @@ extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long*
 extern long molt_get_attr_generic(void* obj, const char* attr, long len);
 extern unsigned long long molt_alloc(long size);
 extern long molt_block_on(void* task);
-extern long molt_async_sleep(void* obj);
 extern void molt_spawn(void* task);
 extern void* molt_chan_new(unsigned long long capacity);
 extern long molt_chan_send(void* chan, long val);

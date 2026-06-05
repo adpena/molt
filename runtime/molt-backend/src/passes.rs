@@ -4149,13 +4149,30 @@ pub fn compute_intrinsic_manifest(
     // intrinsic whose name appears nowhere as a string constant. The symbol set is
     // required (no heuristic fallback): an unknown set fails the build closed at the
     // caller rather than guessing and re-creating the dangling-relocation corruption.
+    // The runtime resolves an intrinsic through the per-app resolver by its
+    // linker SYMBOL, not its Python-visible NAME: `resolve_intrinsic_func`
+    // (molt-runtime registry.rs) does `find_spec(name).symbol` and calls
+    // `try_app_resolve_symbol(spec.symbol)`. For the overwhelming majority of
+    // intrinsics name == symbol, so the distinction is invisible. For the rare
+    // override (today only `molt_async_sleep -> molt_async_sleep_new`) the
+    // const_str carries the NAME while the runtime queries the SYMBOL — so the
+    // manifest, the resolver's table KEY, and the resolver's address RELOCATION
+    // must all use the SYMBOL, or the lookup misses (and, worse, an override
+    // whose legacy NAME is also a real export — like `molt_async_sleep` — would
+    // relocate against the WRONG overload). Map every captured name to its
+    // canonical symbol here, the single chokepoint both resolver emitters
+    // (Cranelift `SimpleBackend::emit_app_resolver_function` and LLVM
+    // `LlvmBackend::emit_app_resolver_function`) consume by keying on the
+    // manifest entry string.
     for func_ir in functions {
         for op in &func_ir.ops {
             if op.kind == "const_str"
                 && let Some(val) = op.s_value.as_deref()
-                && is_candidate_intrinsic_name(val, runtime_intrinsic_symbols)
             {
-                manifest_intrinsic_names.insert(val.to_owned());
+                let symbol = crate::intrinsic_symbol_overrides::intrinsic_symbol_for_name(val);
+                if is_candidate_intrinsic_name(symbol, runtime_intrinsic_symbols) {
+                    manifest_intrinsic_names.insert(symbol.to_owned());
+                }
             }
         }
     }
@@ -4371,6 +4388,85 @@ mod tests {
             !manifest.contains("molt_pbkdf2_hmac"),
             "a well-formed molt_ identifier absent from the staticlib must be excluded"
         );
+    }
+
+    /// Structural guard for the asyncio P0 bug CLASS (not just its instance).
+    ///
+    /// The per-app intrinsic resolver is keyed by — and relocates against — the
+    /// manifest entry strings, while the runtime queries the resolver by
+    /// `IntrinsicSpec::symbol`. For every intrinsic whose Python-visible NAME
+    /// differs from its linker SYMBOL, a `const_str` of the NAME (as compiled
+    /// Python emits) MUST land in the manifest as the SYMBOL, so the resolver's
+    /// table key matches the runtime's query and its relocation targets the
+    /// correct export. This iterates the WHOLE override table, so adding intrinsic
+    /// #2481 with a new name!=symbol override is automatically covered: if the
+    /// manifest scan ever stops mapping name->symbol, this fails at `cargo test`
+    /// instead of shipping a broken resolver. Mirror of the runtime-side
+    /// `name_neq_symbol_specs_resolve_in_core` guard (molt-runtime registry.rs).
+    #[test]
+    fn name_neq_symbol_overrides_resolve_through_manifest() {
+        use crate::intrinsic_symbol_overrides::INTRINSIC_SYMBOL_OVERRIDES;
+        for &(name, symbol) in INTRINSIC_SYMBOL_OVERRIDES {
+            assert_ne!(
+                name, symbol,
+                "an override must actually rename: ({name}, {symbol})"
+            );
+            // The staticlib defines BOTH the legacy NAME export and the canonical
+            // SYMBOL export (e.g. molt_async_sleep AND molt_async_sleep_new), so a
+            // name-keyed resolver would wrongly relocate against the legacy
+            // overload. Simulate both being present to prove the scan keys by
+            // SYMBOL regardless.
+            let symbols: BTreeSet<String> =
+                [name.to_string(), symbol.to_string()].into_iter().collect();
+            let func = manifest_func(vec![
+                make_const_str("nm", name),
+                make_call_func("res", "require_intrinsic", &["nm"]),
+            ]);
+            let manifest = compute_intrinsic_manifest(&[func], &symbols);
+            assert!(
+                manifest.contains(symbol),
+                "override name `{name}` must enter the manifest as its canonical \
+                 symbol `{symbol}` (the key the runtime resolves by)"
+            );
+            assert!(
+                !manifest.contains(name),
+                "override name `{name}` must NOT enter the manifest verbatim — the \
+                 resolver would key by name (runtime miss) and relocate against \
+                 the wrong overload"
+            );
+        }
+    }
+
+    /// The async_sleep instance, pinned explicitly so the headline P0 has a named
+    /// regression independent of the generated override table's contents.
+    #[test]
+    fn manifest_maps_async_sleep_name_to_new_symbol() {
+        let symbols: BTreeSet<String> = [
+            "molt_async_sleep".to_string(),
+            "molt_async_sleep_new".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        let func = manifest_func(vec![
+            make_const_str("nm", "molt_async_sleep"),
+            make_call_func("res", "require_intrinsic", &["nm"]),
+        ]);
+        let manifest = compute_intrinsic_manifest(&[func], &symbols);
+        assert!(manifest.contains("molt_async_sleep_new"));
+        assert!(!manifest.contains("molt_async_sleep"));
+    }
+
+    /// A non-override intrinsic name is captured verbatim (the common case must be
+    /// untouched by the override remapping).
+    #[test]
+    fn manifest_keeps_non_override_name_verbatim() {
+        let symbols: BTreeSet<String> = ["molt_gc_collect".to_string()].into_iter().collect();
+        let func = manifest_func(vec![
+            make_const_str("nm", "molt_gc_collect"),
+            make_call_func("res", "require_intrinsic", &["nm"]),
+        ]);
+        let manifest = compute_intrinsic_manifest(&[func], &symbols);
+        assert!(manifest.contains("molt_gc_collect"));
     }
 
     #[test]
