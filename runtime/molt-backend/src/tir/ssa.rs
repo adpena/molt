@@ -453,22 +453,22 @@ impl<'a> SsaContext<'a> {
         for var in self.all_vars.clone() {
             let mut def_blocks: HashSet<usize> = HashSet::new();
             for bid in 0..n {
-                if self.block_info[bid].defs.contains(&var) {
-                    def_blocks.insert(bid);
-                }
-                // A handler block that already carries `var` as a block
-                // argument (established by `insert_exception_handler_arguments`)
-                // is a definition site for `var`: along the exception edge the
-                // handler introduces a fresh SSA value for the variable. It must
-                // seed the iterated dominance frontier so that every block where
-                // the handler's normal exit rejoins the protected region's
-                // control flow receives a phi merging the handler's version with
-                // the protected-region version. Without this, a value defined in
-                // the protected region and used past such a rejoin is dominated
-                // only on the normal path, not on the handler path — a genuine
-                // SSA-dominance violation that LLVM's verifier rejects once the
-                // handler blocks are lowered.
-                else if self.block_arg_vars[bid].contains(&var) {
+                // A block is a definition site for `var` when its ops define
+                // it — OR when it is a handler block that already carries
+                // `var` as a block argument (established by
+                // `insert_exception_handler_arguments`): along the exception
+                // edge the handler introduces a fresh SSA value for the
+                // variable. It must seed the iterated dominance frontier so
+                // that every block where the handler's normal exit rejoins the
+                // protected region's control flow receives a phi merging the
+                // handler's version with the protected-region version. Without
+                // this, a value defined in the protected region and used past
+                // such a rejoin is dominated only on the normal path, not on
+                // the handler path — a genuine SSA-dominance violation that
+                // LLVM's verifier rejects once the handler blocks are lowered.
+                if self.block_info[bid].defs.contains(&var)
+                    || self.block_arg_vars[bid].contains(&var)
+                {
                     def_blocks.insert(bid);
                 }
             }
