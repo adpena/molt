@@ -829,6 +829,33 @@ mod tests {
         assert!(resolve_symbol("molt_http_client_execute").is_none());
     }
 
+    /// Structural guard for the name≠symbol intrinsic-spec class. Every spec
+    /// whose Python-visible `name` differs from its linker `symbol` carries an
+    /// explicit override (`SYMBOL_OVERRIDES` in tools/gen_intrinsics.py) that
+    /// MUST point at a real, resolvable runtime export. The lone such spec today
+    /// is `molt_async_sleep -> molt_async_sleep_new`; if that override symbol is
+    /// renamed/dropped/misspelled, `resolve_symbol` returns None and every
+    /// asyncio program fails at runtime with `intrinsic unavailable`. Pinning the
+    /// runtime-side closure makes that class of break fail at `cargo test`
+    /// instead of silently shipping. (It does NOT cover the app-resolver
+    /// generation, which keys its table by `name` while the runtime queries by
+    /// `symbol` — that name/symbol skew is the live asyncio break tracked in
+    /// docs/design/foundation/22_bughunt_wave1.md.)
+    #[test]
+    fn name_neq_symbol_specs_resolve_in_core() {
+        for spec in INTRINSICS {
+            if spec.name != spec.symbol {
+                assert!(
+                    resolve_symbol(spec.symbol).is_some(),
+                    "intrinsic spec name={} maps to override symbol={} which the \
+                     runtime core resolver cannot resolve (renamed/unexported?)",
+                    spec.name,
+                    spec.symbol,
+                );
+            }
+        }
+    }
+
     #[test]
     #[cfg_attr(
         miri,
