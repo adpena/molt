@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 pub mod debug_artifacts;
 mod intrinsic_symbols;
 pub use crate::intrinsic_symbols::{runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required};
+mod intrinsic_symbol_overrides;
 mod ir;
 mod ir_rewrites;
 pub use crate::ir_rewrites::{
