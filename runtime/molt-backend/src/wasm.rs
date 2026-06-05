@@ -291,9 +291,11 @@ const TAG_EXCEPTION_INDEX: u32 = 0;
 
 /// First dynamic type index; must equal the count of all statically-defined types.
 ///
-/// Static signatures currently occupy indices 0..=40 inclusive. Dynamic user
-/// arity signatures and wrapper signatures must start after that fixed set.
-const STATIC_TYPE_COUNT: u32 = 41;
+/// Static signatures currently occupy indices 0..=50 inclusive (types 41-50 are
+/// the fused method-dispatch IC signatures `call_method_icN` /
+/// `call_super_method_icN`). Dynamic user arity signatures and wrapper
+/// signatures must start after that fixed set.
+const STATIC_TYPE_COUNT: u32 = 51;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -2219,6 +2221,23 @@ impl WasmBackend {
             }
         }
 
+        // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs_new +
+        // callargs_push_pos + call_bind) into a single allocation-free
+        // `call_method_ic` op, and `super().method(args)` into
+        // `call_super_method_ic` (CPython LOAD_METHOD/CALL_METHOD parity).
+        // Run as the LAST SimpleIR transformation before import collection and
+        // codegen — `call_method_ic` is a backend-only op with no TIR opcode,
+        // so it must run AFTER the TIR roundtrip + module-phase inliner have
+        // produced their final SimpleIR (identical placement contract to the
+        // native backend, which fuses immediately before `compile_func`). The
+        // fused op kinds are import dependencies via OP_IMPORT_DEPS, so this
+        // must precede `collect_required_imports`. The IC ops are recognized as
+        // non-removable by `eliminate_dead_ops` (method dispatch runs arbitrary
+        // user code), so the dead-op pass below preserves them.
+        for func_ir in &mut ir.functions {
+            crate::passes::fuse_method_dispatch(func_ir);
+        }
+
         // Megafunction splitting is only sound on the current wasm path for
         // straight-line functions. Non-linear control is lowered into a
         // jumpful/stateful dispatch machine, and the generic sequential chunk
@@ -2622,6 +2641,136 @@ impl WasmBackend {
                 ValType::I32,
                 ValType::I64,
                 ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+
+        // ── Fused method-dispatch ICs (call_method_icN) ──
+        // ABI: molt_call_method_icN(site: i64, recv: i64, name_ptr: i32,
+        //      name_len: i64, a0..a{N-1}: i64) -> i64. The `name_ptr` is a
+        //      32-bit linear-memory address (runtime `*const u8`), so it is i32
+        //      while every NaN-boxed value (site/recv/args/len) is i64.
+        // Type 41: (i64, i64, i32, i64) -> i64 (call_method_ic0)
+        self.types.function(
+            [ValType::I64, ValType::I64, ValType::I32, ValType::I64],
+            std::iter::once(ValType::I64),
+        );
+        // Type 42: (i64, i64, i32, i64, i64) -> i64 (call_method_ic1)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 43: (i64, i64, i32, i64, i64, i64) -> i64 (call_method_ic2)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 44: (i64, i64, i32, i64, i64, i64, i64) -> i64 (call_method_ic3)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 45: (i64, i64, i32, i64, i64, i64, i64, i64) -> i64 (call_method_ic4)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+
+        // ── Fused super().method() dispatch ICs (call_super_method_icN) ──
+        // ABI: molt_call_super_method_icN(site: i64, class: i64, self: i64,
+        //      name_ptr: i32, name_len: i64, a0..a{N-1}: i64) -> i64.
+        // Type 46: (i64, i64, i64, i32, i64) -> i64 (call_super_method_ic0)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 47: (i64, i64, i64, i32, i64, i64) -> i64 (call_super_method_ic1)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 48: (i64, i64, i64, i32, i64, i64, i64) -> i64 (call_super_method_ic2)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 49: (i64, i64, i64, i32, i64, i64, i64, i64) -> i64 (call_super_method_ic3)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
+        // Type 50: (i64, i64, i64, i32, i64, i64, i64, i64, i64) -> i64 (call_super_method_ic4)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
                 ValType::I64,
                 ValType::I64,
                 ValType::I64,
@@ -11122,6 +11271,97 @@ impl WasmBackend {
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         emit_call(func, reloc_enabled, import_ids["get_attr_ptr"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "call_method_ic" => {
+                        // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
+                        //   args = [recv, a0, a1, ...]  s_value = <method name>
+                        // Lowers to a single molt_call_method_icN(site, recv,
+                        // name_ptr, name_len, a0..) host call — no bound-method or
+                        // callargs allocation on the IC fast path. The runtime
+                        // entry is target-independent extern "C"; `name_ptr` is a
+                        // 32-bit linear-memory address (i32), every NaN-boxed
+                        // value (site/recv/args/len) is i64.
+                        let args_names = op.args.as_ref().unwrap();
+                        let recv = locals[&args_names[0]];
+                        let method_name =
+                            op.s_value.as_ref().expect("call_method_ic missing method name");
+                        let bytes = method_name.as_bytes();
+                        let data = self.add_data_segment(reloc_enabled, bytes);
+                        let site_bits = box_int(stable_ic_site_id(
+                            func_ir.name.as_str(),
+                            op_idx,
+                            "call_method_ic",
+                        ));
+                        let extra = &args_names[1..];
+                        // Stack: site, recv, name_ptr(i32), name_len, a0..
+                        func.instruction(&Instruction::I64Const(site_bits));
+                        func.instruction(&Instruction::LocalGet(recv));
+                        self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        for name in extra {
+                            func.instruction(&Instruction::LocalGet(locals[name]));
+                        }
+                        let import = match extra.len() {
+                            0 => "call_method_ic0",
+                            1 => "call_method_ic1",
+                            2 => "call_method_ic2",
+                            3 => "call_method_ic3",
+                            _ => "call_method_ic4",
+                        };
+                        emit_call(func, reloc_enabled, import_ids[import]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "call_super_method_ic" => {
+                        // Fused super().method() dispatch (no super / bound-method /
+                        // callargs allocation on the fast path):
+                        //   args = [class, self, a0, a1, ...]  s_value = <method>
+                        // Lowers to molt_call_super_method_icN(site, class, self,
+                        // name_ptr, name_len, a0..).
+                        let args_names = op.args.as_ref().unwrap();
+                        let class = locals[&args_names[0]];
+                        let self_local = locals[&args_names[1]];
+                        let method_name = op
+                            .s_value
+                            .as_ref()
+                            .expect("call_super_method_ic missing method name");
+                        let bytes = method_name.as_bytes();
+                        let data = self.add_data_segment(reloc_enabled, bytes);
+                        let site_bits = box_int(stable_ic_site_id(
+                            func_ir.name.as_str(),
+                            op_idx,
+                            "call_super_method_ic",
+                        ));
+                        let extra = &args_names[2..];
+                        // Stack: site, class, self, name_ptr(i32), name_len, a0..
+                        func.instruction(&Instruction::I64Const(site_bits));
+                        func.instruction(&Instruction::LocalGet(class));
+                        func.instruction(&Instruction::LocalGet(self_local));
+                        self.emit_data_ptr(reloc_enabled, func_index, func, data);
+                        func.instruction(&Instruction::I32WrapI64);
+                        func.instruction(&Instruction::I64Const(bytes.len() as i64));
+                        for name in extra {
+                            func.instruction(&Instruction::LocalGet(locals[name]));
+                        }
+                        let import = match extra.len() {
+                            0 => "call_super_method_ic0",
+                            1 => "call_super_method_ic1",
+                            2 => "call_super_method_ic2",
+                            3 => "call_super_method_ic3",
+                            _ => "call_super_method_ic4",
+                        };
+                        emit_call(func, reloc_enabled, import_ids[import]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

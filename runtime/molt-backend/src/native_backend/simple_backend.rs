@@ -2831,6 +2831,24 @@ impl SimpleBackend {
                     .to_str()
                     .unwrap_or(""),
             );
+            // Fuse `obj.method(args)` / `super().method(args)` dispatch into the
+            // allocation-free `call_method_ic` / `call_super_method_ic` ops
+            // BEFORE lifting to TIR. Unlike the Cranelift path (which fuses the
+            // post-roundtrip SimpleIR immediately before `compile_func`), the
+            // LLVM path lowers directly from the per-function-optimized TIR, so
+            // the IC ops must enter the TIR roundtrip as preserved `Copy` ops
+            // (`_original_kind`), which `lower_preserved_simpleir_op` lowers. The
+            // TIR effects oracle treats a `Copy` carrying `_original_kind` as
+            // observably-effecting (effects.rs `op_has_observable_effect_when_dead`),
+            // so the per-function pipeline below preserves them. Built from the
+            // same fused `func` as `function_repr_facts`, keeping the SimpleIR /
+            // TIR pair aligned. Extern (declaration-only) functions have empty
+            // bodies — nothing to fuse.
+            for func in &mut ir.functions {
+                if !func.is_extern {
+                    fuse_method_dispatch(func);
+                }
+            }
             let tir_funcs: Vec<_> = ir
                 .functions
                 .iter()
