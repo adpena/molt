@@ -144,6 +144,14 @@ _MOLT_OS_WTERMSIG = _require_intrinsic("molt_os_wtermsig")
 _MOLT_OS_WIFSTOPPED = _require_intrinsic("molt_os_wifstopped")
 _MOLT_OS_WSTOPSIG = _require_intrinsic("molt_os_wstopsig")
 _MOLT_OS_FSPATH = _require_intrinsic("molt_os_fspath")
+_MOLT_OS_STAT_AT = _require_intrinsic("molt_os_stat_at")
+_MOLT_OS_LSTAT_AT = _require_intrinsic("molt_os_lstat_at")
+_MOLT_OS_READLINK_AT = _require_intrinsic("molt_os_readlink_at")
+_MOLT_OS_SYMLINK_AT = _require_intrinsic("molt_os_symlink_at")
+_MOLT_OS_RENAME_AT = _require_intrinsic("molt_os_rename_at")
+_MOLT_OS_REPLACE_AT = _require_intrinsic("molt_os_replace_at")
+_MOLT_OS_LINK_AT = _require_intrinsic("molt_os_link_at")
+_MOLT_OS_UTIME_AT = _require_intrinsic("molt_os_utime_at")
 
 
 def _resolve_os_name() -> str:
@@ -256,6 +264,8 @@ __all__ = [
     "fspath",
     "fsencode",
     "fdopen",
+    "supports_dir_fd",
+    "supports_follow_symlinks",
 ]
 
 name = _resolve_os_name()
@@ -1081,7 +1091,7 @@ def remove(path: Any) -> None:
 def readlink(path: Any, *, dir_fd: int | None = None) -> str:
     _require_cap("fs.read")
     if dir_fd is not None:
-        raise NotImplementedError("os.readlink(dir_fd=...) is not supported")
+        return _expect_str(_MOLT_OS_READLINK_AT(path, dir_fd), "readlink")
     return _expect_str(_MOLT_OS_READLINK_V2(path), "readlink")
 
 
@@ -1094,7 +1104,8 @@ def symlink(
 ) -> None:
     _require_cap("fs.write")
     if dir_fd is not None:
-        raise NotImplementedError("os.symlink(dir_fd=...) is not supported")
+        _MOLT_OS_SYMLINK_AT(src, dst, dir_fd)
+        return
     _MOLT_OS_SYMLINK_V2(src, dst)
 
 
@@ -1201,7 +1212,9 @@ def stat(
 ) -> stat_result:
     _require_cap("fs.read")
     if dir_fd is not None:
-        raise NotImplementedError("os.stat(dir_fd=...) is not supported")
+        return _expect_stat_result(
+            _MOLT_OS_STAT_AT(path, dir_fd, bool(follow_symlinks)), "stat"
+        )
     if bool(follow_symlinks):
         intrinsic = _require_os_intrinsic("molt_os_stat")
         return _expect_stat_result(intrinsic(path), "stat")
@@ -1212,7 +1225,7 @@ def stat(
 def lstat(path: Any, *, dir_fd: int | None = None) -> stat_result:
     _require_cap("fs.read")
     if dir_fd is not None:
-        raise NotImplementedError("os.lstat(dir_fd=...) is not supported")
+        return _expect_stat_result(_MOLT_OS_LSTAT_AT(path, dir_fd), "lstat")
     intrinsic = _require_os_intrinsic("molt_os_lstat")
     return _expect_stat_result(intrinsic(path), "lstat")
 
@@ -1231,10 +1244,9 @@ def rename(
     dst_dir_fd: int | None = None,
 ) -> None:
     _require_cap("fs.write")
-    if src_dir_fd is not None:
-        raise NotImplementedError("os.rename(src_dir_fd=...) is not supported")
-    if dst_dir_fd is not None:
-        raise NotImplementedError("os.rename(dst_dir_fd=...) is not supported")
+    if src_dir_fd is not None or dst_dir_fd is not None:
+        _MOLT_OS_RENAME_AT(src, src_dir_fd, dst, dst_dir_fd)
+        return
     intrinsic = _require_os_intrinsic("molt_os_rename")
     intrinsic(src, dst)
 
@@ -1247,10 +1259,9 @@ def replace(
     dst_dir_fd: int | None = None,
 ) -> None:
     _require_cap("fs.write")
-    if src_dir_fd is not None:
-        raise NotImplementedError("os.replace(src_dir_fd=...) is not supported")
-    if dst_dir_fd is not None:
-        raise NotImplementedError("os.replace(dst_dir_fd=...) is not supported")
+    if src_dir_fd is not None or dst_dir_fd is not None:
+        _MOLT_OS_REPLACE_AT(src, src_dir_fd, dst, dst_dir_fd)
+        return
     intrinsic = _require_os_intrinsic("molt_os_replace")
     intrinsic(src, dst)
 
@@ -1284,10 +1295,9 @@ def link(
     follow_symlinks: bool = True,
 ) -> None:
     _require_cap("fs.write")
-    if src_dir_fd is not None:
-        raise NotImplementedError("os.link(src_dir_fd=...) is not supported")
-    if dst_dir_fd is not None:
-        raise NotImplementedError("os.link(dst_dir_fd=...) is not supported")
+    if src_dir_fd is not None or dst_dir_fd is not None or not bool(follow_symlinks):
+        _MOLT_OS_LINK_AT(src, src_dir_fd, dst, dst_dir_fd, bool(follow_symlinks))
+        return
     intrinsic = _require_callable_intrinsic(_MOLT_OS_LINK, "molt_os_link")
     intrinsic(str(src), str(dst))
 
@@ -1386,6 +1396,46 @@ def sysconf(name: int | str) -> int:
     return int(_MOLT_OS_SYSCONF(int(name)))
 
 
+# POSIX `time_t` on every platform molt targets is a signed 64-bit integer;
+# a seconds component beyond this overflows the kernel `timespec` and is an
+# OverflowError in CPython.
+_TIME_T_MAX = (1 << 63) - 1
+_TIME_T_MIN = -(1 << 63)
+
+
+def _check_time_t(sec: int) -> int:
+    if sec > _TIME_T_MAX or sec < _TIME_T_MIN:
+        raise OverflowError("timestamp out of range for platform time_t")
+    return sec
+
+
+def _seconds_float_to_sec_nsec(t: float) -> tuple[int, int]:
+    """Split float seconds into integer `(sec, nsec)` for a POSIX `timespec`.
+
+    Both components stay small (`sec` ~ epoch scale, `nsec` < 1e9), so neither
+    exceeds the inline-int range when marshalled to the `*at` intrinsic. The
+    sub-second remainder is rounded and carried across the second boundary so
+    the pair is always a normalized timespec (0 <= nsec < 1e9).
+    """
+    sec = int(t)
+    frac_ns = int(round((t - sec) * 1_000_000_000.0))
+    if frac_ns >= 1_000_000_000:
+        sec += 1
+        frac_ns -= 1_000_000_000
+    elif frac_ns < 0:
+        sec -= 1
+        frac_ns += 1_000_000_000
+    return _check_time_t(sec), frac_ns
+
+
+def _ns_to_sec_nsec(value: int) -> tuple[int, int]:
+    """Split an integer nanosecond count into a normalized `(sec, nsec)` pair."""
+    value = int(value)
+    sec = value // 1_000_000_000
+    nsec = value - sec * 1_000_000_000
+    return _check_time_t(sec), nsec
+
+
 def utime(
     path: Any,
     times: tuple[float, float] | None = None,
@@ -1394,14 +1444,46 @@ def utime(
     dir_fd: int | None = None,
     follow_symlinks: bool = True,
 ) -> None:
-    if dir_fd is not None:
-        raise NotImplementedError("os.utime(dir_fd=...) is not supported")
+    if times is not None and ns is not None:
+        raise ValueError("utime: you may specify either 'times' or 'ns' but not both")
+    _require_cap("fs.write")
+    # The base `molt_os_utime` already maps `times=None` -> current time via a
+    # null timeval pair, so keep its fast path when no dir_fd-relative behavior
+    # and no explicit `ns=` is requested.
+    if dir_fd is None and ns is None and bool(follow_symlinks):
+        if times is not None:
+            if len(times) != 2:
+                raise TypeError("utime: 'times' must be either a tuple of two ints or None")
+            _MOLT_OS_UTIME(str(path), float(times[0]), float(times[1]))
+        else:
+            _MOLT_OS_UTIME(str(path), None, None)
+        return
+    # dir_fd / ns=... / follow_symlinks=False -> the `*at` intrinsic. Times are
+    # pre-split into (sec, nsec) pairs so no argument exceeds the inline-int
+    # range; a nsec of -1 selects "current time" (POSIX UTIME_NOW) for that
+    # timestamp.
     if ns is not None:
-        raise NotImplementedError("os.utime(ns=...) is not supported")
-    if times is not None:
-        _MOLT_OS_UTIME(str(path), float(times[0]), float(times[1]))
+        if len(ns) != 2:
+            raise TypeError("utime: 'ns' must be a tuple of two ints")
+        atime_sec, atime_nsec = _ns_to_sec_nsec(ns[0])
+        mtime_sec, mtime_nsec = _ns_to_sec_nsec(ns[1])
+    elif times is not None:
+        if len(times) != 2:
+            raise TypeError("utime: 'times' must be either a tuple of two ints or None")
+        atime_sec, atime_nsec = _seconds_float_to_sec_nsec(float(times[0]))
+        mtime_sec, mtime_nsec = _seconds_float_to_sec_nsec(float(times[1]))
     else:
-        _MOLT_OS_UTIME(str(path), None, None)
+        atime_sec, atime_nsec = 0, -1
+        mtime_sec, mtime_nsec = 0, -1
+    _MOLT_OS_UTIME_AT(
+        path,
+        dir_fd,
+        atime_sec,
+        atime_nsec,
+        mtime_sec,
+        mtime_nsec,
+        bool(follow_symlinks),
+    )
 
 
 def sendfile(out_fd: int, in_fd: int, offset: int | None, count: int) -> int:
@@ -1459,6 +1541,30 @@ def scandir(path: Any = ".") -> list:
             )
         )
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Capability-introspection sets. Membership mirrors CPython exactly for the
+# functions molt implements: each set holds the *function objects* that honor
+# the named keyword argument. Note that `os.replace` is intentionally absent
+# from `supports_dir_fd` even though it accepts `src_dir_fd`/`dst_dir_fd` — it
+# shares `rename`'s C implementation and CPython registers only `rename`.
+# ---------------------------------------------------------------------------
+supports_dir_fd = {
+    stat,
+    lstat,
+    rename,
+    link,
+    symlink,
+    readlink,
+    utime,
+}
+
+supports_follow_symlinks = {
+    stat,
+    link,
+    utime,
+}
 
 
 # ---------------------------------------------------------------------------
