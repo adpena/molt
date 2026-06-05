@@ -19,7 +19,9 @@ the decomposition.
 
 from __future__ import annotations
 
+import ast
 import importlib
+import inspect
 import json
 from pathlib import Path
 
@@ -30,8 +32,10 @@ from molt.frontend import (
     SimpleTIRGenerator,
     compile_to_tir,
 )
+from molt.frontend._protocol import _GeneratorProtocol
 
 ROOT = Path(__file__).resolve().parents[1]
+FRONTEND_DIR = ROOT / "src" / "molt" / "frontend"
 
 # The public names that external consumers (cli.py, debug/ir.py, tests, tools)
 # import from molt.frontend. This is the backward-compatibility contract.
@@ -107,6 +111,155 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.pattern_match",
     ):
         assert importlib.import_module(mod) is not None
+
+
+# ---------------------------------------------------------------------------
+# Protocol-drift guard (phase-1 reviewer finding)
+#
+# Each mixin annotates ``self`` as ``_GeneratorProtocol`` under TYPE_CHECKING so
+# cross-mixin ``self.<method>`` / ``self.<attr>`` references type-check across
+# files.  That guarantee only holds while the Protocol is a SUPERSET of the
+# assembled generator's real surface.  If a method moves into a mixin but the
+# Protocol is not regenerated (tmp/gen_protocol.py), the moved method — and
+# every sibling-mixin call to it — silently loses static checking.  These tests
+# fail the moment the Protocol and the assembled class diverge.
+# ---------------------------------------------------------------------------
+
+# Names provided by ast.NodeVisitor (the dispatch base) / object are NOT part of
+# the generator's own surface and are excluded from the coverage contract.
+_BUILTIN_NAMES = set(dir(ast.NodeVisitor)) | set(dir(object))
+
+
+def _protocol_methods() -> set[str]:
+    return {
+        name
+        for name, val in vars(_GeneratorProtocol).items()
+        if callable(val) and not name.startswith("__")
+    }
+
+
+def _protocol_attrs() -> set[str]:
+    return set(getattr(_GeneratorProtocol, "__annotations__", {}))
+
+
+def _assembled_class_methods() -> set[str]:
+    """Public methods contributed by SimpleTIRGenerator + all its mixins.
+
+    Excludes dunder methods and anything inherited from ast.NodeVisitor/object
+    (the dispatch base and Python builtins, which the Protocol does not model).
+    """
+    names: set[str] = set()
+    for klass in SimpleTIRGenerator.__mro__:
+        if klass in (object, ast.NodeVisitor):
+            continue
+        for name, val in vars(klass).items():
+            if name.startswith("__"):
+                continue
+            if callable(val):
+                names.add(name)
+    return names - _BUILTIN_NAMES
+
+
+def _assembled_class_attrs() -> set[str]:
+    """Instance attributes (``self.x = ...`` in __init__) + class-level
+    annotated vars across the assembled class and its mixins."""
+    import textwrap
+
+    attrs: set[str] = set()
+    init_src = textwrap.dedent(inspect.getsource(SimpleTIRGenerator.__init__))
+    for node in ast.walk(ast.parse(init_src)):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and isinstance(node.ctx, ast.Store)
+        ):
+            attrs.add(node.attr)
+    for klass in SimpleTIRGenerator.__mro__:
+        if klass is object:
+            continue
+        attrs.update(getattr(klass, "__annotations__", {}))
+    return attrs - _BUILTIN_NAMES
+
+
+def _discover_mixin_classes() -> dict[str, type]:
+    """Auto-discover every *Mixin class under visitors/ and lowering/ so this
+    guard automatically covers new mixins added in later extraction phases."""
+    found: dict[str, type] = {}
+    for sub in ("visitors", "lowering"):
+        pkg_dir = FRONTEND_DIR / sub
+        for path in sorted(pkg_dir.glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            mod = importlib.import_module(f"molt.frontend.{sub}.{path.stem}")
+            for name, obj in vars(mod).items():
+                if (
+                    isinstance(obj, type)
+                    and name.endswith("Mixin")
+                    and obj.__module__ == mod.__name__
+                ):
+                    found[name] = obj
+    return found
+
+
+def test_protocol_covers_full_class_method_surface() -> None:
+    """_GeneratorProtocol must declare every method the assembled class exposes.
+
+    A missing entry means the Protocol drifted from the class (gen_protocol.py
+    was not re-run after a move), so sibling-mixin ``self.<method>`` calls no
+    longer type-check.
+    """
+    missing = _assembled_class_methods() - _protocol_methods()
+    assert not missing, (
+        "Protocol drift: methods on SimpleTIRGenerator missing from "
+        f"_GeneratorProtocol (re-run tmp/gen_protocol.py): {sorted(missing)}"
+    )
+
+
+def test_protocol_covers_full_class_attr_surface() -> None:
+    """_GeneratorProtocol must declare every instance/class attribute the
+    assembled generator sets, so cross-mixin ``self.<attr>`` reads type-check."""
+    missing = _assembled_class_attrs() - _protocol_attrs()
+    assert not missing, (
+        "Protocol drift: attributes on SimpleTIRGenerator missing from "
+        f"_GeneratorProtocol (re-run tmp/gen_protocol.py): {sorted(missing)}"
+    )
+
+
+def test_every_mixin_method_is_on_protocol() -> None:
+    """Per-mixin view of the same contract, for precise failure attribution.
+
+    Each extracted mixin's own (non-dunder) methods must all appear on the
+    Protocol — every mixin annotates ``self`` as the Protocol, so any of its
+    methods that is absent is invisible to every other mixin's static checks.
+    """
+    proto = _protocol_methods()
+    mixins = _discover_mixin_classes()
+    assert mixins, "no *Mixin classes discovered under visitors/ or lowering/"
+    drift: dict[str, list[str]] = {}
+    for mixin_name, mixin_cls in sorted(mixins.items()):
+        own = {
+            name
+            for name, val in vars(mixin_cls).items()
+            if callable(val) and not name.startswith("__")
+        }
+        missing = sorted(own - proto)
+        if missing:
+            drift[mixin_name] = missing
+    assert not drift, (
+        "Protocol drift: mixin methods missing from _GeneratorProtocol "
+        f"(re-run tmp/gen_protocol.py): {drift}"
+    )
+
+
+def test_discovered_mixins_match_expected() -> None:
+    """The auto-discovered mixin set must equal EXPECTED_MIXINS, so adding a
+    mixin without registering it (or vice versa) is caught."""
+    discovered = set(_discover_mixin_classes())
+    assert discovered == set(EXPECTED_MIXINS), (
+        f"mixin registry drift: discovered={sorted(discovered)} "
+        f"expected={sorted(EXPECTED_MIXINS)}"
+    )
 
 
 def test_compile_to_tir_deterministic_with_match() -> None:
