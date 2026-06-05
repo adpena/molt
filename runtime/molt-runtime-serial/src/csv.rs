@@ -1956,19 +1956,14 @@ pub extern "C" fn molt_csv_dialect_lookup_name(name_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        // For non-string types, check hashability (simplified: lists/dicts are unhashable)
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                let tid = object_type_id(ptr);
-                if tid == TYPE_ID_LIST || tid == TYPE_ID_DICT || tid == TYPE_ID_SET {
-                    let tname = type_name(_py, obj);
-                    return raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        &format!("cannot use '{tname}' as a dict key (unhashable type: '{tname}')"),
-                    );
-                }
-            }
+        // Non-string names are looked up in the dialect registry dict. CPython
+        // hashes the key first, so unhashable names raise the dict-key
+        // `TypeError` (version-gated context word) rather than "unknown dialect".
+        // Route through the shared general hashability check (matches the
+        // in-tree copy) — NOT a hardcoded list/dict/set check, which missed
+        // bytearray and every other unhashable type and was not version-gated.
+        if !ensure_hashable(_py, name_bits, HashContextCode::DictKey) {
+            return MoltObject::none().bits();
         }
         raise_exception::<u64>(_py, "csv.Error", "unknown dialect")
     })

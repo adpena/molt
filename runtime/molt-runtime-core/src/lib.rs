@@ -904,6 +904,7 @@ pub mod prelude {
     pub use crate::with_core_gil;
     pub use crate::with_gil_entry;
     pub use crate::with_gil_entry_body;
+    pub use crate::HashContextCode;
     pub use crate::{
         bits_from_ptr, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, bridge_owned_u8_buffer,
         bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits, ptr_from_bits,
@@ -1032,6 +1033,30 @@ pub struct RuntimeVtable {
     pub missing_bits: unsafe extern "C" fn() -> u64,
     pub molt_getattr_builtin: unsafe extern "C" fn(u64, u64, u64) -> u64,
     pub molt_module_import: unsafe extern "C" fn(u64) -> u64,
+
+    // --- Hashability ---
+    /// General unhashable-key check matching the in-tree `ensure_hashable`. The
+    /// `ctx` argument is a `HashContextCode` discriminant selecting the
+    /// CPython-version-gated TypeError context word (bare / set element / dict
+    /// key). Returns 1 when the key is hashable; returns 0 AND raises a pending
+    /// `TypeError` when it is not. This replaces per-satellite hardcoded
+    /// type-list checks (list/dict/set), which missed bytearray and every other
+    /// unhashable type and were not version-gated.
+    pub ensure_hashable: unsafe extern "C" fn(u64, i32) -> i32,
+}
+
+/// Stable discriminant for the runtime's `HashContext`, passed across the FFI
+/// bridge to `RuntimeVtable::ensure_hashable`. Mirrors the in-tree
+/// `object::ops_hash::HashContext` ordering; do not renumber.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HashContextCode {
+    /// Bare `unhashable type: 'X'` on every version.
+    Bare = 0,
+    /// `cannot use 'X' as a set element (...)` on 3.14; bare on 3.12/3.13.
+    SetElement = 1,
+    /// `cannot use 'X' as a dict key (...)` on 3.14; bare on 3.12/3.13.
+    DictKey = 2,
 }
 
 // SAFETY: The vtable is populated once at init time and then only read.

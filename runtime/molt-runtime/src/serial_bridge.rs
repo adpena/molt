@@ -114,6 +114,19 @@ extern "C" fn bridge_is_truthy(bits: u64) -> i32 {
     })
 }
 
+extern "C" fn bridge_ensure_hashable(bits: u64, ctx: i32) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ctx = match ctx {
+            x if x == molt_runtime_core::HashContextCode::SetElement as i32 => {
+                HashContext::SetElement
+            }
+            x if x == molt_runtime_core::HashContextCode::DictKey as i32 => HashContext::DictKey,
+            _ => HashContext::Bare,
+        };
+        if ensure_hashable(_py, bits, ctx) { 1 } else { 0 }
+    })
+}
+
 extern "C" fn bridge_bytes_like_slice(
     ptr: *mut u8,
     out_ptr: *mut *const u8,
@@ -786,6 +799,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     missing_bits: bridge_missing_bits,
     molt_getattr_builtin: bridge_molt_getattr_builtin,
     molt_module_import: bridge_molt_module_import,
+    ensure_hashable: bridge_ensure_hashable,
 };
 
 #[unsafe(no_mangle)]

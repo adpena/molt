@@ -5,7 +5,8 @@
 
 use molt_runtime_core::prelude::*;
 use molt_runtime_core::{
-    RuntimeExtensionStateClear, RuntimeExtensionStateDrop, RuntimeExtensionStateInit, RuntimeVtable,
+    HashContextCode, RuntimeExtensionStateClear, RuntimeExtensionStateDrop,
+    RuntimeExtensionStateInit, RuntimeVtable,
 };
 use std::borrow::Cow;
 use std::sync::OnceLock;
@@ -145,6 +146,17 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
 
 pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
     unsafe { (vt().is_truthy)(obj.bits()) != 0 }
+}
+
+/// General unhashable-key check, delegating to the in-tree `ensure_hashable`
+/// through the runtime vtable. Returns `true` when `key_bits` is hashable;
+/// returns `false` AND leaves a pending `TypeError` (with the CPython
+/// version-gated context message selected by `ctx`) when it is not. This is the
+/// single source of truth shared with the in-tree copy — do not reintroduce a
+/// hardcoded list/dict/set type check (it misses bytearray and is not
+/// version-gated).
+pub fn ensure_hashable(_py: &PyToken, key_bits: u64, ctx: HashContextCode) -> bool {
+    unsafe { (vt().ensure_hashable)(key_bits, ctx as i32) != 0 }
 }
 
 /// # Safety
