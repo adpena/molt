@@ -37,7 +37,7 @@ use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::scev::{compute_scev, find_loop_guard, ScevExpr, ScevResult, TripCount};
@@ -123,6 +123,173 @@ impl IntRange {
         IntRange::new(clamp(lo), clamp(hi))
     }
 
+    /// True if this is the top of the lattice (`FULL_I64`, "anything"). A FULL
+    /// operand means "unknown", so most transfer functions degrade to FULL when
+    /// any input is FULL.
+    fn is_full(self) -> bool {
+        self.lo == i64::MIN && self.hi == i64::MAX
+    }
+
+    /// Saturating interval subtraction `self - other` in i128.
+    ///   `[a.lo - b.hi, a.hi - b.lo]`.
+    // Inherent saturating-interval method, not `std::ops::Sub` (see `add`).
+    #[allow(clippy::should_implement_trait)]
+    pub fn sub(self, other: IntRange) -> IntRange {
+        let lo = (self.lo as i128) - (other.hi as i128);
+        let hi = (self.hi as i128) - (other.lo as i128);
+        IntRange::from_i128(lo, hi)
+    }
+
+    /// Saturating interval multiplication in i128: the hull of the four corner
+    /// products `{lo·lo, lo·hi, hi·lo, hi·hi}`. Sound for mixed signs.
+    // Inherent saturating-interval method, not `std::ops::Mul` (see `add`).
+    #[allow(clippy::should_implement_trait)]
+    pub fn mul(self, other: IntRange) -> IntRange {
+        let a = self.lo as i128;
+        let b = self.hi as i128;
+        let c = other.lo as i128;
+        let d = other.hi as i128;
+        let p = [a * c, a * d, b * c, b * d];
+        let lo = *p.iter().min().unwrap();
+        let hi = *p.iter().max().unwrap();
+        IntRange::from_i128(lo, hi)
+    }
+
+    /// Saturating interval negation `-self`: `[-hi, -lo]` in i128 (so `-i64::MIN`
+    /// saturates to `i64::MAX` rather than wrapping).
+    // Inherent saturating-interval method, not `std::ops::Neg` (see `add`).
+    #[allow(clippy::should_implement_trait)]
+    pub fn neg(self) -> IntRange {
+        IntRange::from_i128(-(self.hi as i128), -(self.lo as i128))
+    }
+
+    /// Python bitwise-AND transfer over the *mathematical* integer value
+    /// (infinite two's-complement). Sound rules:
+    ///
+    ///   * **`a & m` with a constant `m >= 0`** ⇒ result ∈ `[0, m]`, for *any*
+    ///     `a` (even negative). Every bit of `m` above its highest set bit is 0,
+    ///     so it is 0 in the AND; the result is a submask of `m`. This is the
+    ///     load-bearing `field = i & MASK` rule.
+    ///   * **both operands non-negative** (`a, b >= 0`) ⇒ result ∈
+    ///     `[0, min(a.hi, b.hi)]`, since `a & b <= min(a, b)` for non-negatives.
+    ///
+    /// Anything else (a negative operand without a constant non-negative mask)
+    /// returns `FULL_I64`. `mask_const` is `Some(m)` when one operand is a
+    /// compile-time constant, else `None`.
+    fn bit_and(self, other: IntRange, self_const: Option<i64>, other_const: Option<i64>) -> IntRange {
+        // Constant non-negative mask on either side bounds the result to [0, m].
+        for m in [self_const, other_const].into_iter().flatten() {
+            if m >= 0 {
+                return IntRange::new(0, m);
+            }
+        }
+        // Both operands provably non-negative ⇒ [0, min(hi_a, hi_b)].
+        if self.lo >= 0 && other.lo >= 0 {
+            return IntRange::new(0, self.hi.min(other.hi));
+        }
+        IntRange::FULL_I64
+    }
+
+    /// Python bitwise-OR / XOR transfer. Sound only when **both operands are
+    /// provably non-negative**: then both results are non-negative and bounded
+    /// by `fill_below(max(a.hi, b.hi))` — the smallest `2^k - 1` covering the
+    /// larger operand's magnitude (OR/XOR never set a bit above the wider
+    /// operand's most-significant bit). Otherwise `FULL_I64`.
+    ///
+    /// `or_lower_floor` distinguishes OR (whose result is `>= max(a, b)`, so its
+    /// low bound is `max(a.lo, b.lo)`) from XOR (whose result can be 0, e.g.
+    /// `x ^ x`, so its low bound is 0).
+    fn bit_or_xor(self, other: IntRange, or_lower_floor: bool) -> IntRange {
+        if self.lo < 0 || other.lo < 0 {
+            return IntRange::FULL_I64;
+        }
+        let hi = fill_below(self.hi.max(other.hi));
+        let lo = if or_lower_floor {
+            self.lo.max(other.lo)
+        } else {
+            0
+        };
+        IntRange::new(lo, hi)
+    }
+
+    /// Python `%` transfer with a *constant* divisor `c` (molt/Python modulo:
+    /// the result takes the **sign of the divisor**, verified against
+    /// `sccp::eval_binary_mod`). Sound for *any* dividend:
+    ///   * `c > 0` ⇒ result ∈ `[0, c - 1]`.
+    ///   * `c < 0` ⇒ result ∈ `[c + 1, 0]`.
+    ///   * `c == 0` ⇒ raises (no value) — caller must not invoke this.
+    fn mod_const(c: i64) -> IntRange {
+        if c > 0 {
+            IntRange::new(0, c - 1)
+        } else {
+            // c < 0 (c == 0 excluded by caller).
+            IntRange::new(c + 1, 0)
+        }
+    }
+
+    /// Python `%` transfer with a *non-constant* divisor whose range is `divisor`.
+    /// Sound only when the divisor's sign is provably uniform AND it cannot be
+    /// zero:
+    ///
+    ///   * divisor provably `> 0` (`divisor.lo >= 1`) ⇒ result ∈
+    ///     `[0, divisor.hi - 1]`.
+    ///   * divisor provably `< 0` (`divisor.hi <= -1`) ⇒ result ∈
+    ///     `[divisor.lo + 1, 0]`.
+    ///
+    /// A range straddling 0 (possible zero divisor → raise, or mixed sign)
+    /// returns `FULL_I64`.
+    fn mod_range(divisor: IntRange) -> IntRange {
+        if divisor.lo >= 1 {
+            // result magnitude < divisor; sign of divisor (positive).
+            IntRange::from_i128(0, (divisor.hi as i128) - 1)
+        } else if divisor.hi <= -1 {
+            IntRange::from_i128((divisor.lo as i128) + 1, 0)
+        } else {
+            IntRange::FULL_I64
+        }
+    }
+
+    /// Python arithmetic right shift `self >> s` by a *constant* `s >= 0`.
+    /// `x >> s == floor(x / 2^s)`, which is monotone non-decreasing in `x`, so
+    /// the interval maps to `[floor(lo / 2^s), floor(hi / 2^s)]`. Computed in
+    /// i128 with floor division (Rust `/` truncates toward zero, so adjust for
+    /// negatives). `s < 0` is a Python `ValueError` (no value) and returns FULL.
+    fn shr_const(self, s: i64) -> IntRange {
+        if s < 0 {
+            return IntRange::FULL_I64;
+        }
+        if s >= 127 {
+            // Shifting any i64 right by >= 127 yields 0 (non-negative) or -1
+            // (negative). Bound conservatively by [-1, 0] (sign-preserving).
+            return IntRange::new(if self.lo < 0 { -1 } else { 0 }, if self.hi < 0 { -1 } else { 0 });
+        }
+        let div = 1i128 << s;
+        let floor_div = |x: i128| -> i128 {
+            let q = x / div;
+            let r = x % div;
+            if r != 0 && (x < 0) { q - 1 } else { q }
+        };
+        IntRange::from_i128(floor_div(self.lo as i128), floor_div(self.hi as i128))
+    }
+
+    /// Python left shift `self << s` by a *constant* `s >= 0`:
+    /// `[lo << s, hi << s]` in i128 (saturating). `s < 0` returns FULL.
+    fn shl_const(self, s: i64) -> IntRange {
+        if s < 0 {
+            return IntRange::FULL_I64;
+        }
+        if s >= 127 {
+            // A non-zero operand shifted this far overflows i64 in both
+            // directions; only an all-zero operand stays inline.
+            if self.lo == 0 && self.hi == 0 {
+                return IntRange::point(0);
+            }
+            return IntRange::FULL_I64;
+        }
+        let mul = 1i128 << s;
+        IntRange::from_i128((self.lo as i128) * mul, (self.hi as i128) * mul)
+    }
+
     /// True if the whole interval is `>= 0`.
     pub fn is_non_negative(self) -> bool {
         self.lo >= 0
@@ -131,6 +298,27 @@ impl IntRange {
     /// True if the whole interval lies within the signed 47-bit inline window.
     pub fn fits_inline_int47(self) -> bool {
         self.lo >= INLINE_INT47_LO && self.hi <= INLINE_INT47_HI
+    }
+}
+
+/// The smallest value of the form `2^k - 1` that is `>= x` (i.e. fill every bit
+/// below `x`'s most-significant set bit). For a non-negative `x`, this is a sound
+/// upper bound on `a | b` / `a ^ b` when `max(a, b) <= x`, because OR/XOR never
+/// set a bit above the operands' highest set bit. `x <= 0` ⇒ 0 (the only
+/// non-negative OR/XOR result bounded by a non-positive max is 0). Saturates to
+/// `i64::MAX` if `x` has bit 62 set (the next fill would overflow i64).
+fn fill_below(x: i64) -> i64 {
+    if x <= 0 {
+        return 0;
+    }
+    // Highest set bit position of x (x > 0 here, so 0..=62 for a positive i64;
+    // bit 63 is the sign bit and cannot be set in a positive value).
+    let hb = 63 - (x as u64).leading_zeros(); // 0..=62
+    if hb >= 62 {
+        // 2^63 - 1 == i64::MAX is the all-ones positive value.
+        i64::MAX
+    } else {
+        (1i64 << (hb + 1)) - 1
     }
 }
 
@@ -325,15 +513,60 @@ impl Analysis for ValueRange {
 // Computation
 // ---------------------------------------------------------------------------
 
+/// `Some(src)` when `op` is a `Copy` that holds the **same integer value** as a
+/// single source operand `src` — either a plain SSA copy or a frontend
+/// value-identity stack-machine move. FAIL-CLOSED: returns `None` for any `Copy`
+/// whose `_original_kind` is not a proven value-forwarding move, or whose
+/// operands do not all name one value (an opaque/aggregating `Copy`).
+///
+/// The value-forwarding `_original_kind` set mirrors the alias oracle's
+/// `copy_is_known_local_alias` (`copy` / `copy_var` / `store_var` / `load_var` /
+/// `identity_alias`), restricted further to the case where every operand is the
+/// SAME value so the multi-operand stack-machine spelling `Copy(v, v)` resolves
+/// to `v`. A plain attribute-free copy (`is_plain_value_copy`) is the `None`-kind
+/// case and is also accepted.
+fn copy_value_source(op: &TirOp) -> Option<ValueId> {
+    if op.opcode != OpCode::Copy || op.results.len() != 1 || op.operands.is_empty() {
+        return None;
+    }
+    let kind_ok = match op.attrs.get("_original_kind") {
+        None => true,
+        Some(AttrValue::Str(k)) => matches!(
+            k.as_str(),
+            "copy" | "copy_var" | "store_var" | "load_var" | "identity_alias"
+        ),
+        Some(_) => false,
+    };
+    if !kind_ok {
+        return None;
+    }
+    // Every operand must name the same source value (handles `Copy(v, v)`).
+    let src = op.operands[0];
+    if op.operands.iter().all(|&o| o == src) {
+        Some(src)
+    } else {
+        None
+    }
+}
+
 /// Compute value-range facts from the function + its scalar-evolution facts.
 pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeResult {
     let mut result = ValueRangeResult::default();
 
     // ---- transparent-copy map (built first; every fact resolves through it) --
+    // Resolve both *plain* SSA copies AND the frontend's value-identity `Copy`
+    // carriers (its stack-machine `copy` / `copy_var` / `store_var` / `load_var`
+    // moves, which carry `_original_kind`/`_simple_out`/`_col_offset` attrs but
+    // are still pure value moves). The IV reaches a hot-loop field store through
+    // exactly these tagged copies (`store_val = Copy(Copy(Copy(iv)))`); resolving
+    // them is what lets a fact recorded on the canonical IV be found when a
+    // consumer queries the stored value. This mirrors the alias oracle's
+    // `copy_is_known_local_alias` value-forwarding kinds — the single source of
+    // truth for "this Copy holds the same value as its operand".
     for block in func.blocks.values() {
         for op in &block.ops {
-            if op.is_plain_value_copy() {
-                result.copy_src.insert(op.results[0], op.operands[0]);
+            if let Some(src) = copy_value_source(op) {
+                result.copy_src.insert(op.results[0], src);
             }
         }
     }
@@ -426,12 +659,314 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
         }
     }
 
+    // ---- IV ranges from the counted-loop recognizer -------------------------
+    // SCEV only forms an `AddRec` when the IV increment carries `no_signed_wrap`.
+    // The frontend lowers `for i in range(C):` / `for i in range(start, stop):`
+    // directly to a counted *arithmetic* loop (no `CallBuiltin("range")` iterator
+    // for `range_devirt` to match, and its `Add(iv, step)` is NOT nsw-tagged), so
+    // SCEV gives that IV no recurrence and the loop above places no fact. The
+    // canonical counted-loop recognizer ([`counted_loop::recognize_counted_loop`])
+    // proves `start` / `step` / `trip_count` as *constants* directly from the
+    // constant loop guard `Lt(iv, stop_const)` — independent of the nsw tag and
+    // of wrap concerns (a bounded constant trip count gives an exact closed-form
+    // last value). We seed the IV's range from that descriptor for any header SCEV
+    // left un-ranged. This is the producer that unblocks SROA's hot-loop field
+    // promotion on the dominant `for i in range(C): obj.field = <i-derived>` shape.
+    seed_counted_loop_iv_ranges(func, &loop_bodies, &mut result);
+
+    // ---- forward transfer-function propagation ------------------------------
+    // Compute ranges for op-defined values (`i + 1`, `i & 15`, `i % 4`, `i >> 2`,
+    // …) from their operands' already-proven ranges, to a fixpoint. This is the
+    // producer that lets a value DERIVED from an induction variable — not just
+    // the IV itself — be proven inline (the SROA hot-loop field-promotion gap).
+    propagate_op_ranges(func, &mut result);
+
     // ---- edge-sensitive guard narrowing -------------------------------------
     // For a header `CondBranch(cond -> then=body, else=exit)` where
     // `cond = Lt(i, n)` / `Le(i, n)`, the body sees `i < n` / `i <= n`.
     narrow_from_header_guards(func, &loop_bodies, &mut result);
 
+    // Producer-evidence instrument (`MOLT_VRANGE_REPORT=1`): per-function dump of
+    // the proven loop-header IV recurrence + every global integer range, to the
+    // debug-artifact channel. The sibling of `MOLT_SROA_REPORT`/`MOLT_MEMGVN_REPORT`
+    // — used to verify the IV-range seed and transfer-function precision fire on
+    // real code (a `fits_inline_int47=false` here explains a refused SROA there).
+    if std::env::var("MOLT_VRANGE_REPORT").as_deref() == Ok("1") {
+        emit_vrange_report(func, scev, &loop_bodies, &result);
+    }
+
     result
+}
+
+/// Write the `MOLT_VRANGE_REPORT` per-function diagnostics: the loop headers with
+/// their trip count + per-arg SCEV, then every proven global integer range
+/// (ascending by value id). A no-op unless the report flag is set by the caller.
+fn emit_vrange_report(
+    func: &TirFunction,
+    scev: &ScevResult,
+    loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
+    result: &ValueRangeResult,
+) {
+    let mut lines = vec![format!(
+        "[VRANGE] fn={} headers={:?} loop_headers={:?}",
+        func.name,
+        scev.headers(),
+        loop_bodies.keys().collect::<Vec<_>>()
+    )];
+    for h in scev.headers() {
+        lines.push(format!("  header {:?} trip={:?}", h, scev.trip_count(*h)));
+        if let Some(hb) = func.blocks.get(h) {
+            for arg in &hb.args {
+                lines.push(format!("    arg v{} scev={:?}", arg.id.0, scev.scev_of(arg.id)));
+            }
+        }
+    }
+    let mut gr: Vec<_> = result.global_range.iter().collect();
+    gr.sort_by_key(|(v, _)| v.0);
+    for (v, r) in gr {
+        lines.push(format!("  v{} -> [{}, {}]", v.0, r.lo, r.hi));
+    }
+    let sanitized: String = func
+        .name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    let _ = crate::debug_artifacts::write_debug_artifact(
+        format!("vrange_report/{sanitized}.txt"),
+        lines.join("\n") + "\n",
+    );
+}
+
+/// The EXACT integer hull of a counted-loop IV `{start, +, step}` over `trip`
+/// iterations, computed in i128 and required to fit i64 with no saturation.
+///
+/// The IV's mathematical values are `start + j*step` for `j ∈ [0, trip-1]`; the
+/// hull is `[min(start, last), max(start, last)]` where `last = start +
+/// (trip-1)*step`. Computing in i128 is exact. Returning `None` when either
+/// endpoint does not fit i64 is the FAIL-CLOSED guard against a `compute_trip_count`
+/// that overflowed its i64 subtraction (a bogus trip): a real terminating loop's
+/// IV never leaves the i64 domain, so an out-of-i64 endpoint means the trip is
+/// untrustworthy and we assign no fact. (For a *too-small* bogus trip the only way
+/// `stop - start` wraps small-positive is |stop - start| > i64::MAX, which forces
+/// `start` to an i64 extreme — outside any inline window and failing every
+/// non-negative bound — so no false tight-and-in-range fact can result.)
+fn counted_loop_iv_hull(start: i64, step: i64, trip: i64) -> Option<IntRange> {
+    if trip < 1 || step == 0 {
+        return None;
+    }
+    let last = (start as i128) + ((trip as i128) - 1) * (step as i128);
+    let lo = (start as i128).min(last);
+    let hi = (start as i128).max(last);
+    if lo < i64::MIN as i128 || hi > i64::MAX as i128 {
+        return None; // endpoint left the i64 domain ⇒ untrustworthy trip.
+    }
+    Some(IntRange::new(lo as i64, hi as i64))
+}
+
+/// Seed IV ranges from the canonical counted-loop recognizer for any header that
+/// SCEV could not classify as an `AddRec` (the frontend's nsw-less counted-loop
+/// shape). [`counted_loop::recognize_counted_loop`] proves constant `start`,
+/// `step` and `trip_count` directly from the constant loop guard, so the IV's
+/// range is the exact closed-form hull (see [`counted_loop_iv_hull`]) —
+/// independent of the missing nsw tag and of wrap concerns (a bounded constant
+/// trip count gives an exact closed-form last value).
+///
+/// We only ASSIGN a fact to an IV that has none (never widen a tighter SCEV/guard
+/// fact), and we range the back-edge update value the same way SCEV's path does,
+/// so a value-keyed consumer (`fits_inline_int47`) sees the phi's loop-carried
+/// incoming proven too.
+fn seed_counted_loop_iv_ranges(
+    func: &TirFunction,
+    loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
+    result: &mut ValueRangeResult,
+) {
+    use super::counted_loop::recognize_counted_loop;
+
+    let mut headers: Vec<BlockId> = func
+        .loop_roles
+        .iter()
+        .filter_map(|(bid, role)| matches!(role, LoopRole::LoopHeader).then_some(*bid))
+        .collect();
+    headers.sort_unstable_by_key(|b| b.0);
+
+    for header in headers {
+        let Some(c) = recognize_counted_loop(func, header) else {
+            continue;
+        };
+        let iv_canon = result.resolve(c.induction_var);
+        // If SCEV already ranged this header's IV, the SCEV/guard facts are
+        // authoritative — do not disturb them.
+        if result.global_range.contains_key(&iv_canon) {
+            continue;
+        }
+        // The IV's exact i128-computed hull over the proven constant trip count.
+        let Some(iv_range) = counted_loop_iv_hull(c.start, c.step, c.trip_count) else {
+            continue;
+        };
+        // Place the IV range as a weak global + a per-body-block fact.
+        result.global_range.insert(iv_canon, iv_range);
+        if let Some(body) = loop_bodies.get(&header) {
+            for &b in body {
+                let existing = result
+                    .block_range
+                    .get(&(b, iv_canon))
+                    .copied()
+                    .unwrap_or(IntRange::FULL_I64);
+                result.block_range.insert((b, iv_canon), existing.meet(iv_range));
+            }
+        }
+        // Range the back-edge update value `iv_next = iv + step` (one step later)
+        // so the IV phi's loop-carried incoming is also proven for value-keyed
+        // consumers (`fits_inline_int47`). `back_args[iv_arg_index]` is the
+        // IV-next value the recognizer validated as `Add(iv, step)`. Its hull is
+        // the recurrence shifted by one step: `{start + step, +, step}`.
+        if let Some(s0_next) = c.start.checked_add(c.step)
+            && let Some(next_range) = counted_loop_iv_hull(s0_next, c.step, c.trip_count)
+        {
+            let next_canon = result.resolve(c.back_args[c.iv_arg_index]);
+            let existing = result
+                .global_range
+                .get(&next_canon)
+                .copied()
+                .unwrap_or(IntRange::FULL_I64);
+            result.global_range.insert(next_canon, existing.meet(next_range));
+        }
+    }
+}
+
+/// Forward transfer-function sweep: compute a sound loop-invariant range for
+/// every op-defined integer value from its operands' ranges, to a fixpoint.
+///
+/// ## Why this is sound and terminating
+///
+/// The sweep is strictly *monotone-additive*: it only ever ASSIGNS a range to a
+/// value that currently has **none** (`global_range` miss ⇒ implicitly
+/// `FULL_I64`). Once a value gains a range it is never revisited. Each iteration
+/// therefore strictly shrinks the set of un-ranged op results, so the fixpoint
+/// is reached in at most `#values` iterations. Crucially, it **never re-derives
+/// a phi / block-argument's range** (phis are not ops) and **never widens** an
+/// existing fact, so:
+///
+///   * The IV's SCEV-proven recurrence range (seeded above) is authoritative and
+///     untouched — the sweep cannot loosen it.
+///   * An unbounded accumulator (`total = total + i`, a header phi with no proven
+///     AddRec) keeps its `FULL_I64` (absent) range: its `Add` needs the phi's
+///     range, which is FULL, so the transfer yields FULL ⇒ no fact assigned. The
+///     accumulator stays un-proven and correctly falls to the boxed BigInt
+///     carrier. This is the mandatory `bigint_accumulator` soundness gate: a
+///     value that can exceed the inline window must never be proven inline.
+///
+/// Every transfer is computed in i128 and saturates to the i64 domain — a result
+/// that would overflow yields a wider (sound) range, never a wrapped one.
+fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeResult) {
+    // Seed `bool`-typed values as `[0, 1]` (a bool is an integer 0/1). Trivially
+    // sound and lets `bool`-derived arithmetic (`a + (x < y)`) participate.
+    for (&v, ty) in &func.value_types {
+        if matches!(ty, crate::tir::types::TirType::Bool) {
+            let canon = result.resolve(v);
+            result
+                .global_range
+                .entry(canon)
+                .or_insert(IntRange::new(0, 1));
+        }
+    }
+
+    // Iterate to a fixpoint, assigning a range only to results that have none.
+    // Bound the iteration count defensively by the op count (the additive
+    // monotonicity already guarantees termination; this is a hard ceiling).
+    let max_iters = func.blocks.values().map(|b| b.ops.len()).sum::<usize>() + 1;
+    for _ in 0..max_iters {
+        let mut changed = false;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                // Single-result integer ops only. (Value-identity copies — plain
+                // or tagged — are already threaded by `resolve` through
+                // `copy_src`; skip them here so the fact lands on the canonical
+                // source rather than a copy alias.)
+                if op.results.len() != 1 || copy_value_source(op).is_some() {
+                    continue;
+                }
+                let res = result.resolve(op.results[0]);
+                if result.global_range.contains_key(&res) {
+                    continue; // already ranged (constant / IV / earlier sweep).
+                }
+                let Some(range) = transfer_op_range(op, result) else {
+                    continue;
+                };
+                if range.is_full() {
+                    continue; // no information — leave un-ranged.
+                }
+                result.global_range.insert(res, range);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// The transfer function for one op: the range of its result computed from the
+/// (already-proven) ranges of its operands. `None` when the opcode is not a
+/// modeled integer operation; `Some(FULL_I64)` when modeled but unprovable.
+///
+/// Every rule here is sound over the **full i64 domain including negatives**.
+/// A false (too-tight) range feeds `fits_inline_int47` → `RawI64Safe` promotion,
+/// so an unsound bound is a silent BigInt-truncation miscompile. When in doubt,
+/// return `FULL_I64`.
+fn transfer_op_range(op: &TirOp, result: &ValueRangeResult) -> Option<IntRange> {
+    // Operand range / constant helpers (resolve through plain copies).
+    let r = |i: usize| -> IntRange {
+        op.operands
+            .get(i)
+            .map(|&v| result.range_of(v))
+            .unwrap_or(IntRange::FULL_I64)
+    };
+    let c = |i: usize| -> Option<i64> {
+        op.operands
+            .get(i)
+            .and_then(|&v| result.const_int.get(&result.resolve(v)).copied())
+    };
+    match op.opcode {
+        OpCode::Add if op.operands.len() == 2 => Some(r(0).add(r(1))),
+        OpCode::Sub if op.operands.len() == 2 => Some(r(0).sub(r(1))),
+        OpCode::Mul if op.operands.len() == 2 => {
+            let (a, b) = (r(0), r(1));
+            // A FULL operand makes the product FULL; guard to avoid i64::MIN ·
+            // huge corner-product noise (still sound, just no information).
+            if a.is_full() || b.is_full() {
+                Some(IntRange::FULL_I64)
+            } else {
+                Some(a.mul(b))
+            }
+        }
+        OpCode::Neg if op.operands.len() == 1 => Some(r(0).neg()),
+        OpCode::BitAnd if op.operands.len() == 2 => Some(r(0).bit_and(r(1), c(0), c(1))),
+        OpCode::BitOr if op.operands.len() == 2 => Some(r(0).bit_or_xor(r(1), true)),
+        OpCode::BitXor if op.operands.len() == 2 => Some(r(0).bit_or_xor(r(1), false)),
+        OpCode::Mod if op.operands.len() == 2 => {
+            // Constant divisor (Python sign-of-divisor semantics); else a
+            // sign-uniform, non-zero divisor range.
+            if let Some(cd) = c(1) {
+                if cd == 0 {
+                    Some(IntRange::FULL_I64) // ZeroDivisionError — no value.
+                } else {
+                    Some(IntRange::mod_const(cd))
+                }
+            } else {
+                Some(IntRange::mod_range(r(1)))
+            }
+        }
+        OpCode::Shr if op.operands.len() == 2 => match c(1) {
+            Some(s) => Some(r(0).shr_const(s)),
+            None => Some(IntRange::FULL_I64),
+        },
+        OpCode::Shl if op.operands.len() == 2 => match c(1) {
+            Some(s) => Some(r(0).shl_const(s)),
+            None => Some(IntRange::FULL_I64),
+        },
+        _ => None,
+    }
 }
 
 /// Collect `ConstInt` values, container lengths, and `len(c)` symbols.
@@ -829,6 +1364,155 @@ mod tests {
         assert!(!IntRange::FULL_I64.fits_inline_int47());
     }
 
+    // -- transfer-function rules (soundness over the full i64 domain) ---------
+
+    #[test]
+    fn transfer_sub_mul_neg() {
+        // [2, 5] - [1, 3] = [2-3, 5-1] = [-1, 4].
+        assert_eq!(IntRange::new(2, 5).sub(IntRange::new(1, 3)), IntRange::new(-1, 4));
+        // [-2, 3] * [-4, 5] hull of {8,-10,-12,15} = [-12, 15].
+        assert_eq!(IntRange::new(-2, 3).mul(IntRange::new(-4, 5)), IntRange::new(-12, 15));
+        // -[3, 7] = [-7, -3]; -[i64::MIN, 0] saturates the low end.
+        assert_eq!(IntRange::new(3, 7).neg(), IntRange::new(-7, -3));
+        assert_eq!(IntRange::point(i64::MIN).neg().hi, i64::MAX);
+    }
+
+    #[test]
+    fn transfer_sub_mul_saturate() {
+        // Overflowing products/diffs saturate, never wrap.
+        let big = IntRange::point(i64::MAX);
+        assert_eq!(big.mul(IntRange::point(2)).hi, i64::MAX);
+        assert_eq!(IntRange::point(i64::MIN).sub(IntRange::point(1)).lo, i64::MIN);
+    }
+
+    #[test]
+    fn transfer_bit_and_nonneg_mask() {
+        // x & 15 ∈ [0, 15] for ANY x — even negative / unknown.
+        let full = IntRange::FULL_I64;
+        assert_eq!(full.bit_and(IntRange::point(15), None, Some(15)), IntRange::new(0, 15));
+        // mask on the left operand, dividend unknown.
+        assert_eq!(full.bit_and(IntRange::point(7), Some(7), None), IntRange::new(0, 7));
+        // negative x is fine: -1 & 15 == 15 ∈ [0, 15].
+        assert_eq!(
+            IntRange::new(-100, -1).bit_and(IntRange::point(15), None, Some(15)),
+            IntRange::new(0, 15)
+        );
+        // mask 0 ⇒ [0, 0].
+        assert_eq!(full.bit_and(IntRange::point(0), None, Some(0)), IntRange::point(0));
+    }
+
+    #[test]
+    fn transfer_bit_and_negative_mask_is_full() {
+        // x & (-2) can be negative (e.g. -4 & -2 == -4) — NOT bounded to [0,..].
+        let full = IntRange::FULL_I64;
+        assert!(full.bit_and(IntRange::point(-2), None, Some(-2)).is_full());
+        // Both operands non-negative ⇒ [0, min(hi_a, hi_b)].
+        assert_eq!(
+            IntRange::new(0, 100).bit_and(IntRange::new(0, 7), None, None),
+            IntRange::new(0, 7)
+        );
+        // One operand possibly-negative, no constant mask ⇒ FULL.
+        assert!(IntRange::new(-1, 100).bit_and(IntRange::new(0, 7), None, None).is_full());
+    }
+
+    #[test]
+    fn transfer_bit_or_xor() {
+        // 5 | 2 within [0,5]|[0,2] ⇒ low = max(lo) = 0? OR low floor = max(0,0)=0,
+        // hi = fill_below(max(5,2)) = fill_below(5) = 7.
+        assert_eq!(
+            IntRange::new(0, 5).bit_or_xor(IntRange::new(0, 2), true),
+            IntRange::new(0, 7)
+        );
+        // OR low floor: [4,5] | [8,9] ⇒ low = max(4,8) = 8, hi = fill_below(9)=15.
+        assert_eq!(
+            IntRange::new(4, 5).bit_or_xor(IntRange::new(8, 9), true),
+            IntRange::new(8, 15)
+        );
+        // XOR can be 0 ⇒ low = 0.
+        assert_eq!(
+            IntRange::new(4, 5).bit_or_xor(IntRange::new(4, 5), false),
+            IntRange::new(0, 7)
+        );
+        // Negative operand ⇒ FULL (can't bound bitwise of negatives cheaply).
+        assert!(IntRange::new(-1, 5).bit_or_xor(IntRange::new(0, 2), true).is_full());
+        // fill_below saturation: huge value near bit 62 → i64::MAX.
+        assert_eq!(fill_below((1i64 << 62) + 1), i64::MAX);
+        assert_eq!(fill_below(8), 15);
+        assert_eq!(fill_below(0), 0);
+        assert_eq!(fill_below(-5), 0);
+        assert_eq!(fill_below(1), 1);
+    }
+
+    #[test]
+    fn transfer_mod_const_python_sign() {
+        // x % 4 ∈ [0, 3] for ANY x (Python: result has sign of divisor).
+        assert_eq!(IntRange::mod_const(4), IntRange::new(0, 3));
+        // negative divisor: x % -4 ∈ [-3, 0].
+        assert_eq!(IntRange::mod_const(-4), IntRange::new(-3, 0));
+        // x % 1 ∈ [0, 0].
+        assert_eq!(IntRange::mod_const(1), IntRange::point(0));
+    }
+
+    #[test]
+    fn transfer_mod_const_matches_cpython_sign() {
+        // Spot-check the bound against Python's actual % over mixed-sign dividends.
+        // Python: (-7) % 4 == 1, 7 % 4 == 3, (-7) % -4 == -3, 7 % -4 == -1.
+        let pos = IntRange::mod_const(4);
+        for x in [-7i64, -1, 0, 3, 7, 1000] {
+            let py = {
+                let r = x % 4;
+                if r != 0 && ((r ^ 4) < 0) { r + 4 } else { r }
+            };
+            assert!(py >= pos.lo && py <= pos.hi, "x%4={py} outside {pos:?}");
+        }
+        let neg = IntRange::mod_const(-4);
+        for x in [-7i64, -1, 0, 3, 7, 1000] {
+            let py = {
+                let r = x % -4;
+                if r != 0 && ((r ^ -4) < 0) { r + -4 } else { r }
+            };
+            assert!(py >= neg.lo && py <= neg.hi, "x%-4={py} outside {neg:?}");
+        }
+    }
+
+    #[test]
+    fn transfer_mod_range_sign_uniform() {
+        // divisor provably in [2, 9] ⇒ result ∈ [0, 8].
+        assert_eq!(IntRange::mod_range(IntRange::new(2, 9)), IntRange::new(0, 8));
+        // divisor provably in [-9, -2] ⇒ result ∈ [-8, 0].
+        assert_eq!(IntRange::mod_range(IntRange::new(-9, -2)), IntRange::new(-8, 0));
+        // divisor straddles 0 (possible zero → raise, or mixed sign) ⇒ FULL.
+        assert!(IntRange::mod_range(IntRange::new(-1, 5)).is_full());
+        assert!(IntRange::mod_range(IntRange::new(0, 5)).is_full());
+    }
+
+    #[test]
+    fn transfer_shr_const() {
+        // 100 >> 2 == 25; [0,100] >> 2 = [0, 25].
+        assert_eq!(IntRange::new(0, 100).shr_const(2), IntRange::new(0, 25));
+        // Negative floor: (-7) >> 1 == floor(-3.5) == -4 in Python.
+        assert_eq!(IntRange::new(-7, -7).shr_const(1), IntRange::point(-4));
+        assert_eq!(IntRange::new(-8, 8).shr_const(2), IntRange::new(-2, 2));
+        // s < 0 ⇒ FULL (ValueError, no value).
+        assert!(IntRange::new(0, 100).shr_const(-1).is_full());
+        // huge shift ⇒ sign-preserving [-1, 0] band.
+        assert_eq!(IntRange::new(-5, 9).shr_const(200), IntRange::new(-1, 0));
+    }
+
+    #[test]
+    fn transfer_shl_const() {
+        // [1, 3] << 2 = [4, 12].
+        assert_eq!(IntRange::new(1, 3).shl_const(2), IntRange::new(4, 12));
+        // 1 << 70 overflows i64 ⇒ saturates to [i64::MAX, i64::MAX] (a point,
+        // soundly above the value, not a wrap) — correctly NOT inline.
+        assert_eq!(IntRange::point(1).shl_const(70), IntRange::point(i64::MAX));
+        assert!(!IntRange::point(1).shl_const(70).fits_inline_int47());
+        // A two-sided operand shifted past the i64 width saturates both ends.
+        assert!(IntRange::new(-1, 1).shl_const(70).is_full());
+        // 0 << anything == 0.
+        assert_eq!(IntRange::point(0).shl_const(200), IntRange::point(0));
+    }
+
     #[test]
     fn iv_range_positive_step() {
         // for i in range(10): i in [0, 9].
@@ -1050,11 +1734,52 @@ mod tests {
     }
 
     #[test]
-    fn e2e_wrapping_increment_not_in_bounds() {
-        // Same shape but WITHOUT no_signed_wrap on the increment: SCEV refuses
-        // the AddRec, so the IV has no proven range and BCE must NOT fire.
+    fn e2e_counted_loop_const_bound_proven_without_nsw() {
+        // The frontend's counted-loop shape lowers `for i in range(10)` to an
+        // arithmetic loop whose `Add(i, 1)` is NOT nsw-tagged (SCEV refuses the
+        // AddRec). The counted-loop recognizer proves start=0/step=1/trip=10 from
+        // the CONSTANT guard bound, so the IV range [0,9] is recovered soundly —
+        // the producer that unblocks SROA/BCE on the dominant counted-loop shape.
         let (mut func, body, a, iv) = range_loop_vr(10, 10);
-        // Strip nsw from the body's Add.
+        for op in func.blocks.get_mut(&body).unwrap().ops.iter_mut() {
+            if op.opcode == OpCode::Add {
+                op.attrs.remove("no_signed_wrap");
+            }
+        }
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        // SCEV gives no AddRec, but the counted-loop recognizer still proves it.
+        assert_eq!(
+            vr.range_of(iv),
+            IntRange::new(0, 9),
+            "counted-loop recognizer must recover the IV range from the const bound"
+        );
+        assert!(
+            vr.proves_index_in_bounds(body, a, iv),
+            "a constant-bounded counted loop is provably in-bounds even without nsw"
+        );
+    }
+
+    #[test]
+    fn e2e_nonconst_bound_no_nsw_not_proven() {
+        // The genuinely-unprovable case: a NON-CONSTANT stop bound AND no nsw.
+        // The counted-loop recognizer needs a ConstInt stop (it gets none here),
+        // and SCEV needs nsw (stripped) — so NEITHER prover fires and the IV has
+        // no range. BCE must NOT fire (fail-closed).
+        let (mut func, body, a, iv) = range_loop_vr(10, 10);
+        // Make the stop bound a non-constant: replace the `Lt(iv, stop_v)` RHS
+        // with a fresh value that has no ConstInt def (an opaque parameter-like
+        // value). Find the Lt op (in the header) and the stop ConstInt, and drop
+        // the constant by re-pointing Lt's RHS at a never-defined value.
+        let opaque = func.fresh_value();
+        for block in func.blocks.values_mut() {
+            for op in block.ops.iter_mut() {
+                if op.opcode == OpCode::Lt && op.operands.len() == 2 {
+                    op.operands[1] = opaque; // RHS now has no constant/def → opaque.
+                }
+            }
+        }
+        // Strip nsw so SCEV cannot form the AddRec either.
         for op in func.blocks.get_mut(&body).unwrap().ops.iter_mut() {
             if op.opcode == OpCode::Add {
                 op.attrs.remove("no_signed_wrap");
@@ -1063,8 +1788,198 @@ mod tests {
         let scev = compute_scev(&func);
         let vr = compute_value_range(&func, &scev);
         assert!(
+            vr.range_of(iv).is_full(),
+            "IV with neither a const bound nor nsw must have NO proven range"
+        );
+        assert!(
             !vr.proves_index_in_bounds(body, a, iv),
             "a possibly-wrapping IV must not yield a bounds proof"
         );
+    }
+
+    /// Build `for i in range(stop): ...` with extra derived ops in the body, the
+    /// `p.y = i + 1`-style values the forward sweep must range. Returns the func
+    /// plus the derived-value ids.
+    fn range_loop_with_derived(stop: i64) -> (TirFunction, ValueId, ValueId, ValueId, ValueId, ValueId) {
+        let (mut func, body, _a, iv) = range_loop_vr(64, stop);
+        let one = func.fresh_value();
+        let mask = func.fresh_value();
+        let m4 = func.fresh_value();
+        let sh = func.fresh_value();
+        let i_plus_1 = func.fresh_value();
+        let i_and_15 = func.fresh_value();
+        let i_mod_4 = func.fresh_value();
+        let i_shl_30 = func.fresh_value();
+        let block = func.blocks.get_mut(&body).unwrap();
+        // Prepend the constants for the derived ops, then the derived ops.
+        let mut new_ops = vec![
+            cint(one, 1),
+            cint(mask, 15),
+            cint(m4, 4),
+            cint(sh, 30),
+            op(OpCode::Add, vec![iv, one], vec![i_plus_1]),
+            op(OpCode::BitAnd, vec![iv, mask], vec![i_and_15]),
+            op(OpCode::Mod, vec![iv, m4], vec![i_mod_4]),
+            op(OpCode::Shl, vec![iv, sh], vec![i_shl_30]),
+        ];
+        new_ops.append(&mut block.ops);
+        block.ops = new_ops;
+        (func, iv, i_plus_1, i_and_15, i_mod_4, i_shl_30)
+    }
+
+    #[test]
+    fn e2e_derived_values_get_proven_ranges() {
+        // for i in range(10): i in [0,9]. The forward sweep must prove the
+        // derived store values that today block SROA's hot-loop promotion.
+        let (func, iv, i_plus_1, i_and_15, i_mod_4, i_shl_30) = range_loop_with_derived(10);
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        assert_eq!(vr.range_of(iv), IntRange::new(0, 9), "IV body range");
+        // i + 1 ∈ [1, 10] — the `p.y = i + 1` shape.
+        assert_eq!(vr.range_of(i_plus_1), IntRange::new(1, 10));
+        assert!(vr.fits_inline_int47(i_plus_1));
+        // i & 15 ∈ [0, 15] (mask bound — holds even if i were unknown).
+        assert_eq!(vr.range_of(i_and_15), IntRange::new(0, 15));
+        assert!(vr.fits_inline_int47(i_and_15));
+        // i % 4 ∈ [0, 3].
+        assert_eq!(vr.range_of(i_mod_4), IntRange::new(0, 3));
+        assert!(vr.fits_inline_int47(i_mod_4));
+        // i << 30 ∈ [0, 9 << 30] = [0, 9663676416] — still well within 2^46.
+        assert_eq!(vr.range_of(i_shl_30), IntRange::new(0, 9i64 << 30));
+        assert!(vr.fits_inline_int47(i_shl_30));
+    }
+
+    #[test]
+    fn e2e_shl_past_inline_window_not_proven_inline() {
+        // for i in range(10): i << 45 reaches 9 << 45 ≈ 3.2e14 > 2^46-1 ⇒ the
+        // range is proven but does NOT fit the inline window (must stay boxed).
+        let (mut func, _iv, _p1, _a15, _m4, _shl30) = range_loop_with_derived(10);
+        // Find the Shl op and bump its shift constant to 45 (overflow window).
+        let mut sh_id = None;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode == OpCode::Shl {
+                    sh_id = Some(op.operands[1]);
+                }
+            }
+        }
+        let sh_id = sh_id.unwrap();
+        for block in func.blocks.values_mut() {
+            for op in block.ops.iter_mut() {
+                if op.opcode == OpCode::ConstInt
+                    && op.results.first() == Some(&sh_id)
+                {
+                    op.attrs.insert("value".into(), AttrValue::Int(45));
+                }
+            }
+        }
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        // The Shl result is the value whose def op is Shl.
+        let mut shl_res = None;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode == OpCode::Shl {
+                    shl_res = Some(op.results[0]);
+                }
+            }
+        }
+        let shl_res = shl_res.unwrap();
+        // Range is proven ([0, 9<<45]) but does NOT fit the inline window.
+        assert_eq!(vr.range_of(shl_res), IntRange::new(0, 9i64 << 45));
+        assert!(
+            !vr.fits_inline_int47(shl_res),
+            "9<<45 exceeds 2^46-1 — must NOT be proven inline"
+        );
+    }
+
+    #[test]
+    fn e2e_unbounded_accumulator_stays_unranged() {
+        // The mandatory bigint_accumulator soundness gate: an accumulator phi
+        // `total = total + i` whose SCEV is NOT a proven AddRec must keep its
+        // FULL (absent) range — the forward sweep must NEVER prove it inline.
+        let mut func = TirFunction::new("acc".into(), vec![], TirType::None);
+        let start_i = func.fresh_value();
+        let start_t = func.fresh_value();
+        let stop_v = func.fresh_value();
+        let step = func.fresh_value();
+        let iv = func.fresh_value();
+        let total = func.fresh_value();
+        let cond = func.fresh_value();
+        let next_i = func.fresh_value();
+        let next_t = func.fresh_value();
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![cint(start_i, 0), cint(start_t, 0), cint(stop_v, 1000000), cint(step, 1)];
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![start_i, start_t],
+            };
+        }
+        func.blocks.insert(
+            header,
+            Blk {
+                id: header,
+                args: vec![
+                    TirValue { id: iv, ty: TirType::I64 },
+                    TirValue { id: total, ty: TirType::I64 },
+                ],
+                ops: vec![op(OpCode::Lt, vec![iv, stop_v], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.insert(
+            body,
+            Blk {
+                id: body,
+                args: vec![],
+                // total = total + i  (an accumulator — NOT an affine recurrence).
+                ops: vec![
+                    op(OpCode::Add, vec![total, iv], vec![next_t]),
+                    op_nsw(OpCode::Add, vec![iv, step], vec![next_i]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![next_i, next_t],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            Blk {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(exit, LoopRole::LoopEnd);
+
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        // The IV is a proper AddRec and IS ranged.
+        assert!(vr.fits_inline_int47(iv) || vr.range_of(iv).hi <= 999_999);
+        // The accumulator phi and its update MUST stay un-proven (FULL).
+        assert!(
+            !vr.fits_inline_int47(total),
+            "unbounded accumulator phi must never be proven inline"
+        );
+        assert!(
+            !vr.fits_inline_int47(next_t),
+            "accumulator update (total + i) must never be proven inline — it can \
+             exceed the inline window and even i64, requiring a boxed BigInt"
+        );
+        assert!(vr.range_of(next_t).is_full(), "total + i range must be FULL");
     }
 }
