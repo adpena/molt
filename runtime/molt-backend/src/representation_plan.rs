@@ -1513,9 +1513,11 @@ impl ScalarRepresentationPlan {
         // `checked_add` contract supplies the wrap-safety the interval chain
         // cannot: the sum is a true i64 with a hardware overflow flag, and
         // the peel's CFG gates every consumption of a wrapped value.
-        candidates.extend(
-            checked_loop_seed_names(func_ir, &bounded_i64_names, &passes_filter).into_iter(),
-        );
+        candidates.extend(checked_loop_seed_names(
+            func_ir,
+            &bounded_i64_names,
+            &passes_filter,
+        ));
         let mut changed = true;
         while changed {
             changed = false;
@@ -2699,10 +2701,12 @@ fn loop_backedge_update_names(func_ir: &FunctionIR) -> BTreeSet<String> {
 /// Greatest-fixpoint: optimistically admit every `checked_add` sum, every
 /// `load_var` result, and every `store_var` slot, then iteratively STRIP any
 /// member whose defs don't conform —
-///   * a sum whose arg is neither an in-set member nor interval-bounded,
-///   * a load whose slot was stripped,
-///   * a slot with ANY store from a non-member, non-bounded source,
-///   * anything failing the int-primary `passes_filter` (type/poison gates).
+///
+/// * a sum whose arg is neither an in-set member nor interval-bounded,
+/// * a load whose slot was stripped,
+/// * a slot with ANY store from a non-member, non-bounded source,
+/// * anything failing the int-primary `passes_filter` (type/poison gates).
+///
 /// Fail-closed: a questionable member invalidates its dependents, so the
 /// boxed slow-loop clone (whose plain `add` sums are not members) and the
 /// exit-merge slot (fed by both loops) strip out exactly as required, while
