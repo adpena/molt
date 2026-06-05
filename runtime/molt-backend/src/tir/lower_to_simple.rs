@@ -92,6 +92,18 @@ impl SimpleValueNames {
             .unwrap_or_else(|| Self::canonical_value_name(id))
     }
 
+    /// True if `id` carries an EXPLICIT SimpleIR name (a `_simple_out` /
+    /// `_simple_result_N` override) — the stream's source of truth — rather
+    /// than a synthetic canonical fallback (`_v{N}` / `_bb{N}_arg{I}`).
+    ///
+    /// Name-keyed consumers (the scalar representation plan) treat
+    /// explicit-name facts as authoritative: a re-lift renumbers ValueIds, so
+    /// a canonical fallback name can COLLIDE with a different value's
+    /// explicit stream name; the explicit fact must win, not conflict out.
+    pub fn has_override(&self, id: ValueId) -> bool {
+        self.value_overrides.contains_key(&id)
+    }
+
     pub fn block_arg_slot(&self, block: BlockId, index: usize) -> String {
         self.block_arg_slots
             .get(&(block, index))

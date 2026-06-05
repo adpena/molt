@@ -358,6 +358,14 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("check_exception_elim", Cfg, |f, _am, _tti| {
             passes::check_exception_elim::run(f)
         }),
+        // overflow_peel runs AFTER check_exception_elim (the loop body only
+        // becomes the pure Copies+Adds shape its recognizer requires once the
+        // per-op CheckExceptions are eliminated; a body that retains one
+        // correctly refuses via the purity scan) and BEFORE copy_prop/dce
+        // (which are shape-preserving cleanups).
+        pass("overflow_peel", Cfg, |f, am, _tti| {
+            passes::overflow_peel::run(f, am)
+        }),
         pass("copy_prop", OpsOnly, |f, _am, _tti| passes::copy_prop::run(f)),
         pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
     ];
@@ -471,7 +479,7 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
             ));
             match &block.terminator {
                 Terminator::Branch { target, args } => {
-                    dump.push_str(&format!("    → block {} (args={})\n", target.0, args.len()))
+                    dump.push_str(&format!("    → block {} args={:?}\n", target.0, args))
                 }
                 Terminator::CondBranch {
                     cond,
@@ -490,18 +498,18 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
         } else {
             match &block.terminator {
                 Terminator::Branch { target, args } => dump.push_str(&format!(
-                    "  TERM: Branch → block {} (args={})\n",
-                    target.0,
-                    args.len()
+                    "  TERM: Branch → block {} args={:?}\n",
+                    target.0, args
                 )),
                 Terminator::CondBranch {
                     cond,
                     then_block,
+                    then_args,
                     else_block,
-                    ..
+                    else_args,
                 } => dump.push_str(&format!(
-                    "  TERM: CondBranch cond={:?} then={} else={}\n",
-                    cond, then_block.0, else_block.0
+                    "  TERM: CondBranch cond={:?} then={} args={:?} else={} args={:?}\n",
+                    cond, then_block.0, then_args, else_block.0, else_args
                 )),
                 Terminator::Return { values } => {
                     dump.push_str(&format!("  TERM: Return {} values\n", values.len()))
@@ -557,6 +565,7 @@ mod tests {
                 "vectorize",
                 "polyhedral",
                 "check_exception_elim",
+                "overflow_peel",
                 "copy_prop",
                 "dce",
             ],
@@ -587,6 +596,7 @@ mod tests {
                 "sccp",
                 "branchless_count",
                 "check_exception_elim",
+                "overflow_peel",
                 "dce",
             ],
         );
