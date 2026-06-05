@@ -381,6 +381,39 @@ impl LlvmReprFacts {
         self.name_for(id)
             .and_then(|name| self.container_kind_by_name.get(name).copied())
     }
+
+    /// The **effective** parameter carrier types `tir_func`'s callers must
+    /// coerce arguments to, per this function's own value-range proof.
+    ///
+    /// A declared `int` parameter (`TirType::I64`) is a *semantic* int with no
+    /// representation proof attached; it is sound as a raw-i64 carrier only when
+    /// the value-range analysis proves its entire range fits the 47-bit inline
+    /// payload (`is_overflow_safe_int`). An unproven `int` param can receive a
+    /// heap BigInt and therefore MUST be carried `DynBox` (NaN-boxed) across the
+    /// call boundary: the caller passes the boxed value unchanged and the callee
+    /// body uses it boxed. This is the parameter-ABI twin of
+    /// [`FunctionLowering::effective_block_arg_type`] (which makes the same
+    /// decision for loop-carried phis), and the SAME `repr_by_value` proof feeds
+    /// both, so the caller's coercion target and the callee's entry-param carrier
+    /// can never disagree. Non-`I64` declared types pass through unchanged.
+    pub(crate) fn effective_param_types(&self, tir_func: &TirFunction) -> Vec<TirType> {
+        let entry_args = &tir_func.blocks[&tir_func.entry_block].args;
+        tir_func
+            .param_types
+            .iter()
+            .enumerate()
+            .map(|(i, declared)| {
+                let proven_safe = entry_args
+                    .get(i)
+                    .is_some_and(|arg| self.is_overflow_safe_int(arg.id));
+                if matches!(declared, TirType::I64) && !proven_safe {
+                    TirType::DynBox
+                } else {
+                    declared.clone()
+                }
+            })
+            .collect()
+    }
 }
 
 /// Build the `ValueId -> SimpleIR name` bridge for `tir_func` (every op result

@@ -2943,10 +2943,6 @@ impl SimpleBackend {
                 tir_funcs.extend(module.functions.into_iter().map(|f| (false, f)));
             }
 
-            llvm.function_param_types = tir_funcs
-                .iter()
-                .map(|(_, func)| (func.name.clone(), func.param_types.clone()))
-                .collect();
             llvm.function_return_types = tir_funcs
                 .iter()
                 .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
@@ -2985,6 +2981,31 @@ impl SimpleBackend {
                             crate::representation_plan::LlvmReprFacts::build(func, tir_func),
                         )
                     })
+                })
+                .collect();
+
+            // Parameter ABI carriers, derived from the SAME repr facts the body
+            // lowers against: an unprovable-range `int` param is carried `DynBox`
+            // (boxed), a value-range-proven one stays raw `I64`. This is the
+            // caller-side coercion target that must agree with the callee's
+            // entry-param carrier (`FunctionLowering::effective_block_arg_type`);
+            // deriving both from `effective_param_types` over the same
+            // `repr_by_value` keeps a heap-BigInt argument boxed end to end
+            // (the trusted-unbox truncation bug-class is un-creatable at the call
+            // boundary). Externs (no repr facts — they are opaque runtime
+            // declarations) keep their declared ABI param types.
+            llvm.function_param_types = tir_funcs
+                .iter()
+                .map(|(is_extern, tir_func)| {
+                    let tys = if *is_extern {
+                        tir_func.param_types.clone()
+                    } else {
+                        match llvm.function_repr_facts.get(&tir_func.name) {
+                            Some(facts) => facts.effective_param_types(tir_func),
+                            None => tir_func.param_types.clone(),
+                        }
+                    };
+                    (tir_func.name.clone(), tys)
                 })
                 .collect();
 
