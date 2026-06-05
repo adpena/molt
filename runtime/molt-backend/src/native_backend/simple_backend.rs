@@ -2657,15 +2657,25 @@ impl SimpleBackend {
             let analysis = analyze_native_backend_ir(&ir, /* compute_leaves */ false);
             pre_split_task_kinds = analysis.task_kinds;
             pre_split_task_closure_sizes = analysis.task_closure_sizes;
-            // The module phase runs UNCONDITIONALLY (gated only on
-            // skip_ir_passes). The deleted `needs_inlining` heuristic keyed on
+            // The SimpleIR-carrier module phase runs for the Cranelift path
+            // (gated on skip_ir_passes). It is SKIPPED for the LLVM path
+            // (`use_llvm`): LLVM lowers from TIR directly, so it runs the SAME
+            // `run_module_pipeline` on its own TIR functions inside the
+            // `if use_llvm` branch below and lowers the inlined `TirModule`
+            // *directly* — never round-tripping the merged bodies back through
+            // SimpleIR. Running the module phase here too would inline twice (once
+            // into the SimpleIR `ir.functions`, then again when the LLVM branch
+            // re-inlines its TIR lift). One inliner per emitted program: the
+            // SimpleIR carrier feeds Cranelift, the TIR module feeds LLVM.
+            //
+            // The deleted `needs_inlining` heuristic keyed on
             // `kind == "call_internal"`, but the TIR roundtrip's back-conversion
             // re-emits every call as `kind: "call"` — so the flag was always
             // false for TIR-processed functions and had silently disabled
             // production inlining (for the legacy SimpleIR inliner too). The
             // call graph itself is the authority on whether anything is
             // inlinable; an inline-free module just runs a cheap analysis.
-            if !self.skip_ir_passes {
+            if !self.skip_ir_passes && !use_llvm {
                 // E1 ACTIVATION: the TIR function inliner (tir/passes/inliner.rs,
                 // via run_module_pipeline) is now the production inliner — SSA-based,
                 // exception-label-safe, call-graph bottom-up, cost-model-gated, and
@@ -2849,7 +2859,7 @@ impl SimpleBackend {
                     fuse_method_dispatch(func);
                 }
             }
-            let tir_funcs: Vec<_> = ir
+            let mut tir_funcs: Vec<(bool, crate::tir::function::TirFunction)> = ir
                 .functions
                 .iter()
                 .map(|func| {
@@ -2876,6 +2886,63 @@ impl SimpleBackend {
                     (func.is_extern, tir_func)
                 })
                 .collect();
+
+            // ── Whole-program module phase (Tier-2 E1 inliner activation, LLVM) ──
+            // This is the LLVM lane's parity point with native/wasm: it runs the
+            // SAME `run_module_pipeline` (CallGraph → ModuleSummaries → bottom-up
+            // E1 inliner → module-slot promotion → post-inline rebuild) the
+            // Cranelift and WASM drivers run — but on the LLVM lane's own TIR
+            // functions, with the LLVM cost model (`llvm_tti`), and it lowers the
+            // resulting inlined `TirModule` *directly* to LLVM IR below. There is
+            // NO SimpleIR round-trip on the LLVM path: the merged bodies stay in
+            // TIR from the inliner straight through `try_lower_tir_to_llvm`. The
+            // Cranelift-lane SimpleIR module phase above is skipped for `use_llvm`
+            // (see the `!use_llvm` guard) so the program is inlined exactly once.
+            //
+            // Extern functions are runtime declarations with empty bodies (the
+            // shared-stdlib partition's `stdlib_shared.o` symbols, already
+            // externalized before this branch): they are not inlinable and stay
+            // OUT of the module, so calls to them remain opaque call-graph edges
+            // (exactly correct — an extern body is not owned by this object). They
+            // are re-declared below for call resolution. Because externalization
+            // has already physically removed their bodies, the module the inliner
+            // sees contains only locally-owned bodies, so the `non_inlinable` set
+            // is empty here (the native lane needs it only because its module
+            // phase runs *before* externalization).
+            if !self.skip_ir_passes {
+                use crate::tir::function::TirModule;
+
+                let mut externs: Vec<crate::tir::function::TirFunction> = Vec::new();
+                let mut module = TirModule {
+                    name: "llvm_module".to_string(),
+                    functions: Vec::new(),
+                };
+                for (is_extern, tir_func) in tir_funcs.into_iter() {
+                    if is_extern {
+                        externs.push(tir_func);
+                    } else {
+                        module.functions.push(tir_func);
+                    }
+                }
+
+                // Inlines bottom-up and re-optimizes merged callers; leaves every
+                // changed body fully type-refined (see `run_inliner`). Rollback:
+                // MOLT_DISABLE_INLINING=1 (guard in run_inliner).
+                let _module_analysis = crate::tir::run_module_pipeline(
+                    &mut module,
+                    &llvm_tti,
+                    &std::collections::HashSet::new(),
+                );
+
+                // Reassemble the lowering list: extern declarations first, then
+                // the merged non-extern bodies. Declaration and lowering order is
+                // immaterial — LLVM resolves calls by name and functions lower
+                // independently.
+                tir_funcs = Vec::with_capacity(externs.len() + module.functions.len());
+                tir_funcs.extend(externs.into_iter().map(|f| (true, f)));
+                tir_funcs.extend(module.functions.into_iter().map(|f| (false, f)));
+            }
+
             llvm.function_param_types = tir_funcs
                 .iter()
                 .map(|(_, func)| (func.name.clone(), func.param_types.clone()))
@@ -2884,25 +2951,40 @@ impl SimpleBackend {
                 .iter()
                 .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
                 .collect();
-            // Build the shared representation facts from the exact SimpleIR
-            // function and the post-pipeline TIR the LLVM backend is about to
-            // lower. This is the structural convergence point: the LLVM
-            // backend's integer-carrier and container dispatch decisions now
-            // come from the same `ScalarRepresentationPlan` the other three
-            // backends use, instead of treating `TirType::I64` as an exact-i64
-            // carrier. Built in its own pass (after every function's TIR
-            // pipeline has run) so the plan's internal lowering never interleaves
-            // with the main pipeline.
-            llvm.function_repr_facts = ir
+            // Build the shared representation facts from the SimpleIR function
+            // and the post-module-phase TIR the LLVM backend is about to lower.
+            // This is the structural convergence point: the LLVM backend's
+            // integer-carrier and container dispatch decisions now come from the
+            // same `ScalarRepresentationPlan` the other three backends use,
+            // instead of treating `TirType::I64` as an exact-i64 carrier. Built
+            // in its own pass (after the module phase has run) so the plan's
+            // internal lowering never interleaves with the pipeline.
+            //
+            // Keyed by NAME, not by position: the module phase reorders functions
+            // (externs first) and can grow caller bodies, so the pre-inline
+            // `ir.functions` order no longer aligns positionally with `tir_funcs`.
+            // The SimpleIR function supplies only the name-keyed container-dispatch
+            // plan; the soundness-critical `repr_by_value` (the trusted-unbox gate)
+            // is derived purely from each merged TIR's own value-range
+            // (`repr_by_value_for`'s `FunctionIR` param is unused), so the fresh
+            // ValueIds the splice introduced are classified by a value-range
+            // computed on the merged body — a false `RawI64Safe` (the 2bf51b730
+            // truncation bug-class) cannot be introduced by inlining.
+            let simple_by_name: std::collections::HashMap<&str, &FunctionIR> = ir
                 .functions
                 .iter()
-                .zip(tir_funcs.iter())
-                .filter(|(func, _)| !func.is_extern)
-                .map(|(func, (_, tir_func))| {
-                    (
-                        tir_func.name.clone(),
-                        crate::representation_plan::LlvmReprFacts::build(func, tir_func),
-                    )
+                .map(|f| (f.name.as_str(), f))
+                .collect();
+            llvm.function_repr_facts = tir_funcs
+                .iter()
+                .filter(|(is_extern, _)| !*is_extern)
+                .filter_map(|(_, tir_func)| {
+                    simple_by_name.get(tir_func.name.as_str()).map(|func| {
+                        (
+                            tir_func.name.clone(),
+                            crate::representation_plan::LlvmReprFacts::build(func, tir_func),
+                        )
+                    })
                 })
                 .collect();
 
