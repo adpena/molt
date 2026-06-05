@@ -87,6 +87,7 @@ __all__ = [
     "get_args",
     "get_origin",
     "get_type_hints",
+    "final",
     "override",
     "overload",
     "runtime_checkable",
@@ -995,6 +996,28 @@ def cast(_typ: object, value: object) -> object:
 
 def overload(func):
     return func
+
+
+def final(f):
+    """Decorator to indicate final methods and final classes.
+
+    Use this decorator to indicate to type checkers that the decorated
+    method cannot be overridden, and decorated class cannot be subclassed.
+
+    There is no runtime checking of these properties. The decorator
+    attempts to set the ``__final__`` attribute to ``True`` on the decorated
+    object to allow runtime introspection.
+
+    PEP 591 -- added in Python 3.8; ``__final__`` set since 3.11.
+    """
+    try:
+        f.__final__ = True
+    except (AttributeError, TypeError):
+        # Skip the attribute silently if it is not writable.
+        # AttributeError happens if the object has __slots__ or a
+        # read-only property, TypeError if it's a builtin class.
+        pass
+    return f
 
 
 def assert_type(val, tp, /):
