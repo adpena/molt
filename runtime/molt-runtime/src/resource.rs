@@ -1334,10 +1334,61 @@ mod tests {
         // proof lives in tests/resource_enforcement.rs). Here we assert only
         // that the helper wires setrlimit correctly and reports success.
         let tracker_limit = 1usize << 40; // 1 TiB — comfortably above test RSS
+
+        // Under AddressSanitizer the process reserves tens of TiB of virtual
+        // address space for shadow memory, so the 1.25 TiB backstop is below the
+        // live footprint and the kernel rejects the `setrlimit` with EINVAL —
+        // exactly the "lowering RLIMIT_AS below current usage" case the helper is
+        // documented to refuse. That is an artifact of the sanitizer environment,
+        // not of the helper. Probe whether the environment permits the install
+        // and assert the helper's report is *consistent* with that ground truth
+        // (returns `Some` iff the underlying `setrlimit` is allowed), so the test
+        // proves the wiring on a normal runner and stays robust under ASan.
+        const MIN_HEADROOM: usize = 64 * 1024 * 1024;
+        let headroom = (tracker_limit / 4).max(MIN_HEADROOM);
+        let backstop = tracker_limit.saturating_add(headroom) as libc::rlim_t;
+        let env_permits_install = unsafe {
+            let mut current = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(
+                libc::getrlimit(libc::RLIMIT_AS, &mut current),
+                0,
+                "getrlimit(RLIMIT_AS) must succeed on unix"
+            );
+            // Helper installs the soft limit raise-only, clamped to the hard cap.
+            let effective = if current.rlim_max == libc::RLIM_INFINITY {
+                backstop
+            } else {
+                backstop.min(current.rlim_max)
+            };
+            // Already at/below `effective`: helper leaves it untouched and reports
+            // success without calling setrlimit.
+            if current.rlim_cur != libc::RLIM_INFINITY && current.rlim_cur <= effective {
+                true
+            } else {
+                let probe = libc::rlimit {
+                    rlim_cur: effective,
+                    rlim_max: current.rlim_max,
+                };
+                let ok = libc::setrlimit(libc::RLIMIT_AS, &probe) == 0;
+                if ok {
+                    // Restore the original limit so the probe does not perturb the
+                    // helper call below (or the rest of the test process).
+                    let _ = libc::setrlimit(libc::RLIMIT_AS, &current);
+                }
+                ok
+            }
+        };
+
         let installed = install_address_space_backstop(tracker_limit);
-        assert!(
+        assert_eq!(
             installed.is_some(),
-            "RLIMIT_AS backstop should install for a large (non-lowering) value on unix"
+            env_permits_install,
+            "RLIMIT_AS backstop install result must match whether the environment \
+             permits the setrlimit (it does not under AddressSanitizer's large \
+             reserved address space, which is benign)"
         );
     }
 
