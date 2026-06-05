@@ -257,6 +257,16 @@ class SimpleTIRGenerator(
         self.state_count: int = 0
         self.classes: dict[str, ClassInfo] = dict(known_classes or {})
         self.local_class_names: set[str] = set()
+        # Depth of class-statement bodies currently being lowered.  A nested
+        # ``class`` statement (a class defined inside another class body) must
+        # bind into the *enclosing class namespace* — exactly like a method or
+        # a class-attribute assignment — never into module globals, even when
+        # the outermost enclosing class is at module scope (where
+        # ``current_func_name == "molt_main"``).  ``visit_ClassDef`` increments
+        # this around its body-statement loop and consults it when publishing
+        # the finished class so the nested class is bound as a class-body local
+        # that the enclosing loop harvests into ``class_attr_values``.
+        self._class_body_depth: int = 0
         self.locals: dict[str, MoltValue] = {}
         # Backing store for the current frame's `locals()` snapshot semantics.
         # Stored outside `self.locals` to avoid accidental shadowing/rewrites by lowering passes.

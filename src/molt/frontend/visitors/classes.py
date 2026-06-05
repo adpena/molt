@@ -244,6 +244,34 @@ class ClassDefVisitorMixin(_MixinBase):
 
         return tuple(attrs)
 
+    def _publish_class_value(self, name: str, class_val: MoltValue) -> None:
+        """Bind a freshly built class object into its defining scope.
+
+        Single source of truth for the four ``visit_ClassDef`` publication
+        paths (static / dataclass-rebuilt / dynamic / decorated).  A nested
+        ``class`` statement (``self._class_body_depth > 0``) is a member of the
+        enclosing class body, exactly like a method or a class-attribute
+        assignment.  Those bind into the class-body namespace with a *direct*
+        ``self.locals[name] = value`` write (see the method and ``ast.Assign``
+        branches in the body loop) rather than the function-local store
+        machinery (boxed cells / async closure slots), and they are never
+        published to module globals — even when the outermost enclosing class
+        lives at module scope.  The enclosing class-body loop harvests this
+        binding into ``class_attr_values``; here we only need a deterministic
+        ``self.locals`` entry, so we mirror that direct write.
+        """
+
+        if self._class_body_depth > 0:
+            self.locals[name] = class_val
+            return
+        if self.current_func_name == "molt_main":
+            self.globals[name] = class_val
+            self._emit_module_attr_set(name, class_val)
+            if name in self.boxed_locals:
+                self._store_local_value(name, class_val)
+        else:
+            self._store_local_value(name, class_val)
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.local_class_names.add(node.name)
         prev_class_annotations = self.class_annotation_items
@@ -586,7 +614,16 @@ class ClassDefVisitorMixin(_MixinBase):
                 dynamic = True
         if node.name in self.mutated_classes:
             dynamic = True
-        is_static = self.current_func_name == "molt_main"
+        # ``static`` marks a module-level top-level class whose class object has
+        # a stable global-name binding, so its methods may reference the class
+        # by module attribute (``_emit_class_ref`` -> module-attr-get) for layout
+        # guards.  A *nested* ``class`` statement (``_class_body_depth > 0``) is
+        # bound only into its enclosing class namespace — it has no module-global
+        # name — so it must be treated exactly like a function-local class
+        # (``current_func_name != "molt_main"``): non-static, routing its
+        # methods' typed-field accesses through the instance-based generic path
+        # rather than a non-existent module attribute.
+        is_static = self.current_func_name == "molt_main" and self._class_body_depth == 0
 
         base_mros = [self._class_mro_names(name) for name in base_names]
         base_mros.append(list(base_names))
@@ -2380,8 +2417,42 @@ class ClassDefVisitorMixin(_MixinBase):
         }
         saved_locals = self.locals
         self.locals = dict(class_scope)
+        self._class_body_depth += 1
         try:
             for item in node.body:
+                if isinstance(item, ast.ClassDef):
+                    # A nested ``class`` statement.  Lower it recursively: this
+                    # emits the nested class's own ``CLASS_DEF`` (so the class
+                    # object exists before it is attached to the enclosing
+                    # class) and — because ``self._class_body_depth > 0`` — binds
+                    # it into ``self.locals`` rather than module globals.  Harvest
+                    # that binding into the enclosing class namespace, mirroring
+                    # the plain class-attribute ``Assign`` path below so methods
+                    # referencing the nested class by name resolve and the class
+                    # object is published as ``Enclosing.Nested``.
+                    self.visit_ClassDef(item)
+                    nested_val = self.locals.get(item.name)
+                    if nested_val is None:
+                        raise NotImplementedError(
+                            "Nested class lowering produced no bound value for "
+                            f"'{item.name}'"
+                        )
+                    class_attr_values[item.name] = nested_val
+                    if dynamic_namespace is not None:
+                        key_val = MoltValue(self.next_var(), type_hint="str")
+                        self.emit(
+                            MoltOp(
+                                kind="CONST_STR", args=[item.name], result=key_val
+                            )
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_INDEX",
+                                args=[dynamic_namespace, key_val, nested_val],
+                                result=MoltValue("none"),
+                            )
+                        )
+                    continue
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     _, _, kwonly, _, _ = self._split_function_args(item.args)
                     kwonly_names = [arg.arg for arg in kwonly]
@@ -2706,6 +2777,7 @@ class ClassDefVisitorMixin(_MixinBase):
                             )
                         )
         finally:
+            self._class_body_depth -= 1
             self.locals = saved_locals
 
         # __static_attributes__ (CPython 3.13+) — always emitted after class
@@ -3098,13 +3170,7 @@ class ClassDefVisitorMixin(_MixinBase):
                     metadata={"s_value": class_def_meta},
                 )
             )
-            if self.current_func_name == "molt_main":
-                self.globals[node.name] = class_val
-                self._emit_module_attr_set(node.name, class_val)
-                if node.name in self.boxed_locals:
-                    self._store_local_value(node.name, class_val)
-            else:
-                self._store_local_value(node.name, class_val)
+            self._publish_class_value(node.name, class_val)
             if class_info.get("dataclass"):
                 dataclass_params = class_info.get("dataclass_params", {})
 
@@ -3182,23 +3248,11 @@ class ClassDefVisitorMixin(_MixinBase):
                         result=applied_cls,
                     )
                 )
-                if self.current_func_name == "molt_main":
-                    self.globals[node.name] = applied_cls
-                    self._emit_module_attr_set(node.name, applied_cls)
-                    if node.name in self.boxed_locals:
-                        self._store_local_value(node.name, applied_cls)
-                else:
-                    self._store_local_value(node.name, applied_cls)
+                self._publish_class_value(node.name, applied_cls)
                 class_val = applied_cls
         else:
             # Dynamic path
-            if self.current_func_name == "molt_main":
-                self.globals[node.name] = class_val
-                self._emit_module_attr_set(node.name, class_val)
-                if node.name in self.boxed_locals:
-                    self._store_local_value(node.name, class_val)
-            else:
-                self._store_local_value(node.name, class_val)
+            self._publish_class_value(node.name, class_val)
             offsets_dict_d: MoltValue | None = None
             if (
                 not class_info.get("dataclass")
@@ -3331,11 +3385,7 @@ class ClassDefVisitorMixin(_MixinBase):
                 )
                 decorated = res
             class_val = decorated
-            if self.current_func_name == "molt_main":
-                self.globals[node.name] = class_val
-                self._emit_module_attr_set(node.name, class_val)
-            else:
-                self._store_local_value(node.name, class_val)
+            self._publish_class_value(node.name, class_val)
 
         bound_class = self.globals.get(node.name)
         if (
