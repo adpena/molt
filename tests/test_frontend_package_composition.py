@@ -65,6 +65,8 @@ PUBLIC_SURFACE = [
 EXPECTED_MIXINS = [
     "SerializationMixin",
     "PatternMatchMixin",
+    "CallVisitorMixin",
+    "ClassDefVisitorMixin",
 ]
 
 
@@ -101,6 +103,14 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_Match")
     assert hasattr(SimpleTIRGenerator, "_emit_match_class")
     assert hasattr(SimpleTIRGenerator, "_validate_match_pattern")
+    # calls (phase 2)
+    assert hasattr(SimpleTIRGenerator, "visit_Call")
+    assert hasattr(SimpleTIRGenerator, "_emit_call_args_builder")
+    assert hasattr(SimpleTIRGenerator, "_fold_bare_super_static")
+    # classes (phase 2)
+    assert hasattr(SimpleTIRGenerator, "visit_ClassDef")
+    assert hasattr(SimpleTIRGenerator, "_compute_method_closure")
+    assert hasattr(SimpleTIRGenerator, "_extract_inline_init_assigns")
 
 
 def test_mixin_modules_import_standalone() -> None:
@@ -109,6 +119,8 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend._types",
         "molt.frontend.lowering.serialization",
         "molt.frontend.visitors.pattern_match",
+        "molt.frontend.visitors.calls",
+        "molt.frontend.visitors.classes",
     ):
         assert importlib.import_module(mod) is not None
 
