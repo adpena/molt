@@ -961,7 +961,7 @@ pub extern "C" fn molt_scrypt(
                 "Invalid parameter combination for n, r, p, maxmem.",
             );
         }
-        let log_n = (64 - (n as u64).leading_zeros() - 1) as u8;
+        let log_n = (64 - n.leading_zeros() - 1) as u8;
         let params = match scrypt::Params::new(log_n, r as u32, p as u32, 32) {
             Ok(val) => val,
             Err(_) => {
