@@ -381,6 +381,16 @@ fn debug_subscript_enabled() -> bool {
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_SUBSCRIPT").as_deref() == Ok("1"))
 }
 
+/// Cached `MOLT_DEBUG_DICT_SUBCLASS` flag. `dict_subclass_storage_bits` runs on
+/// every dict-subclass storage access (hot for Counter/OrderedDict-style
+/// subclasses); reading the env var there would take the libc environ lock and
+/// heap-allocate per access. Cache it like the sibling debug flags above.
+#[inline]
+fn debug_dict_subclass_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_DICT_SUBCLASS").as_deref() == Ok("1"))
+}
+
 pub(super) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
     if step.is_zero() {
         return BigInt::from(0);
@@ -7411,7 +7421,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
 
 unsafe fn dict_subclass_storage_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     unsafe {
-        let debug = std::env::var("MOLT_DEBUG_DICT_SUBCLASS").as_deref() == Ok("1");
+        let debug = debug_dict_subclass_enabled();
         let class_bits = object_class_bits(ptr);
         if class_bits == 0 {
             if debug {
