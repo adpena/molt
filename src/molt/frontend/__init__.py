@@ -219,6 +219,14 @@ class ActiveException:
     slot: int | None = None
     handler_name: str | None = None
     is_handler: bool = False
+    # Number of `try` blocks active at the point this handler's body begins
+    # executing (``len(self.try_end_labels)``).  A `raise` inside the handler
+    # body only *exits* this handler — and so only triggers its implicit
+    # ``del NAME`` — when it is not caught by a nested `try` opened after the
+    # handler started, i.e. when the raise propagates from the same try-nesting
+    # depth recorded here.  A larger live depth means an inner `try` protects
+    # the raise and the handler is not left.
+    handler_try_depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -6196,6 +6204,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return res
 
+    def _name_resolves_to_builtin(self, name: str) -> bool:
+        """True if `name` names a builtin type/function/exception.
+
+        Used to keep `del`/`except`-target read routing CPython-faithful for
+        names that shadow a builtin: once the module binding is removed, a bare
+        read must fall back to the builtin (which the regular `visit_Name`
+        resolution materialises statically), not raise NameError.
+        """
+        return (
+            name in BUILTIN_TYPE_TAGS
+            or name in BUILTIN_FUNC_SPECS
+            or name in BUILTIN_EXCEPTION_NAMES
+        )
+
     def _emit_globals_dict(self) -> MoltValue:
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             module_val = self.module_obj
@@ -7873,6 +7895,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return local
             if (
                 self.current_func_name == "molt_main"
+                and node.id in self.del_targets
+                and not self._name_resolves_to_builtin(node.id)
+            ):
+                # The name is `del`'d or is an `except ... as` target somewhere
+                # in this module scope, so on any reachable path it may be
+                # unbound when read. A bare Name read at module scope has
+                # LOAD_GLOBAL semantics: it must raise NameError (not the
+                # AttributeError that MODULE_GET_ATTR yields) when the binding
+                # is absent, while still returning the live value when present
+                # (e.g. deleted only on a conditional branch, or re-bound after
+                # the delete). MODULE_GET_GLOBAL reads the live module dict and
+                # encodes exactly those semantics.  A name that shadows a builtin
+                # is excluded: deleting it must fall back to the builtin (CPython
+                # LOAD_GLOBAL semantics), which the regular resolution below
+                # handles via the static builtin-type/func/exception lookup once
+                # the module binding is gone.
+                return self._emit_global_get(node.id)
+            if (
+                self.current_func_name == "molt_main"
                 and node.id in self.module_global_mutations
             ):
                 return self._emit_module_attr_get(node.id)
@@ -8411,6 +8452,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             def visit_Delete(self, node: ast.Delete) -> None:
                 for target in node.targets:
                     self.names.update(outer._collect_target_names(target))
+
+            def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+                # `except E as e:` implicitly `del e` at handler exit (CPython
+                # unconditionally deletes the target even when the handler body
+                # raises). A subsequent read of `e` is therefore an unbound
+                # name — NameError at module scope, UnboundLocalError in a
+                # function — so the target must be tracked alongside explicit
+                # `del` names to route post-block reads through the correct
+                # unbound-name path rather than an attribute access.
+                if node.name:
+                    self.names.add(node.name)
+                self.generic_visit(node)
 
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 return
@@ -10011,9 +10064,48 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
+        self._emit_active_handler_name_deletes(handlers)
+
+    def _emit_active_handler_name_deletes(
+        self, handlers: list["ActiveException"]
+    ) -> None:
+        """Delete the `except ... as NAME` target bindings for `handlers`.
+
+        CPython lowers `except E as e:` to an implicit ``finally: del e`` that
+        runs on *every* exit edge of the handler — normal fall-through, return,
+        break/continue, and an exception escaping the handler body.  The normal
+        and return/break paths route through `_emit_exception_handler_exit_cleanup`
+        (which also clears the handling context); a `raise` inside the handler
+        must delete the same names without clearing the context it just captured
+        into the new exception.  Deleting the name only drops the binding — the
+        exception object itself stays alive via any reference already taken
+        (e.g. `raise X from e`).
+        """
         for entry in reversed(handlers):
             if entry.handler_name:
                 self._emit_delete_name(entry.handler_name, allow_missing=True)
+
+    def _emit_escaping_handler_name_deletes(self) -> None:
+        """Delete `except ... as NAME` targets for handlers a `raise` escapes.
+
+        A `raise` only leaves an active handler — and so only runs that
+        handler's implicit ``del NAME`` — when it is not caught by a `try`
+        opened *after* the handler body began.  `handler_try_depth` records the
+        live `try` nesting at the handler's entry; a handler is escaped iff the
+        current live depth is no deeper than that recorded value (no inner
+        `try` is protecting the raise).  Handlers protected by a nested `try`
+        (whose own cleanup deletes their name when control actually leaves them)
+        are left untouched.
+        """
+        if not self.active_exceptions:
+            return
+        live_depth = len(self.try_end_labels)
+        escaped = [
+            entry
+            for entry in self.active_exceptions
+            if entry.is_handler and live_depth <= entry.handler_try_depth
+        ]
+        self._emit_active_handler_name_deletes(escaped)
 
     def _emit_expr_list(self, exprs: list[ast.expr]) -> list[MoltValue]:
         if not exprs:
@@ -22090,6 +22182,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     class_id = None
                 elif class_value_name is None and self.current_func_name == "molt_main":
                     class_id = None
+            if (
+                class_id is not None
+                and self.current_func_name == "molt_main"
+                and class_id in self.del_targets
+                and not self._name_resolves_to_builtin(class_id)
+            ):
+                # A module-scope class whose name is `del`'d (or shadowed by an
+                # `except ... as` target) may be unbound when called; a bare Name
+                # read has LOAD_GLOBAL semantics, so resolve through
+                # MODULE_GET_GLOBAL (NameError on a missing binding) rather than
+                # the static class ref / MODULE_GET_ATTR (AttributeError) the
+                # known-class fast path would otherwise take.  Dropping `class_id`
+                # routes the callee through the generic Name resolution, which
+                # applies the same del-target rule.
+                class_id = None
             if class_id is not None:
                 class_info = self.classes[class_id]
                 if self.current_func_name == "molt_main":
@@ -29029,6 +29136,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 slot=exc_slot_offset,
                 handler_name=handler.name,
                 is_handler=True,
+                handler_try_depth=len(self.try_end_labels),
             )
             self.active_exceptions.append(exc_entry)
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
@@ -29279,6 +29387,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 slot=exc_slot_offset,
                 handler_name=handler.name,
                 is_handler=True,
+                handler_try_depth=len(self.try_end_labels),
             )
             self.active_exceptions.append(exc_entry)
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
@@ -29727,6 +29836,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     slot=exc_slot_offset,
                     handler_name=handler.name,
                     is_handler=True,
+                    handler_try_depth=len(self.try_end_labels),
                 )
                 self.active_exceptions.append(exc_entry)
                 self.emit(
@@ -30355,6 +30465,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                 exc_val = self._active_exception_value(self.active_exceptions[-1])
+                # Bare `raise` escaping `except ... as NAME` deletes NAME too
+                # (the value is already captured in `exc_val`).
+                self._emit_escaping_handler_name_deletes()
                 none_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
                 is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -30429,6 +30542,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
+        # A `raise` escaping an `except ... as NAME` handler must delete NAME
+        # (CPython's implicit `finally: del NAME` runs on the exception-escape
+        # edge too). Context/cause are already captured into `exc_val` above, so
+        # dropping the bindings here cannot disturb the in-flight exception.
+        self._emit_escaping_handler_name_deletes()
         emit_raise_or_defer(exc_val)
         if should_exit:
             self._emit_raise_exit()
