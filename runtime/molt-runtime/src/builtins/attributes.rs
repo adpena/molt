@@ -4,6 +4,7 @@ use molt_obj_model::MoltObject;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -96,6 +97,29 @@ impl AttributesRuntimeState {
 
 static ATTR_LOOKUP_TRACE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static ATTR_LOOKUP_TRACE_LINES: AtomicUsize = AtomicUsize::new(0);
+
+/// Cached `MOLT_TRACE_ATTR_LOOKUP` flag.
+///
+/// `attr_lookup_ptr` is on the hot path of EVERY attribute access (`obj.attr`,
+/// `self.x`, method binding, dataclass field reads, ...) — one of the most
+/// frequent operations in any Python program. Reading the env var directly per
+/// lookup (`std::env::var`) takes the libc environ lock (`__findenv_locked`)
+/// and heap-allocates a `String` each time; profiling a dataclass-heavy ETL
+/// loop showed `getenv` internals as the dominant frame. Cache it once.
+#[inline]
+fn trace_attr_lookup_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_ATTR_LOOKUP").as_deref() == Ok("1"))
+}
+
+/// Cached `MOLT_DEBUG_BOUND_METHOD` flag. Read during bound-method resolution
+/// inside the attribute-lookup path (every `obj.method`), so reading the env
+/// var directly there takes the libc environ lock per method bind.
+#[inline]
+pub(crate) fn debug_bound_method_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("MOLT_DEBUG_BOUND_METHOD").is_some())
+}
 
 fn attributes_state(_py: &PyToken<'_>) -> &'static AttributesRuntimeState {
     &crate::runtime_state(_py).attributes
@@ -1019,7 +1043,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
     attr_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        let trace_attr_lookup = std::env::var("MOLT_TRACE_ATTR_LOOKUP").as_deref() == Ok("1");
+        let trace_attr_lookup = trace_attr_lookup_enabled();
         let trace_guard = AttrLookupTraceGuard::new(trace_attr_lookup);
         if trace_attr_lookup {
             let line_no = ATTR_LOOKUP_TRACE_LINES.fetch_add(1, Ordering::Relaxed);
@@ -2528,7 +2552,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
                 {
-                    if std::env::var_os("MOLT_DEBUG_BOUND_METHOD").is_some() {
+                    if debug_bound_method_enabled() {
                         let class_name_bits_val = crate::class_name_bits(class_ptr);
                         let class_name = string_obj_to_owned(obj_from_bits(class_name_bits_val))
                             .unwrap_or_default();
