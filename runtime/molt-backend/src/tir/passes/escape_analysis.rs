@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrDict, AttrValue, OpCode};
+use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::PassStats;
@@ -677,6 +677,79 @@ fn rewritable_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     roots
 }
 
+/// A `StoreAttr` is a TYPED-SLOT store (the only attribute write a fixed-layout
+/// stack object can service) iff its `_original_kind` is `store` / `store_init`
+/// — the frontend's offset-keyed forms for a proven-concrete-class declared
+/// field. EVERY other `StoreAttr` spelling (`set_attr_generic_ptr`,
+/// `set_attr_generic_obj`, `set_attr_name`, `guarded_field_set`, …) is a
+/// GENERIC, name-keyed write that routes through the instance `__dict__`. A
+/// dict-routed write must materialize a heap `__dict__` and stash its pointer in
+/// the instance's trailing dict slot — a stack-promoted instance (immortal,
+/// fixed payload, no heap identity to anchor a `__dict__` against) cannot do
+/// this, so the store silently no-ops and the matching generic load raises
+/// `AttributeError`. Returns `true` for the dict-routed shape, which forces the
+/// target instance to stay heap-allocated.
+fn store_attr_is_dict_routed(op: &TirOp) -> bool {
+    if op.opcode != OpCode::StoreAttr {
+        return false;
+    }
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => !matches!(kind.as_str(), "store" | "store_init"),
+        // A `StoreAttr` with NO `_original_kind` is a raw SSA-lift store with no
+        // offset proof; conservatively dict-routed (treat as needing a heap
+        // `__dict__`). Only the explicit offset-keyed forms prove a typed slot.
+        _ => true,
+    }
+}
+
+/// The set of rewritable allocation ROOTS (`ObjectNewBound` / `Alloc` results)
+/// whose instance is the target of at least one GENERIC (dict-routed) attribute
+/// store — transitively through pure SSA-move copies. Such an instance needs a
+/// heap `__dict__` and therefore MUST NOT be stack-promoted.
+///
+/// The dict requirement is seeded at every dict-routed `StoreAttr`'s target
+/// operand, then propagated BACKWARD across pure-move copies (`dst = move src`
+/// ⇒ `src` is dict-requiring whenever `dst` is) so the requirement reaches the
+/// originating alloc result, which is the value `apply` actually rewrites. This
+/// is the reverse of `rewritable_alloc_roots`'s forward alloc→copy propagation
+/// and uses the same `is_pure_move_copy` alias relation, so the two analyses
+/// agree on exactly which values name the same heap object.
+fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
+    let mut dict_required: HashSet<ValueId> = HashSet::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if store_attr_is_dict_routed(op)
+                && let Some(&target) = op.operands.first()
+            {
+                dict_required.insert(target);
+            }
+        }
+    }
+    if dict_required.is_empty() {
+        return dict_required;
+    }
+    // Backward propagation across pure-move copies to a fixpoint: if a copy's
+    // RESULT requires a dict, its SOURCE (the same heap object) requires one too.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode != OpCode::Copy || !is_pure_move_copy(&op.attrs) {
+                    continue;
+                }
+                let (Some(&src), Some(&dst)) = (op.operands.first(), op.results.first()) else {
+                    continue;
+                };
+                if dict_required.contains(&dst) && dict_required.insert(src) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    dict_required
+}
+
 /// Apply escape analysis results: rewrite non-escaping `Alloc` ops to
 /// `StackAlloc`, and remove `IncRef`/`DecRef` on non-escaping values.
 ///
@@ -706,6 +779,14 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
     // exactly preserves the pre-S5 contract.
     let rewritable_roots = rewritable_alloc_roots(func);
 
+    // Instances that receive a generic (dict-routed) attribute store need a heap
+    // `__dict__` and must NOT be stack-promoted: a fixed-layout immortal stack
+    // object cannot anchor a `__dict__`, so `g.method = fn` (an out-of-layout
+    // store) silently no-ops and `g.method()` then raises AttributeError. Exclude
+    // these roots from promotion exactly as escape would (heap allocation), the
+    // structurally-correct precondition for the dict-materialization path.
+    let dict_required = dict_requiring_alloc_roots(func);
+
     // Collect non-escaping (NoEscape ∪ ArgEscape) values that are rewritable
     // allocation roots — those that do not escape the function and are therefore
     // safe to stack-promote / drop RC on. `ArgEscape` (borrowed-but-not-captured)
@@ -713,7 +794,9 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
     let no_escape: HashSet<ValueId> = escapes
         .iter()
         .filter(|&(vid, state)| {
-            *state != EscapeState::GlobalEscape && rewritable_roots.contains(vid)
+            *state != EscapeState::GlobalEscape
+                && rewritable_roots.contains(vid)
+                && !dict_required.contains(vid)
         })
         .map(|(&vid, _)| vid)
         .collect();
@@ -951,6 +1034,144 @@ mod tests {
             entry.ops[0].opcode,
             OpCode::ObjectNewBound,
             "an escaping object must stay heap-allocated"
+        );
+    }
+
+    /// Build a `StoreAttr` op with the given `_original_kind` spelling targeting
+    /// `target` (operand 0). The frontend's offset-keyed `store`/`store_init`
+    /// forms are typed-slot writes; everything else (`set_attr_generic_ptr`, …)
+    /// is dict-routed.
+    fn make_store_attr(original_kind: &str, target: ValueId, value: ValueId) -> TirOp {
+        let mut attrs = AttrDict::new();
+        attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str(original_kind.into()),
+        );
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::StoreAttr,
+            operands: vec![target, value],
+            results: vec![],
+            attrs,
+            source_span: None,
+        }
+    }
+
+    /// Regression: a non-escaping `ObjectNewBound` whose instance receives a
+    /// GENERIC (dict-routed) attribute store — `g.method = fn`, lowered as
+    /// `set_attr_generic_ptr` — must NOT be stack-promoted. A fixed-layout
+    /// immortal stack object cannot anchor a `__dict__`, so the store would
+    /// silently no-op and the later generic load raise AttributeError.
+    #[test]
+    fn object_new_bound_with_generic_attr_store_is_not_stack_promoted() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let fn_val = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(16));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs,
+            source_span: None,
+        });
+        // g.method = fn  -> dict-routed generic store.
+        entry
+            .ops
+            .push(make_store_attr("set_attr_generic_ptr", inst_val, fn_val));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+        assert_eq!(
+            entry.ops[0].opcode,
+            OpCode::ObjectNewBound,
+            "an object receiving a generic (dict-routed) attribute store must \
+             stay heap-allocated so the runtime can materialize its __dict__"
+        );
+    }
+
+    /// Counterpart: a non-escaping `ObjectNewBound` that receives ONLY typed-slot
+    /// stores (`store_init` at a declared field offset) IS still stack-promoted —
+    /// the dict-routed guard must not over-pessimize the common declared-field case.
+    #[test]
+    fn object_new_bound_with_only_typed_slot_store_still_stack_promotes() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let field_val = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(16));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs,
+            source_span: None,
+        });
+        let mut store = make_store_attr("store_init", inst_val, field_val);
+        store.attrs.insert("value".into(), AttrValue::Int(0)); // field offset 0
+        entry.ops.push(store);
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+        assert_eq!(
+            entry.ops[0].opcode,
+            OpCode::ObjectNewBoundStack,
+            "an object with only typed-slot field stores is layout-fixed and \
+             must still be stack-promoted (no dict needed)"
+        );
+    }
+
+    /// The dict requirement propagates BACKWARD across a pure-move copy: an
+    /// `ObjectNewBound` whose move-alias receives the generic store must also be
+    /// kept on the heap (the same heap object is named by both ids).
+    #[test]
+    fn generic_store_through_move_alias_keeps_object_heap() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let class_ref = ValueId(0);
+        let inst_val = func.fresh_value();
+        let alias_val = func.fresh_value();
+        let fn_val = func.fresh_value();
+
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(16));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ObjectNewBound,
+            operands: vec![class_ref],
+            results: vec![inst_val],
+            attrs,
+            source_span: None,
+        });
+        entry
+            .ops
+            .push(make_op(OpCode::Copy, vec![inst_val], vec![alias_val]));
+        entry
+            .ops
+            .push(make_store_attr("set_attr_generic_ptr", alias_val, fn_val));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        run(&mut func);
+        let entry = func.blocks.get(&func.entry_block).unwrap();
+        assert_eq!(
+            entry.ops[0].opcode,
+            OpCode::ObjectNewBound,
+            "a generic store through a move-alias must keep the originating \
+             allocation heap-allocated"
         );
     }
 
