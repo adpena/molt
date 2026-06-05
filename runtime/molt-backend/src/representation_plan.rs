@@ -736,6 +736,17 @@ impl ScalarRepresentationPlan {
                 );
                 for (index, result) in op.result_values.iter().enumerate() {
                     if checked_i64_arithmetic && index == 0 {
+                        // The checked-overflow result's repr is loop-carried-
+                        // ambiguous; register it WEAK under the canonical
+                        // `_v{id}` name so it never displaces or conflicts out
+                        // the strong `_simple_out` fact inserted below (a weak
+                        // insert under the override name would collide with the
+                        // block-arg weak insert above and blacklist the carrier).
+                        // The collision resolver in `SimpleValueNames` keeps a
+                        // checked-overflow result's emitted name equal to this
+                        // canonical name whenever it is free, so the int-carrier
+                        // lookup still resolves; on the rare collision the strong
+                        // `_simple_out` fact (keyed on the emitted name) carries it.
                         plan.insert_lir_value_weak(
                             SimpleValueNames::canonical_value_name(result.id),
                             result,
