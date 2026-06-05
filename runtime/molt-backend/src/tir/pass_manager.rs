@@ -460,16 +460,31 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
     bids.sort_by_key(|b| b.0);
     for bid in &bids {
         let block = &func.blocks[bid];
+        let arg_ids: Vec<u32> = block.args.iter().map(|a| a.id.0).collect();
+        let role = func.loop_roles.get(bid);
         dump.push_str(&format!(
-            "\nblock {} (args={}, ops={}):\n",
+            "\nblock {} (args={:?}, ops={}{}):\n",
             bid.0,
-            block.args.len(),
-            block.ops.len()
+            arg_ids,
+            block.ops.len(),
+            match role {
+                Some(r) => format!(", role={r:?}"),
+                None => String::new(),
+            }
         ));
         for op in &block.ops {
+            let mut attr_keys: Vec<&str> = op.attrs.keys().map(|s| s.as_str()).collect();
+            attr_keys.sort_unstable();
             dump.push_str(&format!(
-                "  {:?} operands={:?} results={:?}\n",
-                op.opcode, op.operands, op.results
+                "  {:?} operands={:?} results={:?}{}\n",
+                op.opcode,
+                op.operands,
+                op.results,
+                if attr_keys.is_empty() {
+                    String::new()
+                } else {
+                    format!(" attrs={attr_keys:?}")
+                }
             ));
         }
         if phase == "pre" {
@@ -478,17 +493,24 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
                 std::mem::discriminant(&block.terminator)
             ));
             match &block.terminator {
-                Terminator::Branch { target, args } => {
-                    dump.push_str(&format!("    → block {} args={:?}\n", target.0, args))
-                }
+                Terminator::Branch { target, args } => dump.push_str(&format!(
+                    "    → block {} args={:?}\n",
+                    target.0,
+                    args.iter().map(|v| v.0).collect::<Vec<_>>()
+                )),
                 Terminator::CondBranch {
                     cond,
                     then_block,
+                    then_args,
                     else_block,
-                    ..
+                    else_args,
                 } => dump.push_str(&format!(
-                    "    cond={:?} then={} else={}\n",
-                    cond, then_block.0, else_block.0
+                    "    cond={:?} then={} then_args={:?} else={} else_args={:?}\n",
+                    cond,
+                    then_block.0,
+                    then_args.iter().map(|v| v.0).collect::<Vec<_>>(),
+                    else_block.0,
+                    else_args.iter().map(|v| v.0).collect::<Vec<_>>()
                 )),
                 Terminator::Return { values } => {
                     dump.push_str(&format!("    return {} values\n", values.len()))

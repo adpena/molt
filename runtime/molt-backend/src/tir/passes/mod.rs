@@ -8,6 +8,7 @@ pub mod branchless_count;
 pub mod canonicalize;
 pub mod check_exception_elim;
 pub mod copy_prop;
+pub mod counted_loop;
 pub mod dce;
 pub mod dead_store_elim;
 pub mod deforestation;
