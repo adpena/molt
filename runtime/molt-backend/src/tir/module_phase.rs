@@ -112,12 +112,28 @@ impl ModuleAnalysis {
 ///
 /// `tti` is the unified cost model (Tier-0 S2): the single source of truth for
 /// the inliner's per-callee budget.
-pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAnalysis {
+///
+/// `non_inlinable` is the set of callee names whose canonical definition is
+/// linked externally to this module (e.g. the native/wasm shared-stdlib
+/// partition's `stdlib_shared.o` symbols). The inliner treats them as
+/// external-linkage functions and never splices their bodies — the caller keeps
+/// the external reference. Pass an empty set when every body in the module is
+/// locally owned (the common, non-partitioned build).
+pub fn run_module_pipeline(
+    module: &mut TirModule,
+    tti: &TargetInfo,
+    non_inlinable: &std::collections::HashSet<String>,
+) -> ModuleAnalysis {
     let call_graph = CallGraph::build(module);
     let summaries = ModuleSummaries::compute(module, &call_graph);
 
     // E1: inline (a module transform — mutates bodies across functions).
-    let inline_stats = super::passes::inliner::run_inliner(module, &call_graph, &summaries, tti);
+    // `non_inlinable` names callees whose canonical definition is linked
+    // externally (shared-stdlib-partition symbols the native/wasm driver will
+    // externalize): the inliner refuses them so the app keeps the external
+    // reference instead of forking a private copy of a body it does not own.
+    let inline_stats =
+        super::passes::inliner::run_inliner(module, &call_graph, &summaries, tti, non_inlinable);
     // Observability (mirrors TIR_OPT_STATS): the per-module inliner outcome, so
     // an unexpectedly-inert activation is visible instead of silently zero.
     if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
@@ -395,7 +411,7 @@ mod tests {
             func_calling("b", &[]),
         ]);
         let tti = TargetInfo::native_release_fast();
-        let analysis = run_module_pipeline(&mut m, &tti);
+        let analysis = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
 
         // Both functions remain summarized (the post-inline rebuild covers all).
         assert!(analysis.summaries.get("a").is_some());
@@ -419,7 +435,7 @@ mod tests {
             func_calling("d", &[]),
         ]);
         let tti = TargetInfo::native_release_fast();
-        let analysis = run_module_pipeline(&mut m, &tti);
+        let analysis = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
         assert_eq!(
             analysis.leaf_functions(),
             analysis.call_graph.leaf_functions()
@@ -450,7 +466,7 @@ mod tests {
 
         let mut m = module(vec![a, b]);
         let tti = TargetInfo::native_release_fast();
-        let _ = run_module_pipeline(&mut m, &tti);
+        let _ = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
 
         // a's body no longer has a Call op (b was inlined).
         let a_after = m.functions.iter().find(|f| f.name == "a").unwrap();

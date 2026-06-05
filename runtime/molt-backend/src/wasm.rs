@@ -2171,7 +2171,12 @@ impl WasmBackend {
             let wasm_tti = crate::tir::target_info::TargetInfo::wasm_release_fast();
             let (mut tir_module, idx_map) =
                 crate::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
-            let module_analysis = crate::tir::run_module_pipeline(&mut tir_module, &wasm_tti);
+            // WASM links the whole program into one module — there is no
+            // shared-stdlib external partition, so every body is locally owned
+            // and the inliner is unconstrained (empty external-linkage set).
+            let non_inlinable = std::collections::HashSet::new();
+            let module_analysis =
+                crate::tir::run_module_pipeline(&mut tir_module, &wasm_tti, &non_inlinable);
             let changed: std::collections::HashSet<&str> = module_analysis
                 .changed_functions
                 .iter()
