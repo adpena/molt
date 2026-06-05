@@ -54,6 +54,25 @@ pub struct SimpleValueNames {
 impl SimpleValueNames {
     pub fn for_function(func: &TirFunction) -> Self {
         let mut names = Self::default();
+
+        // ── Phase 1: collect the EXPLICIT-override names ────────────────────
+        // Entry-param names and `_simple_out` / `_simple_result_N` stream names
+        // are authoritative: they are the SimpleIR identities downstream
+        // consumers (the scalar representation plan, store_var/load_var edges)
+        // key on. We assign them first and reserve every name they consume.
+        //
+        // A value with an explicit override keeps it verbatim. Two different
+        // overrides that name the SAME string would already be a frontend bug;
+        // we do not attempt to rename overrides (they are the contract). We DO
+        // protect *canonical* fallbacks from colliding with an override name
+        // belonging to a different value — the re-lift hazard documented on
+        // `has_override`: the TIR inliner mints fresh ValueIds, so a value's
+        // canonical `_v{id}` can land on a string a *different* value already
+        // claimed via `_simple_out` (carried verbatim from the pre-lift stream).
+        // Without this protection both values resolve to one SimpleIR name and
+        // `rewrite_copy_aliases` conflates them — a silent wrong-value miscompile
+        // (observed: a module-scope guarded property merge reading the cold slow
+        // path on the hot fast edge).
         if let Some(entry_block) = func.blocks.get(&func.entry_block) {
             for (idx, arg) in entry_block.args.iter().enumerate() {
                 if let Some(name) = func.param_names.get(idx) {
@@ -82,6 +101,64 @@ impl SimpleValueNames {
                 }
             }
         }
+
+        // ── Phase 2: resolve canonical-name collisions ──────────────────────
+        // Reserve every name already consumed: all explicit overrides. Then,
+        // for every value WITHOUT an override, check whether its canonical
+        // `_v{id}` name collides with a reserved name (an override on a
+        // different value, or a canonical name already handed to another value).
+        // On collision, mint a fresh deterministic name and record it as an
+        // override so `value_name` returns it. Values are visited in ascending
+        // ValueId order so the assignment is stable across builds.
+        let mut reserved: std::collections::HashSet<String> =
+            names.value_overrides.values().cloned().collect();
+
+        let mut all_values: Vec<ValueId> = Vec::new();
+        if let Some(entry_block) = func.blocks.get(&func.entry_block) {
+            for arg in &entry_block.args {
+                all_values.push(arg.id);
+            }
+        }
+        for block in func.blocks.values() {
+            for arg in &block.args {
+                all_values.push(arg.id);
+            }
+            for op in &block.ops {
+                for result in &op.results {
+                    all_values.push(*result);
+                }
+            }
+        }
+        all_values.sort_unstable_by_key(|v| v.0);
+        all_values.dedup();
+
+        for id in all_values {
+            if names.value_overrides.contains_key(&id) {
+                // Already has an authoritative name; it is reserved.
+                continue;
+            }
+            let canonical = Self::canonical_value_name(id);
+            if !reserved.contains(&canonical) {
+                // Canonical name is free — claim it (reserve so a later value's
+                // canonical or fresh name cannot re-collide).
+                reserved.insert(canonical);
+                continue;
+            }
+            // Collision: this value's canonical name belongs to a different
+            // value (via override). Mint a fresh, collision-free name and pin
+            // it as an override so `value_name` returns it deterministically.
+            let mut suffix = 0u32;
+            let fresh = loop {
+                let candidate = format!("_v{}_c{}", id.0, suffix);
+                if !reserved.contains(&candidate) {
+                    break candidate;
+                }
+                suffix += 1;
+            };
+            reserved.insert(fresh.clone());
+            names.value_overrides.insert(id, fresh);
+        }
+
         names
     }
 
@@ -4723,6 +4800,67 @@ mod tests {
             names.value_name(arg_id),
             SimpleValueNames::canonical_value_name(arg_id),
             "block argument storage slots are separate from SSA value names",
+        );
+    }
+
+    /// Regression: the TIR inliner mints fresh `ValueId`s, so a value's CANONICAL
+    /// name (`_v{id}`) can land on a string a DIFFERENT value already claimed via
+    /// an explicit `_simple_out` override (carried verbatim from the pre-lift
+    /// stream). Two distinct values must NOT resolve to the same SimpleIR name —
+    /// otherwise `rewrite_copy_aliases` conflates them (observed: a module-scope
+    /// guarded property merge read the cold slow path on its hot fast edge). The
+    /// override is authoritative; the colliding canonical value gets a fresh,
+    /// unique name.
+    #[test]
+    fn canonical_name_collision_with_override_is_resolved() {
+        // Value A = ValueId(2), no override -> wants canonical "_v2".
+        // Value B = ValueId(5), op carries `_simple_out: "_v2"` (a stale stream
+        // name from before the re-lift renumbered ids). B keeps "_v2".
+        let mut func = TirFunction::new("collide".into(), vec![], TirType::DynBox);
+        let a = ValueId(2);
+        let b = ValueId(5);
+
+        let mut b_attrs = AttrDict::new();
+        b_attrs.insert("_simple_out".into(), AttrValue::Str("_v2".into()));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        // A is a const result (canonical-named).
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![a],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        // B carries the explicit override "_v2".
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![b],
+            attrs: b_attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![b] };
+
+        let names = SimpleValueNames::for_function(&func);
+
+        assert_eq!(
+            names.value_name(b),
+            "_v2",
+            "the explicit `_simple_out` override is authoritative"
+        );
+        assert_ne!(
+            names.value_name(a),
+            names.value_name(b),
+            "two distinct values must never resolve to the same SimpleIR name"
+        );
+        assert_ne!(
+            names.value_name(a),
+            "_v2",
+            "the canonical-name value whose name collided with an override must \
+             be renamed to a fresh, collision-free name"
         );
     }
 

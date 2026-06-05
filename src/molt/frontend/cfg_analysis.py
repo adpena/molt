@@ -282,6 +282,19 @@ def _compute_successors(
                 block_id,
                 block_for_index(None if try_end_idx is None else try_end_idx + 1),
             )
+            # Model the implicit exception edge to the handler. `TRY_START`'s
+            # `args[0]` is the handler label: ANY op in the try region may raise
+            # and transfer control there, so the handler is reachable from the
+            # region entry regardless of the normal-flow shape of the body. Add
+            # this edge so reachability/DCE never prune a handler whose only
+            # surviving predecessor is the exception path — e.g. a try body whose
+            # first/only statement is `raise`, where the post-raise
+            # `CHECK_EXCEPTION`/`JUMP`-to-handler block is itself unreachable via
+            # normal flow (the raise block has no fall-through successor) and so
+            # cannot anchor the handler. Without this edge the entire `except`
+            # clause is silently dropped and the exception escapes uncaught.
+            handler_label = str(op.args[0]) if op.args else ""
+            add_succ(block_id, label_to_block.get(handler_label))
             continue
         if op.kind == "CHECK_EXCEPTION":
             add_succ(block_id, next_block)
