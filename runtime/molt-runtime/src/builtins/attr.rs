@@ -892,7 +892,7 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
                 }
             }
         }
-        let debug_bound = std::env::var_os("MOLT_DEBUG_BOUND_METHOD").is_some();
+        let debug_bound = crate::builtins::attributes::debug_bound_method_enabled();
         if let Some(mro) = class_mro_ref(class_ptr) {
             for class_bits in mro.iter() {
                 let class_obj = obj_from_bits(*class_bits);

@@ -383,6 +383,17 @@ fn debug_list_builder_enabled() -> bool {
     })
 }
 
+/// Cached `MOLT_TRACE_CALLARGS` flag. `PtrDropGuard::drop` runs on every
+/// CallArgs-builder drop — i.e. on every function/method/constructor call that
+/// builds an argument tuple. Reading the env var there (`std::env::var`) took
+/// the libc environ lock and heap-allocated per call; profiling a call-heavy
+/// ETL loop showed `getenv` internals as a dominant frame. Cache it once.
+#[inline]
+fn trace_callargs_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALLARGS").as_deref() == Ok("1"))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -449,9 +460,7 @@ impl Drop for PtrDropGuard {
     fn drop(&mut self) {
         if self.active && !self.ptr.is_null() {
             unsafe {
-                if std::env::var("MOLT_TRACE_CALLARGS").as_deref() == Ok("1")
-                    && object_type_id(self.ptr) == TYPE_ID_CALLARGS
-                {
+                if trace_callargs_enabled() && object_type_id(self.ptr) == TYPE_ID_CALLARGS {
                     let args_ptr = crate::call::bind::callargs_ptr(self.ptr);
                     eprintln!(
                         "[molt callargs] guard_drop builder_ptr=0x{:x} args_ptr=0x{:x}",
