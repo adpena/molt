@@ -1,5 +1,20 @@
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::*;
+use std::sync::OnceLock;
+
+/// Cached `MOLT_DEBUG_EXCEPTION_MATCH` flag.
+///
+/// `isinstance_runtime` is on the hot path of every `except ClassName` match,
+/// every `isinstance()` call, and every exception-type comparison. Reading the
+/// env var directly on each call (`std::env::var`) takes the libc environ lock
+/// (`__findenv_locked`) and heap-allocates a `String` per call — profiling an
+/// exception-heavy loop showed `getenv` internals as the single dominant frame.
+/// Cache the flag once like every sibling debug flag in `exceptions.rs`.
+#[inline]
+fn debug_exception_match() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_MATCH").as_deref() == Ok("1"))
+}
 
 pub(crate) unsafe fn class_mro_ref(class_ptr: *mut u8) -> Option<&'static Vec<u64>> {
     unsafe {
@@ -541,7 +556,7 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
     let mut matched = false;
     let mut classes = Vec::new();
     collect_classinfo_isinstance(_py, class_bits, &mut classes);
-    let debug_match = std::env::var("MOLT_DEBUG_EXCEPTION_MATCH").as_deref() == Ok("1");
+    let debug_match = debug_exception_match();
     if debug_match && has_saved_exc && classes.is_empty() {
         let class_type = class_name_for_error(type_of_bits(_py, class_bits));
         eprintln!(
