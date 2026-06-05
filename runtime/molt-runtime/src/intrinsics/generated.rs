@@ -3178,6 +3178,46 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_os_stat_at",
+        symbol: "molt_os_stat_at",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_os_lstat_at",
+        symbol: "molt_os_lstat_at",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_os_readlink_at",
+        symbol: "molt_os_readlink_at",
+        arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_os_symlink_at",
+        symbol: "molt_os_symlink_at",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_os_rename_at",
+        symbol: "molt_os_rename_at",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_os_replace_at",
+        symbol: "molt_os_replace_at",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_os_link_at",
+        symbol: "molt_os_link_at",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_os_utime_at",
+        symbol: "molt_os_utime_at",
+        arity: 7,
+    },
+    IntrinsicSpec {
         name: "molt_getcwd",
         symbol: "molt_getcwd",
         arity: 0,
@@ -20095,6 +20135,38 @@ fn resolve_os_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_os_replace",
             crate::molt_os_replace as *const (),
         )),
+        "molt_os_stat_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_stat_at",
+            crate::molt_os_stat_at as *const (),
+        )),
+        "molt_os_lstat_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_lstat_at",
+            crate::molt_os_lstat_at as *const (),
+        )),
+        "molt_os_readlink_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_readlink_at",
+            crate::molt_os_readlink_at as *const (),
+        )),
+        "molt_os_symlink_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_symlink_at",
+            crate::molt_os_symlink_at as *const (),
+        )),
+        "molt_os_rename_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_rename_at",
+            crate::molt_os_rename_at as *const (),
+        )),
+        "molt_os_replace_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_replace_at",
+            crate::molt_os_replace_at as *const (),
+        )),
+        "molt_os_link_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_link_at",
+            crate::molt_os_link_at as *const (),
+        )),
+        "molt_os_utime_at" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_utime_at",
+            crate::molt_os_utime_at as *const (),
+        )),
         "molt_os_access" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_os_access",
             crate::molt_os_access as *const (),
@@ -24427,3 +24499,4 @@ fn resolve_zoneinfo_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+

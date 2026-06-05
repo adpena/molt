@@ -91,6 +91,13 @@ pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
             return unsafe { bigint_ref(ptr) }.to_i64();
         }
     }
+    // A bare heap BigInt (a Python `int` whose magnitude exceeds the inline-int
+    // tag range, ~2^46) is still a plain integer. Convert it when it fits in
+    // i64 so intrinsics that accept large integers (e.g. os.utime nanosecond
+    // timestamps) see the value instead of falling through to `None`.
+    if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
+        return unsafe { bigint_ref(ptr) }.to_i64();
+    }
     None
 }
 

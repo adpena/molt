@@ -1961,6 +1961,297 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
     })
 }
 
+// ---------------------------------------------------------------------------
+// dir_fd-relative variants (`*at` POSIX family). `dir_fd=None` -> AT_FDCWD.
+//
+// `molt_os_lstat_at` / `molt_os_stat_at` / `molt_os_rename_at` /
+// `molt_os_replace_at` / `molt_os_link_at` live in molt-runtime's
+// `builtins/io_path.rs` (always compiled, alongside the stat-tuple builders);
+// only the readlink/symlink/utime family — whose base variants live in this
+// crate — is defined here.
+//
+// WASI preview-1 cannot mint general dir fds dynamically, so the wasm32 stubs
+// raise OSError(ENOSYS); Windows is covered by the `#[cfg(not(unix))]` arm.
+// ---------------------------------------------------------------------------
+
+/// Convert a path to a NUL-terminated `CString` for the `*at` syscall family,
+/// raising `ValueError` (CPython parity) on an interior NUL.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn at_path_to_cstring(_py: &CoreGilToken, path: &Path) -> Result<std::ffi::CString, u64> {
+    #[cfg(unix)]
+    let bytes: Vec<u8> = {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(not(unix))]
+    let bytes: Vec<u8> = path.to_string_lossy().as_bytes().to_vec();
+    match std::ffi::CString::new(bytes) {
+        Ok(c) => Ok(c),
+        Err(_) => Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            "embedded null byte",
+        )),
+    }
+}
+
+/// Resolve a `dir_fd` NaN-boxed argument to a libc fd for the `*at` family.
+/// `None` -> platform `libc::AT_FDCWD`; non-integer -> `TypeError`.
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[inline]
+fn at_resolve_dir_fd(_py: &CoreGilToken, dir_fd_bits: u64) -> Result<libc::c_int, u64> {
+    let obj = obj_from_bits(dir_fd_bits);
+    if obj.is_none() {
+        return Ok(libc::AT_FDCWD);
+    }
+    match to_i64(obj) {
+        Some(fd) => Ok(fd as libc::c_int),
+        None => Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "an integer is required",
+        )),
+    }
+}
+
+/// `os.readlink(path, dir_fd=...)` → str — directory-relative readlink.
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        if !has_capability(_py, "fs.read") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let path = match require_path(_py, path_bits, "path") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        #[cfg(unix)]
+        {
+            let dir_fd = match at_resolve_dir_fd(_py, dir_fd_bits) {
+                Ok(fd) => fd,
+                Err(bits) => return bits,
+            };
+            let c_path = match at_path_to_cstring(_py, &path) {
+                Ok(c) => c,
+                Err(bits) => return bits,
+            };
+            // Loop-grow so an oversized link target is never silently truncated.
+            let mut cap: usize = 256;
+            loop {
+                let mut buf: Vec<u8> = vec![0u8; cap];
+                let rc = unsafe {
+                    libc::readlinkat(
+                        dir_fd,
+                        c_path.as_ptr(),
+                        buf.as_mut_ptr() as *mut libc::c_char,
+                        cap,
+                    )
+                };
+                if rc < 0 {
+                    return os_err_bits(_py, std::io::Error::last_os_error(), "readlink");
+                }
+                let n = rc as usize;
+                if n < cap {
+                    buf.truncate(n);
+                    return str_bits(_py, &String::from_utf8_lossy(&buf));
+                }
+                cap *= 2;
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = dir_fd_bits;
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "readlink")
+        }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_readlink_at(_p: u64, _d: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "readlink")
+    })
+}
+
+/// `os.symlink(src, dst, dir_fd=...)` → None — directory-relative symlink.
+///
+/// NOTE: `symlinkat(target, newdirfd, linkpath)` takes the new-directory fd as
+/// its SECOND argument; `dir_fd` here qualifies the LINK (`dst`), matching
+/// CPython.
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_symlink_at(src_bits: u64, dst_bits: u64, dir_fd_bits: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let src = match require_path(_py, src_bits, "src") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        let dst = match require_path(_py, dst_bits, "dst") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        #[cfg(unix)]
+        {
+            let dir_fd = match at_resolve_dir_fd(_py, dir_fd_bits) {
+                Ok(fd) => fd,
+                Err(bits) => return bits,
+            };
+            let c_src = match at_path_to_cstring(_py, &src) {
+                Ok(c) => c,
+                Err(bits) => return bits,
+            };
+            let c_dst = match at_path_to_cstring(_py, &dst) {
+                Ok(c) => c,
+                Err(bits) => return bits,
+            };
+            let rc = unsafe { libc::symlinkat(c_src.as_ptr(), dir_fd, c_dst.as_ptr()) };
+            if rc < 0 {
+                return os_err_bits(_py, std::io::Error::last_os_error(), "symlink");
+            }
+            MoltObject::none().bits()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = dir_fd_bits;
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
+        }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_symlink_at(_s: u64, _d: u64, _dir: u64) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
+    })
+}
+
+/// `os.utime(path, dir_fd=..., follow_symlinks=...)` → None.
+///
+/// Times arrive pre-split into `(sec, nsec)` pairs by the Python wrapper (from
+/// `times=`, `ns=`, or "current time"). Splitting on the Python side keeps every
+/// argument within the inline-int range — a single epoch-scale nanosecond count
+/// (~1.7e18) would exceed it. A `nsec` sentinel of `-1` selects POSIX
+/// `UTIME_NOW` for that timestamp (the "no times given" path sends `-1` for
+/// both).
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_utime_at(
+    path_bits: u64,
+    dir_fd_bits: u64,
+    atime_sec_bits: u64,
+    atime_nsec_bits: u64,
+    mtime_sec_bits: u64,
+    mtime_nsec_bits: u64,
+    follow_symlinks_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        if !has_capability(_py, "fs.write") {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
+        }
+        let path = match require_path(_py, path_bits, "path") {
+            Ok(p) => p,
+            Err(bits) => return bits,
+        };
+        #[cfg(unix)]
+        {
+            let dir_fd = match at_resolve_dir_fd(_py, dir_fd_bits) {
+                Ok(fd) => fd,
+                Err(bits) => return bits,
+            };
+            let ts = match at_timespec_pair(
+                _py,
+                atime_sec_bits,
+                atime_nsec_bits,
+                mtime_sec_bits,
+                mtime_nsec_bits,
+            ) {
+                Ok(ts) => ts,
+                Err(bits) => return bits,
+            };
+            let follow = is_truthy(_py, obj_from_bits(follow_symlinks_bits));
+            let flags = if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW };
+            let c_path = match at_path_to_cstring(_py, &path) {
+                Ok(c) => c,
+                Err(bits) => return bits,
+            };
+            let rc = unsafe { libc::utimensat(dir_fd, c_path.as_ptr(), ts.as_ptr(), flags) };
+            if rc < 0 {
+                return os_err_bits(_py, std::io::Error::last_os_error(), "utime");
+            }
+            MoltObject::none().bits()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (
+                dir_fd_bits,
+                atime_sec_bits,
+                atime_nsec_bits,
+                mtime_sec_bits,
+                mtime_nsec_bits,
+                follow_symlinks_bits,
+            );
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
+        }
+    })
+}
+
+/// Build the `[atime, mtime]` `timespec` pair for `utimensat` from four
+/// NaN-boxed `(sec, nsec)` ints. A `nsec` of `-1` maps to `UTIME_NOW`. Any
+/// non-integer raises `TypeError` (error bits carry the recorded exception).
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+#[inline]
+fn at_timespec_pair(
+    _py: &CoreGilToken,
+    atime_sec_bits: u64,
+    atime_nsec_bits: u64,
+    mtime_sec_bits: u64,
+    mtime_nsec_bits: u64,
+) -> Result<[libc::timespec; 2], u64> {
+    let one = |bits: u64| -> Result<i64, u64> {
+        to_i64(obj_from_bits(bits))
+            .ok_or_else(|| raise_exception::<u64>(_py, "TypeError", "utime: times must be integers"))
+    };
+    let mk = |sec: i64, nsec: i64| -> libc::timespec {
+        if nsec == -1 {
+            libc::timespec {
+                tv_sec: sec as libc::time_t,
+                tv_nsec: libc::UTIME_NOW,
+            }
+        } else {
+            libc::timespec {
+                tv_sec: sec as libc::time_t,
+                tv_nsec: nsec as _,
+            }
+        }
+    };
+    let atime = mk(one(atime_sec_bits)?, one(atime_nsec_bits)?);
+    let mtime = mk(one(mtime_sec_bits)?, one(mtime_nsec_bits)?);
+    Ok([atime, mtime])
+}
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_utime_at(
+    _p: u64,
+    _d: u64,
+    _as: u64,
+    _an: u64,
+    _ms: u64,
+    _mn: u64,
+    _f: u64,
+) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
+    })
+}
+
 /// `os.sendfile(out_fd, in_fd, offset, count)` → int — zero-copy file send
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_sendfile(
