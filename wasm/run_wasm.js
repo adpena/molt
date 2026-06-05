@@ -5768,6 +5768,22 @@ const runLinked = async () => {
   importObject.env.molt_process_stdio_host = processHostStdio;
   importObject.env.molt_process_host_poll = processHostPoll;
   importObject.env.molt_gpu_webgpu_dispatch_host = () => -ENOSYS;
+  // `molt_isolate_import` is app-owned: the linked module both imports
+  // (env::molt_isolate_import) and exports it, a self-import that wasm-ld leaves
+  // unresolved (it is on the allowed-undefined list).  Forward it to the linked
+  // instance's own export via a closure, mirroring the two-instance direct path
+  // (see the `molt_isolate_import` env entry there).  The import is only invoked
+  // at runtime (from molt_main), long after instantiation assigns linkedModule,
+  // so the forward reference is always resolved before first call.
+  importObject.env.molt_isolate_import = (...args) => {
+    if (
+      !linkedModule ||
+      typeof linkedModule.instance.exports.molt_isolate_import !== 'function'
+    ) {
+      throw new Error('molt_isolate_import used before linked instantiation');
+    }
+    return linkedModule.instance.exports.molt_isolate_import(...args);
+  };
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
   const { molt_main, molt_table_init } = linkedModule.instance.exports;

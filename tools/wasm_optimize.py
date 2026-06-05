@@ -33,6 +33,15 @@ VALID_LEVELS = {"O1", "O2", "O3", "O4", "Os", "Oz"}
 # enables --enable-custom-descriptors which rewrites typed function references
 # into `exact` heap types — rejected by Cloudflare Workers' V8 and other
 # engines that haven't shipped the custom-descriptors proposal yet.
+#
+# `--disable-gc` is load-bearing: with `--enable-gc`, wasm-opt re-encodes the
+# merged type section as a GC-proposal *recursive type group* (`0x4E`), which the
+# molt wasmtime host runner, Cloudflare Workers' V8, and any non-GC engine reject
+# ("rec group usage requires `gc` proposal to be enabled").  The LLD-22 link
+# output is pre-flattened to standalone func types by `_flatten_rec_groups`
+# (tools/wasm_link.py) before wasm-opt runs, and disabling gc keeps wasm-opt from
+# re-wrapping them — the module's `(ref $func)` typed references remain valid
+# under the reference-types feature without the gc rec-group encoding.
 _DEFAULT_FEATURE_FLAGS = [
     "--enable-bulk-memory",
     "--enable-mutable-globals",
@@ -41,7 +50,7 @@ _DEFAULT_FEATURE_FLAGS = [
     "--enable-simd",
     "--enable-multivalue",
     "--enable-reference-types",
-    "--enable-gc",
+    "--disable-gc",
     "--enable-tail-call",
     "--disable-custom-descriptors",
 ]
