@@ -639,10 +639,24 @@ pub fn append_terminator_successors(term: &Terminator, out: &mut Vec<BlockId>) {
 ///   case-list-before-default), so the result is deterministic given a
 ///   deterministic CFG construction.
 ///
+/// CFG edge set: the traversal follows BOTH terminator successors AND the
+/// implicit exception edges of `CheckException`/`TryStart`/`TryEnd` ops (the
+/// same `Full` edge set the TIR analyses use). An exception-handler block is
+/// reachable *only* via a mid-block `CheckException` label edge — it never
+/// appears in any terminator's successor list — so without the exception edges
+/// the handler would be excluded from the RPO, never lowered, and stamped with
+/// a bare `unreachable` by the pass-5 sweep. LLVM's SimplifyCFG would then fold
+/// the `CheckException` arm's conditional branch into an `llvm.assume` that the
+/// exception is never pending, silently skipping the handler at runtime. The
+/// exception-edge extraction is delegated to the single source of truth in
+/// [`crate::tir::dominators::exception_successors`] (not re-derived here).
+///
 /// Public so integration tests (under `runtime/molt-backend/tests/`) can
 /// exercise it without going through an inkwell context.
 #[cfg(feature = "llvm")]
 pub fn compute_function_rpo(func: &TirFunction) -> Vec<BlockId> {
+    use crate::tir::dominators::{exception_label_to_block, exception_successors};
+
     /// Work-stack frame: either `Enter(b)` (visit `b` and schedule its
     /// successors) or `Exit(b)` (record `b` in post-order — all successors
     /// have now been fully visited).
@@ -657,6 +671,10 @@ pub fn compute_function_rpo(func: &TirFunction) -> Vec<BlockId> {
         // the contract that callers see only blocks present in the CFG.
         return Vec::new();
     }
+
+    // Resolve each handler label id to its owning block once; reused for every
+    // block's exception-successor lookup below.
+    let label_to_block = exception_label_to_block(func);
 
     let mut visited: std::collections::HashSet<BlockId> =
         std::collections::HashSet::with_capacity(func.blocks.len());
@@ -685,12 +703,20 @@ pub fn compute_function_rpo(func: &TirFunction) -> Vec<BlockId> {
                 // have been fully visited.
                 stack.push(Frame::Exit(b));
 
+                // Collect successors: terminator edges first (preserving
+                // then-before-else / case-before-default order), then the
+                // implicit exception-handler edges. Handler blocks are placed
+                // *after* the normal successors so the common fall-through path
+                // keeps its natural layout, mirroring the runtime expectation
+                // that the exceptional path is the unlikely one.
+                succ_buf.clear();
+                append_terminator_successors(&block.terminator, &mut succ_buf);
+                succ_buf.extend(exception_successors(block, &label_to_block));
+
                 // Push successors in reverse so the *first* successor is
                 // popped (and thus visited) first. This makes the recursion
                 // order match the natural left-to-right successor order
-                // recorded by `append_terminator_successors`.
-                succ_buf.clear();
-                append_terminator_successors(&block.terminator, &mut succ_buf);
+                // (terminator successors, then handler successors).
                 for succ in succ_buf.iter().rev() {
                     if !visited.contains(succ) {
                         stack.push(Frame::Enter(*succ));
