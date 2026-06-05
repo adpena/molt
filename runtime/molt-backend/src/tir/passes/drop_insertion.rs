@@ -166,6 +166,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // functions — which is the overwhelming majority and every leak in the
     // bug evidence — are fully covered. Re-enabling for state-machine functions
     // is the Phase 4/5 follow-up (needs the StateSwitch-aware liveness).
+    // Idempotency: a function may be re-lifted (the native module path re-lifts
+    // `ir.functions` → TIR for the inliner) and re-run through this pipeline (the
+    // module-slot-promotion path re-runs `run_pipeline` on promoted functions).
+    // The `lower_from_simple` round-trip preserves the `drop_inserted` attr, and
+    // the DecRef/IncRef ops survive the re-lift as real ops — so re-running the
+    // pass would DOUBLE-insert drops (a refcount underflow / use-after-free).
+    // Skip a function whose RC is already TIR-managed; its drops are already in
+    // place.
+    if matches!(
+        func.attrs.get(DROP_INSERTED_ATTR),
+        Some(AttrValue::Bool(true))
+    ) {
+        return stats;
+    }
     if func.has_exception_handlers() {
         return stats;
     }
@@ -195,10 +209,34 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
     }
 
-    // A value is droppable iff it is heap-carrying, not a param, not a stack
-    // value. (`is_raw_scalar` covers the repr filter — RawI64Safe/Bool/Float.)
+    // Alias-root canonicalization (design 20 §1.2 — `Copy`/`TypeGuard` are
+    // borrowed aliases, holding NO new reference). Ownership — and therefore the
+    // drop obligation — is per alias ROOT, not per SSA value. The drop pass
+    // operates entirely in root space: every value reference is canonicalized to
+    // its root, and we drop each root EXACTLY ONCE (at the last use of any chain
+    // member). Dropping each `Copy` independently is a refcount underflow /
+    // use-after-free (the loop-carried accumulator loads its phi via
+    // `load_var`→`Copy` every iteration; a per-copy drop double-frees the live
+    // accumulator). This is the SAME union-find the liveness analysis used, so the
+    // live sets (in root space) line up with these canonicalized placements.
+    let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(func);
+    let canon = |v: ValueId| -> ValueId { aliases.root(v) };
+
+    // Root-space params / stack sets.
+    let param_roots: HashSet<ValueId> = param_ids.iter().map(|&v| canon(v)).collect();
+    let stack_roots: HashSet<ValueId> = stack_values.iter().map(|&v| canon(v)).collect();
+
+    // A root is droppable iff it is heap-carrying, not a (root of a) param, not a
+    // (root of a) stack value, AND it is its own alias root (a non-root alias is a
+    // borrow — the root carries the single ownership obligation).
+    // `is_raw_scalar` covers the repr filter — RawI64Safe/Bool/Float — and is
+    // tested on the root carrier (a copy of a raw i64 is raw).
     let droppable = |v: ValueId| -> bool {
-        !live.is_raw_scalar(v) && !param_ids.contains(&v) && !stack_values.contains(&v)
+        let r = canon(v);
+        r == v
+            && !live.is_raw_scalar(r)
+            && !param_roots.contains(&r)
+            && !stack_roots.contains(&r)
     };
 
     // The plan: per block, a list of (insert_after_op_index OR at-entry, value)
@@ -248,40 +286,55 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             before_op: HashMap::new(),
         };
 
-        // ── 1. Straight-line last-use drops ──────────────────────────────────
-        // For every value used by an op in this block, find its last use index.
-        // If the value is droppable AND not live-out of this block AND not a
-        // branch arg of the terminator (those transfer ownership), drop it after
-        // its last op-use. Block args defined here that die in-block are also
-        // dropped at their last use.
+        // ── 1. Straight-line last-use drops (alias-root space) ───────────────
+        // For every alias ROOT used by an op in this block, find the LAST op
+        // index where any chain member is used as an operand. If the root is
+        // droppable AND not live-out of this block AND not transferred by a
+        // branch arg / terminator use (which pass ownership), drop the ROOT after
+        // its last op-use. Canonicalizing collapses a `Copy`-chain into one
+        // entity → one drop per owned object (no double-free across copies).
         //
-        // Gather every value that has an op-use in this block.
-        let branch_args = terminator_branch_args(&block.terminator);
+        // Branch args / terminator direct uses are canonicalized to roots: a
+        // copied value passed on an edge transfers the ROOT's ownership.
+        let branch_arg_roots: HashSet<ValueId> = terminator_branch_args(&block.terminator)
+            .into_iter()
+            .map(canon)
+            .collect();
+        // Last op-use index per ROOT (max over all aliases).
         let mut last_use: HashMap<ValueId, usize> = HashMap::new();
         for (idx, op) in block.ops.iter().enumerate() {
             for &operand in &op.operands {
-                last_use.insert(operand, idx);
+                let r = canon(operand);
+                last_use
+                    .entry(r)
+                    .and_modify(|e| {
+                        if idx > *e {
+                            *e = idx;
+                        }
+                    })
+                    .or_insert(idx);
             }
         }
         for (&v, &idx) in &last_use {
+            // `v` is already a root (last_use is keyed by canon'd operands).
             if !droppable(v) {
                 continue;
             }
-            // Transferred via branch arg → no drop (the successor owns it now).
-            if branch_args.contains(&v) {
+            // Transferred via branch arg (root space) → no drop (successor owns).
+            if branch_arg_roots.contains(&v) {
                 continue;
             }
-            // Live-out of this block → dropped later (in a successor / before a
-            // later use); not here.
+            // Live-out of this block → dropped later; not here.
             if live.is_live_out(bid, v) {
                 continue;
             }
-            // Used by the terminator directly (e.g. Return value, cond) → the
-            // terminator consumes it; do not drop before the terminator.
-            if terminator_uses_directly(&block.terminator, v) {
+            // Consumed by the terminator (Return value / cond) — canonicalize the
+            // terminator's direct uses to roots and skip if `v` is among them.
+            if terminator_uses_root(&block.terminator, v, &canon) {
                 continue;
             }
-            // The value dies after op `idx` in this block: drop after it.
+            // The owned object dies after op `idx` in this block: drop the root
+            // after it.
             plan.after_op.entry(idx).or_default().push(v);
         }
 
@@ -297,6 +350,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         // before the yield would be a use-before-def (a TIR verify failure).
         // Build the set of values defined at or before each op position.
         if block.ops.iter().any(|o| is_suspension_point(o.opcode)) {
+            // `live_out` is already in alias-root space (liveness canonicalized).
             let live_out_here: HashSet<ValueId> = live
                 .live_out
                 .get(&bid)
@@ -304,20 +358,23 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 .flatten()
                 .copied()
                 .collect();
-            let mut defined: HashSet<ValueId> = block.args.iter().map(|a| a.id).collect();
+            // Roots defined at-or-before each op (block args are roots).
+            let mut defined: HashSet<ValueId> = block.args.iter().map(|a| canon(a.id)).collect();
             for (idx, op) in block.ops.iter().enumerate() {
                 if is_suspension_point(op.opcode) {
                     let mut seen: HashSet<ValueId> = HashSet::new();
                     for &v in &live_out_here {
+                        // `v` is a root; IncRef the root if it is droppable and
+                        // already defined before the yield.
                         if droppable(v) && defined.contains(&v) && seen.insert(v) {
                             plan.before_op.entry(idx).or_default().push(v);
                         }
                     }
                 }
-                // The yield's own results (and every other op's results) become
-                // defined AFTER the op executes.
+                // The op's results become defined AFTER it executes (in root
+                // space — a copy result canonicalizes to an already-defined root).
                 for &r in &op.results {
-                    defined.insert(r);
+                    defined.insert(canon(r));
                 }
             }
         }
@@ -469,14 +526,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     stats
 }
 
-/// True if `v` is consumed directly by the terminator (a Return value, a
-/// CondBranch/Switch condition). Branch ARGS are handled separately (they
-/// transfer ownership to the successor's block arg).
-fn terminator_uses_directly(term: &Terminator, v: ValueId) -> bool {
+/// True if the alias root `v` is consumed directly by the terminator (a Return
+/// value, a CondBranch/Switch condition), comparing in alias-root space. Branch
+/// ARGS are handled separately (they transfer ownership to the successor's block
+/// arg).
+fn terminator_uses_root(term: &Terminator, v: ValueId, canon: &dyn Fn(ValueId) -> ValueId) -> bool {
     match term {
-        Terminator::Return { values } => values.contains(&v),
-        Terminator::CondBranch { cond, .. } => *cond == v,
-        Terminator::Switch { value, .. } => *value == v,
+        Terminator::Return { values } => values.iter().any(|&x| canon(x) == v),
+        Terminator::CondBranch { cond, .. } => canon(*cond) == v,
+        Terminator::Switch { value, .. } => canon(*value) == v,
         Terminator::Branch { .. } | Terminator::Unreachable => false,
     }
 }
@@ -527,6 +585,114 @@ mod tests {
             .flat_map(|b| b.ops.iter())
             .filter(|o| o.opcode == OpCode::IncRef)
             .count()
+    }
+
+    /// Regression (RC drop-insertion substrate, design 20): the real `accumulate`
+    /// loop-slot shape from the frontend SimpleIR, run through the FULL pipeline.
+    /// The loop loads its carried accumulator via `load_var`→`Copy` every
+    /// iteration; a per-SSA-value drop pass double-frees the live accumulator
+    /// (the activation blocker — `invalid object header before dec_ref` /
+    /// use-after-free at n≥50k). The alias-root-aware drop pass must drop each
+    /// underlying heap object EXACTLY ONCE per program point. This test asserts
+    /// the no-double-drop invariant directly on the post-pipeline TIR: within any
+    /// block, no two `DecRef`s name values that share an alias root.
+    #[test]
+    fn loop_slot_accumulator_no_double_drop() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+        use crate::tir::passes::alias_analysis::build_alias_union_find;
+        use crate::tir::passes::run_pipeline;
+        use crate::tir::type_refine::refine_types;
+
+        let mk = |kind: &str, out: Option<&str>, var: Option<&str>, args: Vec<&str>, val: Option<i64>, sval: Option<&str>| OpIR {
+            kind: kind.into(),
+            out: out.map(|s| s.to_string()),
+            var: var.map(|s| s.to_string()),
+            args: if args.is_empty() { None } else { Some(args.iter().map(|s| s.to_string()).collect()) },
+            value: val,
+            s_value: sval.map(|s| s.to_string()),
+            ..OpIR::default()
+        };
+        // Shape from tmp/.../native/final_ir/bigint_accumulator__accumulate.txt:
+        // total = 1<<60 ; i=0 ; while i<n: total=total+1; total=total-1; total=total+1; i=i+1 ; return total
+        let func_ir = FunctionIR {
+            name: "diag__accumulate".into(),
+            params: vec!["n".into()],
+            ops: vec![
+                mk("const", Some("v106"), None, vec![], Some(1), None),
+                mk("const", Some("v107"), None, vec![], Some(60), None),
+                mk("lshift", Some("v108"), None, vec!["v106", "v107"], None, None),
+                mk("const", Some("v109"), None, vec![], Some(0), None),
+                mk("const", Some("v114"), None, vec![], Some(1), None),
+                mk("const", Some("v117"), None, vec![], Some(1), None),
+                mk("const", Some("v120"), None, vec![], Some(1), None),
+                mk("const", Some("v123"), None, vec![], Some(1), None),
+                mk("store_var", None, Some("_bb1_arg0"), vec!["v108"], None, None),
+                mk("store_var", None, Some("_bb1_arg1"), vec!["v109"], None, None),
+                mk("jump", None, None, vec![], Some(8), None),
+                mk("label", None, None, vec![], Some(8), None),
+                mk("loop_start", None, None, vec![], None, None),
+                mk("load_var", Some("_v19"), Some("_bb1_arg0"), vec![], None, None),
+                mk("load_var", Some("_v20"), Some("_bb1_arg1"), vec![], None, None),
+                mk("lt", Some("v112"), None, vec!["_v20", "n"], None, None),
+                mk("loop_break_if_false", None, None, vec!["v112"], None, None),
+                mk("add", Some("v115"), None, vec!["_v19", "v114"], None, None),
+                mk("sub", Some("v118"), None, vec!["v115", "v117"], None, None),
+                mk("add", Some("v121"), None, vec!["v118", "v120"], None, None),
+                mk("add", Some("v124"), None, vec!["_v20", "v123"], None, None),
+                mk("store_var", None, Some("_bb1_arg0"), vec!["v121"], None, None),
+                mk("store_var", None, Some("_bb1_arg1"), vec!["v124"], None, None),
+                mk("loop_continue", None, None, vec![], None, None),
+                mk("loop_end", None, None, vec![], None, None),
+                mk("jump", None, None, vec![], Some(12), None),
+                mk("label", None, None, vec![], Some(12), None),
+                mk("ret", None, Some("_v19"), vec!["_v19"], None, None),
+            ],
+            param_types: Some(vec!["Any".into()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let mut tir_func = lower_to_tir(&func_ir);
+        refine_types(&mut tir_func);
+        // Run the full optimization pipeline to reach the realistic lowered loop
+        // shape (Copy-aliased loop-slot loads), THEN run drop insertion directly.
+        // The pass is a complete primitive but intentionally NOT wired into
+        // `build_default_pipeline` yet (Phase-5 native-RC retirement is the
+        // remaining activation prerequisite — see the pass_manager activation
+        // note), so we invoke it explicitly here to exercise the alias-root
+        // placement on the production-shaped IR.
+        run_pipeline(&mut tir_func, &crate::tir::target_info::TargetInfo::native_release_fast());
+        {
+            let mut am = AnalysisManager::new();
+            run(&mut tir_func, &mut am);
+        }
+
+        // Invariant: within any block, no two DecRefs share an alias root — a
+        // double-drop of one heap object is the activation-blocker use-after-free.
+        let aliases = build_alias_union_find(&tir_func);
+        for block in tir_func.blocks.values() {
+            let mut dropped_roots: HashSet<ValueId> = HashSet::new();
+            for op in &block.ops {
+                if op.opcode == OpCode::DecRef {
+                    let root = aliases.root(op.operands[0]);
+                    assert!(
+                        dropped_roots.insert(root),
+                        "double-drop of alias root {root:?} in one block: {:?}",
+                        block.ops
+                    );
+                }
+            }
+        }
+        // The loop body must drop SOMETHING (the dead intermediates + the prev
+        // accumulator) — a fully-inert pass would mean the leak is unclosed.
+        let total_decrefs: usize = tir_func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|o| o.opcode == OpCode::DecRef)
+            .count();
+        assert!(total_decrefs >= 2, "loop accumulator must insert drops, got {total_decrefs}");
     }
 
     /// Straight-line temp: v1 = Call(a); v2 = Call(v1); Return(v2).

@@ -199,12 +199,14 @@ fn live_out_of(
     live_in: &HashMap<BlockId, HashSet<ValueId>>,
     block_args: &HashMap<BlockId, HashSet<ValueId>>,
     heap_carrying: &dyn Fn(ValueId) -> bool,
+    canon: &dyn Fn(ValueId) -> ValueId,
 ) -> HashSet<ValueId> {
     let mut out = HashSet::new();
     for succ in terminator_successors(&block.terminator) {
         if let Some(succ_in) = live_in.get(&succ) {
             let succ_args = block_args.get(&succ);
             for &v in succ_in {
+                // `v` is already an alias root (live sets are in root space).
                 let is_succ_arg = succ_args.is_some_and(|a| a.contains(&v));
                 if !is_succ_arg {
                     out.insert(v);
@@ -213,10 +215,11 @@ fn live_out_of(
         }
         // Edge args this block supplies to the successor's block args are direct
         // uses in this block — they are live-out of this block (their value must
-        // survive to the branch).
+        // survive to the branch). Canonicalize to the alias root so a copied edge
+        // arg keeps its underlying object live.
         for v in edge_args_to(&block.terminator, succ) {
             if heap_carrying(v) {
-                out.insert(v);
+                out.insert(canon(v));
             }
         }
     }
@@ -284,9 +287,30 @@ fn compute_raw_scalars(func: &TirFunction) -> HashSet<ValueId> {
 }
 
 /// Backward-dataflow liveness with representation filtering. See module docs.
+///
+/// **Alias-root canonicalization (design 20 §1.2 — `Copy`/`TypeGuard` are
+/// borrowed aliases).** A transparent SSA copy (`b = Copy(a)`, including the
+/// SimpleIR `copy_var` / `load_var` / `identity_alias` carriers that lower to
+/// `Copy`) names the SAME heap object as its source — it carries NO new
+/// reference. Liveness therefore operates in **alias-root space**: every value
+/// reference (use, def/kill, edge arg, terminator use) is canonicalized to its
+/// alias root before the dataflow runs. This collapses a `Copy`-chain into one
+/// ownership entity so the drop pass drops the underlying object EXACTLY ONCE (at
+/// the last use of any chain member), instead of once per `Copy` — the latter is
+/// a refcount underflow / use-after-free (the loop-carried accumulator loads its
+/// phi via `load_var`→`Copy` every iteration; dropping each copy double-frees the
+/// live accumulator). Block args have no defining op, so the union-find never
+/// unions them away — a loop-header phi stays its own root and is the single
+/// owner of the loop-carried value.
 pub fn compute_liveness(func: &TirFunction) -> TirLivenessResult {
     let raw_scalars = compute_raw_scalars(func);
-    let heap_carrying = |v: ValueId| -> bool { !raw_scalars.contains(&v) };
+    // Alias union-find: canonicalize transparent copies to their root owner.
+    let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(func);
+    let canon = |v: ValueId| -> ValueId { aliases.root(v) };
+    // A root is heap-carrying unless the root itself is a raw scalar. We test the
+    // ROOT's repr: the carrier of the owned object is the root's carrier (a
+    // `Copy` of a raw i64 is still raw; a `Copy` of a boxed value is boxed).
+    let heap_carrying = |v: ValueId| -> bool { !raw_scalars.contains(&canon(v)) };
 
     // Per-block block-arg id sets (kills at block entry).
     let mut block_args: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
@@ -303,30 +327,40 @@ pub fn compute_liveness(func: &TirFunction) -> TirLivenessResult {
     for (&bid, block) in &func.blocks {
         let mut uses: HashSet<ValueId> = HashSet::new();
         let mut defs: HashSet<ValueId> = HashSet::new();
-        // Block args are defined at entry.
+        // Block args are defined at entry. A block arg is its own alias root
+        // (no defining op), so `canon` is identity here, but we apply it for
+        // uniformity.
         for arg in &block.args {
-            defs.insert(arg.id);
+            defs.insert(canon(arg.id));
         }
         for op in &block.ops {
             for &operand in &op.operands {
+                let r = canon(operand);
                 // Upward-exposed use: read before it is defined in this block.
-                if !defs.contains(&operand) && heap_carrying(operand) {
-                    uses.insert(operand);
+                if !defs.contains(&r) && heap_carrying(operand) {
+                    uses.insert(r);
                 }
             }
+            // A transparent-copy result is the SAME owned object as its root, so
+            // it does NOT kill the root (it is a borrow alias). Only NON-alias
+            // results define a fresh value. We canonicalize the result: if it
+            // aliases an existing root, `canon(res)` is that root and inserting it
+            // is a no-op for liveness (the root was already live/defined). A
+            // genuine fresh result canonicalizes to itself.
             for &res in &op.results {
-                defs.insert(res);
+                defs.insert(canon(res));
             }
         }
         // Terminator direct uses are reads at the end of the block; they are
         // upward-exposed unless defined earlier in the block.
         for v in terminator_direct_uses(&block.terminator) {
-            if !defs.contains(&v) && heap_carrying(v) {
-                uses.insert(v);
+            let r = canon(v);
+            if !defs.contains(&r) && heap_carrying(v) {
+                uses.insert(r);
             }
         }
         use_set.insert(bid, uses);
-        // Kill = all defs (op results + block args).
+        // Kill = all defs (op results + block args), in root space.
         kill_set.insert(bid, defs);
     }
 
@@ -355,7 +389,7 @@ pub fn compute_liveness(func: &TirFunction) -> TirLivenessResult {
             let Some(block) = func.blocks.get(&bid) else {
                 continue;
             };
-            let new_out = live_out_of(block, &live_in, &block_args, &heap_carrying);
+            let new_out = live_out_of(block, &live_in, &block_args, &heap_carrying, &canon);
             // LiveIn = (LiveOut \ Kill) ∪ Use
             let kill = &kill_set[&bid];
             let uses = &use_set[&bid];

@@ -376,23 +376,41 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         pass("copy_prop", OpsOnly, |f, _am, _tti| passes::copy_prop::run(f)),
         pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
-        // ── RC drop insertion (design 20) ───────────────────────────────────
-        // NOT YET WIRED INTO THE PRODUCTION PIPELINE. The pass + its
-        // refcount_elim_post elision step are complete and unit-tested
-        // primitives (see `drop_insertion.rs` / `refcount_elim::run_post_drop`),
-        // but ACTIVATION is blocked on a structural prerequisite: the legacy
-        // native TIR→SimpleIR→Cranelift codegen path cannot soundly consume a
-        // `DecRef` on an arbitrary SSA value. Its `dec_ref` handler resolves the
-        // operand through the name-keyed `var_get_boxed_overflow_safe`, which
-        // only yields a correctly-boxed live value for the narrow set the
-        // ad-hoc `loop_reassign_old_val` path and escape-analysis target (named
-        // loop locals / Alloc results). For a general drop temporary the name
-        // resolves to a stale or raw-i64 slot → a garbage pointer reaches
-        // `molt_dec_ref_obj` → `invalid object header` abort (observed on the
-        // memory corpus). Sound activation requires the typed-IR convergence
-        // (one value-keyed raw/heap carrier source of truth shared by the drop
-        // filter AND native codegen), which is a separate arc. See the
-        // baton-pass note for the exact activation plan. To activate, append:
+        // ── RC drop insertion (design 20) — NOT YET WIRED (Phase-5 blocked) ──
+        // The pass + its `refcount_elim_post` elision step are complete,
+        // unit-tested, alias-root-CORRECT primitives (see `drop_insertion.rs` /
+        // `refcount_elim::run_post_drop`). This session FIXED the original
+        // activation blocker — the use-after-free abort (`invalid object header
+        // before dec_ref`) at n≥50k — which was NOT a carrier-resolution problem
+        // but a borrow-alias double-drop: the lowered loop loads its carried
+        // accumulator via `load_var`→`Copy` every iteration, and the per-SSA-value
+        // drop pass dropped EACH copy of the one live object (a refcount underflow
+        // → premature free → UAF). The fix made liveness + drop placement operate
+        // in ALIAS-ROOT space (design §1.2: `Copy`/`TypeGuard` are borrow aliases
+        // holding no new reference); each heap object is now dropped exactly once.
+        // The `drop_inserted` marker also now round-trips losslessly through
+        // `lower_from_simple` (the native module-phase re-lift), and the pass is
+        // idempotent on a re-lifted function.
+        //
+        // REMAINING ACTIVATION BLOCKER (Phase 5 — retire the legacy native RC):
+        // the native backend runs its OWN Swift-ARC-style value-tracking RC
+        // (`tracked_obj_vars` + `drain_cleanup_tracked`, retain-at-store /
+        // release-at-scope-exit) IN PARALLEL with the TIR drops. For a loop-carried
+        // accumulator (`s = s + "x"`, `total = total + 1`) that tracking NEGATES
+        // the TIR `DecRef(old)` — the carried object is never freed, so the
+        // headline leak case (loop accumulators) is NOT closed by activation alone
+        // (measured: string-concat 0/n freed; bigint-accumulator only the 2 dead
+        // intermediates/iter freed, the carried value leaks → O(n) RSS). Closing it
+        // requires SUPPRESSING the native value-tracking RC for `drop_inserted`
+        // functions (the §4.1 `loop_reassign_old_val` dec-side guard and the
+        // store_var inc-side guard added this session are the first two of the
+        // family; the full set — heap-result registration into `tracked_*`,
+        // `drain_cleanup_tracked_dedup` at every exit/label/check_exception site,
+        // and the func-end last_use extension — must all be gated so the TIR drops
+        // become the SOLE RC authority). That is a multi-site change with real
+        // double-free risk and is left as the Phase-5 arc. Until it lands, wiring
+        // these passes ships an O(n) residual leak on loop accumulators, so they
+        // stay dormant. To activate (AFTER Phase 5), append:
         //   pass("drop_insertion", OpsOnly, |f, am, _tti| passes::drop_insertion::run(f, am)),
         //   pass("refcount_elim_post", OpsOnly, |f, am, _tti| passes::refcount_elim::run_post_drop(f, am)),
     ];
@@ -584,7 +602,9 @@ mod tests {
 
     /// The default pipeline must preserve the EXACT canonical pass order (28
     /// `run` invocations — canonicalize runs twice). Any reorder/insert/drop is
-    /// a behavior change and must update this list deliberately.
+    /// a behavior change and must update this list deliberately. (The RC
+    /// drop-insertion arc — design 20 — is a complete primitive but NOT wired
+    /// here yet; see the activation note in `build_default_pipeline`.)
     #[test]
     fn default_pipeline_preserves_canonical_pass_order() {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());

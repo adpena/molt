@@ -78,10 +78,22 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
         rewritten_ops
     };
     // RC drop-insertion substrate (design 20, R1 guard): the `drop_inserted`
-    // marker is a SimpleIR-transport-only signal (it tells the native backend's
-    // preanalysis to disable the ad-hoc loop dec-ref path). It carries no
-    // semantics into TIR — strip it before lifting so it never becomes a TIR op
-    // (the leaf-analysis re-lift path would otherwise see an unmodeled op kind).
+    // marker is a SimpleIR-transport signal (it tells the native backend's
+    // preanalysis to disable the ad-hoc loop inc/dec-ref paths, which the TIR
+    // drop pass now owns). It carries no per-op semantics into TIR, so we strip
+    // it before lifting (the leaf-analysis re-lift path would otherwise see an
+    // unmodeled op kind) — BUT we PRESERVE the signal as a TIR function-level
+    // attr. Without this, a re-lift through `lower_from_simple` (the native
+    // module path re-lifts `ir.functions` for the inliner) would silently drop
+    // the marker: the function's TIR-inserted `DecRef`s survive the round-trip
+    // (they are real `dec_ref` OpIR), but the legacy native loop inc/dec-ref
+    // guards would re-activate (`drop_inserted=false`), producing an unmatched
+    // `inc_ref(new)` per loop iteration → an O(n) refcount leak on the
+    // loop-carried accumulator. The attr makes the round-trip lossless: a
+    // subsequent `lower_to_simple_ir` re-emits the marker, so native re-reads it.
+    let had_drop_inserted_marker = working_ops
+        .iter()
+        .any(|op| op.kind == crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
     working_ops.retain(|op| op.kind != crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
     // Memory SSA: rewrite cell-based locals (store_index/index on a 1-elem
     // list "cell") to store_var/load_var so SSA generates proper phi nodes
@@ -108,7 +120,15 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     let ssa = convert_to_ssa_with_name_and_params(&ir.name, &cfg, ops, &ir.params);
 
     // 3. Assemble the TirFunction from the SSA output.
-    assemble_function(ir_ref, &cfg, ssa)
+    let mut tir_func = assemble_function(ir_ref, &cfg, ssa);
+    // Preserve the RC drop-insertion marker across the round-trip (see above).
+    if had_drop_inserted_marker {
+        tir_func.attrs.insert(
+            crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.to_string(),
+            crate::tir::ops::AttrValue::Bool(true),
+        );
+    }
+    tir_func
 }
 
 /// Rewrite `loop_index_start`/`loop_index_next` into `store_var`/`load_var`
