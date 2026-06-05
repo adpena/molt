@@ -6131,6 +6131,121 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn lower_preserved_simpleir_op(&mut self, op: &TirOp, kind: &str) -> bool {
         let i64_ty = self.backend.context.i64_type();
         match kind {
+            "call_method_ic" => {
+                // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
+                //   operands = [recv, a0, a1, ...]  attrs.s_value = <method>
+                // Lowers to a single molt_call_method_icN(site, recv, name_ptr,
+                // name_len, a0..) runtime call — no bound-method / callargs
+                // allocation on the IC fast path. The runtime entry is
+                // target-independent extern "C"; on the native LLVM target the
+                // name pointer is a real pointer cast to i64 (every arg i64),
+                // matching the `4 + N`-i64 declaration in runtime_imports.rs.
+                if op.operands.is_empty() {
+                    return false;
+                }
+                let Some(method_name) = op.attrs.get("s_value").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let recv_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let extra: Vec<inkwell::values::IntValue<'ctx>> = op.operands[1..]
+                    .iter()
+                    .map(|&id| self.materialize_dynbox_operand(id))
+                    .collect();
+                let site_bits = self.next_call_site_bits("call_method_ic");
+                let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
+                let symbol = match extra.len() {
+                    0 => "molt_call_method_ic0",
+                    1 => "molt_call_method_ic1",
+                    2 => "molt_call_method_ic2",
+                    3 => "molt_call_method_ic3",
+                    _ => "molt_call_method_ic4",
+                };
+                let arity = 4 + extra.len();
+                let call_fn = self.ensure_runtime_i64_fn(symbol, arity);
+                let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
+                    site_bits.into(),
+                    recv_bits.into(),
+                    name_ptr_bits.into(),
+                    name_len_bits.into(),
+                ];
+                call_args.extend(
+                    extra
+                        .iter()
+                        .map(|v| -> inkwell::values::BasicMetadataValueEnum<'ctx> { (*v).into() }),
+                );
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(call_fn, &call_args, symbol)
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "call_super_method_ic" => {
+                // Fused super().method() dispatch (no super / bound-method /
+                // callargs allocation on the fast path):
+                //   operands = [class, self, a0, a1, ...]  attrs.s_value = <method>
+                // Lowers to molt_call_super_method_icN(site, class, self,
+                // name_ptr, name_len, a0..).
+                if op.operands.len() < 2 {
+                    return false;
+                }
+                let Some(method_name) = op.attrs.get("s_value").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let class_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let self_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let extra: Vec<inkwell::values::IntValue<'ctx>> = op.operands[2..]
+                    .iter()
+                    .map(|&id| self.materialize_dynbox_operand(id))
+                    .collect();
+                let site_bits = self.next_call_site_bits("call_super_method_ic");
+                let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&method_name);
+                let symbol = match extra.len() {
+                    0 => "molt_call_super_method_ic0",
+                    1 => "molt_call_super_method_ic1",
+                    2 => "molt_call_super_method_ic2",
+                    3 => "molt_call_super_method_ic3",
+                    _ => "molt_call_super_method_ic4",
+                };
+                let arity = 5 + extra.len();
+                let call_fn = self.ensure_runtime_i64_fn(symbol, arity);
+                let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = vec![
+                    site_bits.into(),
+                    class_bits.into(),
+                    self_bits.into(),
+                    name_ptr_bits.into(),
+                    name_len_bits.into(),
+                ];
+                call_args.extend(
+                    extra
+                        .iter()
+                        .map(|v| -> inkwell::values::BasicMetadataValueEnum<'ctx> { (*v).into() }),
+                );
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(call_fn, &call_args, symbol)
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "builtin_func" => {
                 let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),

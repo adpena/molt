@@ -512,6 +512,43 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         add_willreturn(ctx, func);
     }
 
+    // ── Fused method-dispatch ICs ──
+    // molt_call_method_icN(site, recv, name_ptr, name_len, a0..a{N-1}) -> u64
+    //   N positional args, N ∈ 0..=4. All u64 — the name pointer is a real
+    //   native pointer cast to i64 (every value NaN-boxed). These dispatch the
+    //   resolved method, which executes arbitrary user code: NO `willreturn`
+    //   (a method may loop forever or suspend), but `nounwind` holds (the
+    //   `with_gil_entry_nopanic!` catch_unwind boundary converts every panic to
+    //   a pending exception). 4 + N parameters.
+    for (name, n) in &[
+        ("molt_call_method_ic0", 0usize),
+        ("molt_call_method_ic1", 1),
+        ("molt_call_method_ic2", 2),
+        ("molt_call_method_ic3", 3),
+        ("molt_call_method_ic4", 4),
+    ] {
+        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            (0..(4 + *n)).map(|_| i64_ty.into()).collect();
+        let fn_ty = i64_ty.fn_type(&params, false);
+        let func = module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
+        add_nounwind(ctx, func);
+    }
+    // molt_call_super_method_icN(site, class, self, name_ptr, name_len, a0..) -> u64
+    //   5 + N parameters; same effect profile (nounwind, no willreturn).
+    for (name, n) in &[
+        ("molt_call_super_method_ic0", 0usize),
+        ("molt_call_super_method_ic1", 1),
+        ("molt_call_super_method_ic2", 2),
+        ("molt_call_super_method_ic3", 3),
+        ("molt_call_super_method_ic4", 4),
+    ] {
+        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            (0..(5 + *n)).map(|_| i64_ty.into()).collect();
+        let fn_ty = i64_ty.fn_type(&params, false);
+        let func = module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
+        add_nounwind(ctx, func);
+    }
+
     // ── Containers ──
     // molt_dict_new(capacity_bits: u64) -> u64
     // molt_set_new(capacity_bits: u64) -> u64
@@ -888,6 +925,51 @@ mod tests {
         assert!(module.get_function("molt_get_attr_name").is_some());
         assert!(module.get_function("molt_raise").is_some());
         assert!(module.get_function("molt_is_truthy").is_some());
+    }
+
+    #[test]
+    fn fused_method_dispatch_ic_runtime_functions_are_declared() {
+        let ctx = Context::create();
+        let module = ctx.create_module("test_method_dispatch_ic");
+        declare_runtime_functions(&ctx, &module);
+
+        // call_method_icN: site + recv + name_ptr + name_len + N args = 4 + N.
+        // call_super_method_icN: site + class + self + name_ptr + name_len + N
+        // args = 5 + N. All u64 — the name pointer is a native pointer cast to
+        // i64. These dispatch arbitrary user code, so they carry `nounwind`
+        // (catch_unwind boundary) but must NOT carry `willreturn`.
+        let willreturn_kind = Attribute::get_named_enum_kind_id("willreturn");
+        for (name, arity) in &[
+            ("molt_call_method_ic0", 4usize),
+            ("molt_call_method_ic1", 5),
+            ("molt_call_method_ic2", 6),
+            ("molt_call_method_ic3", 7),
+            ("molt_call_method_ic4", 8),
+            ("molt_call_super_method_ic0", 5),
+            ("molt_call_super_method_ic1", 6),
+            ("molt_call_super_method_ic2", 7),
+            ("molt_call_super_method_ic3", 8),
+            ("molt_call_super_method_ic4", 9),
+        ] {
+            let func = module
+                .get_function(name)
+                .unwrap_or_else(|| panic!("{name} should be declared"));
+            assert_eq!(
+                func.count_params() as usize,
+                *arity,
+                "{name} should have {arity} i64 parameters"
+            );
+            assert!(has_fn_attr(func, "nounwind"), "{name} should have nounwind");
+            // Method dispatch runs arbitrary user code (may loop/suspend): the
+            // declaration must not promise termination.
+            if willreturn_kind != 0 {
+                assert!(
+                    func.get_enum_attribute(AttributeLoc::Function, willreturn_kind)
+                        .is_none(),
+                    "{name} must NOT have willreturn (dispatches arbitrary user code)"
+                );
+            }
+        }
     }
 
     #[test]

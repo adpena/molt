@@ -120,6 +120,21 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("call_arity_error", 3),
     ("call_bind", 3),
     ("call_bind_ic", 5),
+    // Fused instance-method dispatch ICs (no bound-method / callargs alloc on
+    // the fast path). Type indices declared in wasm.rs (41-45); `name_ptr` is
+    // an i32 linear-memory address, every other arg is a NaN-boxed i64.
+    ("call_method_ic0", 41), // (site, recv, name_ptr:i32, name_len) -> i64
+    ("call_method_ic1", 42), // + a0
+    ("call_method_ic2", 43), // + a0, a1
+    ("call_method_ic3", 44), // + a0, a1, a2
+    ("call_method_ic4", 45), // + a0, a1, a2, a3
+    // Fused super().method() dispatch ICs (no super / bound-method / callargs
+    // alloc on the fast path). Type indices declared in wasm.rs (46-50).
+    ("call_super_method_ic0", 46), // (site, class, self, name_ptr:i32, name_len) -> i64
+    ("call_super_method_ic1", 47), // + a0
+    ("call_super_method_ic2", 48), // + a0, a1
+    ("call_super_method_ic3", 49), // + a0, a1, a2
+    ("call_super_method_ic4", 50), // + a0, a1, a2, a3
     ("call_func_dispatch", 7),
     ("call_indirect_ic", 5),
     ("callargs_expand_kwstar", 3),
@@ -1110,6 +1125,30 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     // ── On-demand: call variants ──
     ("call_bind", &["call_bind"]),
     ("call_bind_ic", &["call_bind_ic"]),
+    // Fused method-dispatch ICs: a single op kind may lower to any of the five
+    // arity variants (the codegen selects by positional-arg count), so pull in
+    // the whole family when the fused op is present. Mirrors the context_enter
+    // family-expansion convention.
+    (
+        "call_method_ic",
+        &[
+            "call_method_ic0",
+            "call_method_ic1",
+            "call_method_ic2",
+            "call_method_ic3",
+            "call_method_ic4",
+        ],
+    ),
+    (
+        "call_super_method_ic",
+        &[
+            "call_super_method_ic0",
+            "call_super_method_ic1",
+            "call_super_method_ic2",
+            "call_super_method_ic3",
+            "call_super_method_ic4",
+        ],
+    ),
     ("call_arity_error", &["call_arity_error"]),
     ("call_indirect", &["call_indirect_ic"]),
     ("call_indirect_ic", &["call_indirect_ic"]),
