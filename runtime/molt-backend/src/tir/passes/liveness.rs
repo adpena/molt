@@ -391,7 +391,6 @@ mod tests {
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::TirValue;
-    use std::collections::HashMap;
 
     fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {

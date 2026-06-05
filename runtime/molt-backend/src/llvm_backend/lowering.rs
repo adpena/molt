@@ -335,6 +335,90 @@ struct PhiIncomingEdge<'ctx> {
     args: Vec<ValueId>,
 }
 
+/// The closed set of vectorized-reduction op kinds emitted by the frontend's
+/// `_match_vector_reduction_loop` (`VEC_SUM/PROD/MIN/MAX_*`, lower-cased by the
+/// SimpleIR→TIR path). Each entry is `(op_kind, arity)` where `arity` is the
+/// operand count and the runtime symbol is always `molt_<op_kind>`. This list
+/// is the single LLVM-side authority for the family and MUST stay in lock-step
+/// with the `molt_vec_*` runtime surface (`object/ops_vec.rs`) and the native
+/// dispatch (`function_compiler.rs`). The arity split is structural: the
+/// `_range` forms additionally pass the `start` bound (3 operands), while the
+/// plain, `_trusted`, and `_range_iter` forms pass only `(seq, acc)`.
+const VEC_REDUCTION_OPS: &[(&str, usize)] = &[
+    ("vec_sum_int", 2),
+    ("vec_sum_int_trusted", 2),
+    ("vec_sum_int_range", 3),
+    ("vec_sum_int_range_trusted", 3),
+    ("vec_sum_int_range_iter", 2),
+    ("vec_sum_int_range_iter_trusted", 2),
+    ("vec_sum_float", 2),
+    ("vec_sum_float_trusted", 2),
+    ("vec_sum_float_range", 3),
+    ("vec_sum_float_range_trusted", 3),
+    ("vec_sum_float_range_iter", 2),
+    ("vec_sum_float_range_iter_trusted", 2),
+    ("vec_prod_int", 2),
+    ("vec_prod_int_trusted", 2),
+    ("vec_prod_int_range", 3),
+    ("vec_prod_int_range_trusted", 3),
+    ("vec_min_int", 2),
+    ("vec_min_int_trusted", 2),
+    ("vec_min_int_range", 3),
+    ("vec_min_int_range_trusted", 3),
+    ("vec_max_int", 2),
+    ("vec_max_int_trusted", 2),
+    ("vec_max_int_range", 3),
+    ("vec_max_int_range_trusted", 3),
+];
+
+/// Returns the `molt_*` runtime symbol for a vectorized-reduction op kind, or
+/// `None` if `kind` is not a member of the family. The returned symbol is a
+/// `&'static str` so it can be passed straight to `ensure_runtime_i64_fn`.
+fn vec_reduction_runtime_symbol(kind: &str) -> Option<&'static str> {
+    VEC_REDUCTION_RUNTIME_SYMBOLS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, sym)| *sym)
+}
+
+/// Operand count for a vectorized-reduction op kind. Panics in debug builds if
+/// `kind` is not a member of the family — callers must gate on
+/// [`vec_reduction_runtime_symbol`] first.
+fn vec_reduction_arity(kind: &str) -> usize {
+    VEC_REDUCTION_OPS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, arity)| *arity)
+        .expect("vec_reduction_arity called on non-vec kind")
+}
+
+/// Static `(kind, "molt_<kind>")` table derived from [`VEC_REDUCTION_OPS`].
+/// Computed once at first use so the runtime symbols are leak-free `'static`
+/// strings (the lowering needs `&'static str` for `ensure_runtime_i64_fn`).
+static VEC_REDUCTION_RUNTIME_SYMBOLS: std::sync::LazyLock<Vec<(&'static str, &'static str)>> =
+    std::sync::LazyLock::new(|| {
+        VEC_REDUCTION_OPS
+            .iter()
+            .map(|(kind, _)| {
+                let symbol: &'static str = Box::leak(format!("molt_{kind}").into_boxed_str());
+                (*kind, symbol)
+            })
+            .collect()
+    });
+
+/// Whether `kind` names a SimpleIR op that carries dedicated value-producing
+/// runtime semantics which the LLVM backend MUST lower explicitly. Such ops
+/// reach the `OpCode::Copy` arm via the SSA `_ => OpCode::Copy` fallback
+/// (ssa.rs) with `_original_kind` set; if `lower_preserved_simpleir_op` does not
+/// handle them, passing operand 0 through is a wrong-result miscompile (the
+/// sequence/range object is returned instead of the computed value). These are
+/// the families guaranteed to surface the bug — the benign span/line/copy
+/// passthroughs do not match and continue to the ordinary copy. Used to convert
+/// a silent miscompile into a hard `record_fatal` lowering error.
+fn is_dedicated_semantics_kind(kind: &str) -> bool {
+    kind.starts_with("vec_") || kind == "range_new" || kind == "list_from_range"
+}
+
 /// Lower a TIR function to LLVM IR.
 ///
 /// Returns the LLVM function value. The function is added to `backend.module`.
@@ -2184,11 +2268,32 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //   - 1+ operands, 0 results: no-op (side-effect only)
             //   - 1+ operands, 1+ results: pass-through first operand
             OpCode::Copy => {
-                if let Some(kind) = op.attrs.get("_original_kind").and_then(|v| match v {
+                let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
                     _ => None,
-                }) && self.lower_preserved_simpleir_op(op, kind)
+                });
+                if let Some(kind) = original_kind
+                    && self.lower_preserved_simpleir_op(op, kind)
                 {
+                    return;
+                }
+                // Fail loud rather than silently passing the first operand
+                // through for ops whose `_original_kind` names dedicated runtime
+                // semantics the LLVM backend is expected to lower. A passthrough
+                // here is a wrong-result miscompile (it returns the sequence
+                // object instead of the reduction result, the range object
+                // instead of the constructed range, etc.). The plain
+                // span/passthrough copies (line markers, value-carrying Copies)
+                // do NOT match these prefixes and continue to the benign
+                // passthrough below.
+                if let Some(kind) = original_kind
+                    && is_dedicated_semantics_kind(kind)
+                {
+                    self.record_fatal(format!(
+                        "unhandled dedicated SimpleIR op `{kind}` reached the LLVM Copy \
+                         passthrough — lowering it as a copy of operand 0 would silently \
+                         miscompile; add a `lower_preserved_simpleir_op` arm for it"
+                    ));
                     return;
                 }
                 if op.results.is_empty() {
@@ -2380,6 +2485,49 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
                             .into();
                         self.values.insert(result_id, none_val);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
+                } else if builtin_name_str.as_deref() == Some("range_new") {
+                    // `range(...)` is a dedicated frontend op (`RANGE_NEW`), not a
+                    // generic builtin lookup. The SSA lifter folds it into
+                    // `OpCode::CallBuiltin` with `_original_kind = "range_new"`
+                    // (ssa.rs), but `range` is NOT registered as a runtime
+                    // intrinsic and `molt_call_builtin` would fall through to the
+                    // builtins module-cache path — failing at any call site reached
+                    // before that cache is populated. Lower directly to the
+                    // dedicated runtime constructor `molt_range_new(start, stop,
+                    // step)`, exactly as the native and WASM backends do. The
+                    // frontend (`_parse_range_call`) always materializes all three
+                    // boxed bounds (start defaults to 0, step to 1), so operands is
+                    // exactly [start, stop, step] (args_start == 0 because Pattern B
+                    // was detected via `_original_kind`).
+                    debug_assert_eq!(
+                        op.operands.len(),
+                        3,
+                        "range_new must carry exactly [start, stop, step]"
+                    );
+                    if op.operands.len() != 3 {
+                        return;
+                    }
+                    let range_new_fn = self.ensure_runtime_i64_fn("molt_range_new", 3);
+                    let start = self
+                        .materialize_dynbox_operand(op.operands[0])
+                        .into();
+                    let stop = self
+                        .materialize_dynbox_operand(op.operands[1])
+                        .into();
+                    let step = self
+                        .materialize_dynbox_operand(op.operands[2])
+                        .into();
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(range_new_fn, &[start, stop, step], "range_new")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    if let Some(&result_id) = op.results.first() {
+                        self.values.insert(result_id, result);
                         self.value_types.insert(result_id, TirType::DynBox);
                     }
                 } else {
@@ -6156,7 +6304,85 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     fn lower_preserved_simpleir_op(&mut self, op: &TirOp, kind: &str) -> bool {
         let i64_ty = self.backend.context.i64_type();
+        // Vectorized reduction family (`VEC_SUM/PROD/MIN/MAX_*` from the
+        // frontend's `_match_vector_reduction_loop`). These ops have no
+        // dedicated `OpCode` — the SSA lifter folds them into `Copy` with
+        // `_original_kind` carrying the op name (ssa.rs), so on backends that
+        // round-trip TIR→SimpleIR (native/WASM/Luau) they dispatch on that
+        // string. The LLVM backend consumes TIR directly, so without this arm
+        // each reduction would fall through to the naive `Copy` passthrough and
+        // SILENTLY return its first operand (the sequence object) instead of the
+        // reduced value — a wrong-result miscompile, not an error. The mapping
+        // is fully mechanical: the runtime symbol is `molt_<kind>` and the arity
+        // equals the operand count (2 for seq+acc / range_iter, 3 for the range
+        // forms that also carry `start`). Every operand is a boxed value; the
+        // result is a single i64. The set is closed and validated against the
+        // runtime surface so an unrecognized `vec_*` kind fails loud rather than
+        // miscompiling.
+        if let Some(symbol) = vec_reduction_runtime_symbol(kind) {
+            debug_assert_eq!(
+                op.operands.len(),
+                vec_reduction_arity(kind),
+                "vec reduction {kind} must carry exactly {} operands",
+                vec_reduction_arity(kind),
+            );
+            if op.operands.len() != vec_reduction_arity(kind) {
+                return false;
+            }
+            let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
+                .operands
+                .iter()
+                .map(|&id| self.materialize_dynbox_operand(id).into())
+                .collect();
+            let call_fn = self.ensure_runtime_i64_fn(symbol, op.operands.len());
+            let result = self
+                .backend
+                .builder
+                .build_call(call_fn, &arg_bits, symbol)
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic();
+            if let Some(&result_id) = op.results.first() {
+                self.values.insert(result_id, result);
+                self.value_types.insert(result_id, TirType::DynBox);
+            }
+            return true;
+        }
         match kind {
+            "list_from_range" => {
+                // `list(range(start, stop, step))` materialized eagerly by the
+                // frontend (`LIST_FROM_RANGE`). Like `range_new`, it has no
+                // dedicated TIR `OpCode` and survives as a `Copy` carrying
+                // `_original_kind`; without this arm the LLVM Copy passthrough
+                // would return operand 0 (the `start` bound) instead of the
+                // built list — a silent wrong-result miscompile. Lower to the
+                // dedicated runtime constructor `molt_list_from_range(start,
+                // stop, step)`, mirroring the native/WASM backends.
+                debug_assert_eq!(
+                    op.operands.len(),
+                    3,
+                    "list_from_range must carry exactly [start, stop, step]"
+                );
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let list_from_range_fn = self.ensure_runtime_i64_fn("molt_list_from_range", 3);
+                let start = self.materialize_dynbox_operand(op.operands[0]).into();
+                let stop = self.materialize_dynbox_operand(op.operands[1]).into();
+                let step = self.materialize_dynbox_operand(op.operands[2]).into();
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(list_from_range_fn, &[start, stop, step], "list_from_range")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "call_method_ic" => {
                 // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
                 //   operands = [recv, a0, a1, ...]  attrs.s_value = <method>
