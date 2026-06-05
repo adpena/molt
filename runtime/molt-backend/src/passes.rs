@@ -1555,7 +1555,19 @@ fn fuse_count_value_reads(ops: &[OpIR], name: &str) -> usize {
     allow(dead_code)
 )]
 pub fn fuse_method_dispatch(func_ir: &mut FunctionIR) {
-    if std::env::var("MOLT_DISABLE_METHOD_FUSION").is_ok() {
+    fuse_method_dispatch_inner(
+        func_ir,
+        std::env::var("MOLT_DISABLE_METHOD_FUSION").is_ok(),
+    )
+}
+
+/// [`fuse_method_dispatch`] with the disable lever explicitly controlled
+/// (rather than read from the process-global env), so tests can force it
+/// deterministically without racing other parallel tests — `set_var` in one
+/// test flips the gate under every concurrently-running test (the
+/// poisoned-env-lock / flaky-fusion-test class).
+fn fuse_method_dispatch_inner(func_ir: &mut FunctionIR, disabled: bool) {
+    if disabled {
         return;
     }
     let len = func_ir.ops.len();
@@ -5800,8 +5812,9 @@ mod tests {
 
     #[test]
     fn fuse_method_dispatch_disabled_by_env() {
-        let prev = std::env::var("MOLT_DISABLE_METHOD_FUSION").ok();
-        unsafe { std::env::set_var("MOLT_DISABLE_METHOD_FUSION", "1") };
+        // The lever is exercised through the explicit parameter — mutating
+        // the process-global env here races every concurrently-running test
+        // that calls the env-reading wrapper.
         let mut func = FunctionIR {
             name: "f".to_string(),
             params: vec!["recv".to_string(), "x".to_string()],
@@ -5815,14 +5828,10 @@ mod tests {
             source_file: None,
             is_extern: false,
         };
-        fuse_method_dispatch(&mut func);
+        fuse_method_dispatch_inner(&mut func, true);
         assert!(
             func.ops.iter().all(|o| o.kind != "call_method_ic"),
             "fusion must be a no-op when disabled by env"
         );
-        match prev {
-            Some(v) => unsafe { std::env::set_var("MOLT_DISABLE_METHOD_FUSION", v) },
-            None => unsafe { std::env::remove_var("MOLT_DISABLE_METHOD_FUSION") },
-        }
     }
 }

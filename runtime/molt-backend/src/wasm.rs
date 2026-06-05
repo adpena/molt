@@ -185,8 +185,11 @@ fn prepare_lir_wasm_fast_output(
     // path (correctness preserved; the unsound bare op is un-emittable here).
     let vr = crate::representation_plan::value_range_for(tir_func);
     let repr = crate::representation_plan::repr_by_value_for(func_ir, tir_func, Some(&vr));
-    let output =
-        crate::tir::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi(tir_func, Some(&repr))?;
+    let output = crate::tir::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi_with_proof(
+        tir_func,
+        Some(&repr),
+        Some(&vr),
+    )?;
     let has_placeholder_call = output
         .instructions
         .iter()
@@ -2672,6 +2675,14 @@ impl WasmBackend {
                     .iter()
                     .map(|spec| spec.import_name.to_string()),
             );
+            // LIR fast-lane bodies reach runtime helpers via NAMED calls
+            // (WasmFunctionOutput::runtime_calls) that no IR op mentions —
+            // e.g. the overflow-safe box's cold `int_from_i64`. Auto-pruning
+            // them would resolve the call to the u32::MAX skipped-import
+            // sentinel and emit `unreachable`.
+            for output in lir_fast_outputs.values() {
+                required.extend(output.runtime_calls.iter().map(|name| name.to_string()));
+            }
             Some(required)
         } else {
             None
@@ -5153,9 +5164,37 @@ impl WasmBackend {
                 );
             }
             let mut func = Function::new_with_locals_types(lir_output.locals.clone());
+            // Resolve NAMED runtime calls: the k-th placeholder pairs with
+            // runtime_calls[k] (positional — instruction indexes shift under
+            // the LIR peephole pass, so the pairing is by order, not index).
+            let mut named_calls = lir_output.runtime_calls.iter();
             for instruction in &lir_output.instructions {
+                if matches!(
+                    instruction,
+                    Instruction::Call(crate::tir::lower_to_wasm::NAMED_RUNTIME_CALL_PLACEHOLDER)
+                ) {
+                    let name = named_calls.next().unwrap_or_else(|| {
+                        panic!(
+                            "LIR fast output for '{}' has more named-call placeholders than runtime_calls entries",
+                            func_ir.name
+                        )
+                    });
+                    let import_index = ctx.import_ids[name];
+                    assert!(
+                        import_index != u32::MAX,
+                        "LIR fast output for '{}' calls runtime import '{name}' which was skipped/pruned from the import set",
+                        func_ir.name
+                    );
+                    func.instruction(&Instruction::Call(import_index));
+                    continue;
+                }
                 func.instruction(instruction);
             }
+            assert!(
+                named_calls.next().is_none(),
+                "LIR fast output for '{}' has unconsumed runtime_calls entries",
+                func_ir.name
+            );
             self.codes.function(&func);
             return;
         }
