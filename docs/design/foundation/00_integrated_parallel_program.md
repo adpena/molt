@@ -1,412 +1,428 @@
-<!-- Integrated parallel build program — architect-swarm synthesis (wf_18b24759-006, 2026-06-04) -->
+<!-- Integrated parallel build program — master coordination artifact. Refreshed 2026-06-05 (wf_18b24759-006 lineage). Supersedes the 2026-06-04 synthesis: ledger landed, E1 activated on native+WASM, RC + LLVM-exception Tier-1 substrates added, L4 arc corrected. -->
 
 # molt Compiler Foundation — Integrated Build Program
+
+This is the master coordination artifact for the multi-tier foundation program.
+It tracks what has landed, what is in flight, and the dependency edges that
+order the remaining work. Design docs `01`–`20` in this directory carry the
+full per-arc blueprints; this doc is the index and the schedule. Every claim
+below is grounded in a commit hash or a numbered design doc.
 
 ## Status Legend
 
 - **DONE** — landed on main, verified
+- **IN FLIGHT** — active or partially landed; sub-phases noted
 - **HELD** — implementation complete, driver wiring pending
-- **OUTSTANDING** — not yet started
+- **OUTSTANDING** — designed, not yet started
 
 ---
 
-## 1. Dependency DAG
+## 1. Landed Ledger
+
+The substrate and correctness foundation is largely built. Completed arcs:
+
+### Tier-0 substrates (analysis/cost-model foundation)
+
+| Arc | Commit | What landed |
+|-----|--------|-------------|
+| S1 AnalysisManager + PassManager | `ef284d182` | `TirPass::run(func, am)`, 7 analyses (PredMap/ImmediateDoms/DomChildren/ExecReachable/StrictReachable/LoopForest/DefMap); deleted 3 duplicate dominator impls; `MOLT_VERIFY_ANALYSIS=1` guard |
+| S2 TargetInfo / cost model (TTI) | `9ff5d2e00` | `run(func, am, tti)`; deleted magic profitability constants |
+| S3 effects oracle | `8b6b88286` | `effects.rs` single source of truth; licm/gvn deleted their dup lists; Div/Mod/Pow CSE-safe-but-not-movable asymmetry encoded |
+| S4 call-graph + module phase | `7915b29a0` | `call_graph` + `ip_summary` + `module_phase`; replaced SimpleIR leaf-detection with TIR call-graph (byte-identical) |
+| S6 SCEV + ValueRange | `cd66f365e` | SCEV + value-range as S1 analyses; rewrote BCE on range queries; deleted ~550 lines of ad-hoc RangeFact/GuardFact/KnownLength/prove_guard_bound; **fixed a latent silent-OOB** (old BCE elided length checks on non-negative const indices) |
+| S5-ph1 alias analysis | `fb574b289` | First-class alias oracle; deleted the 4 ad-hoc barrier lists; conservative superset |
+| S5-ph1 precision (CheckException) | `5d6274e04` | `CheckException` is not a memory clobber in the alias oracle |
+| S5-ph1.5 TypedField regions | `d8275ed8a` | Class-aware TypedField alias regions from guarded-field ops' own runtime guards |
+| S5-ph2a MemorySSA | `4e3c7ca7d`, `9f1097147` | Standalone analysis (types + `compute_standalone` + unit tests); registered with the AnalysisManager |
+| S5-ph2b MemGVN | `081bda9e8` | Store-to-load forwarding + redundant-load elimination over MemorySSA |
+| S5-ph2d SROA | `55b35d870` | Dead-object field promotion over MemorySSA |
+
+### Tier-1 correctness
+
+| Arc | Commit | What landed |
+|-----|--------|-------------|
+| C1 BCE natural loops | `850077e7f` | Dominator-based natural-loop collection (fixed unsound `collect_loop_body`) |
+| C2 needs_exception_stack | `430e09793` | Polarity trap fixed — exception observation now universal; depth-bookkeeping gated on try/with; byte-identical CPython |
+| C3 async _poll panic | `29cd7765b` | Loop-region external-reentry guard fixed the "invalid labels" panic |
+| Import-error parity | `2cecc1415`, `f9afd99d3` | `ModuleNotFoundError` for missing modules; `ImportError` (not AttributeError) for `from M import missing` via dedicated `OpCode::ModuleImportFrom` (wired through every pass + all 5 backends) |
+
+### Tier-2 / perf engine
+
+| Arc | Commit | What landed |
+|-----|--------|-------------|
+| E1 inliner core (phases a/b) | `f14b196ce` (hardened `951938075`) | `tir/passes/inliner.rs`: clone/remap/splice/is_inlineable; refcount arg-IncRef guard; SSA verify; all-4-loop-metadata transfer |
+| E1 phase-c (obs-only EH inlining) | `6d9962a98` | Inlines observation-only callees; `has_exception_handlers()` handler⟂observation split; fresh exception-label remap |
+| **E1 ACTIVATION (native+WASM)** | `7512919fa` | **Routed native+WASM codegen through the `run_module_pipeline`-inlined `TirModule`; DELETED `passes::inline_functions` + the dead needs_inlining gate.** The inliner is no longer dormant on those two targets (see §2 for the LLVM/Luau gap) |
+| module_slot_promotion | `b9188ab1c` | mem2reg of module-dict slots across loops — the bench_sum 16× fix (design 10) |
+| dispatch-IC (fused method/super) | `798f9b136` | Allocation-free fused method/super dispatch — class_hierarchy 7× |
+| CheckedAdd primitive (peel phase A) | `c2a373a3a` | `OpCode::CheckedAdd` exact signed-overflow add, all 4 backends |
+| overflow_peel dual-loop peel (bug #15) | `e267a4f5a` | Dual-loop accumulator peel; bench 2.2× slower → **14× faster than CPython** |
+| canonical counted-loop contract | `fae639e94` | Route B counted-loop contract; unlocks `loop_unroll` (L4 producer) |
+| RawI64 carrier unification | `2639d490b` | Full-range value-keyed seeds, overflow-safe boxing, proof-gated triple, LIR naming unified |
+
+### Backend correctness / parity / DX
+
+| Arc | Commit | What landed |
+|-----|--------|-------------|
+| 3 LLVM-lane miscompile fixes | `0fd0e9794` | call-ABI boxing + first-class `ConstBigInt` + dead-edge phi dataflow; peel matrix 5/9 → 9/9 on LLVM |
+| dir_fd `*at` intrinsics | `ca2c57ff1` | readlink/symlink/stat/lstat/rename/replace/link/utime dir_fd variants (design 19, 13 differential tests) |
+| god-file split | `34e3bddbf` | `molt-backend/src/lib.rs` 6,928 → 264 lines (move-only, 0 behavior change); thin facade + focused submodules |
+| LLVM toolchain unblock | `f91711944`, `02e5e9cc0` | host-triple staging + per-app intrinsic resolver; extern functions not lifted/inlined as shared-stdlib externals |
+| WASM gc-proposal parse fix | `ab82ca479` | "rec group requires gc proposal" parse failure on linked modules |
+
+The performance evidence (STATUS.md `bench-summary`, last full run 2026-05-23,
+predates several of the above wins): top speedups class_hierarchy 6.94×,
+bytes_find 6.27×, sum 5.30×; remaining regressions led by `bench_struct` 0.04×
+(SROA + RC substrate target) and `bench_exception_heavy` 0.55×.
+
+---
+
+## 2. Tier-1 Correctness Substrates Still Open (highest priority)
+
+Two load-bearing Tier-1 substrates were discovered on 2026-06-05. Both are
+correctness blockers and outrank the remaining Tier-2/3 perf work.
+
+### RC-1 — RC Ownership / Drop Insertion (design 20, `bc67f6406`) — **the #1 correctness blocker**
+
+**The bug**: molt allocates every expression-result heap object with
+`ref_count = 1` and **never decrements it**. The runtime `dec_ref` machinery,
+the TIR `DecRef` opcode, and `molt_dec_ref_obj` all exist and are correct in
+isolation — what is missing is the compiler pass that *inserts* `DecRef` ops for
+expression temporaries. The result is a whole-program memory leak on every
+refcounting backend (native, LLVM, WASM; Luau is GC-managed, no-op).
+
+**Evidence** (design 20 §Executive Summary): a 1M-iteration BigInt accumulator
+loop produces 3,000,635 allocations, **0 deallocations**, 297 MB RSS at exit;
+a 30M-iteration string concat OOMs at the 512 MB cap. The native backend has
+only a partial per-loop-variable dec-ref heuristic
+(`function_compiler.rs:3566-3628`) that fires on loop-body reassignment of one
+narrow shape — a symptom-suppressor, not an ownership model, and invisible to
+the TIR pipeline.
+
+**The fix** (design 20, 5 phases): a first-class TIR `DropInsertion` pass,
+post-optimization / pre-lowering, that inserts `DecRef` at every value's last
+use, with representation-aware filtering (raw scalar lanes carry no refcount —
+the overflow-peel fast loop gets **zero** RC ops, preserving the perf contract),
+exception-edge correctness (drop once on each of normal + handler paths),
+loop-carried ownership (drop the prior phi before the back-edge), and suspension
+survival (IncRef live-across-yield values into the coroutine frame). After
+insertion, the existing `refcount_elim` pass elides redundant ops.
+
+Phase map: **P1** runtime observability (`DEALLOC_COUNT`, `MOLT_ASSERT_NO_LEAK`,
+`tests/differential/memory/`); **P2** `TirLiveness` analysis (`AnalysisId::Liveness`);
+**P3** core `DropInsertion` pass + the `loop_reassign_old_val` double-drop guard;
+**P4** WASM `DecRef`/`IncRef` wiring (`lower_to_wasm.rs`) + Luau no-op; **P5**
+delete the legacy SimpleIR loop-reassign + `rc_coalescing` paths. Non-goals:
+reference-cycle collection (future design 21), immortal-constant interning,
+Perceus reuse-token emission (future design 22).
+
+### RC-2 — LLVM exception-CFG arc — **in flight, no numbered design doc yet**
+
+**The bug**: the LLVM backend's `compute_function_rpo`
+(`llvm_backend/lowering.rs:645`) walks **terminator edges only**. The
+`CheckException` op introduces a mid-block branch to a handler block that is not
+visible in the TIR block terminator (see the comment at `lowering.rs:5435`:
+"Mid-block branches from CheckException (not visible in TIR terminators)").
+Handler blocks reached only by those CheckException edges are therefore never
+included in the RPO walk → never lowered → emitted as `unreachable`
+(`build_unreachable`, `lowering.rs:503,512,5405`) → control that does reach them
+hits `llvm.assume`-style UB. The consequence is **0/25 exception differential
+tests passing on the LLVM target.**
+
+A second, related granularity class: the mid-block `CheckException` edge splits a
+block's effective dominance below TIR block granularity, so phi/dominance
+reasoning over those edges is coarse (the `check_exception_edge_feeds_handler_phi`
+test at `lowering.rs:9096` exercises exactly this seam).
+
+**The fix** (summary — to be promoted to a numbered design doc): make the LLVM
+RPO/successor walk CheckException-aware so handler blocks are discovered and
+lowered, and refine the dominance granularity at the mid-block exception edge.
+This is the LLVM analogue of the C2/C3 exception-observation correctness arc on
+the Cranelift/WASM paths.
+
+**Dependency**: RC-1 Phase 3 on the LLVM target *requires this arc first* —
+drop ops on exception paths need the handler blocks to actually be lowered, or
+the inserted `DecRef`s land in `unreachable` blocks. Land RC-2 before RC-1's
+LLVM coverage.
+
+---
+
+## 3. Dependency DAG (remaining work)
 
 ```
-TIER 0 (substrate)
-  S1 AnalysisManager          DONE  ef284d182
-  S2 TargetInfo/cost-model    DONE  9ff5d2e00
-  S3 effects oracle            DONE  8b6b88286
-  S4 call-graph + module-phase DONE  7915b29a0
-  S5-ph1 alias analysis        DONE  fb574b289
-  S6 SCEV + ValueRange         DONE  cd66f365e
-
-TIER 1 (correctness)
-  C1 BCE natural loops         DONE  850077e7f
-  C2 needs_exception_stack     DONE  430e09793
-  C3 async _poll panic         DONE  29cd7765b
+TIER 1 (correctness — open)
+  RC-1 DropInsertion substrate     OUTSTANDING  (design 20; THE #1 blocker)
+    └─ P3-on-LLVM requires: RC-2
+  RC-2 LLVM exception-CFG arc      IN FLIGHT     (no numbered doc; §2)
+    └─ requires: nothing (LLVM-local)
 
 TIER 2 (engine)
-  E1-a+b  inliner core        DONE  f14b196ce (hardened 951938075)
-  E1-c    obs-only EH inlining DONE  6d9962a98
-  E1-d    cost/fixed-pt        OUTSTANDING  (unblocked)
-  E1-e    ACTIVATION           OUTSTANDING  (driver wiring, held patch exists)
-    └─ requires: E1-a/b/c (DONE)
-  E2/S5-ph2..5  MemorySSA + SROA  OUTSTANDING
-    └─ requires: S5-ph1 (DONE), S1 (DONE)
-  E3  IP escape+purity summaries  OUTSTANDING
-    └─ requires: S4 (DONE)
-  E4  IPSCCP                   OUTSTANDING
-    └─ requires: S4, E1-e (activation needed for IPO context)
-  E5  monomorphization         OUTSTANDING
-    └─ requires: S4, E1-e (clone+run infrastructure)
-  E6  MemGVN+store-fwd         OUTSTANDING (part of S5-ph2..5 arc)
+  E1-e  inliner activation
+    native + WASM                  DONE  7512919fa
+    LLVM                           OUTSTANDING  (LLVM never calls run_module_pipeline)
+    Luau                           OUTSTANDING  (doc 14 Gap 1: module phase entirely absent)
+  E3  IP escape + purity summaries OUTSTANDING  (design 03/12; requires S4 DONE)
+  E4  IPSCCP                       OUTSTANDING  (requires S4, E1-e LLVM/Luau for full IPO)
+  E5  monomorphization (Julia axis) OUTSTANDING (design 03; requires S4, E1 clone infra)
+  S5-ph2c cross-block DSE          OUTSTANDING  (design 02; MemorySSA DONE)
+  S5-ph2e LICM-of-loads            OUTSTANDING  (design 02; MemorySSA DONE)
 
 TIER 3 (consequences)
-  D1  generator fusion / CoroElide  OUTSTANDING
-    └─ requires: E1-e (active inliner), E2 (SROA for frame slot promotion)
-  DX  build-speed (crate split, LTO, generated.rs split)  OUTSTANDING
-    └─ independent of correctness; phase 1a can land immediately
+  D1  generator fusion / CoroElide OUTSTANDING  (design 07; requires E1 active, SROA DONE)
+        → retires native os.walk + itertools intrinsics
+  DX  build-speed (LTO/sccache/fc split)  OUTSTANDING (design 08; independent)
 
-TIER 4 (loops/SIMD)
-  L4-ph1  gate fix (loop_unroll/block_versioning/type_guard_hoist)  OUTSTANDING
-    └─ requires: nothing (pure conservative narrowing, zero deps)
-  L4-ph2  range_devirt ordering fix                                  OUTSTANDING
-    └─ requires: L4-ph1
-  L4-ph3  IV strength reduction                                       OUTSTANDING
-    └─ requires: L4-ph2, S6 (DONE)
-  L2  real SIMD codegen                                               OUTSTANDING
-    └─ requires: S2 (DONE), S5-ph1 (DONE), S6 (DONE), L4-ph2 (range_devirt)
-  L1  IV canonical + FloorDiv/Mod SR                                  OUTSTANDING
-    └─ requires: L4-ph3
+TIER 4 (loops / SIMD)
+  L4  range_devirt ordering + IV strength reduction  OUTSTANDING (design 04)
+        loop_unroll producer unlocked by fae639e94 (counted-loop contract)
+  L2  real SIMD codegen            OUTSTANDING  (design 05; requires S2/S5-ph1/S6 DONE, L4)
+  L1  IV canonical + FloorDiv/Mod SR  OUTSTANDING (requires L4)
 
-TIER 5 (whole-program feedback)
-  W1  PGO core data flow        OUTSTANDING  (independent, can parallel engine)
-    └─ requires: S2 (DONE), S4 (DONE), E1-e (for hot-callee budget wiring)
-  W3  per-attribute DCE         OUTSTANDING  (independent of engine)
-    └─ requires: nothing (SimpleIR layer only)
+TIER 5 (whole-program feedback / size)
+  W1  PGO end-to-end              OUTSTANDING  (design 06; independent of engine)
+  W3  per-attribute DCE           OUTSTANDING  (design 09/13; SimpleIR-only; <2MB lever)
 
 TIER 6 (verification)
-  V1  translation-validation     OUTSTANDING
-    └─ gates L2/E5/D1 risky lowering arcs
+  V1  translation-validation      OUTSTANDING  (gates L2/E5/D1 risky lowering)
+
+PARITY arcs (cross-cutting)
+  Luau CheckedAdd lowering         OUTSTANDING  (design 15; portable helper, Luau f64 model)
+  asyncio-wasm event loop          OUTSTANDING  (design 18; WASI poll_oneoff, 4 blockers)
+  Luau module-phase parity         OUTSTANDING  (design 14 Gap 1)
+  CPython surface / stdlib / GPU   ongoing      (design 16)
+  ecosystem / third-party compat   ongoing      (design 17)
 ```
 
-### E1-e DORMANCY ROOT CAUSE (the keystone blocking multiple arcs)
+### Note on the corrected L4 framing
 
-`CheckException` sets `has_exception_handling = true` (lower_from_simple.rs:319-330) which causes `is_inlineable` to refuse every real function. The correct gate is `has_exception_handlers()` (function.rs:153), which E1-c already landed for the observation-only inlining path. E1-e activation and L4 gate fixes are the two immediate structural unlocks.
-
----
-
-## 2. Parallel Track Assignment
-
-### Build Cap Constraint
-- Max 2 concurrent build-triggering agents (CLAUDE.md). Production-codegen changes (E1-e, backend paths) must be serially validated — one at a time through the daemon socket.
-- 3 tracks run simultaneously; the third slot is held for the critical path (E1-e) when it conflicts with active work.
-
-### Track A — Critical Path: E1-e Activation + E3 Summaries (serial, highest leverage)
-Files: `simple_backend.rs`, `wasm.rs`, `passes.rs`, `ip_summary.rs`, `escape_analysis.rs`
-
-Phase sequence:
-1. **E1-e1**: native Cranelift path restructure (parallel TIR loop → TirModule → run_module_pipeline → back-convert → delete compute_leaf_functions_via_call_graph)
-2. **E1-e2**: WASM path restructure (mirror native)
-3. **E1-e3**: LLVM activation (apply held patch at `memory/phase_e_e1_llvm_driver_wiring.patch`, strip diagnostics)
-4. **E1-e4**: delete `passes::inline_functions` + `is_inlineable_with_limit` (the dual path)
-
-Steps e1–e4 are ONE ATOMIC ARC (CLAUDE.md: no dual path in intermediate commits unless each is independently complete and batoned).
-
-5. **E3-A**: extend `FunctionSummary` with `does_not_capture_param` + `is_pure` + `return_repr`; populate bottom-up in `ModuleSummaries::compute`
-6. **E3-B**: bottom-up callee-summary propagation (purity through call chains)
-7. **E3-C**: wire `Option<Arc<ModuleSummaries>>` into `escape_analysis::analyze`; replace `OpCode::Call → GlobalEscape` unconditional with summary-gated `ArgEscape`
-8. **E3-D**: migrate `compute_return_alias_summaries` from SimpleIR to TIR-native in `ip_summary.rs`
-
-Track A owns: `tir/module_phase.rs`, `native_backend/simple_backend.rs`, `wasm.rs`, `passes.rs`, `tir/passes/ip_summary.rs`, `tir/passes/escape_analysis.rs`
-
-### Track B — Memory Foundation: S5-ph2..5 MemorySSA + SROA (serially validated, no prod-path conflict during construction)
-Files: `tir/passes/memory_ssa.rs` (new), `tir/passes/mem_gvn.rs` (new), `tir/passes/sroa.rs` (new), `tir/passes/dead_store_elim.rs`, `tir/passes/licm.rs`, `tir/analysis/mod.rs`, `tir/pass_manager.rs`
-
-Phase sequence:
-1. **S5-2a**: `MemorySsaResult` types + `compute_standalone` + 7 unit tests — standalone, no consumers, no behavior change
-2. **S5-2b**: `MemGVN` pass (store-to-load forwarding + redundant-load elim), insert into pipeline after `dead_store_elim`
-3. **S5-2c**: cross-block DSE via MemorySSA in `dead_store_elim::run`
-4. **S5-2d**: SROA pass (field promotion on NoEscape objects)
-5. **S5-2e**: LICM-of-loads (extend `licm::is_hoistable` with MemorySSA gate)
-
-Track B is independent of Track A during construction phases S5-2a/2b/2c (no overlapping files). S5-2d and S5-2e interact with the pipeline `pass_manager.rs` which Track A also touches — coordinate merge order.
-
-Track B also needs `AnalysisId::MemorySSA` added to `analysis/mod.rs`. This file is NOT modified by Track A.
-
-### Track C — Loop Gates + DX + W3 (independent, no backend conflicts)
-
-**Sub-track C1 — L4 gate fixes (zero build conflicts with A or B)**:
-1. **L4-ph1**: add `TerminatorOnlyPredMap` to `analysis/mod.rs`; change `func.has_exception_handling` to `func.has_exception_handlers()` in `loop_unroll.rs:250`, `block_versioning.rs:378`, `type_guard_hoist.rs:90`; switch those two passes to `TerminatorOnlyPredMap`; delete stale comments. One atomic commit.
-2. **L4-ph2**: diagnose and fix `range_devirt` pipeline ordering (swap `iter_devirt` before `range_devirt` in `pass_manager.rs:290-293`)
-3. **L4-ph3**: new `tir/passes/iv_strength_reduction.rs` pass
-
-**Sub-track C2 — W3 per-attribute DCE (SimpleIR only, zero TIR conflicts)**:
-1. `collect_module_attr_write_map` in `passes.rs` (no behavior change)
-2. Two-phase BFS augmentation in `eliminate_dead_functions`; mirror in `cli.py:_reachable_function_names_for_stdlib_cache`; bump schema version
-
-**Sub-track C3 — DX build speed (config + structural)**:
-1. `Cargo.toml`: `lto = "thin"` in `release-fast`, add `release-output` with fat LTO
-2. `cli.py`: shared `.sccache/` directory
-3. `function_compiler.rs` module split (8 sub-modules in `native_backend/`)
-
-Sub-track C3 phase 1 (LTO + sccache) has zero source file conflicts. The `function_compiler.rs` split conflicts with Track A's `simple_backend.rs` work only if both edit the same lines; schedule the fc split AFTER E1-e lands on Track A.
+The previous version of this doc led with an "L4 Arc 1 gate-flip" — flipping
+`has_exception_handling` → `has_exception_handlers()` in `loop_unroll`,
+`block_versioning`, and `type_guard_hoist` — as the highest-leverage immediate
+unlock. **That framing was stale and the gate-flip is inert in production.**
+Verified (design 04 + prior session forensics): there is no TypeGuard *producer*
+in the production pipeline, and range-loops carry no iterator ops, so the three
+passes have nothing to fire on even with the exception gate opened. The real L4
+arc is the producer chain: **TypeGuard generation → loop-shape canonicalization
+→ the gate** — i.e. you must first emit the loop shapes and type guards those
+passes consume. The counted-loop contract (`fae639e94`, "Route B") landed the
+first half of this (a canonical counted-loop shape that unlocks `loop_unroll` as
+a producer); `range_devirt` ordering and IV strength reduction (design 04)
+remain. Do not schedule a bare gate-flip as if it were a perf unlock.
 
 ---
 
-## 3. Critical Path
+## 4. Critical Path and Scheduling
 
-The longest dependency chain:
+### 4.1 Correctness gate (precedes all perf work)
 
 ```
-E1-e1 → E1-e2 → E1-e3 → E1-e4   (E1 activation, ~3 days)
-  → E3-A → E3-B → E3-C → E3-D    (IP summaries, ~2 days)
-    → E5-A → E5-B → E5-C          (monomorphization, ~5 days)
-      → D1-A → D1-B → D1-C        (generator fusion, ~5 days)
-        → D1-E (os.walk)           (os.walk as Python, ~2 days)
+RC-2 (LLVM exception-CFG)  ──┐
+                             ├─→ RC-1 P3+ (LLVM drop coverage) → RC-1 P4 (WASM) → RC-1 P5 (delete legacy)
+RC-1 P1/P2/P3-native+WASM ──┘
 ```
 
-Total critical path: ~17 days serial. Shortening it:
+RC-1's native+WASM legs (P1 observability, P2 liveness, P3 core pass) are
+independent of RC-2 and can land first; they immediately stop the leak on the
+two activated targets. RC-1's LLVM coverage waits on RC-2. This is the unmovable
+front of the program: a whole-program memory leak outranks every perf arc, and
+the `MOLT_ASSERT_NO_LEAK` + `safe_run.py --rss-mb` gates from design 20 §5 make
+every subsequent arc continuously leak-checked.
 
-1. **E1-e** is the first unmovable gate. Apply the held patch (`memory/phase_e_e1_llvm_driver_wiring.patch`) for the LLVM leg; native + WASM legs require restructuring the parallel TIR loops. This is 2–3 days of focused work on Track A. Nothing on the critical path moves until this lands.
+### 4.2 Perf keystone
 
-2. **E3-C** (IP escape threading) adds `Option<Arc<ModuleSummaries>>` to `escape_analysis::analyze`. This is the site where SROA (Track B) and the generator fusion (D1) both benefit — landing it early on Track A lets Track B's SROA fire on cross-call patterns immediately.
+**E1-e LLVM + Luau activation is the pending perf keystone.** Native and WASM
+already route codegen through the inlined `TirModule` (`7512919fa`); the inliner
+fires in production on those targets and the SimpleIR dual path is deleted. Two
+gaps remain (design 14):
 
-3. **S5-ph2 (MemorySSA)** on Track B is independent of E1-e and can land in parallel. It does not shorten the critical path but is the prerequisite for SROA (E2) which D1 (generator fusion) needs for frame slot promotion. Running Track B at full speed during Track A's E1-e work closes that gap.
+- **LLVM (Gap 2)**: the LLVM branch consumes the inliner's changed bodies
+  *transitively* (it re-lifts the already-mutated `ir.functions`), but never
+  calls `run_module_pipeline` itself and re-runs the full per-function pipeline
+  from post-inline SimpleIR — a compile-time asymmetry, not a miscompile. LLVM
+  also gets no molt-level inlining decisions of its own (it relies on its `-O2`
+  IPO).
+- **Luau (Gap 1, blocking parity)**: `run_module_pipeline` is *never* called on
+  the Luau path (`main.rs` bypasses `SimpleBackend::compile` entirely). The
+  inliner and slot-promotion produce zero benefit for Luau. Insertion point:
+  `main.rs` after the per-function loop / `eliminate_dead_ops`.
 
-4. **L4-ph1** (gate fixes) is 4 hours of work with zero conflicts. It immediately unlocks loop unrolling and type guard hoisting on the vast majority of user functions. Do this first, before anything else, on Track C.
+Activating those two closes the IPO context for E3/E4/E5 across all four targets.
+
+### 4.3 The size/startup lever
+
+The `<2 MB binary / <50 ms cold start` targets (ROADMAP "Active Blockers") are
+driven by three converging arcs, none of which touch correctness:
+
+- **W3 per-attribute DCE** (design 09/13): make `func_new` liveness precise —
+  drop a module attr's body when it is provably never read in the static graph.
+  SimpleIR-only, fail-closed. Expected 650 KB–1.1 MB reduction; directly attacks
+  the 4.31 MB `empty.py` floor.
+- **RuntimeSurfacePlan** (ROADMAP medium-term): one per-intrinsic/per-primitive
+  reachability authority shared by native link-roots, the WASM import/export
+  manifest, and the intrinsic resolver — so a tiny program stops linking async /
+  GPU / networking / logging it cannot reach.
+- **DX build-speed** (design 08): thin LTO, shared sccache, `function_compiler.rs`
+  split — wall-clock, not size, but it is the multiplier on every other arc's
+  iteration cost.
+
+### 4.4 The generator-fusion strategic prize
+
+**D1 generator fusion / CoroElide** (design 07) retires the native-iterator
+treadmill. Every stdlib function that needs to be fast (os.walk, itertools.*)
+currently demands a hand-written ~300–800-line Cranelift intrinsic bound to one
+backend. Fusing `def`-with-`yield` generators to machine-code-equivalent loops
+lets those live as pure Python and the intrinsics be deleted — including the
+os.walk rewrite that closes the still-open os.walk OOM/SIGSEGV (the native
+implementation is deleted from the tree at HEAD; the OOM/recursion bugs stay
+open until fusion lands). Requires E1 active (DONE native/WASM) + SROA (DONE,
+`55b35d870`) for frame-slot promotion.
+
+### 4.5 Parity arcs
+
+- **Luau CheckedAdd** (design 15): the `overflow_peel` arc landed `CheckedAdd` on
+  4 backends, but Luau needs a portable helper — Luau is f64-only, has no i64
+  overflow signal, so `CheckedAdd` lowers to `molt_checked_i64_add(a,b) → (a+b,
+  false)` (overflow never fires; byte-identical to the un-peeled Luau path). No
+  target-conditional pass logic.
+- **asyncio-wasm** (design 18): 4 blockers (event-loop I/O has no WASM pathway —
+  `add_reader`/`add_writer` are `#[cfg(not(wasm32))]` stubs; table-ref trap;
+  zipimport; thread unavailability). The structural fix is a first-class WASM
+  event loop over WASI `poll_oneoff`.
+- **Luau lag** generally (design 14, ROADMAP item 8): Luau trails native/WASM —
+  no module phase, a `< 4`-op skip heuristic with no parallel elsewhere, no TIR
+  cache. Drive to checked parity per the support matrix.
 
 ---
 
-## 4. Landing Order Per Track
+## 5. Five-Year Mapping
 
-### Track A Landing Order
+The tiers above map onto the long-horizon outcomes. Perf contract throughout
+(CLAUDE.md, ROADMAP): **molt must be faster than CPython on every benchmark,
+across every target (native, WASM, LLVM, Luau) and every profile (release-fast,
+dev-fast, debug-with-asserts).** Headline targets: sieve → 1000×, cold start
+< 50 ms, binary < 2 MB.
 
-| Step | Arc | Files | Perf Gate |
-|------|-----|-------|-----------|
-| A1 | E1-e1..e4 (atomic) | `simple_backend.rs`, `wasm.rs`, `passes.rs` | bench_sum ≥ CPython, no regression on 882 tests |
-| A2 | E3-A (summaries schema) | `ip_summary.rs`, `target_info.rs` | no behavior change, unit tests |
-| A3 | E3-B (bottom-up chain) | `ip_summary.rs` | purity propagates through call chains |
-| A4 | E3-C (escape threading) | `escape_analysis.rs`, `pass_manager.rs` | `stack_alloc_across_call.py` differential passes |
-| A5 | E3-D (return alias migration) | `ip_summary.rs`, `passes.rs` | byte-identical codegen all 3 backends |
+| Horizon | Outcome | Carrying arcs |
+|---------|---------|---------------|
+| **Y1** | Foundations + CPython ≥3.12 parity | Tier-0 substrates (S1–S6, **DONE**), Tier-1 correctness (C1–C3 **DONE**; **RC-1 + RC-2 the open front**), import/surface parity (designs 14–19) |
+| **Y1.5** | Ecosystem / dlopen | `libmolt` extension support (ROADMAP long-term), ecosystem compat (design 17), third-party import graph |
+| **Y2** | Perf frontier | E1-e full activation, E3/E4/E5 IPO (design 03/12), S5-ph2c/2e memory opt (design 02), L4/L2/L1 loops + **real SIMD** (design 04/05), **W1 PGO** (design 06) |
+| **Y2–3** | ML / AI | tinygrad fidelity + DFlash + GPU codegen (currently CPU-sim; ROADMAP molt-gpu Movement/Contiguous blocker), CLAUDE.md tinygrad/DFlash fidelity policy |
+| **Y3** | Systems | D1 generator fusion / CoroElide (design 07) retiring native iterators; RuntimeSurfacePlan; the `< 2 MB / < 50 ms` size+startup arc (W3, design 09) |
+| **Y4** | MLIR + formal verification | MLIR output surface (ROADMAP), V1 translation-validation (Tier 6) gating L2/E5/D1 |
+| **Y5** | Leadership | "Mojo/Julia speed, Python semantics" delivered across all four targets; the full evidence matrix (native/WASM/Luau/MLIR) green on cold-start, size, and throughput simultaneously |
 
-All of A1 is one atomic commit. A2–A5 are each independently completable.
-
-### Track B Landing Order
-
-| Step | Arc | Files | Perf Gate |
-|------|-----|-------|-----------|
-| B1 | S5-2a MemorySSA standalone | `memory_ssa.rs` (new), `analysis/mod.rs` | 7 unit tests pass, no behavior change |
-| B2 | S5-2b MemGVN forwarding | `mem_gvn.rs` (new), `pass_manager.rs` | struct_field_forwarding.py differential |
-| B3 | S5-2c cross-block DSE | `dead_store_elim.rs` | struct_cross_block_dse.py |
-| B4 | S5-2d SROA | `sroa.rs` (new), `pass_manager.rs` | bench_struct ≥ 1.0× CPython native |
-| B5 | S5-2e LICM-of-loads | `licm.rs` | struct_loop_licm.py, bench_field_licm ≥ CPython |
-
-B1 can land concurrently with A1 (no file overlap). B2 requires `AnalysisId::MemorySSA` from B1. B4 is the bench_struct proving ground — it is the primary perf gate for Track B.
-
-### Track C Landing Order
-
-| Step | Arc | Files | Perf Gate |
-|------|-----|-------|-----------|
-| C1 | L4-ph1 gate fixes | `loop_unroll.rs`, `block_versioning.rs`, `type_guard_hoist.rs`, `analysis/mod.rs` | counted_loop unrolls, TIR_OPT_STATS shows fires |
-| C2 | L4-ph2 range_devirt ordering | `pass_manager.rs` | range_devirt: 1 values_changed confirmed |
-| C3 | L4-ph3 IV strength reduction | `iv_strength_reduction.rs` (new), `pass_manager.rs` | stride_sum improvement ≥ 10% |
-| C4 | W3-ph1 attr-write-map | `passes.rs` | no behavior change |
-| C5 | W3-ph2 two-phase BFS | `passes.rs`, `cli.py` | empty.py ≤ 3.5 MB |
-| C6 | DX-ph1a LTO split | `Cargo.toml` | clean build time drops ≥ 30s |
-| C7 | DX-ph1b sccache shared | `cli.py` | cross-agent hit rate ≥ 80% |
-| C8 | DX-ph2 fc split | `native_backend/fc_*.rs` (8 new) | `fc_arith.rs` edit incremental ≤ 30s |
-
-C1 MUST be first (the highest ROI per hour on Track C). C6/C7 can land any time — zero behavior risk. C8 schedules after A1 (E1-e) to avoid merge conflicts in `simple_backend.rs`.
-
----
-
-## 5. Highest-Leverage Next 3 Arcs
-
-### Arc 1: L4-ph1 — Loop Gate Fixes (implement immediately, Track C)
-
-**Rationale**: 4 hours of work. Three passes (loop_unroll, block_versioning, type_guard_hoist) produce zero work on virtually all real user functions today because `has_exception_handling = true` from `CheckException` (C2 universal observation). The fix is 3 line changes + 1 new analysis registration + deletion of 3 stale comments. No new logic, just un-blocking existing logic. Zero risk of miscompile — pure conservative narrowing.
-
-**Independence**: No file conflicts with Track A or B. Can proceed immediately while E1-e is being designed/implemented.
-
-**Leverage**: Immediately enables loop unrolling for counted loops, TypeGuard hoisting for polymorphic loops, and block versioning for type-specialized paths. These feed into SCCP folding and the SIMD pre-requisite (range_devirt canonicalization).
-
-Specific changes:
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/analysis/mod.rs`: add `TerminatorOnlyPredMap` variant to `AnalysisId`, add to `ALL`, implement `Analysis` trait with `CfgEdgePolicy::TerminatorOnly`
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/loop_unroll.rs:250`: `func.has_exception_handling` → `func.has_exception_handlers()`
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/block_versioning.rs:378`: same gate; `line 382`: `PredMap` → `TerminatorOnlyPredMap`; delete stale comment lines 373-377
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/type_guard_hoist.rs:90`: same gate; `line 100`: `PredMap` → `TerminatorOnlyPredMap`; delete stale comment lines 94-98
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs`: add `TerminatorOnlyPredMap` to `assert_analyses_fresh` macro body
-
-### Arc 2: E1-e1..e4 — Inliner Activation (Track A, critical path gate)
-
-**Rationale**: The inliner has been dormant since `f14b196ce`. Every downstream IPO arc (E3, E4, E5, D1) and most of the benchmarked perf wins depend on the inliner actually firing in production codegen. The held patch covers the LLVM leg. The native and WASM legs require restructuring the parallel TIR loop in `simple_backend.rs` and `wasm.rs`. This is a structural arc with no shortcut — landing it is the single most load-bearing session of work in the entire program.
-
-**Independence**: Conflicts with DX-ph2 (fc split) — schedule DX-ph2 after this lands. No conflict with Track B or L4-ph1.
-
-**Leverage**: Activates the entire IPO tier. Eliminates the SimpleIR inliner dual path. Makes `bench_sum` and all helper-function benchmarks measurably faster. Enables E3 (IP escape summaries) to actually reduce allocations across call boundaries.
-
-**Key correctness check**: After landing, `MOLT_DISABLE_INLINING=1` must still work as a rollback. The `apply(f, 1<<60, 7)` bigint oracle differential test must pass byte-identical to CPython on all targets (the repr safety argument in §5.3 of the E1-e blueprint guarantees this but must be verified).
-
-### Arc 3: W3-ph1..ph2 — Per-Attribute DCE (Track C, binary size + startup)
-
-**Rationale**: Currently `empty.py` links 4.31 MB because `func_new` in `molt_init_builtins` / `molt_init_sys` is an unconditional DCE root. Every builtin (`filter`, `sorted`, `zip`, `enumerate`, `vars`, `dir`, etc.) links into every program regardless of use. The fix is entirely in `passes.rs:2005-2146` and `cli.py:17057` — no new IR constructs, no backend changes, no risk of miscompile (fail-closed: unrecognized patterns → old behavior).
-
-**Independence**: Zero conflicts with any other track. Operates on `FunctionIR`/`OpIR` structs before TIR lifting. Can proceed concurrently with A1 and B1.
-
-**Leverage**: Expected 650 KB–1.1 MB binary size reduction. Directly attacks the `<2 MB` target. Also reduces cold-start by reducing code page faults on first use. The W3 blueprint's two-phase BFS (attr-write collection + attr-read-gated BFS) is the correct structural fix — not a per-module allowlist, not a manual annotation scheme.
+The single highest-leverage ordering: **finish the RC correctness front (RC-1 +
+RC-2) → complete E1-e on LLVM/Luau → E3/E5 IPO → L2 SIMD / W1 PGO → D1 fusion +
+W3 size.** Correctness gates perf; perf gates the five-year claim.
 
 ---
 
 ## 6. Cross-Cutting Risks
 
-### Risk 1: E1 Dormancy Cascades into D1 and E5
+These survive from the prior synthesis and remain live.
 
-The `CheckException`-causes-`has_exception_handling` finding means the inliner phases a+b+c are dormant on real code. E1-e activation is the fix for the production path. But E5 (monomorphization) clones functions and runs the pipeline on clones — if `is_inlineable` refuses all clones due to the same `CheckException` flag, monomorphization's inlined specializations will be unoptimized. The L4-ph1 gate fix uses `has_exception_handlers()` not `has_exception_handling` for loop passes; E5's `is_specializable` predicate must do the same. Add this check explicitly when implementing E5.
+### Risk 1: RC double-drop (design 20 R1)
 
-### Risk 2: MemorySSA + SROA + Repr Safety
+The SimpleIR loop-reassign dec-ref (`function_compiler.rs:3566`) fires on the
+same value as the new TIR `DropInsertion` pass → refcount underflow →
+use-after-free. The `!drop_inserted` guard (RC-1 P3) must land *with* the pass,
+not after, and the `drop_inserted` function attr must round-trip through
+`lower_to_simple`. Triple-redundant stack-value defense already exists
+(escape_analysis + refcount_elim Step 2a).
 
-When SROA promotes a field to an SSA value (replaces `LoadAttr(obj, offset)` with `Copy(stored_val)`), the forwarded value inherits the repr of the `stored_val`. If `stored_val` is `MaybeBigInt`, the forwarded value must remain `MaybeBigInt`. The `repr_by_value_for` call in `representation_plan.rs` must run fresh on the post-SROA function (after `run_pipeline`) to recompute repr on the promoted SSA values. The SROA precondition gate (no `GenericHeap` MemoryDef between store and load) prevents miscompile; the repr floor ensures no trusted-unbox regression. The `apply(f, 1<<60, 7)` oracle covers this.
+### Risk 2: RC repr-filter miss on the peel fast loop (design 20 R3)
 
-### Risk 3: SimpleIR Inliner Deletion (E1-e4) — Cascading Test Failures
+If the `Repr` filter misclassifies an overflow-peel `CheckedAdd` result
+(`RawI64Safe`), a raw i64 register is passed to `molt_dec_ref_obj` → type
+confusion. The filter keys on `repr_by_value`/`Repr::default_for`; `CheckedAdd`
+results are promoted to `RawI64Safe`. Guarded by the `bench_sum` zero-new-ops
+smoke test.
 
-`passes::inline_functions` has call sites in `simple_backend.rs` (native) and `wasm.rs`. After E1-e4 deletes it, any test that exercised the SimpleIR inliner path exercises the TIR inliner instead. The behavioral difference is that the TIR inliner is MORE conservative (respects exception observation, cost model, SSA verification). Tests whose pass criteria depend on the SimpleIR inliner's aggressive-but-structurally-unsound behavior (no handler check, no SSA, no cost model) will fail. These are not regression failures — they reveal test specifications that encoded the old behavior. Fix the tests to encode correct behavior.
+### Risk 3: E5 monomorphization inherits the C2 exception flag
 
-### Risk 4: W3 Stdlib Cache Coherence
+E5 clones functions and re-runs the pipeline on clones. The clone's
+`is_specializable` predicate must use `has_exception_handlers()` (handler check),
+not `has_exception_handling` (the universal-observation flag from C2) — else all
+clones refuse specialization. Mirror the L4 fix.
 
-The Python BFS (`cli.py:_reachable_function_names_for_stdlib_cache`) and the Rust DFE BFS (`passes.rs:eliminate_dead_functions`) must produce identical live sets or the cache will be stale. Both must be updated atomically in the W3 commit. A schema version bump (`_SHARED_STDLIB_CACHE_SCHEMA_VERSION`) is mandatory to force cache invalidation on the first post-W3 build. Missing this causes silent over-linking for cached builds.
+### Risk 4: SROA + repr safety (design 02)
 
-### Risk 5: DX Phase 3 (Crate Extraction) + E1-e Ordering
+When SROA forwards a stored value to a load, the forwarded value inherits the
+stored value's repr. `repr_by_value_for` must run fresh post-SROA so a
+`MaybeBigInt` store does not silently become a trusted-unbox. The
+`apply(f, 1<<60, 7)` bigint oracle covers this.
 
-`molt-backend-native` crate extraction moves `native_backend/simple_backend.rs` — the exact file E1-e modifies. If E1-e is in-progress when DX-ph3 is attempted, there will be a 3-way merge conflict. **Resolution**: E1-e MUST land and be pushed before DX-ph3 begins. The DX blueprint's phasing already documents this dependency.
+### Risk 5: W3 stdlib cache coherence (design 09/13)
 
-### Risk 6: L2 SIMD — Cranelift SIMD Type Availability
+The Python BFS (`cli.py:_reachable_function_names_for_stdlib_cache`) and the Rust
+DFE BFS (`passes.rs:eliminate_dead_functions`) must produce identical live sets.
+Update both atomically + bump `_SHARED_STDLIB_CACHE_SCHEMA_VERSION` or cached
+builds silently over-link.
 
-`types::I64X2` and `types::F64X2` are available in Cranelift 0.131 on aarch64 (Apple Silicon via NEON) and x86_64 (SSE2). But `I64X4` (AVX2) requires querying the ISA builder for `has_avx2`. The `SimdCaps::detect_host()` path (already in `simple_backend.rs:2544`) provides the right width. L2 must not hardcode AVX2 widths — always query `tti.vector_width_i64`. Additionally, the existing 4x scalar unroll at `function_compiler.rs:30815-31000` that L2 deletes is the ONLY current "vectorization". Deleting it before L2 is fully wired would regress `bench_sum_list`. The deletion and the new SIMD emission are ONE ATOMIC ARC (phases 1b). Do not split them.
+### Risk 6: L2 SIMD — atomic deletion of the 4× scalar unroll (design 05)
 
-### V1 Translation-Validation Gate
+The only current "vectorization" is a manual 4× scalar unroll in
+`function_compiler.rs`. Deleting it before the real SIMD emission is wired
+regresses `bench_sum_list`. Deletion + new emission are ONE atomic arc. Always
+query `tti.vector_width_*` (from `SimdCaps::detect_host()`), never hardcode AVX2.
 
-Per the gap analysis (Tier 6), `function_compiler.rs` (~38K lines) has no semantic-equivalence guarantee. The riskiest lowering arcs — L2 (SIMD codegen into Cranelift), E5 (function cloning + pipeline re-run), D1 (generator frame restructuring) — each introduce new TIR→SimpleIR→native paths with no formal validation.
+### Risk 7: matches!-oracle silent miscompile on new opcodes
 
-**The V1 gate should precede L2 and E5**: extend `tools/translation_validator.py` beyond pass-to-pass TIR checking to also validate TIR→SimpleIR round-trips. Specifically: for each function that the SIMD pass (L2) or monomorphization (E5) transforms, run the TIR→SimpleIR→back-to-TIR round-trip and assert structural equivalence (same ops modulo SSA renaming). This is not a complete Alive2-level proof, but it catches the class of bugs that have manifested in past sessions (wrong opcode mapping, missing loop metadata transfer, truncated BigInt paths).
+`effects.rs::opcode_may_throw` / `opcode_is_side_effecting` use `matches!` which
+defaults to `false` for unlisted opcodes (the `ModuleImportFrom` lesson). On any
+opcode add, audit both oracles. New *analyses* (e.g. `AnalysisId::Liveness` for
+RC-1) must be added to `AnalysisId::ALL` and every exhaustive `match` — the
+compiler enforces this for `match`, not for `matches!`.
 
-The V1 work is ~2 days and belongs on Track C between L4-ph3 and L2. Landing L2 or E5 without V1 is accepted risk but should be documented in the commit as "pre-V1 — requires differential test matrix to substitute."
+### V1 translation-validation gate
 
----
-
-## 7. Module-Level Parallel Execution Map (Concurrent Agent Assignment)
-
-Given the 2-build-agent cap:
-
-**When E1-e is the active Track A build**:
-- Agent 1: Track A (E1-e1..e4 — requires daemon rebuild)
-- Agent 2: Track B (S5-2a MemorySSA construction — does NOT require daemon, only `cargo test`)
-- Track C manual work: L4-ph1 gate fix (4 hours, no build trigger needed to write, single build to verify)
-
-**When E1-e has landed and Track A moves to E3**:
-- Agent 1: Track A (E3-A/B/C — incremental builds)
-- Agent 2: Track B (S5-2b..d MemGVN+SROA — each requires a build)
-- Track C: W3-ph1 (no build conflict during construction, one build to verify)
-
-**When S5 is on S5-2d (SROA)**:
-- This is the bench_struct proving ground. Reserve the third build slot for perf measurement.
-
-**When both E1-e and S5 are landed**:
-- Agent 1: Track A (E5 monomorphization — pure construction with periodic test-builds)
-- Agent 2: Track C (L2 SIMD — new file construction, periodic test-builds)
-- DX-ph2 (fc split): can now proceed on a third agent since E1-e is stable
-
----
-
-## 8. File-Level Conflict Table
-
-| File | Track A | Track B | Track C |
-|------|---------|---------|---------|
-| `tir/analysis/mod.rs` | — | B1 (MemorySSA variant) | C1 (TerminatorOnlyPredMap) |
-| `tir/pass_manager.rs` | — | B2 (insert mem_gvn) | C1 (check! macro), C2 (ordering) |
-| `tir/module_phase.rs` | A1 (E5/E3 call), later E5 | — | — |
-| `tir/passes/escape_analysis.rs` | A4 (E3-C) | — | — |
-| `tir/passes/ip_summary.rs` | A2/A3/A5 (E3) | — | — |
-| `native_backend/simple_backend.rs` | A1 (E1-e) | — | C8 (fc split, AFTER A1) |
-| `wasm.rs` | A1 (E1-e) | — | — |
-| `passes.rs` | A5 (delete return_alias legacy) | — | C4/C5 (W3) |
-| `tir/passes/loop_unroll.rs` | — | — | C1 |
-| `tir/passes/block_versioning.rs` | — | — | C1 |
-| `tir/passes/type_guard_hoist.rs` | — | — | C1 |
-| `tir/passes/licm.rs` | — | B5 (MemorySSA gate) | — |
-| `tir/passes/dead_store_elim.rs` | — | B3 | — |
-| `Cargo.toml` | — | — | C6 (LTO) |
-| `cli.py` | — | — | C5 (W3), C7 (sccache) |
-
-Conflicts exist at `tir/analysis/mod.rs` (both B1 and C1 add to `AnalysisId`) and `tir/pass_manager.rs` (both B2 and C2 modify the pipeline). **Resolution**: land C1 (L4 gate fix, 4 hours) before B1 starts, so B1's `analysis/mod.rs` edit includes the already-landed `TerminatorOnlyPredMap` variant. For `pass_manager.rs`, C2 (ordering fix) is a 1-line swap; land it in the same commit as C1. B2 then edits a clean baseline.
+`function_compiler.rs` (~38K lines) has no semantic-equivalence guarantee. The
+riskiest lowering arcs — L2 (SIMD into Cranelift), E5 (clone + pipeline re-run),
+D1 (generator-frame restructuring) — each add a new TIR→SimpleIR→native path with
+no formal validation. Extend `tools/translation_validator.py` to validate
+TIR→SimpleIR round-trips for transformed functions before landing L2/E5; document
+"pre-V1, differential-matrix-substituted" otherwise.
 
 ---
 
-## 9. Build Sequence — Complete Phased Checklist
+## 7. Build Discipline
 
-### Immediate (before any session build starts)
+Per CLAUDE.md, unchanged:
 
-- [ ] **C1a** — Add `TerminatorOnlyPredMap` to `AnalysisId` in `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/analysis/mod.rs`
-- [ ] **C1b** — Change `func.has_exception_handling` → `func.has_exception_handlers()` in `loop_unroll.rs:250`, `block_versioning.rs:378`, `type_guard_hoist.rs:90`
-- [ ] **C1c** — Switch `block_versioning.rs:382` and `type_guard_hoist.rs:100` from `PredMap` to `TerminatorOnlyPredMap`; delete stale comments at `block_versioning.rs:373-377` and `type_guard_hoist.rs:94-98`
-- [ ] **C1d** — Add `TerminatorOnlyPredMap` arm to `assert_analyses_fresh` macro in `pass_manager.rs`
-- [ ] **C2** — Swap `iter_devirt` before `range_devirt` in `pass_manager.rs:290-293`
-- [ ] Verify: `cargo test -p molt-backend --features native-backend` ≥ 882 tests, `TIR_OPT_STATS=1` on `sum_range(4)` shows `loop_unroll: ops_added > 0`
-- [ ] Commit atomically: `"L4: re-enable loop_unroll/block_versioning/type_guard_hoist on CheckException-bearing functions + range_devirt ordering fix"`
-
-### Phase 1: E1 Activation (Track A, 1 build slot)
-
-- [ ] **A1a** — Add `lower_functions_to_tir_module` to `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/lower_from_simple.rs`
-- [ ] **A1b** — Restructure native parallel TIR loop in `simple_backend.rs` to produce `TirModule` → `run_module_pipeline` → back-convert → `module_analysis.leaf_functions()`
-- [ ] **A1c** — Delete `compute_leaf_functions_via_call_graph` from `simple_backend.rs`; delete `inline_functions(...)` call at line ~2625
-- [ ] **A1d** — Mirror WASM path in `wasm.rs`: per-function TIR → TirModule → `run_module_pipeline` → back-convert; move `prepare_lir_wasm_fast_output` to post-module-phase; delete `crate::inline_functions(...)` at `wasm.rs:2159-2162`
-- [ ] **A1e** — Apply held patch `memory/phase_e_e1_llvm_driver_wiring.patch` to LLVM branch in `simple_backend.rs`; remove `TEMP DIAGNOSTIC` block
-- [ ] **A1f** — Delete `passes::inline_functions` and `passes::is_inlineable_with_limit` from `passes.rs`
-- [ ] Verify: 882+ tests, `apply(mul, 1<<60, 7)` bigint oracle correct, `bench_sum` ≥ CPython
-- [ ] Commit atomic E1-e1..e4: `"E1-e: activate TIR inliner in all 3 backends, retire SimpleIR inliner dual path"`
-
-### Phase 2: MemorySSA Foundation (Track B, concurrent with A1 refine)
-
-- [ ] **B1** — Create `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/memory_ssa.rs` with `MemVersion`, `MemAccess`, `MemorySsaResult`, `compute_standalone`; add `AnalysisId::MemorySSA` (10 → 11); 7 unit tests; no behavior change
-- [ ] **B2** — Create `mem_gvn.rs`; add `"mem_gvn"` pass after `"dead_store_elim"` in pipeline; `struct_field_forwarding.py` differential passes
-- [ ] **B3** — Extend `dead_store_elim::run` with `run_cross_block_dse`; `struct_cross_block_dse.py` passes
-- [ ] **B4** — Create `sroa.rs`; add `"sroa"` pass after `"mem_gvn"`; `bench_struct ≥ 1.0× CPython native`
-- [ ] **B5** — Extend `licm::run` with `am.get::<MemorySSA>` gate in `is_hoistable_with_mem`; `struct_loop_licm.py` passes
-
-### Phase 3: IP Summaries (Track A, after E1-e landed)
-
-- [ ] **A2** — Extend `FunctionSummary` with `does_not_capture_param`, `is_pure`, `return_repr`; populate in `ModuleSummaries::compute`
-- [ ] **A3** — Bottom-up callee-summary purity propagation
-- [ ] **A4** — Add `summaries: Option<&ModuleSummaries>` to `escape_analysis::analyze`; replace `OpCode::Call → GlobalEscape` unconditional arm; wire through `PassManager.module_summaries`; differential `stack_alloc_across_call.py`
-- [ ] **A5** — Migrate `compute_return_alias_summaries` to TIR-native in `ip_summary.rs`
-
-### Phase 4: Binary Size + DX (Track C, concurrent with A2-A5)
-
-- [ ] **C4-C5** — W3 per-attribute DCE: `collect_module_attr_write_map` + two-phase BFS in `passes.rs`; mirror in `cli.py`; bump schema version; empty.py ≤ 3.5 MB
-- [ ] **C6-C7** — `Cargo.toml` LTO split; shared `.sccache/` dir; verify `bench_fib` does not regress below CPython (thin LTO risk point)
-- [ ] **C8** — `function_compiler.rs` split into 8 sub-modules (after E1-e is stable on main); `fc_arith.rs` incremental rebuild ≤ 30s
-
-### Phase 5: Monomorphization (Track A, after E3 landed)
-
-- [ ] **E5-A** — Create `tir/passes/specializer.rs`; add `specialization_budget = 0` field to `TargetInfo`; `run_specializer` call in `module_phase.rs` gated behind `is_specialization_enabled()`; all tests pass, zero behavior change
-- [ ] **E5-B** — Implement `compute_call_site_repr_key`; activate `specialization_budget = 4` on `native_release_fast`; `specialize_bigint_boundary.py` differential must pass
-- [ ] **E5-C** — WASM + LLVM activation with domain-appropriate budgets
-
-### Phase 6: Real SIMD + Generator Fusion (after V1 gate + E1-e + S5-2d)
-
-- [ ] **V1** — Extend `tools/translation_validator.py` to validate TIR→SimpleIR structural equivalence for transformed functions; integrate as `--verify-lowering` flag
-- [ ] **L2-ph1a** — Add 9 SIMD opcodes to `ops.rs`; classify in `effects.rs`, `alias_analysis.rs`
-- [ ] **L2-ph1b** — Create `vectorize_lower.rs`; delete 4x scalar unroll from `function_compiler.rs:30815-31000` (atomic with new SIMD emission); `bench_sum_list ≥ CPython`
-- [ ] **D1-A** — Extract `clone_function_body_with_fresh_ids` from `inliner.rs` to shared location; create `generator_fusion.rs`; wire into `module_phase.rs` after E1; `gen_simple_for.py` passes
-- [ ] **D1-B** — Extend to observation-only CheckException poll functions
-- [ ] **D1-C** — Multi-yield generators (while + yield)
-- [ ] **D1-D** — Lazy scandir primitive
-- [ ] **D1-E** — os.walk as Python generator; delete `molt_os_walk` intrinsic AFTER perf gate passes
-
-### Phase 7: PGO (Track C, largely independent)
-
-- [ ] **W1-a** — Extend `PgoProfileIR` with `call_counts`, `loop_counts`; `ProfileData::from_pgo_ir` constructor; bridge `ir.profile → TargetInfo.with_profile_data` in `simple_backend.rs` + `wasm.rs`; delete dual `pgo_hot: BTreeSet` from `passes.rs:303-320`; add `pgo_annotate` ReadOnly no-op pass
-- [ ] **W1-b** — `block_order_hint` in `TirFunction`; Cranelift hot-block ordering
-- [ ] **W1-c** — LLVM `!prof` metadata via `llvm-sys` unsafe call at `lowering.rs:5144`
-- [ ] **W1-d** — Instrumented binary → `molt_pgo.profdata` counter collection
+- Max 2 concurrent build-triggering agents; production-codegen changes
+  (RC pass, E1-e LLVM/Luau, backend paths) serialize through the daemon socket.
+- Each agent exports `MOLT_SESSION_ID` before any build for its own
+  `target-<id>/` directory.
+- Never run a compiled molt binary raw — route smoke/bisect/profile through
+  `python3 tools/safe_run.py --rss-mb <cap> --timeout <s> -- ./binary`. RC-1's
+  leak regressions surface here as exit 137 (RSS cap) or `MOLT_ASSERT_NO_LEAK`
+  abort.
+- Structural change is the unit of work: an arc is not done until its last
+  sub-phase lands. No localized hacks committed as placeholders; baton-pass
+  notes for unfinished arcs.
 
 ---
 
-## 10. The Three Parallel Workstreams Right Now
+## 8. Design-Doc Index
 
-**Starting immediately (before any build)**:
-
-1. **Track C/L4-ph1+ph2** — 4-hour zero-risk unlock: loop gate fixes + range_devirt ordering. No build agent needed during writing. One build to verify. This is the single highest-leverage-per-hour move available.
-
-2. **Track C/W3-ph1** — Write `collect_module_attr_write_map` in `passes.rs`. No behavior change, one build to verify. ~3 hours.
-
-3. **Track C/DX-ph1a** — Edit `Cargo.toml` `release-fast` profile: `lto = "thin"`. Add `release-output` profile. ~30 minutes.
-
-**In parallel with E1-e design (requires one dedicated build agent)**:
-
-Track B/S5-2a — Write the MemorySSA types and 7 unit tests. Uses `cargo test` only, no daemon needed. Can run while the E1-e build occupies the daemon slot.
-
-**After L4-ph1 and W3-ph1 land**:
-
-Start Track A/E1-e1..e4. This is the critical path. Reserve both build slots for it.
+| Doc | Arc |
+|-----|-----|
+| `01`, `01b` | E1 inliner activation (native+WASM landed `7512919fa`; LLVM/Luau open) |
+| `02` | S5 MemorySSA + SROA + MemGVN + cross-block DSE (ph2a/2b/2d landed; 2c/2e open) |
+| `03`, `12` | E3 IP escape/purity summaries + E5 monomorphization |
+| `04` | L4 loop transforms (corrected arc — producer chain, not gate-flip) |
+| `05` | L2 real SIMD codegen |
+| `06` | W1 PGO end-to-end |
+| `07` | D1 generator fusion / CoroElide → os.walk-as-Python |
+| `08` | DX build-speed |
+| `09`, `13` | W3 per-attribute DCE (the `<2 MB` lever) |
+| `10` | module-global loop promotion (bench_sum 16× — landed `b9188ab1c`) |
+| `11` | bug-#15 dual-loop overflow peel (landed `e267a4f5a`, `c2a373a3a`) |
+| `14` | target × profile parity audit (E1 LLVM/Luau gaps) |
+| `15` | Luau CheckedAdd lowering plan |
+| `16` | CPython surface / stdlib / GPU gap audit |
+| `17` | ecosystem / third-party compat gap audit |
+| `18` | asyncio-wasm event-loop fix plan |
+| `19` | os dir_fd `*at` intrinsic design (landed `ca2c57ff1`) |
+| `20` | **RC ownership & drop insertion** (the #1 correctness blocker) |
