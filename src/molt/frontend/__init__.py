@@ -52,6 +52,19 @@ def _next_ic_index() -> int:
     return idx
 
 
+class _InlineSuperFoldRequired(Exception):
+    """Raised inside ``_try_inline_method_call`` when an inlined method body
+    contains a ``super()`` call that cannot be folded statically.
+
+    The inlined body is spliced into the caller's scope, which carries no
+    ``__class__`` closure cell, so a ``super()`` that lowers to the runtime
+    super path would raise ``RuntimeError: super(): __class__ cell not found``
+    (or bind to the wrong class) at execution time.  This sentinel aborts the
+    whole inline expansion; the caller then falls back to the general dispatch
+    path, which threads the method's real ``__class__`` closure cell.
+    """
+
+
 @dataclass
 class MoltValue:
     name: str
@@ -1393,6 +1406,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.scope_assigned: set[str] = set()
         self.del_targets: set[str] = set()
         self.unbound_check_names: set[str] = set()
+        # Set while inlining a method that closes over the implicit ``__class__``
+        # super cell: any ``super()`` in the inlined body that cannot fold
+        # statically raises ``_InlineSuperFoldRequired`` to abort the inline,
+        # because the caller's spliced scope has no ``__class__`` cell.
+        self._inline_super_must_fold: bool = False
         self.exact_locals: dict[str, str] = {}
         self.exact_builtin_locals: dict[str, str] = {}
         self.globals: dict[str, MoltValue] = {}
@@ -16007,9 +16025,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # compile_method-time AST inspection).
             inline_return = None
             inline_init_assigns: list[tuple[str, ast.expr]] | None = None
+            inline_closure_ok = self._method_inline_closure_ok(free_vars, item)
             if (
                 descriptor == "function"
-                and not has_closure
+                and inline_closure_ok
                 and not (vararg is not None or varkw is not None)
                 and not kwonly_names
             ):
@@ -16039,6 +16058,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "has_vararg": vararg is not None,
                 "has_varkw": varkw is not None,
                 "has_closure": has_closure,
+                # True when ``has_closure`` is purely the implicit ``__class__``
+                # super cell (no real enclosing-local capture).  The static
+                # devirt / super-fold sites may then take the *inline* path
+                # (whose recursive super-fold resolves the chain at compile
+                # time and never reads the cell), but must NOT emit a direct
+                # CALL to the closure symbol on inline failure — they fall back
+                # to the general dispatch which threads the real closure tuple.
+                "inline_closure_ok": inline_closure_ok,
                 "property_field": property_field,
                 "property_update": property_update,
                 "inline_return": inline_return,
@@ -18212,15 +18239,45 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if not isinstance(super_call.func, ast.Name) or super_call.func.id != "super":
             return None
         if super_call.args or super_call.keywords:
-            return None  # typed super(T, obj) — leave to general path
+            # typed super(T, obj) — leave to general path.  But if we are
+            # inlining a ``__class__``-cell method, the runtime super path the
+            # general path takes has no cell in the caller's spliced scope, so
+            # the inline must be aborted (caller falls back to dispatch).
+            if self._inline_super_must_fold:
+                raise _InlineSuperFoldRequired
+            return None
         if self.current_class is None or self.current_method_first_param is None:
+            if self._inline_super_must_fold:
+                raise _InlineSuperFoldRequired
             return None
         if node.keywords:
+            if self._inline_super_must_fold:
+                raise _InlineSuperFoldRequired
             return None  # kwargs hit defaults / kwonly machinery
         for arg in node.args:
             if isinstance(arg, (ast.Starred,)):
+                if self._inline_super_must_fold:
+                    raise _InlineSuperFoldRequired
                 return None  # *args spread — needs builder
         method_name = node.func.attr
+        folded = self._fold_bare_super_static(node, method_name)
+        if folded is None and self._inline_super_must_fold:
+            # A bare ``super().method()`` that did not fold while inlining a
+            # ``__class__``-cell method: the general dispatch fallback would
+            # emit a runtime super into a scope with no ``__class__`` cell.
+            # Abort the inline so the caller routes through the dispatch path.
+            raise _InlineSuperFoldRequired
+        return folded
+
+    def _fold_bare_super_static(
+        self, node: ast.Call, method_name: str
+    ) -> "MoltValue | None":
+        """Fold a confirmed bare ``super().method(*positional)`` call to a
+        direct CALL / inline when the MRO is statically resolvable.  Returns
+        ``None`` to fall through to the general dispatch path.  The caller
+        (``_try_emit_super_static_call``) has already validated the bare-super
+        shape and handles the inline-abort policy.
+        """
         # SOUNDNESS GATE for the static super fold.  ``super().method()`` in
         # ``current_class.method`` resolves to the first class defining
         # ``method`` after ``current_class`` in ``type(self).__mro__``.  Folding
@@ -18244,7 +18301,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         if method_info.get("descriptor") != "function":
             return None
-        if method_info.get("has_closure"):
+        # A method whose closure is exactly the implicit ``__class__`` super
+        # cell (``inline_closure_ok``) can still be folded — but ONLY via the
+        # inline path below, which resolves its own ``super()`` chain statically
+        # and never reads the cell.  A direct CALL to that closure symbol would
+        # omit the cell argument, so ``target_is_closure`` forbids the direct
+        # CALL fallback for these methods (they route to general dispatch on
+        # inline failure).  A method with real captured locals is not foldable.
+        target_is_closure = bool(method_info.get("has_closure"))
+        if target_is_closure and not method_info.get("inline_closure_ok"):
             return None
         if method_info.get("has_vararg"):
             return None
@@ -18273,6 +18338,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if self_val is None:
             return None
 
+        call_args = [self.visit(a) for a in node.args]
+        if any(a is None for a in call_args):
+            return None
+
+        # Phase 2 inline opportunity at the super-fold site: if the
+        # MRO-resolved target method has a trivially inlinable body
+        # (single Return of a constant/param/binop/etc. expression),
+        # emit the body inline rather than a CALL.  This composes
+        # with Phase 4a's recursive super-walk — `Leaf.compute` calls
+        # `super().compute(x) * 2` which folds to `Mid.compute`,
+        # whose body inlines to `super().compute(x) + 1` whose super
+        # again folds to `Base.compute(x) = x`, fully unwinding the
+        # super-chain at compile time.  This is the only foldable path
+        # for a ``__class__``-cell closure target (see ``target_is_closure``).
+        inlined = self._try_inline_method_call(method_info, self_val, call_args)
+        if inlined is not None:
+            return inlined
+
+        # The MRO-resolved target carries the implicit ``__class__`` super cell
+        # but did not inline (its body was not trivially inlinable): a direct
+        # CALL to its closure symbol would omit the cell, so route to the
+        # general dispatch path, which threads the real closure tuple.
+        if target_is_closure:
+            return None
+
         # Extract the method symbol from method_info["func"].type_hint
         # (format: "Func:<symbol>"), which was set when the ClassDef
         # compiled the method.  Calling `_function_symbol` here would
@@ -18286,23 +18376,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         method_symbol = func_val.type_hint.split(":", 1)[1]
         if method_symbol not in self.func_symbol_names:
             return None
-
-        call_args = [self.visit(a) for a in node.args]
-        if any(a is None for a in call_args):
-            return None
-
-        # Phase 2 inline opportunity at the super-fold site: if the
-        # MRO-resolved target method has a trivially inlinable body
-        # (single Return of a constant/param/binop/etc. expression),
-        # emit the body inline rather than a CALL.  This composes
-        # with Phase 4a's recursive super-walk — `Leaf.compute` calls
-        # `super().compute(x) * 2` which folds to `Mid.compute`,
-        # whose body inlines to `super().compute(x) + 1` whose super
-        # again folds to `Base.compute(x) = x`, fully unwinding the
-        # super-chain at compile time.
-        inlined = self._try_inline_method_call(method_info, self_val, call_args)
-        if inlined is not None:
-            return inlined
 
         res_hint = "Any"
         return_hint = method_info.get("return_hint")
@@ -18319,6 +18392,51 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
         return res
+
+    def _method_inline_closure_ok(
+        self,
+        free_vars: list[str],
+        item: "ast.FunctionDef | ast.AsyncFunctionDef",
+    ) -> bool:
+        """True when a method that is technically a *closure* is still safe to
+        record as inline-eligible.
+
+        A method using zero-arg ``super()`` closes over the enclosing class's
+        implicit ``__class__`` cell, so its ``free_vars`` contains ``"__class__"``
+        even though it captures no *real* enclosing locals.  That cell exists
+        only to let the runtime dispatch path read the finished class object; at
+        an **inline** call site the recursive static ``super()`` fold (which sets
+        ``current_class`` / ``current_method_first_param`` to the inline owner)
+        resolves the super-chain at compile time and never reads the cell.  When
+        a ``super()`` in the inlined body cannot fold statically, the inline is
+        aborted via ``_InlineSuperFoldRequired`` and the call routes through the
+        cell-threaded dispatch path — so the cell is never needed at the inline
+        site.
+
+        The exception is a **bare ``__class__`` value load** (e.g.
+        ``__class__.__name__``): that reads the cell directly, and the inlined
+        body — spliced into a scope with no ``__class__`` cell — cannot reproduce
+        it, so such a method must NOT be inline-eligible.  ``super()`` calls
+        never appear as an ``ast.Name("__class__")`` (the cell binding is
+        implicit), so any ``ast.Name`` with id ``"__class__"`` in the body is a
+        bare value load that disqualifies the method.
+
+        So a closure method is inline-eligible iff (a) it captures nothing beyond
+        the implicit ``__class__`` cell, and (b) it contains no bare
+        ``__class__`` value load.  Any genuine enclosing-local capture forces the
+        CALL path, where the real closure tuple is threaded.
+        """
+        if not free_vars:
+            return True
+        real = [name for name in free_vars if name != "__class__"]
+        if real:
+            return False
+        # ``free_vars == ["__class__"]``: eligible only if the body uses the
+        # cell exclusively through ``super()`` (no bare ``__class__`` value).
+        for child in ast.walk(item):
+            if isinstance(child, ast.Name) and child.id == "__class__":
+                return False
+        return True
 
     def _extract_inline_return(
         self, item: "ast.FunctionDef", params: list[str]
@@ -18550,11 +18668,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         self.locals = subst
         self.exact_locals = new_exact
+        # When the inlined method closes over the implicit ``__class__`` super
+        # cell, every ``super()`` in its body MUST fold statically at this
+        # site: the inlined body is spliced into the caller's scope, which has
+        # no ``__class__`` cell, so a ``super()`` that falls to the runtime
+        # path would bind to the wrong cell (or none — ``RuntimeError:
+        # super(): __class__ cell not found``).  Setting ``_inline_super_must_fold``
+        # makes the static super-fold raise ``_InlineSuperFoldRequired`` when it
+        # cannot fold, aborting the whole inline so the caller falls back to the
+        # cell-threaded dispatch path.  Stacks correctly across nested inlines.
+        prev_super_must_fold = self._inline_super_must_fold
+        if method_info.get("inline_closure_ok") and method_info.get("has_closure"):
+            self._inline_super_must_fold = True
         try:
             result = self.visit(inline_return)
-        except (KeyError, AttributeError, NotImplementedError):
+        except (
+            KeyError,
+            AttributeError,
+            NotImplementedError,
+            _InlineSuperFoldRequired,
+        ):
             return None
         finally:
+            self._inline_super_must_fold = prev_super_must_fold
             self.locals = old_locals
             self.exact_locals = old_exact
             self.current_class = old_class
@@ -18723,7 +18859,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return None
         if method_info.get("descriptor") != "function":
             return None
-        if method_info.get("has_closure"):
+        # A method whose closure is exactly the implicit ``__class__`` super
+        # cell (``inline_closure_ok``) is foldable, but ONLY through the inline
+        # path below — its recursive static super-fold resolves the chain at
+        # compile time and never reads the cell.  A direct CALL to the closure
+        # symbol would omit the cell argument, so ``target_is_closure`` forbids
+        # the direct-CALL fallback (routing those to the general dispatch path,
+        # which threads the real closure tuple).  Real captured locals are not
+        # foldable here at all.
+        target_is_closure = bool(method_info.get("has_closure"))
+        if target_is_closure and not method_info.get("inline_closure_ok"):
             return None
         if method_info.get("has_vararg"):
             return None
@@ -18761,6 +18906,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if receiver is None:
             return None
 
+        call_args = [self.visit(a) for a in node.args]
+        if any(a is None for a in call_args):
+            return None
+
+        # Phase 2 inline opportunity: if the method has a trivially
+        # inlinable body (single Return of a constant/param/binop/etc.
+        # expression), emit the body inline rather than a CALL.  For a
+        # ``__class__``-cell closure target this is the only foldable path:
+        # the recursive super-fold inside the inlined body resolves the chain
+        # statically and never reads the cell.
+        inlined = self._try_inline_method_call(method_info, receiver, call_args)
+        if inlined is not None:
+            return inlined
+
+        # The target carries the implicit ``__class__`` super cell but did not
+        # inline: a direct CALL to its closure symbol would omit the cell, so
+        # route to the general dispatch path (which threads the real closure).
+        if target_is_closure:
+            return None
+
         # The method's symbol was registered when the ClassDef was
         # compiled (frontend/__init__.py:14117).  `method_info["func"]`
         # is the MoltValue produced for the method, with
@@ -18776,18 +18941,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         method_symbol = func_val.type_hint.split(":", 1)[1]
         if method_symbol not in self.func_symbol_names:
             return None
-
-        call_args = [self.visit(a) for a in node.args]
-        if any(a is None for a in call_args):
-            return None
-
-        # Phase 2 inline opportunity: if the method has a trivially
-        # inlinable body (single Return of a constant/param/binop/etc.
-        # expression), emit the body inline rather than a CALL.
-        # Falls through to a regular direct CALL on bail.
-        inlined = self._try_inline_method_call(method_info, receiver, call_args)
-        if inlined is not None:
-            return inlined
 
         res_hint = "Any"
         return_hint = method_info.get("return_hint")
