@@ -1,0 +1,123 @@
+name: Sanitizers
+
+# Memory/UB hardening for the safety-critical Rust crates (molt-runtime,
+# molt-backend, molt-obj-model). These runs use a nightly toolchain plus
+# -Zbuild-std (to instrument std for AddressSanitizer) and cargo-miri, both of
+# which are too slow to gate every PR — so this workflow is weekly-scheduled and
+# manually dispatchable. It ratchets the "sanitizer-clean lib suites" invariant:
+# a regression here means a new memory/UB bug crept into the runtime or backend.
+#
+# Local repro (macOS aarch64 — substitute aarch64-apple-darwin for the target):
+#   AddressSanitizer (runtime lib tests):
+#     RUSTFLAGS='-Zsanitizer=address' RUSTDOCFLAGS='-Zsanitizer=address' \
+#     ASAN_OPTIONS='detect_leaks=0' \
+#     cargo +nightly test -p molt-runtime --lib --no-default-features \
+#       --features stdlib_micro --target <triple> -Zbuild-std
+#   AddressSanitizer (backend lib tests):
+#     RUSTFLAGS='-Zsanitizer=address' RUSTDOCFLAGS='-Zsanitizer=address' \
+#     cargo +nightly test -p molt-backend --lib --target <triple> -Zbuild-std
+#   Miri (NaN-boxing object model):
+#     cargo +nightly miri test -p molt-lang-obj-model --lib
+#
+# Feasibility notes (see the hardening-wave baton):
+#   * ASan + -Zbuild-std: WORKS on aarch64-apple-darwin and x86_64 Linux.
+#   * Miri: WORKS on the obj-model crate (permissive provenance — molt's
+#     NaN-boxing legitimately uses exposed provenance, so -Zmiri-strict-provenance
+#     is NOT used).
+#   * ThreadSanitizer / MemorySanitizer: NOT wired. TSan SIGSEGVs at process
+#     startup on this toolchain even for an allocator-free crate; the runtime's
+#     mimalloc global allocator (already gated not(miri)) is a second blocker.
+
+on:
+  schedule:
+    # Weekly Tuesday 6am UTC (offset from the Monday Nightly/Security jobs).
+    - cron: "0 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # x86_64 Linux is the best-supported -Zbuild-std + sanitizer target on CI.
+  SANITIZER_TARGET: "x86_64-unknown-linux-gnu"
+
+jobs:
+  asan-lib-suites:
+    name: AddressSanitizer (runtime + backend lib tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install nightly Rust with rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: asan-${{ env.SANITIZER_TARGET }}
+
+      - name: AddressSanitizer — molt-runtime lib tests (stdlib_micro)
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          RUSTDOCFLAGS: "-Zsanitizer=address"
+          # The known DropInsertion P0 leaks compiled-Python-code allocations,
+          # not the Rust lib tests; leak detection on the lib suite is clean but
+          # we keep it off here so this job tracks UAF/OOB/double-free only.
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:halt_on_error=0"
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            cargo +nightly test -p molt-runtime --lib \
+              --no-default-features --features stdlib_micro \
+              --target "$SANITIZER_TARGET" -Zbuild-std
+
+      - name: AddressSanitizer — molt-backend lib tests (native backend)
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          RUSTDOCFLAGS: "-Zsanitizer=address"
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:halt_on_error=0"
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            cargo +nightly test -p molt-backend --lib \
+              --features native-backend \
+              --target "$SANITIZER_TARGET" -Zbuild-std
+
+  miri-obj-model:
+    name: Miri (NaN-boxing object model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install nightly Rust with miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: miri-obj-model
+
+      - name: Miri — obj-model lib unit tests
+        # Permissive provenance: molt's NaN-boxing recovers TAG_PTR values via
+        # exposed provenance by design (the registry is a debug-only checker), so
+        # strict-provenance is intentionally NOT enabled.
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            cargo +nightly miri test -p molt-lang-obj-model --lib
+
+      - name: Miri — obj-model NaN-boxing property tests
+        env:
+          # Miri isolation disables filesystem access; proptest's failure
+          # persistence needs cwd/file IO, so disable isolation + persistence and
+          # cap case count (Miri is ~100x slower than native).
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+          PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "16"
+        run: |
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            cargo +nightly miri test -p molt-lang-obj-model --test nan_boxing_props
