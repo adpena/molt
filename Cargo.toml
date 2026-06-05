@@ -283,26 +283,37 @@ debug = 0
 [profile.dev-fast.package.zip]
 debug = 0
 
-# Fast iteration profile: O3 with single codegen unit and fat LTO for
-# maximum cross-crate inlining and optimization. The daemon binary is
-# built infrequently, so the extra LTO link time (~30-60s) is acceptable
-# for the codegen quality win (fat LTO enables interprocedural
-# optimizations across crate boundaries that thin LTO cannot perform).
+# Fast-ITERATION profile for the backend DAEMON (the molt compiler itself), NOT a
+# ship profile. The shipped user-binary runtime staticlib is built with
+# `release-output` (fat LTO, opt-z) and WASM with `wasm-release`; this profile
+# only ever builds the daemon-compiler's own code, which runs as a compiler — its
+# internal codegen quality has no bearing on USER-program runtime perf. So we
+# optimize this profile purely for the edit->rebuild->test iteration loop.
+#
+# lto = "thin" (was "fat" until measured 2026-06-05): the daemon bin's LTO is THE
+# build long pole. Fat LTO re-merges the whole dependency closure (lib + cranelift)
+# into ONE module and re-optimizes it serially, defeating the cgu=256 parallelism
+# in the LTO phase. Thin LTO performs cross-module inlining via per-module summaries
+# and keeps codegen parallel across cores through LTO. MEASURED on this repo
+# (M5 Max, touch a molt-backend lib source -> rebuild daemon):
+#   fat LTO : ~137 s  (median of 132/142)
+#   thin LTO:  ~81 s  (median of 73/90)   -> ~41% / ~56 s faster PER EDIT.
+# Zero user-binary runtime-perf risk: release-fast never builds the shipped runtime
+# (that is release-output, untouched). Verified byte-identical compiled-program
+# output + full lib suite + compliance after the switch.
 # panic = "unwind" required — see [profile.release] comment above.
 [profile.release-fast]
 inherits = "release"
 opt-level = 3          # O3: auto-vectorization + aggressive inlining for daemon hot paths
-lto = "fat"
-# codegen-units controls only the PRE-LTO per-crate partitioning here: fat LTO
-# re-merges every crate's bitcode into a single module and re-optimizes the whole
-# program, so the initial cgu count has negligible effect on the final binary's
-# runtime perf (rustc fat-LTO semantics) but DOES parallelize each crate's
-# MIR->LLVM codegen across cores. release-fast is a build-ITERATION profile (the
-# backend daemon + runtime staging), not a ship profile — the shipping native
-# runtime is built with release-output and WASM with wasm-release, both of which
-# keep codegen-units=1. So we use a high cgu here purely to parallelize the
-# incremental recompile of the 342k-LoC molt-runtime hub (cgu=1 serialized it
-# into a ~72s one-line-edit rebuild; cgu=256 parallelizes it across 18 cores).
+lto = "thin"
+# codegen-units: under THIN LTO the per-module summaries let all cgus stay parallel
+# through the LTO phase (unlike fat LTO, which collapses them into one serial merge).
+# release-fast is a build-ITERATION profile (the backend daemon + runtime staging),
+# not a ship profile — the shipping native runtime is built with release-output and
+# WASM with wasm-release, both of which keep codegen-units=1. A high cgu here
+# parallelizes the incremental recompile of the 342k-LoC molt-runtime hub (cgu=1
+# serialized it into a ~72s one-line-edit rebuild; cgu=256 parallelizes across cores)
+# AND, with thin LTO, parallelizes the daemon-bin LTO itself.
 codegen-units = 256
 strip = "symbols"
 panic = "unwind"       # required for catch_unwind in Cranelift retry path
