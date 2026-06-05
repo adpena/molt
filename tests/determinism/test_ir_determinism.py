@@ -155,12 +155,15 @@ ASYNC_PROGRAMS = _async_programs()
 
 
 # Programs that exercise other set-iteration -> IR-emission leaks of the #34
-# class beyond async spill: unpacking/star targets and structural-pattern
-# capture names flow through ``_collect_target_names`` /
-# ``_collect_pattern_capture_names`` into the function's co_varnames tuple via
-# ``_collect_assigned_names_ordered``.  Both returned sets historically, leaking
-# hash order into the emitted IR.  These are the regression surface for that
-# class; the names are pinned so a regression in any one is attributable.
+# class beyond async spill.  Three name collectors historically returned sets
+# whose hash-ordered iteration reached emitted IR:
+#   * ``_collect_target_names`` — unpacking / star targets;
+#   * ``_collect_pattern_capture_names`` — structural-pattern captures;
+#     (both feed the co_varnames tuple via ``_collect_assigned_names_ordered``)
+#   * ``_collect_namedexpr_names`` / ``_collect_inline_comp_walrus_names`` —
+#     comprehension walrus (:=) targets, synced to the enclosing scope with
+#     per-name INDEX / module-attr-set ops.
+# The names are pinned so a regression in any one is attributable.
 _HASH_ORDER_LEAK_PROGRAMS = [
     "unpack_assignment.py",
     "stress_structures_pass.py",
@@ -171,6 +174,10 @@ _HASH_ORDER_LEAK_PROGRAMS = [
     "pattern_matching_core_matrix.py",
     "pattern_matching_class_guard_matrix.py",
     "pep634_pattern_matching_more.py",
+    "comprehension_walrus_nested_targets.py",
+    "comprehension_walrus_and_or_filters.py",
+    "comprehension_nested_walrus.py",
+    "pep572_walrus_edges.py",
 ]
 
 
