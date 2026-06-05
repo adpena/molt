@@ -163,8 +163,18 @@ impl<'a> SsaContext<'a> {
         self.gather_defs_uses();
         self.build_augmented_cfg();
         self.compute_dominance_frontiers();
-        self.insert_block_arguments();
+        // Handler-block arguments must be established BEFORE the iterated
+        // dominance frontier runs: a handler block that receives a live-in
+        // variable as a block argument is a *new* SSA definition of that
+        // variable (the handler re-enters the variable's live range along the
+        // exception edge), so its dominance frontier — every point where the
+        // handler's normal exit rejoins the protected region's control flow —
+        // needs a phi. Seeding the IDF with handler blocks (below) is what
+        // places those rejoin phis; running it afterward would leave the
+        // rejoin merges phi-less and produce values that are defined on the
+        // normal path but undefined on the handler path.
         self.insert_exception_handler_arguments();
+        self.insert_block_arguments();
         self.rename_and_emit();
     }
 
@@ -444,6 +454,21 @@ impl<'a> SsaContext<'a> {
             let mut def_blocks: HashSet<usize> = HashSet::new();
             for bid in 0..n {
                 if self.block_info[bid].defs.contains(&var) {
+                    def_blocks.insert(bid);
+                }
+                // A handler block that already carries `var` as a block
+                // argument (established by `insert_exception_handler_arguments`)
+                // is a definition site for `var`: along the exception edge the
+                // handler introduces a fresh SSA value for the variable. It must
+                // seed the iterated dominance frontier so that every block where
+                // the handler's normal exit rejoins the protected region's
+                // control flow receives a phi merging the handler's version with
+                // the protected-region version. Without this, a value defined in
+                // the protected region and used past such a rejoin is dominated
+                // only on the normal path, not on the handler path — a genuine
+                // SSA-dominance violation that LLVM's verifier rejects once the
+                // handler blocks are lowered.
+                else if self.block_arg_vars[bid].contains(&var) {
                     def_blocks.insert(bid);
                 }
             }
