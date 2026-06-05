@@ -31,12 +31,15 @@ molt has three distinct decomposition problems, each with a different correct fi
    with 261 `visit_`/emit methods). Fix = **Python package decomposition into visitor
    mixins** (edit-locality / reviewability / parallel-ownership win — NOT compile time;
    Python has no compile step).
-3. **Runtime satellite duplication** (`molt-runtime`, 346,220 lines). The satellite pattern
-   (`molt-runtime-http` etc.) *works for build caching* but was applied as a
+3. **Runtime satellite duplication + DRIFT** (`molt-runtime`, 346,220 lines). The satellite
+   pattern (`molt-runtime-http` etc.) *works for build caching* but was applied as a
    `#[cfg(not(feature))]` dual-path that left the in-tree copy physically duplicated — e.g.
-   `functions_http.rs` exists byte-for-byte in two crates (verified content-identical). Fix
-   = **finish the satellite arc** (delete the in-tree fallback copies; make the satellite the
-   single source of truth).
+   `functions_http.rs` exists in two crates. **CORRECTION (see §1.4): the two copies are NOT
+   content-identical — all 28 pairs bidirectionally DRIFTED, and the in-tree copy is the live
+   source for the reduced tiers, not a dead fallback.** Fix = a three-phase arc: (R.1, LANDED)
+   a fail-closed parity guard + per-pair drift reconciliation; (R.2) unify the access layer
+   (direct-call vs FFI-bridge) so one source compiles in both contexts; (R.3) only then make
+   the satellite the single source of truth and delete the in-tree copy.
 
 The unifying lesson, stated plainly: **a module split buys edit-locality and review
 ergonomics; only a crate split buys build-cache isolation.** Do not conflate them. The
@@ -50,7 +53,7 @@ cache). The runtime wants the *completion* of crate splits it half-did.
 | 1 | Split `function_compiler.rs` (39,043 LOC) into opcode-family submodules, within-crate, move-only | Highest churn god-file; #1 ownership-collision source after frontend | Recompile blast radius 39K→~4-6K per family | Low (module split, `use super::*` preserved) | **A+** |
 | 2 | Decompose `frontend/__init__.py` `SimpleTIRGenerator` into a `frontend/` package of visitor mixins | #1 ownership-collision source (3 contention events this window) | None (Python) — but unblocks parallel agents | Medium (mixin MRO, no static typing of `self`) | **A** |
 | 3 | Extract `molt-tir` crate (tir/ + ir/ + Repr), the clean lower layer | TIR-pass authors stop recompiling all 5 backends | Editing a TIR pass no longer rebuilds Cranelift/WASM/LLVM codegen | Medium (pub-surface contract, the `Repr` cycle cut) | **A** |
-| 4 | Finish the runtime satellite arc: delete the 28 in-tree `cfg(not(feature))` fallback copies | Eliminates dual-maintenance (silent drift hazard) | Removes duplicate compilation units from the monolith hot path | Low-Med (feature-unification audit) | **A−** |
+| 4 | Finish the runtime satellite arc: parity guard + reconcile drift (R.1, LANDED), then access-layer unification (R.2) + dedup (R.3). NOT a naive "delete the 28 copies" — they drifted, serve disjoint tiers, and are two access models (§1.4/§2.4) | Stops new drift now (guard); eliminates dual-maintenance after R.3 | Removes duplicate CUs at R.3 | R.1 Low; R.2/R.3 Med (access-layer unification, feature-unification audit) | **A−** |
 | 5 | Extract `molt-backend-native` (native_backend/ + llvm_backend/) onto `molt-tir` | Cranelift/LLVM authors isolated from WASM/Luau/TIR authors | Editing codegen ⟂ editing passes; parallel codegen | Medium (the `use super::*` glob → explicit `use molt_tir::*`) | **B+** |
 
 ### 0.2 What contradicts the supervisor's stated assumptions
@@ -208,22 +211,65 @@ All verified by `grep -rE 'crate::<mod>' <subtree>`:
   `SimpleBackend`). These re-exports in `lib.rs:44-65` define the contract a thin orchestrator
   must preserve.
 
-### 1.4 The runtime satellite finding (the duplication smell, resolved)
+### 1.4 The runtime satellite finding (drift hazard — CORRECTED 2026-06-05)
 
-- `runtime/molt-runtime/src/builtins/functions_http.rs` (7,144 lines) and
-  `runtime/molt-runtime-http/src/functions_http.rs` (7,338 lines) are **content-identical**:
-  `diff <(sort A) <(sort B) | grep -c '^[<>]'` = **0**. (Line-count differs only by header/ordering.)
-- Wiring (`builtins/mod.rs:59-62`): `#[cfg(not(feature = "stdlib_http"))] pub(crate) mod
-  functions_http;`. When `stdlib_http` is OFF, molt-runtime compiles its OWN copy; when ON, the
-  satellite crate is pulled (`Cargo.toml:113` `stdlib_http = ["dep:molt-runtime-http"]`). The
-  satellite copy is a **real file, not a symlink** (`file` confirms), with **no sync script**
-  (no tool references `functions_http` under `tools/`). → manual-sync duplication = silent-drift
-  hazard.
-- This pattern repeats **28 times** in `builtins/mod.rs` (`grep -c 'cfg(not(feature = "stdlib_'`).
-  The satellite pattern *succeeds* at build-cache isolation but *fails* by retaining a duplicate
-  in-tree copy as a fallback. **The fix is to make the satellite the single source of truth and
-  delete the in-tree fallback** (the build default must include the satellite features; see §3
-  Phase R).
+> **CORRECTION.** An earlier draft of this section claimed the 28 in-tree
+> `cfg(not(feature))` copies are "content-identical" to their satellites
+> (`functions_http` sorted-diff = 0). **That claim was false.** Verification at a
+> later base (`d48ac22df`+) found **every one of the 28 pairs had bidirectionally
+> drifted** — `functions_http`'s raw sorted-diff was 820 lines, not 0. The drift
+> is the silent-miscompile bug-class this program targets, already materialized:
+> a behavioral fix landed in only ONE copy makes **shipped behavior differ by
+> build tier** *today* (see below). The full inventory + access-model analysis is
+> in `memory/recovery/baton_move_R_satellite_drift.md`; the reconciliation +
+> fail-closed guard landed under Move R (this section now reflects that reality).
+
+Three load-bearing facts (all verified):
+
+1. **The in-tree copies are NOT dead fallbacks.** They are the SOLE compiled
+   source for the reduced build tiers: `--stdlib-profile micro`, `stdlib_edge`,
+   and the WASM feature set all build with `--no-default-features` and leave most
+   satellites OFF (`src/molt/cli.py:25340-25368`), so the in-tree copy is what
+   compiles there. The default native build (`stdlib_full`) pulls the satellites.
+   **Both copies are live, in disjoint configs.** Deleting the in-tree copy would
+   break micro/edge/WASM unless the satellites are forced into those tiers — which
+   defeats the binary-size lever those tiers exist for.
+2. **The two copies are NOT one logic in two namespaces.** The in-tree copy calls
+   molt-runtime internals DIRECTLY (`use crate::{...}`, the `PyToken` GIL token,
+   `crate::with_gil_entry_nopanic!`). The satellite reaches the same internals
+   through an `extern "C"` FFI BRIDGE (`use crate::bridge::*` +
+   `molt_runtime_core::prelude::*`, the `CoreGilToken` token, `with_core_gil!`;
+   the serial satellite dispatches through a single `RuntimeVtable`). A
+   `#[path]`/symlink include cannot unify them — the access layer must be unified
+   first.
+3. **Most residual drift, once the access layer is normalized away, is
+   access-layer shape — but not all of it.** Move R's reconciliation normalizes
+   the by-design access differences (imports, doc comments, the GIL macro/token,
+   bridge path prefixes, single-line `unsafe {}` wrappers, trailing comments) and
+   compares the residual line-multiset. After normalization, 12 of the 28 pairs
+   have ZERO residual (provably the same behavior in two access models). The
+   rest carry genuine semantic divergence ranging from 2 lines (decimal — a lone
+   lifetime annotation; the earlier "2439-line, architecturally different" figure
+   compared the satellite against the 13-line in-tree dispatcher stub instead of
+   the real `decimal_without_mpdec.rs` implementation) up to ~570 lines
+   (itertools, whose in-tree copy adopted RuntimeState-scoped slots that the
+   satellite has not). **At least one residual was a real shipped bug**: the
+   satellite `csv` copy hardcoded a list/dict/set unhashable-key check that
+   missed `bytearray` (and every other unhashable type) and was not
+   version-gated, so `csv.get_dialect(bytearray(...))` returned the wrong result
+   on the default native build while the in-tree copy was already correct. Move R
+   ported the in-tree `ensure_hashable`/`HashContext::DictKey` path into the
+   satellite (via a new `RuntimeVtable::ensure_hashable` entry) with a
+   two-tier differential regression.
+
+There is **no sync script** anywhere under `tools/` — which is exactly why the
+drift accumulated silently. Move R replaces the absent sync with a CONTRACT:
+`tools/check_satellite_parity.py` (run by the
+`runtime/molt-runtime/tests/satellite_parity.rs` integration test) is a
+fail-closed, ratcheting parity guard that makes any NEW drift a test failure.
+**The eventual fix remains to make the satellite the single source of truth and
+delete the in-tree fallback — but only AFTER the access layer is unified (the
+real Phase 2) and the per-pair drift is reconciled; see §3 Phase R.**
 
 ---
 
@@ -376,12 +422,36 @@ precedent once that lands.
 
 ### 2.4 Runtime decomposition (continue + COMPLETE the satellite pattern)
 
-- **Complete the 28 dual-path satellites**: for each `#[cfg(not(feature = "stdlib_X"))] mod foo;`,
-  the in-tree `foo.rs` is a duplicate of `molt-runtime-X/src/foo.rs`. The correct end state: the
-  satellite crate is the SINGLE source of truth, and the in-tree copy is **deleted**. The default
-  build feature set must then include the satellite features (so a default `molt-runtime` build is
-  unchanged behaviorally). See §3 Phase R for the per-satellite checklist and the feature-default
-  migration.
+- **Complete the 28 dual-path satellites** — but NOT by a naive "verify identical,
+  delete the in-tree copy" move. As §1.4 corrects, the copies have **drifted**,
+  they live in **disjoint live tiers** (in-tree = micro/edge/WASM; satellite =
+  default native), and they are two **access models** (direct `crate::` calls vs
+  an `extern "C"` FFI bridge / `RuntimeVtable`), not one logic in two namespaces.
+  The structurally-correct arc is three phases, in order:
+  - **Phase R.1 (LANDED, Move R) — fail-closed parity GUARD + drift
+    reconciliation.** `tools/check_satellite_parity.py` +
+    `runtime/molt-runtime/tests/satellite_parity.rs` normalize the access layer
+    and ratchet the per-pair residual toward zero, failing CI on any new drift; a
+    committed `tools/satellite_parity_baseline.json` allowlists the
+    not-yet-reconciled residual (one-way ratchet: it may only shrink). This stops
+    NEW drift immediately and is independently valuable. Reconciliation ports
+    one-sided behavioral fixes into BOTH copies with two-tier differential
+    regressions (the csv `ensure_hashable` fix is the first).
+  - **Phase R.2 (the real "phase 2", PENDING) — bridge-facade access-layer
+    unification.** Make ONE source file compile in BOTH the direct-call (in-tree)
+    and FFI-bridge (satellite) contexts: a shared `bridge` facade +
+    `molt_runtime_core::prelude` that resolves to direct `crate::` re-exports
+    inside molt-runtime and to the `extern "C"`/`RuntimeVtable` bridge as a
+    standalone crate, with a unified GIL token/macro. Only then is a `#[path]`
+    include (feature flag controls LINKAGE, not DUPLICATION) sound.
+  - **Phase R.3 (PENDING) — per-satellite dedup.** After R.2, with a reconciled
+    pair and the guard at zero residual, convert the in-tree `mod` to a `#[path]`
+    include of the satellite and delete the in-tree copy. Smallest-drift-first
+    (stringprep / zipfile / xml_sax already at zero residual); decimal last (it
+    must preserve the in-tree mpdec / without-mpdec split, or have the satellite
+    absorb it). The default feature set must include the (now-mandatory) satellite
+    features so a default build is behaviorally unchanged.
+  See §3 Phase R and `memory/recovery/baton_move_R_satellite_drift.md`.
 - **`molt-gpu` already exists as a crate** — `builtins/gpu.rs` (11,816) should migrate into it (or
   the existing `molt-gpu` should absorb it), gated by `molt_gpu_primitives` (verified the gate
   exists, `builtins/mod.rs:73`).
@@ -492,19 +562,52 @@ interleave anytime. N1 must wait for the LLVM partner's arc (§0.3). C1/O are cl
 - Rollback: revert; merge `molt-tir`'s files back under `molt-backend/src/`, restore `Repr` to
   `representation_plan.rs`, drop the dep. (Larger revert than M1/F1 — hence T1 is move #3 not #1.)
 
-**R — complete the 28 satellite dedups (move #4):**
-- For each of the 28 `#[cfg(not(feature = "stdlib_X"))]` modules: verify the satellite copy is
-  content-identical (`diff <(sort in_tree) <(sort satellite)` = 0), then **delete the in-tree copy**
-  and make the satellite the unconditional source. Migrate the default feature set so a default
-  build includes the (now-mandatory) satellite features → behavior-preserving.
-- Per-satellite gate: full differential suite for that stdlib module (e.g. `http`, `csv`, `decimal`)
-  green; binary-size delta measured (should be ≤0 — removing a duplicate compilation unit).
-- **Feature-unification trap (§4):** if two satellites share a transitive dep with conflicting
-  feature requirements, unifying them in the default set can silently enable a feature elsewhere.
-  Audit `cargo tree -f '{p} {f}'` before/after each satellite's default-on migration.
-- Rollback: per-satellite (this phase is 28 independently-revertable sub-commits, one per module —
-  the ONLY phase that is legitimately multi-commit, because each satellite IS a complete structural
-  piece per the CLAUDE.md "intermediate commits acceptable when each is itself complete" rule).
+**R — reconcile the 28 satellite pairs, then dedup (move #4) — CORRECTED:**
+
+> The naive "verify `diff <(sort) <(sort)` = 0, delete the in-tree copy" recipe in
+> the original draft is UNSOUND here: the pairs have drifted, the copies serve
+> disjoint live tiers, and they are two access models (see §1.4/§2.4). The
+> corrected, structurally-ordered plan:
+
+- **R.1 (LANDED, Move R) — fail-closed parity guard + drift reconciliation.**
+  - `tools/check_satellite_parity.py` normalizes the by-design access-layer
+    differences and compares the residual line-multiset per pair; the
+    `runtime/molt-runtime/tests/satellite_parity.rs` integration test runs it in
+    the lib suite. `tools/satellite_parity_baseline.json` records the per-pair
+    allowed residual count + a SHA-256 of the residual content, plus a one-way
+    `ratchet_ceiling` (total residual; may only DECREASE). The guard FAILS on: a
+    pair's residual exceeding baseline, the residual content changing at the same
+    count, a missing pair, or the total exceeding the ceiling. This is a CONTRACT,
+    not a sync script — it makes new drift a CI failure and ratchets toward zero.
+  - Reconciliation ports each genuine one-sided behavioral fix into BOTH copies
+    with a differential regression run vs CPython under BOTH a default build
+    (satellite copy) and a `MOLT_DIFF_STDLIB_PROFILE=micro` build (in-tree copy).
+    First landed fix: satellite `csv` adopted the in-tree general
+    `ensure_hashable`/`HashContext::DictKey` unhashable-key check (new
+    `RuntimeVtable::ensure_hashable` entry), pinned by
+    `tests/differential/stdlib/csv_get_dialect_unhashable.py` (byte-identical on
+    both tiers, incl. the previously-broken `bytearray` case).
+- **R.2 (PENDING) — bridge-facade access-layer unification** (the real "phase 2";
+  see §2.4). REQUIRED before any deletion: one source file must compile in both
+  access contexts.
+- **R.3 (PENDING) — per-satellite dedup.** Only after R.2 and a zero-residual,
+  reconciled pair: convert the in-tree `mod` to a `#[path]` include of the
+  satellite and delete the in-tree copy. Smallest-residual-first (12 pairs are
+  already at zero residual: difflib, ipaddress, cmath, fractions,
+  functions_zipfile, stringprep, html, unicodedata, xml_etree, xml_sax, zoneinfo,
+  + the access-layer-only http drop). decimal LAST and special (preserve the
+  in-tree mpdec / without-mpdec split). itertools needs its satellite to adopt
+  RuntimeState-scoped slots first (it still uses process-global `AtomicU64`s).
+- Per-pair gate: the parity guard at the new (lower) baseline + the full
+  differential suite for that stdlib module green on BOTH tiers; binary-size delta
+  measured at the eventual R.3 dedup (should be ≤0 — removing a duplicate CU).
+- **Feature-unification trap (§4):** at R.3, if two satellites share a transitive
+  dep with conflicting feature requirements, unifying them in the default set can
+  silently enable a feature elsewhere. Audit `cargo tree -f '{p} {f}'`
+  before/after each satellite's default-on migration.
+- Rollback: R.1 is two independently-revertable commits (guard; reconciliation).
+  R.3 is per-satellite (each satellite IS a complete structural piece per the
+  CLAUDE.md "intermediate commits acceptable when each is itself complete" rule).
 
 **N1 — extract `molt-backend-native` (move #5):**
 - New crate = `native_backend/` + `llvm_backend/` onto `molt-tir`. The `use super::*` glob becomes
@@ -539,7 +642,7 @@ T1).
 | **byte-identical regression** | Any phase claiming move-only | G3 artifact diff is mandatory. If artifacts differ, the move changed behavior → it is not move-only → reject and find what leaked (usually an inlining/ordering change from a crate boundary; acceptable ONLY if proven semantically identical and documented). |
 | **extracting a crate from under an active editor** | N1 vs LLVM partner | Sequence N1 after the partner's arc; or freeze-window coordinate. Never `git mv` files another agent is mid-edit on. |
 | **mixin loses static self-typing** | F1 | `_GeneratorProtocol` + `if TYPE_CHECKING: self: _GeneratorProtocol` per mixin. |
-| **satellite drift already happened** | R | The 28 in-tree copies have likely already drifted from satellites in subtle ways. Before deleting, the `diff <(sort) <(sort)`=0 check per satellite is mandatory; any non-zero diff means investigate WHICH copy is correct before deleting. |
+| **satellite drift already happened** (CONFIRMED, partly mitigated) | R | All 28 in-tree copies DID drift (confirmed, not "likely") — `functions_http` raw sorted-diff was 820, not 0. Move R landed the fail-closed parity guard (`tools/check_satellite_parity.py` + `satellite_parity.rs`) that normalizes the access layer, ratchets the residual toward zero, and fails CI on new drift; reconciliation ports one-sided fixes into both copies with two-tier differential tests. A raw `diff <(sort) <(sort)`=0 check is the WRONG gate (it flags by-design access-layer differences); use the guard's normalized residual. Deletion (R.3) is blocked on the R.2 access-layer unification. |
 | **churn-data illusion** | Prioritization | The 50-commit window is too short for frequency churn. Do NOT re-derive priorities from `git log` frequency; use the structural ranking (§1.2 caveat). |
 
 ---
@@ -578,9 +681,12 @@ Ranked by `(friction-relief × build-win) / risk`. Rationale per move:
 3. **T1 — extract `molt-tir`.** The keystone build-cache move. Enabled by the verified zero
    back-edge finding — the layering is *already* correct, only the crate line is missing. Unblocks
    N1/W1/L1. Medium risk (pub-surface contract + the surgical Repr cut + the matches!-oracle audit).
-4. **R — finish the satellite dedup.** Eliminates a systemic 28× dual-maintenance / silent-drift
-   hazard. Low-medium risk (per-satellite, independently revertable). High friction relief
-   (stdlib-module authors stop editing two copies). Independent of the backend arc — can run anytime.
+4. **R — reconcile + guard the satellites (R.1 LANDED), then unify + dedup (R.2/R.3).** Eliminates a
+   systemic 28× dual-maintenance / silent-drift hazard that was already materialized (shipped
+   behavior differed by build tier). R.1 (parity guard + reconciliation) is low risk, independently
+   revertable, and stops new drift NOW; R.2 (access-layer unification) and R.3 (per-satellite dedup,
+   independently revertable) are medium risk and follow. High friction relief (stdlib-module authors
+   stop editing two diverging copies). Independent of the backend arc — can run anytime.
 5. **N1 — extract `molt-backend-native`.** The biggest single build-cache win (isolates the 58K-line
    Cranelift+LLVM codegen from the rest) but the riskiest extraction (the `use super::*` → explicit
    imports rewrite, symbol-identity gate, and the LLVM-partner sequencing constraint). Last of the
@@ -602,10 +708,13 @@ git log --numstat --pretty=format: | awk '...'             # → frontend/__init
 grep -rcE 'crate::(wasm|luau|rust|llvm_backend|native_backend)' runtime/molt-backend/src/tir/  # → (none)
 grep -rnE 'crate::representation_plan' runtime/molt-backend/src/tir/  # → only lower_to_wasm:1530, lower_to_lir:13
 grep -ohE 'crate::[a-z_]+' runtime/molt-backend/src/representation_plan.rs | sort|uniq -c  # → tir×22, ir×2
-# §1.4 satellite dup
+# §1.4 satellite drift (CORRECTED — the copies are NOT identical):
 diff <(sort runtime/molt-runtime/src/builtins/functions_http.rs) \
-     <(sort runtime/molt-runtime-http/src/functions_http.rs) | grep -c '^[<>]'   # → 0
+     <(sort runtime/molt-runtime-http/src/functions_http.rs) | grep -c '^[<>]'   # → 820 (NOT 0)
 grep -c 'cfg(not(feature = "stdlib_' runtime/molt-runtime/src/builtins/mod.rs    # → 28
+# The correct drift metric (access layer normalized away) + the fail-closed guard:
+python3 tools/check_satellite_parity.py --verbose        # per-pair normalized residual vs baseline
+python3 tools/check_satellite_parity.py --show functions_http   # the residual diff for one pair
 # §0.2 DX-doc staleness
 grep -nE 'lto|\[profile' Cargo.toml | head      # release thin@40; release-fast fat@295; release-output@366
 # §3 gates
