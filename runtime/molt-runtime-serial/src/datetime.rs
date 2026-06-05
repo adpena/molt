@@ -573,7 +573,7 @@ fn parse_isotime_str(s: &str) -> Result<(i32, i32, i32, i32, i64), String> {
     if b.len() < 2 {
         return Err(format!("Invalid time string: {s:?}"));
     }
-    let h = parse_digits_n(b, 0, 2)? as i32;
+    let h = parse_digits_n(b, 0, 2)?;
     let mut pos = 2usize;
     let (mi, sec, us) = if pos < b.len() && (b[pos] == b':' || b[pos].is_ascii_digit()) {
         let has_colon = b[pos] == b':';
@@ -583,7 +583,7 @@ fn parse_isotime_str(s: &str) -> Result<(i32, i32, i32, i32, i64), String> {
         if pos + 2 > b.len() {
             return Err(format!("Invalid time string: {s:?}"));
         }
-        let mi = parse_digits_n(b, pos, 2)? as i32;
+        let mi = parse_digits_n(b, pos, 2)?;
         pos += 2;
         let (sec, us) =
             if pos < b.len() && (b[pos] == b':' || (!has_colon && b[pos].is_ascii_digit())) {
@@ -593,7 +593,7 @@ fn parse_isotime_str(s: &str) -> Result<(i32, i32, i32, i32, i64), String> {
                 if pos + 2 > b.len() {
                     return Err(format!("Invalid time string: {s:?}"));
                 }
-                let sec = parse_digits_n(b, pos, 2)? as i32;
+                let sec = parse_digits_n(b, pos, 2)?;
                 pos += 2;
                 let us = if pos < b.len() && b[pos] == b'.' {
                     pos += 1;
