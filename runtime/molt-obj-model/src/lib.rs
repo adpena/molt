@@ -168,9 +168,20 @@ impl MoltObject {
         }
     }
 
+    /// Construct an INLINE NaN-boxed int. CONTRACT: `i` must fit the 47-bit
+    /// inline window `[-2^46, 2^46)`. Values outside it need a heap BigInt —
+    /// use the runtime's `int_bits_from_i128` (or `molt_int_from_i64` at the
+    /// C ABI), which dispatches inline-vs-BigInt correctly. The masking below
+    /// would otherwise silently truncate mod 2^47 — the silent-integer
+    /// miscompile class (this exact stub truncated the overflow_peel
+    /// accumulator's exit boxing before `molt_int_from_i64` was fixed).
     #[inline(always)]
     pub fn from_int(i: i64) -> Self {
-        // Simple 47-bit integer for MVP
+        debug_assert!(
+            (-(1i64 << (INT_WIDTH - 1))..(1i64 << (INT_WIDTH - 1))).contains(&i),
+            "MoltObject::from_int: {i} is outside the 47-bit inline window; \
+             callers must route non-inline values through int_bits_from_i128"
+        );
         let val = (i as u64) & INT_MASK;
         Self(QNAN | TAG_INT | val)
     }

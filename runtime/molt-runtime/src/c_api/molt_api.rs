@@ -62,7 +62,17 @@ pub extern "C" fn molt_bool_from_i32(value: i32) -> MoltHandle {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_from_i64(value: i64) -> MoltHandle {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_int(value).bits() })
+    // This is the backend's FULL-RANGE i64 boxing entrypoint — the cold path
+    // of every native escape site (`ensure_boxed_overflow_safe`) and the
+    // overflow_peel raw-carrier boxing. It MUST allocate a heap BigInt for
+    // values outside the 47-bit inline window. It previously delegated to
+    // `MoltObject::from_int` (the inline-window constructor), which silently
+    // truncated mod 2^47 — a latent silent-integer miscompile that was
+    // unreachable while the carrier chains only admitted inline-proven
+    // values, and detonated the moment full-range raw carriers landed.
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::builtins::numbers::int_bits_from_i128(_py, value as i128)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -685,11 +695,13 @@ pub extern "C" fn molt_module_add_int_constant(
     value: i64,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
+        // Full-range: a module int constant outside the 47-bit inline window
+        // must become a heap BigInt, not a truncated inline box.
         module_add_object_impl(
             _py,
             module_bits,
             name_bits,
-            MoltObject::from_int(value).bits(),
+            crate::builtins::numbers::int_bits_from_i128(_py, value as i128),
         )
     })
 }
