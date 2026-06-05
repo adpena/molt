@@ -5,6 +5,52 @@
 
 use crate::*;
 
+type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
+type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
+
+// ---------------------------------------------------------------------------
+// Runtime-scoped extension state for the itertools satellite
+// ---------------------------------------------------------------------------
+
+/// Register/fetch the itertools satellite's per-interpreter slot box. The box
+/// is created on first use and `clear`+`drop`-ed by the runtime on interpreter
+/// teardown (see `runtime_extension_states_clear_and_drop`), so the satellite's
+/// cached class/function handles are scoped to the interpreter exactly like the
+/// in-tree `RuntimeState.itertools` field.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_itertools_runtime_state_get_or_init(
+    key_ptr: *const u8,
+    key_len: usize,
+    init: RuntimeExtensionStateInit,
+    clear: RuntimeExtensionStateClear,
+    drop: RuntimeExtensionStateDrop,
+) -> *mut u8 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
+        crate::state::runtime_extension_state_get_or_init(
+            crate::state::runtime_state::runtime_state(_py),
+            key,
+            init,
+            clear,
+            drop,
+        )
+    })
+}
+
+/// Interned-aware shutdown release of a cached object handle held in an
+/// itertools satellite slot. Byte-for-byte the in-tree `clear_atomic_bits`
+/// release semantics (skip interned objects, otherwise shutdown-release).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_release_slot_bits(bits: u64) {
+    if bits == 0 {
+        return;
+    }
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::object::release_shutdown_bits(_py, bits);
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Class system helpers for itertools class setup
 // ---------------------------------------------------------------------------

@@ -11,6 +11,57 @@ use molt_runtime_core::prelude::*;
 pub fn init_vtable() {}
 
 // ---------------------------------------------------------------------------
+// Runtime-scoped extension state
+//
+// The itertools class/next-fn/sentinel slots are boxed into the runtime's
+// per-interpreter extension-state registry (keyed by an opaque byte string).
+// The runtime calls the registered `clear` (release handles) then `drop` (free
+// the box) on every interpreter teardown, so the cached object handles never
+// outlive the heap that produced them — the satellite analogue of the in-tree
+// `RuntimeState.itertools` field.
+// ---------------------------------------------------------------------------
+
+pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
+pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
+
+unsafe extern "C" {
+    fn __molt_itertools_runtime_state_get_or_init(
+        key_ptr: *const u8,
+        key_len: usize,
+        init: RuntimeExtensionStateInit,
+        clear: RuntimeExtensionStateClear,
+        drop: RuntimeExtensionStateDrop,
+    ) -> *mut u8;
+
+    /// Interned-aware release of a slot's cached object handle. Mirrors the
+    /// in-tree `clear_atomic_bits` (which skips interned objects and otherwise
+    /// performs a shutdown release).
+    fn molt_itertools_release_slot_bits(bits: u64);
+}
+
+pub fn runtime_state_get_or_init(
+    key: &[u8],
+    init: RuntimeExtensionStateInit,
+    clear: RuntimeExtensionStateClear,
+    drop: RuntimeExtensionStateDrop,
+) -> *mut u8 {
+    unsafe {
+        __molt_itertools_runtime_state_get_or_init(key.as_ptr(), key.len(), init, clear, drop)
+    }
+}
+
+/// Release a cached object handle from an itertools runtime-state slot.
+///
+/// # Safety
+///
+/// Must be called while the runtime GIL is held (the extension-state teardown
+/// path holds it). `bits` must be a handle previously stored in a slot.
+pub unsafe fn release_runtime_slot_bits(bits: u64) {
+    unsafe { molt_itertools_release_slot_bits(bits) }
+}
+
+// ---------------------------------------------------------------------------
 // Itertools-specific + runtime C API imports
 // ---------------------------------------------------------------------------
 
