@@ -23770,7 +23770,25 @@ impl SimpleBackend {
                         let store_uses_boxed_transport = !int_primary_vars.contains(name)
                             && !bool_primary_vars.contains(name)
                             && !float_primary_vars.contains(name);
-                        if in_loop && store_uses_boxed_transport {
+                        // RC drop-insertion substrate (design 20, R1 guard — inc
+                        // side): when the TIR drop pass processed this function it
+                        // already inserted the loop-carried RC ownership transfer
+                        // (a `DecRef(old)` before the back-edge; the back-edge passes
+                        // the new value's single owned reference to the header phi).
+                        // The legacy `inc_ref(new)`-per-iteration path below would
+                        // then add an unmatched reference per iteration. This is the
+                        // symmetric twin of the `loop_reassign_old_val` dec-side
+                        // guard (§4.1) and is NECESSARY for sound activation — but
+                        // note it is NOT SUFFICIENT on its own: the broader native
+                        // value-tracking RC (`tracked_obj_vars` registration +
+                        // `drain_cleanup_tracked_dedup` at exits, retain-at-store /
+                        // release-at-scope-exit) still negates the TIR `DecRef(old)`
+                        // on loop-carried accumulators. Closing the residual O(n)
+                        // leak requires gating that whole system on `drop_inserted`
+                        // (the Phase-5 native-RC retirement — see the activation note
+                        // in `pass_manager::build_default_pipeline` and design 20
+                        // §4.1). The guard here is dormant until the pass is wired.
+                        if in_loop && store_uses_boxed_transport && !drop_inserted {
                             // inc_ref the new value so it survives loop iterations.
                             // No dec_ref for old — drain_cleanup_tracked handles
                             // final cleanup at function return (lifetimes extended
