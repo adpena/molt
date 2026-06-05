@@ -279,9 +279,28 @@ impl MoltObject {
         if self.is_ptr() {
             let masked = self.0 & POINTER_MASK;
             let addr = canonical_addr_from_masked(masked);
-            // In release builds, bypass the registry — reconstruct the pointer
-            // directly from the NaN-boxed canonical address. The registry lookup
-            // only exists for provenance safety checking in debug/dev builds.
+            // The NaN-boxed canonical address is the SINGLE source of truth for a
+            // `TAG_PTR` value's identity, on every build profile. Recovering it via
+            // `with_exposed_provenance_mut` is exactly what release does, and it is
+            // address-equivalent to the registered slot for runtime-minted pointers
+            // (`register_ptr` keys on the same `expose_provenance()` address that
+            // `from_ptr` boxes).
+            //
+            // The provenance registry is a debug-only PROVENANCE CHECKER, not the
+            // arbiter of whether a pointer is recoverable. Compiled code legitimately
+            // mints `TAG_PTR` values WITHOUT calling `from_ptr` — e.g. the native
+            // backend inlines `ObjectNewBoundStack` and NaN-boxes the Cranelift
+            // `stack_addr` directly (function_compiler.rs `box_ptr_value`). Those
+            // pointers are canonical and valid but never enter the registry, so a
+            // registry MISS must not turn `as_ptr()` into `None` — doing so made
+            // stack-allocated temp receivers (`Left().who()`) decode to a null
+            // receiver under the dev profile only, diverging from release.
+            //
+            // So: when the registry has a slot for this address, return the
+            // provenance-carrying registered pointer (preserving the debug-build
+            // safety check for runtime-minted objects); otherwise fall back to the
+            // canonical reconstruction, identical to release. This keeps `as_ptr()`
+            // profile-independent while retaining the registry's checking value.
             #[cfg(not(debug_assertions))]
             {
                 Some(std::ptr::with_exposed_provenance_mut(addr as usize))
@@ -289,6 +308,7 @@ impl MoltObject {
             #[cfg(debug_assertions)]
             {
                 resolve_ptr(addr)
+                    .or_else(|| Some(std::ptr::with_exposed_provenance_mut(addr as usize)))
             }
         } else {
             None
@@ -517,6 +537,31 @@ mod tests {
         unsafe {
             drop(Box::from_raw(ptr));
         }
+    }
+
+    #[test]
+    fn as_ptr_recovers_address_for_compiled_minted_box() {
+        // Compiled native code (e.g. the inlined `ObjectNewBoundStack` lowering)
+        // NaN-boxes a pointer directly without going through `from_ptr`, so the
+        // pointer never enters the debug provenance registry. `as_ptr()` must
+        // still recover the canonical address — a registry MISS is NOT `None`.
+        // This is the profile-independence contract the call_method_ic receiver
+        // (a stack-allocated temp receiver) depends on.
+        reset_ptr_registry();
+        let boxed = Box::new(0xABu8);
+        let ptr = Box::into_raw(boxed);
+        let addr = ptr.expose_provenance() as u64;
+        // Build the TAG_PTR box exactly as `box_ptr_value` does in codegen,
+        // bypassing `from_ptr`/`register_ptr`.
+        let masked = addr & POINTER_MASK;
+        let obj = MoltObject(QNAN | TAG_PTR | masked);
+        assert!(obj.is_ptr());
+        let recovered = obj.as_ptr().expect("unregistered TAG_PTR must recover");
+        assert_eq!(recovered.expose_provenance() as u64, addr);
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
+        reset_ptr_registry();
     }
 
     #[test]
