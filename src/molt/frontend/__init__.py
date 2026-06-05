@@ -6938,25 +6938,36 @@ class SimpleTIRGenerator(
             items.append(cell)
         return items
 
-    def _collect_pattern_capture_names(self, pattern: ast.pattern) -> set[str]:
-        names: set[str] = set()
+    def _collect_pattern_capture_names(self, pattern: ast.pattern) -> list[str]:
+        # Source order, deduplicated.  A set leaked PYTHONHASHSEED ordering into
+        # emitted IR because _collect_assigned_names_ordered feeds these capture
+        # names positionally into the function's co_varnames tuple (#34,
+        # match-capture class).  Callers that need set semantics (e.g. MatchOr
+        # binding-equality) wrap in set(...).
+        names: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: str) -> None:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
 
         def visit(current: ast.pattern) -> None:
             if isinstance(current, ast.MatchAs):
                 if current.name and current.name != "_":
-                    names.add(current.name)
+                    add(current.name)
                 if current.pattern is not None:
                     visit(current.pattern)
                 return
             if isinstance(current, ast.MatchStar):
                 if current.name and current.name != "_":
-                    names.add(current.name)
+                    add(current.name)
                 return
             if isinstance(current, ast.MatchMapping):
                 for sub in current.patterns:
                     visit(sub)
                 if current.rest and current.rest != "_":
-                    names.add(current.rest)
+                    add(current.rest)
                 return
             if isinstance(current, ast.MatchSequence):
                 for sub in current.patterns:
@@ -8155,17 +8166,27 @@ class SimpleTIRGenerator(
             return result
         return None
 
-    def _collect_target_names(self, target: ast.AST) -> set[str]:
+    def _collect_target_names(self, target: ast.AST) -> list[str]:
+        # Source (left-to-right) order, deduplicated.  A set would be lossy: its
+        # iteration order is PYTHONHASHSEED-dependent, and several callers feed
+        # these names positionally into emitted IR (e.g. the co_varnames tuple
+        # via _collect_assigned_names_ordered), so a set leaked hash order into
+        # the compiled output (#34, unpack-target class).  Returning an ordered
+        # list keeps that deterministic; set-semantics callers wrap in set(...).
         if isinstance(target, ast.Name):
-            return {target.id}
+            return [target.id]
         if isinstance(target, ast.Starred):
             return self._collect_target_names(target.value)
         if isinstance(target, (ast.Tuple, ast.List)):
-            names: set[str] = set()
+            names: list[str] = []
+            seen: set[str] = set()
             for elt in target.elts:
-                names.update(self._collect_target_names(elt))
+                for name in self._collect_target_names(elt):
+                    if name not in seen:
+                        seen.add(name)
+                        names.append(name)
             return names
-        return set()
+        return []
 
     def _collect_global_decls(self, nodes: list[ast.stmt]) -> set[str]:
         class GlobalCollector(ast.NodeVisitor):
@@ -13257,7 +13278,7 @@ class SimpleTIRGenerator(
         comp = node.generators[0]
         if self._collect_inline_comp_walrus_names([node.elt], comp.ifs):
             return False
-        target_names = self._collect_target_names(comp.target)
+        target_names = set(self._collect_target_names(comp.target))
         lambda_free_vars = self._collect_inline_comp_lambda_free_vars(
             [node.elt], comp.ifs
         )
