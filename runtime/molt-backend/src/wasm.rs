@@ -17438,4 +17438,97 @@ mod tests {
         ];
         assert!(!has_non_linear_control_flow(&ops));
     }
+
+    /// Extract `(param_count, result_count)` for every func type in a module's
+    /// type section, in section order.
+    fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
+        use wasmparser::CompositeInnerType;
+        let mut sigs = Vec::new();
+        for payload in Parser::new(0).parse_all(wasm) {
+            if let Ok(Payload::TypeSection(reader)) = payload {
+                for rec_group in reader.into_iter() {
+                    let rec_group = rec_group.expect("valid rec group");
+                    for sub_type in rec_group.into_types() {
+                        if let CompositeInnerType::Func(f) = &sub_type.composite_type.inner {
+                            sigs.push((f.params().len(), f.results().len()));
+                        }
+                    }
+                }
+            }
+        }
+        sigs
+    }
+
+    /// Structural guard for the static WASM type section. The backend emits a
+    /// fixed block of static func types at indices `0..STATIC_TYPE_COUNT`, then
+    /// appends dynamic/wrapper types starting at `STATIC_TYPE_COUNT`. Codegen
+    /// and the runtime ABI both index into this block by *fixed integer*, so if
+    /// a static type is inserted, removed, or reordered without updating
+    /// `STATIC_TYPE_COUNT`, every dynamic type shifts and `call_indirect` /
+    /// import signatures silently mismatch (a hard-to-debug trap class).
+    ///
+    /// This pins the load-bearing static signatures by index so any such drift
+    /// fails at `cargo test`. It also pins `STATIC_TYPE_COUNT` against the count
+    /// where the static block ends (the first dynamic type begins). Unlike the
+    /// integration test in `tests/wasm_type_section.rs` (asserts a stale `>= 39`
+    /// and cannot see the private const), this lives where the const is visible.
+    #[test]
+    fn static_type_section_signatures_are_pinned_to_static_type_count() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![make_op("ret_void", None, None, None)],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+        let wasm = WasmBackend::new().compile(ir);
+        let sigs = wasm_type_section_signatures(&wasm);
+
+        assert!(
+            sigs.len() >= STATIC_TYPE_COUNT as usize,
+            "type section ({}) must contain at least the {STATIC_TYPE_COUNT} static types",
+            sigs.len()
+        );
+
+        // Pin the load-bearing static signatures by index. These indices are
+        // referenced as fixed integers by codegen and the runtime ABI.
+        let pinned: &[(usize, (usize, usize))] = &[
+            (0, (0, 1)),   // () -> i64           (user functions)
+            (1, (1, 0)),   // (i64) -> ()         (print_obj)
+            (8, (0, 0)),   // () -> ()            (nullary void)
+            (31, (2, 2)),  // (i64,i64) -> (i64,i64)  MULTI_RETURN_2
+            (32, (3, 3)),  // (i64,i64,i64) -> 3-tuple  MULTI_RETURN_3
+            (33, (1, 2)),  // (i64) -> (i64,i64)  MULTI_RETURN_UNARY_TO_2
+            (34, (0, 2)),  // () -> (i64,i64)     MULTI_RETURN_NULLARY_TO_2
+            (35, (9, 1)),  // (i64*9) -> i64      high-arity
+            (38, (12, 1)), // (i64*12) -> i64     high-arity
+            (41, (4, 1)),  // call_method_ic0
+            (45, (8, 1)),  // call_method_ic4
+            (46, (5, 1)),  // call_super_method_ic0
+            (50, (9, 1)),  // call_super_method_ic4 (last static type)
+        ];
+        for &(idx, expected) in pinned {
+            assert_eq!(
+                sigs[idx], expected,
+                "static WASM type {idx} drifted to {:?}, expected {expected:?}. \
+                 A static type was inserted/removed/reordered without updating \
+                 the pinned indices or STATIC_TYPE_COUNT.",
+                sigs[idx]
+            );
+        }
+
+        // The static block ends exactly at STATIC_TYPE_COUNT: index 50 is the
+        // last static type (call_super_method_ic4) and index 51 (==
+        // STATIC_TYPE_COUNT) is the first dynamically-appended type. If a static
+        // type were added without bumping STATIC_TYPE_COUNT, the ic4 signature
+        // would no longer land at index 50 above and this guard would fire.
+        assert_eq!(
+            STATIC_TYPE_COUNT, 51,
+            "STATIC_TYPE_COUNT changed; update the pinned static signature indices above to match"
+        );
+    }
 }
