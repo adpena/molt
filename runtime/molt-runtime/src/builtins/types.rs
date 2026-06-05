@@ -1,7 +1,26 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_obj_model::MoltObject;
+
+/// Cached `MOLT_TRACE_BUILTIN_TYPE` flag. `molt_builtin_type` resolves builtin
+/// type objects (`int`, `str`, ...) and is on a very hot dispatch path; read
+/// the env var once rather than per call (per-call `std::env::var` takes the
+/// libc environ lock and heap-allocates).
+#[inline]
+fn trace_builtin_type_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_BUILTIN_TYPE").as_deref() == Ok("1"))
+}
+
+/// Cached `MOLT_TRACE_ISINSTANCE` flag. `molt_isinstance` runs on every
+/// `isinstance()` call; read the env var once rather than per call.
+#[inline]
+fn trace_isinstance_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_ISINSTANCE").as_deref() == Ok("1"))
+}
 
 use crate::state::{RuntimeState, cache::clear_atomic_slots};
 use crate::{
@@ -103,10 +122,7 @@ pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
         let Some(bits) = builtin_type_bits(_py, tag) else {
             return raise_exception::<_>(_py, "TypeError", "unknown builtin type tag");
         };
-        if matches!(
-            std::env::var("MOLT_TRACE_BUILTIN_TYPE").ok().as_deref(),
-            Some("1")
-        ) {
+        if trace_builtin_type_enabled() {
             eprintln!("molt builtin_type tag={} bits=0x{:x}", tag, bits);
         }
         inc_ref_bits(_py, bits);
@@ -455,10 +471,7 @@ pub extern "C" fn molt_type_subclasscheck(cls_bits: u64, sub_bits: u64) -> u64 {
 pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let result = isinstance_runtime(_py, val_bits, class_bits);
-        if matches!(
-            std::env::var("MOLT_TRACE_ISINSTANCE").ok().as_deref(),
-            Some("1")
-        ) {
+        if trace_isinstance_enabled() {
             eprintln!(
                 "molt isinstance val_type={} class_type={} result={}",
                 crate::type_name(_py, obj_from_bits(val_bits)),

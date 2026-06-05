@@ -5208,7 +5208,7 @@ pub extern "C" fn molt_code_new(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let debug_bound = std::env::var_os("MOLT_DEBUG_BOUND_METHOD").is_some();
+        let debug_bound = crate::builtins::attributes::debug_bound_method_enabled();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             if debug_bound {
