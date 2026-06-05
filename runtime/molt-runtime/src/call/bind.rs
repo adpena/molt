@@ -411,7 +411,39 @@ struct MethodIcEntry {
     func_bits: u64,
     attr_bits: u64,
     can_shadow: bool,
+    /// Fixed parameter count of `func_bits` INCLUDING `self`. The fused
+    /// `call_direct` fast path passes exactly `[self, args...]` with NO
+    /// default-filling, so it is only correct when the supplied positional count
+    /// (`args.len() + 1`) equals this. Computed once at insert so the hit path is
+    /// a single integer compare.
+    fixed_arity: u8,
+    /// Whether `func_bits` needs the full binder (has positional/keyword-only
+    /// defaults, `*args`, or `**kwargs`). When true the `call_direct` fast path
+    /// MUST NOT be taken — defaults would never be applied (e.g.
+    /// `runner.run(coro)` against `def run(self, coro, *, context=None)`), raising
+    /// a spurious `call arity mismatch`. Routes to the slow binder instead.
+    requires_full_binding: bool,
     valid: bool,
+}
+
+/// Compute `(fixed_arity_including_self, requires_full_binding)` for a resolved
+/// method function. Used by the fused method-call IC to decide whether the
+/// allocation-free `call_direct` fast path (which performs NO argument binding)
+/// is sound for the call. Returns `None` when `func_bits` is not a plain
+/// function object.
+///
+/// # Safety
+/// `func_bits` must be a live object reference; the GIL must be held.
+unsafe fn method_ic_direct_call_shape(_py: &PyToken<'_>, func_bits: u64) -> Option<(u8, bool)> {
+    unsafe {
+        let func_ptr = obj_from_bits(func_bits).as_ptr()?;
+        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+            return None;
+        }
+        let arity = function_arity(func_ptr);
+        let requires_full_binding = function_requires_full_binding(_py, func_ptr);
+        Some((arity as u8, requires_full_binding))
+    }
 }
 
 const METHOD_IC_TLS_SIZE: usize = 256; // Must be power of 2.
@@ -428,6 +460,8 @@ thread_local! {
                         func_bits: 0,
                         attr_bits: 0,
                         can_shadow: true,
+                        fixed_arity: 0,
+                        requires_full_binding: true,
                         valid: false,
                     },
                 ); METHOD_IC_TLS_SIZE],
@@ -482,6 +516,8 @@ pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) {
                 func_bits: 0,
                 attr_bits: 0,
                 can_shadow: true,
+                fixed_arity: 0,
+                requires_full_binding: true,
                 valid: false,
             },
         ); METHOD_IC_TLS_SIZE];
@@ -2698,6 +2734,19 @@ unsafe fn call_method_ic_dispatch(
                 call_function_obj_vec(_py, func_bits, &argv[..args.len() + 1])
             };
 
+            // The allocation-free `call_direct` passes EXACTLY `[self, args...]`
+            // and performs NO argument binding, so it is sound only when the
+            // method takes no positional/keyword-only defaults, no `*args`/
+            // `**kwargs`, AND the supplied positional count matches its fixed
+            // arity. Otherwise the call must take the slow binder path (which
+            // fills defaults via `molt_call_bind_ic`); without this guard a call
+            // like `runner.run(coro)` against `def run(self, coro, *,
+            // context=None)` reaches `call_function_obj` with one arg short and
+            // raises a spurious `call arity mismatch`.
+            let direct_ok = |fixed_arity: u8, requires_full_binding: bool| -> bool {
+                !requires_full_binding && fixed_arity as usize == args.len() + 1
+            };
+
             // Per-site IC: on a hit, validate the receiver class + layout
             // version, run the (cheap) shadow check only when the class permits
             // shadowing, and dispatch directly — no name interning, no MRO walk.
@@ -2708,6 +2757,7 @@ unsafe fn call_method_ic_dispatch(
                 if class_bits == entry.class_bits
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && class_layout_version_bits(class_ptr) == entry.class_version
+                    && direct_ok(entry.fixed_arity, entry.requires_full_binding)
                 {
                     let shadowed = entry.can_shadow
                         && crate::builtins::attr::object_instance_shadows(
@@ -2737,6 +2787,15 @@ unsafe fn call_method_ic_dispatch(
                             attr_bits,
                         );
                     if !shadowed {
+                        // Compute the direct-call shape once and record it in the
+                        // IC so future hits decide soundness with a single integer
+                        // compare. A method that needs full binding (defaults/
+                        // kw-only/varargs) is cached with `requires_full_binding`
+                        // set so the fast path is permanently skipped for this
+                        // site — correct, and still avoids re-resolving.
+                        let (fixed_arity, requires_full_binding) =
+                            method_ic_direct_call_shape(_py, info.func_bits)
+                                .unwrap_or((0, true));
                         if let Some(site_id) = ic_site_from_bits(site_bits) {
                             // Transfer the owned `attr_bits` ref into the IC; it
                             // is released by `method_ic_insert`/`clear` on reuse.
@@ -2749,18 +2808,30 @@ unsafe fn call_method_ic_dispatch(
                                     func_bits: info.func_bits,
                                     attr_bits,
                                     can_shadow: info.can_shadow,
+                                    fixed_arity,
+                                    requires_full_binding,
                                     valid: true,
                                 },
                             );
-                            return call_direct(_py, info.func_bits);
+                            if direct_ok(fixed_arity, requires_full_binding) {
+                                return call_direct(_py, info.func_bits);
+                            }
+                            // Needs full binding (or arg count mismatch): fall
+                            // through to the slow binder below.
+                        } else if direct_ok(fixed_arity, requires_full_binding) {
+                            // No stable site id — cannot cache; release our ref.
+                            let res = call_direct(_py, info.func_bits);
+                            dec_ref_bits(_py, attr_bits);
+                            return res;
+                        } else {
+                            dec_ref_bits(_py, attr_bits);
                         }
-                        // No stable site id — cannot cache; release our ref.
-                        let res = call_direct(_py, info.func_bits);
+                    } else {
                         dec_ref_bits(_py, attr_bits);
-                        return res;
                     }
+                } else {
+                    dec_ref_bits(_py, attr_bits);
                 }
-                dec_ref_bits(_py, attr_bits);
             }
         }
 
