@@ -5712,7 +5712,17 @@ unsafe fn bind_builtin_file_reconfigure(_py: &PyToken<'_>, args: &CallArgs) -> O
                 write_through_bits = val_bits;
             }
             _ => {
-                let msg = format!("'{name_str}' is an invalid keyword argument for reconfigure()");
+                // CPython 3.13 changed TextIOWrapper.reconfigure's invalid-kwarg
+                // TypeError to the generic "got an unexpected keyword argument"
+                // form; 3.12 used the specific "is an invalid keyword argument
+                // for reconfigure()" form. Gate on the configured target version
+                // so output matches the emulated CPython across 3.12/3.13/3.14 on
+                // every arch/OS (mirrors the splitlines() gating above).
+                let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+                    format!("reconfigure() got an unexpected keyword argument '{name_str}'")
+                } else {
+                    format!("'{name_str}' is an invalid keyword argument for reconfigure()")
+                };
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
