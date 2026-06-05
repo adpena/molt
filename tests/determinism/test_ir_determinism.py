@@ -42,17 +42,22 @@ def _compile_source_to_ir_subprocess(
     source_text: str,
     *,
     pythonhashseed: str = "0",
+    parse_codec: str = "msgpack",
 ) -> str:
     """Compile via a subprocess to ensure full process isolation."""
     script = (
         "import json, sys; "
         "sys.path.insert(0, {src!r}); "
         "from molt.frontend import compile_to_tir; "
-        "ir = compile_to_tir(sys.stdin.read()); "
+        "ir = compile_to_tir(sys.stdin.read(), parse_codec={codec!r}); "
         "print(json.dumps(ir, sort_keys=True, indent=2))"
-    ).format(src=str(ROOT / "src"))
+    ).format(src=str(ROOT / "src"), codec=parse_codec)
 
     env = os.environ.copy()
+    # ``pythonhashseed="random"`` exercises the *unpinned* path: a fresh,
+    # process-chosen hash seed on every run.  This is the only configuration
+    # that catches a hash-order leak that happens to agree across a fixed
+    # seed set (the #34 async-local-offset bug evaded a fixed-seed-only test).
     env["PYTHONHASHSEED"] = pythonhashseed
 
     result = run_native_test_process(
@@ -70,6 +75,50 @@ def _compile_source_to_ir_subprocess(
     return result.stdout
 
 
+def _compile_outcome_subprocess(
+    source_text: str,
+    *,
+    pythonhashseed: str,
+    parse_codec: str,
+) -> str:
+    """Return the deterministic *outcome* of compiling, success or failure.
+
+    On success this is the canonical IR JSON.  On a compile error it is a
+    normalized ``COMPILE_ERROR::<ExceptionType>::<message>`` string.  Either
+    way the outcome must be byte-identical across hash seeds — a program that
+    raises the *same* CompatibilityError on every seed is still deterministic;
+    only an outcome that *varies* with the seed is a leak.  (The plain IR
+    helper above ``pytest.fail``s on any error, which is right for programs
+    that are expected to compile but wrong for asserting determinism over a
+    set that may include legitimately-unsupported constructs.)
+    """
+    wrapper = (
+        "import json, sys\n"
+        "sys.path.insert(0, {src!r})\n"
+        "src = sys.stdin.read()\n"
+        "try:\n"
+        "    from molt.frontend import compile_to_tir\n"
+        "    ir = compile_to_tir(src, parse_codec={codec!r})\n"
+        "    sys.stdout.write('IR::' + json.dumps(ir, sort_keys=True))\n"
+        "except BaseException as exc:\n"
+        "    sys.stdout.write("
+        "'COMPILE_ERROR::' + type(exc).__name__ + '::' + str(exc))\n"
+    ).format(src=str(ROOT / "src"), codec=parse_codec)
+
+    env = os.environ.copy()
+    env["PYTHONHASHSEED"] = pythonhashseed
+
+    result = run_native_test_process(
+        [sys.executable, "-c", wrapper],
+        input=source_text,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    return result.stdout
+
+
 # ---------------------------------------------------------------------------
 # Collect programs
 # ---------------------------------------------------------------------------
@@ -84,6 +133,25 @@ def _basic_programs() -> list[Path]:
 
 
 BASIC_PROGRAMS = _basic_programs()
+
+
+def _async_programs() -> list[Path]:
+    """Async programs that exercise the async-local spill/restore path.
+
+    Async functions spill live values into closure slots across every
+    ``await``/``yield`` state boundary.  The slot offsets are assigned in
+    ``_spill_async_temporaries``, which historically iterated a *set* of
+    spill names — making every assigned offset depend on PYTHONHASHSEED
+    (bug #34).  These programs are the regression surface for that class:
+    any hash-order leak feeding IR emission shows up here as a per-seed
+    IR divergence.
+    """
+    if not BASIC_DIR.is_dir():
+        return []
+    return sorted(BASIC_DIR.glob("async_*.py"))
+
+
+ASYNC_PROGRAMS = _async_programs()
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +217,55 @@ def test_ir_hashseed_independence(program: Path) -> None:
             f"IR for {program.name} differs with PYTHONHASHSEED={seeds[i]} "
             f"vs PYTHONHASHSEED={seeds[0]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: async-spill hash-order independence (regression for #34)
+#
+# The async-local spill path assigns closure-slot offsets while iterating a
+# set of spill names.  Before the fix, that iteration order — and thus the
+# emitted offsets — varied with PYTHONHASHSEED.  A fixed-seed-only check
+# missed it because the chosen seeds happened to agree; the decisive
+# configuration is an *unpinned* (process-random) seed, run alongside a few
+# fixed seeds, across BOTH parse codecs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "program",
+    ASYNC_PROGRAMS,
+    ids=[p.name for p in ASYNC_PROGRAMS],
+)
+@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
+def test_async_spill_hashseed_independence(program: Path, parse_codec: str) -> None:
+    """Async-spill IR must be byte-identical across hash seeds, unpinned.
+
+    Includes ``"random"`` so the compiler runs under a fresh, process-chosen
+    hash seed — the only configuration that proves the offset assignment does
+    not depend on dict/set iteration order rather than merely agreeing for a
+    hand-picked seed set.
+    """
+    source = program.read_text()
+    # Fixed seeds + an explicit random one + the unpinned ("random") path.
+    seeds = ["0", "1", "42", "12345", str(_random_seed()), "random"]
+    reference = _compile_outcome_subprocess(
+        source, pythonhashseed=seeds[0], parse_codec=parse_codec
+    )
+    for seed in seeds[1:]:
+        outcome = _compile_outcome_subprocess(
+            source, pythonhashseed=seed, parse_codec=parse_codec
+        )
+        assert outcome == reference, (
+            f"Compile outcome for {program.name} [{parse_codec}] differs with "
+            f"PYTHONHASHSEED={seed} vs PYTHONHASHSEED={seeds[0]} — a hash-order "
+            f"leak into IR emission (regression of #34)"
+        )
+
+
+def _random_seed() -> int:
+    import random
+
+    return random.randint(1, 2**31 - 1)
 
 
 # ---------------------------------------------------------------------------
