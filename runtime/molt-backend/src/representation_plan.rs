@@ -164,6 +164,36 @@ impl I64Interval {
         }
     }
 
+    /// Widening join (abstract-interpretation `∇`): like [`union`], but any
+    /// bound that would *grow* (a lower bound moving down, an upper bound moving
+    /// up) is pushed straight to the `i64` extremum instead of inching outward.
+    /// This guarantees the interval fixpoint terminates even when a value is
+    /// updated self-referentially without a loop back-edge — e.g. a fully
+    /// UNROLLED accumulator `total = total + k` repeated in straight-line code,
+    /// where every clone writes the same SimpleIR variable, so each fixpoint
+    /// pass widens the variable's range by another step and a plain monotone
+    /// `union` never converges (an infinite-loop compile hang). Widening to
+    /// ±i64 is conservative-correct: an unbounded interval simply means the
+    /// value is not proven to fit the inline-int representation, so codegen
+    /// falls back to the BigInt-correct boxed path (bug #15 floor) — never a
+    /// miscompile.
+    ///
+    /// [`union`]: I64Interval::union
+    fn widen(self, other: Self) -> Self {
+        Self {
+            min: if other.min < self.min {
+                i64::MIN
+            } else {
+                self.min
+            },
+            max: if other.max > self.max {
+                i64::MAX
+            } else {
+                self.max
+            },
+        }
+    }
+
     fn checked_add(self, other: Self) -> Option<Self> {
         Self::from_i128_bounds(
             self.min as i128 + other.min as i128,
@@ -2103,22 +2133,36 @@ fn op_produces_raw_i64_for_int_primary(
     }
 }
 
+/// Number of monotone `union` fixpoint passes allowed before the interval
+/// analysis switches to a WIDENING join. A legitimately-converging program
+/// stabilises in a handful of passes; anything still growing past this bound is
+/// a self-referential accumulator (e.g. a fully-unrolled `total += i`) whose
+/// range is unbounded, so we widen it to ±i64 (→ BigInt-correct boxed path)
+/// rather than loop forever. The bound guarantees termination on ANY input.
+const INTERVAL_WIDEN_AFTER_PASSES: u32 = 8;
+
 fn compute_i64_interval_facts(func_ir: &FunctionIR) -> BTreeMap<String, I64Interval> {
     let mut intervals = BTreeMap::new();
     let loop_backedge_updates = loop_backedge_update_names(func_ir);
     let mut changed = true;
+    let mut pass = 0u32;
     while changed {
+        // After the union budget is spent, widen every join so any still-growing
+        // interval saturates to ±i64 in one more step and the fixpoint
+        // terminates. Widening is sound (a strict superset of the union result).
+        let widen = pass >= INTERVAL_WIDEN_AFTER_PASSES;
         changed = false;
         for op in &func_ir.ops {
             if let Some(out) = op.out.as_deref()
                 && let Some(interval) =
                     interval_for_simple_op(op, &intervals, &loop_backedge_updates)
             {
-                changed |= insert_interval(&mut intervals, out, interval);
+                changed |= insert_interval(&mut intervals, out, interval, widen);
             }
         }
-        changed |= propagate_store_target_intervals(func_ir, &mut intervals);
-        changed |= propagate_counted_loop_intervals(func_ir, &mut intervals);
+        changed |= propagate_store_target_intervals(func_ir, &mut intervals, widen);
+        changed |= propagate_counted_loop_intervals(func_ir, &mut intervals, widen);
+        pass = pass.saturating_add(1);
     }
     intervals
 }
@@ -2127,10 +2171,15 @@ fn insert_interval(
     intervals: &mut BTreeMap<String, I64Interval>,
     name: &str,
     interval: I64Interval,
+    widen: bool,
 ) -> bool {
     match intervals.get(name).copied() {
         Some(existing) => {
-            let joined = existing.union(interval);
+            let joined = if widen {
+                existing.widen(interval)
+            } else {
+                existing.union(interval)
+            };
             if joined == existing {
                 false
             } else {
@@ -2197,6 +2246,7 @@ fn interval_for_binary_args(
 fn propagate_store_target_intervals(
     func_ir: &FunctionIR,
     intervals: &mut BTreeMap<String, I64Interval>,
+    widen: bool,
 ) -> bool {
     let mut targets: BTreeMap<String, Option<I64Interval>> = BTreeMap::new();
     for op in &func_ir.ops {
@@ -2219,7 +2269,7 @@ fn propagate_store_target_intervals(
     let mut changed = false;
     for (target, interval) in targets {
         if let Some(interval) = interval {
-            changed |= insert_interval(intervals, &target, interval);
+            changed |= insert_interval(intervals, &target, interval, widen);
         }
     }
     changed
@@ -2228,17 +2278,18 @@ fn propagate_store_target_intervals(
 fn propagate_counted_loop_intervals(
     func_ir: &FunctionIR,
     intervals: &mut BTreeMap<String, I64Interval>,
+    widen: bool,
 ) -> bool {
     let mut changed = false;
     for (start, end) in loop_regions(&func_ir.ops) {
         if let Some(proof) = loop_index_interval_proof(func_ir, start, end, intervals) {
             for (name, interval) in proof.names {
-                changed |= insert_interval(intervals, &name, interval);
+                changed |= insert_interval(intervals, &name, interval, widen);
             }
         }
         if let Some(proof) = store_load_loop_interval_proof(func_ir, start, end, intervals) {
             for (name, interval) in proof.names {
-                changed |= insert_interval(intervals, &name, interval);
+                changed |= insert_interval(intervals, &name, interval, widen);
             }
         }
     }
