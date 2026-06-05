@@ -32,6 +32,7 @@ pub mod refcount_elim;
 pub mod reuse_analysis;
 pub mod scev;
 pub mod sccp;
+pub mod sroa;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
 pub mod unboxing;
@@ -56,7 +57,7 @@ pub const PIPELINE_PASS_CAPACITY_HINT: usize = 32;
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// This is the public entry point. It builds the canonical 26-pass pipeline
+/// This is the public entry point. It builds the canonical 28-pass pipeline
 /// ([`pass_manager::build_default_pipeline`](crate::tir::pass_manager::build_default_pipeline))
 /// and runs it through the [`PassManager`](crate::tir::pass_manager::PassManager),
 /// which threads a per-function
@@ -149,6 +150,7 @@ mod tests {
                 "reuse_analysis",
                 "dead_store_elim",
                 "mem_gvn",
+                "sroa",
                 "type_guard_hoist",
                 "sccp",
                 "strength_reduction",

@@ -268,6 +268,47 @@ fn copy_is_known_local_alias(op: &TirOp) -> bool {
     }
 }
 
+/// True if a `Copy`-carried `_original_kind` op writes/reads/clobbers NO heap
+/// memory — a debug / source-location / control-flow marker or a read-only guard
+/// the SSA lift carries as a `Copy` (it has no dedicated `OpCode`). These are
+/// classified [`MemRegion::ScalarRegister`] so they do not spuriously bump the
+/// memory version between adjacent field accesses (which would starve MemGVN
+/// store-to-load forwarding and SROA — see [`AliasAnalysisResult::region_of`]).
+///
+/// FAIL-CLOSED: every kind listed here is *proven* heap-inert:
+/// * `line` / `trace_enter_slot` / `trace_exit` — source-line + call-trace
+///   debug markers (no operands that survive, no heap effect).
+/// * `missing` — materializes the unbound-cell sentinel; a const-like value
+///   producer, never a heap mutation.
+/// * `nop` — an explicit no-op.
+/// * `guard_layout` / `guard_dict_shape` / `guard_int` / `guard_float` /
+///   `guard_str` / `guard_bool` / `guard_none` — read-only class/representation
+///   guards: they read the object's class version and may raise on mismatch, but
+///   never write a field (the same memory-inert property `TypeGuard` already
+///   has — and `OpCode::TypeGuard` is already excluded by `opcode_touches_memory`).
+///
+/// Any kind NOT in this set keeps the conservative `GenericHeap` classification.
+fn copy_kind_is_memory_inert(op: &TirOp) -> bool {
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => matches!(
+            kind.as_str(),
+            "line"
+                | "trace_enter_slot"
+                | "trace_exit"
+                | "missing"
+                | "nop"
+                | "guard_layout"
+                | "guard_dict_shape"
+                | "guard_int"
+                | "guard_float"
+                | "guard_str"
+                | "guard_bool"
+                | "guard_none"
+        ),
+        _ => false,
+    }
+}
+
 /// The transparent-alias root an op contributes, if any. A no-op `TypeGuard` and
 /// a pure-move `Copy` both forward their single operand's root. Mirrors
 /// `dead_store_elim`'s former `transparent_alias_root`.
@@ -662,6 +703,37 @@ impl AliasAnalysisResult {
                 }
                 MemRegion::GenericHeap
             }
+            // A `Copy` is overloaded: a pure SSA move (the result names the same
+            // value as the operand — no heap footprint), an inert structural /
+            // debug-metadata marker (a source-line / trace / unbound-cell
+            // sentinel the lift carries as a `Copy`), OR the opaque
+            // `_original_kind` passthrough carrier for an unmapped SimpleIR op
+            // (which MAY have arbitrary heap effects). The first two write no heap
+            // memory and are `ScalarRegister`; only the last is a conservative
+            // `GenericHeap` clobber.
+            //
+            // Classifying the inert markers as `GenericHeap` (the pre-S5-2d
+            // default) bumped the memory version between a constructor's field
+            // stores and the field loads — the frontend emits a `line` /
+            // `trace_exit` marker between nearly every statement, so a `p = P(..)`
+            // followed by a `p.x` read always had a marker-`Copy` clobber between
+            // the store and the load. That starved MemGVN store-to-load forwarding
+            // (the load's reaching def became the marker's `GenericHeap` version,
+            // not the store) and, downstream, SROA field promotion — exactly the
+            // spurious-clobber bug already fixed for `CheckException` /
+            // `ExceptionPending` (see `opcode_touches_memory`).
+            //
+            // FAIL-CLOSED: a passthrough `Copy` whose carrier kind is NOT a proven
+            // memory-inert marker keeps the conservative `GenericHeap`. Every kind
+            // in `copy_kind_is_memory_inert` is provably heap-inert (a debug /
+            // source-location / control-flow marker or a read-only layout guard).
+            OpCode::Copy => {
+                if copy_is_known_local_alias(op) || copy_kind_is_memory_inert(op) {
+                    MemRegion::ScalarRegister
+                } else {
+                    MemRegion::GenericHeap
+                }
+            }
             OpCode::Index | OpCode::StoreIndex | OpCode::DelIndex => MemRegion::ContainerElement,
             OpCode::ModuleCacheGet
             | OpCode::ModuleCacheSet
@@ -696,6 +768,23 @@ impl AliasAnalysisResult {
             self.escape.get(&root),
             Some(EscapeState::NoEscape) | Some(EscapeState::ArgEscape)
         )
+    }
+
+    /// True if `op` is a **transparent-alias producer**: a no-op `TypeGuard` or a
+    /// pure-move `Copy` whose result names the *same* heap object as its operand
+    /// (object identity flows through it unchanged). This is exactly the op set
+    /// [`record_transparent_aliases`] unions into one root, so callers that have
+    /// already routed values through [`root`](Self::root) can recognize such an op
+    /// as object-identity plumbing rather than a fresh use.
+    ///
+    /// The opaque `_original_kind` passthrough carriers (container constructors,
+    /// unmapped SimpleIR ops) are NOT transparent — their result is a distinct
+    /// value — and return `false`. This is the single source of truth for "is
+    /// this Copy/TypeGuard a pure identity move?"; SROA consumes it so it never
+    /// re-implements the contract.
+    #[inline]
+    pub fn is_transparent_alias_op(&self, op: &TirOp) -> bool {
+        transparent_alias_root(op, &self.aliases).is_some()
     }
 }
 
@@ -1263,6 +1352,59 @@ mod tests {
             res.region_of(&init),
             MemRegion::TypedField { class: "Point".into(), offset: 0 }
         );
+    }
+
+    /// A `Copy` is classified by whether it touches heap memory: a pure SSA
+    /// move (no `_original_kind`) and the inert debug / source-location / guard
+    /// markers are `ScalarRegister`; an opaque passthrough carrier stays the
+    /// conservative `GenericHeap`. This is the keystone that stops a `line` /
+    /// `trace_exit` marker `Copy` from spuriously clobbering the memory version
+    /// between a constructor's field stores and the field loads (S5-2d).
+    #[test]
+    fn copy_region_pure_and_inert_markers_are_scalar() {
+        let res = empty_res();
+
+        // Pure SSA move (no `_original_kind`): identity plumbing, no heap.
+        let pure_move = op(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)]);
+        assert_eq!(res.region_of(&pure_move), MemRegion::ScalarRegister);
+
+        // Known-local-alias kinds are pure moves too.
+        for kind in ["copy", "copy_var", "store_var", "load_var", "identity_alias"] {
+            let c = op_kind(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)], kind);
+            assert_eq!(
+                res.region_of(&c),
+                MemRegion::ScalarRegister,
+                "alias-kind copy '{kind}' is heap-inert"
+            );
+        }
+
+        // Inert debug / source-location / sentinel / guard markers: no heap.
+        for kind in [
+            "line",
+            "trace_enter_slot",
+            "trace_exit",
+            "missing",
+            "nop",
+            "guard_layout",
+            "guard_dict_shape",
+            "guard_int",
+            "guard_float",
+            "guard_str",
+            "guard_bool",
+            "guard_none",
+        ] {
+            let c = op_kind(OpCode::Copy, vec![], vec![], kind);
+            assert_eq!(
+                res.region_of(&c),
+                MemRegion::ScalarRegister,
+                "inert marker copy '{kind}' must not clobber memory"
+            );
+        }
+
+        // An opaque passthrough carrier (an unmapped SimpleIR op with no proven
+        // memory-inert kind) keeps the conservative GenericHeap classification.
+        let opaque = op_kind(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)], "list_append");
+        assert_eq!(res.region_of(&opaque), MemRegion::GenericHeap);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //! recomputes against the new shape.
 //!
 //! The default pipeline ([`build_default_pipeline`]) preserves the EXACT
-//! 26-pass order, the snapshot/restore-on-zero-delta behavior, and the
+//! 28-pass order, the snapshot/restore-on-zero-delta behavior, and the
 //! post-pipeline `verify_function` of the legacy `run_pipeline`. `run_pipeline`
 //! is now a thin entry that builds the default pipeline and runs it — the real
 //! API, not a shim.
@@ -251,7 +251,7 @@ impl PassManager {
     }
 }
 
-/// Build the default 26-pass pipeline in the canonical order. The ordering and
+/// Build the default 28-pass pipeline in the canonical order. The ordering and
 /// per-pass behavior are byte-for-byte identical to the legacy `run_pipeline`;
 /// only the dispatch and analysis-caching mechanism changed.
 ///
@@ -332,6 +332,14 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // of live stores, and its replacement IncRef is final (refcount_elim has
         // already run). OpsOnly: replaces a load with IncRef+Copy in place.
         pass("mem_gvn", OpsOnly, |f, am, _tti| passes::mem_gvn::run(f, am)),
+        // SROA promotes the fields of a proven-non-escaping object out of memory
+        // and deletes the allocation. Placed AFTER mem_gvn (which forwards every
+        // observable typed-slot load to a Copy, so a fully-promotable object's
+        // residue is store-only) and BEFORE the later cleanup: SROA removes the
+        // stores, and the now-unreferenced ObjectNewBoundStack (not
+        // side-effecting) is deleted by the trailing dce pass. OpsOnly: it only
+        // removes StoreAttr ops within blocks (no CFG change).
+        pass("sroa", OpsOnly, |f, am, _tti| passes::sroa::run(f, am)),
         // ── Value optimization ──────────────────────────────────────
         pass("type_guard_hoist", Cfg, |f, am, _tti| {
             passes::type_guard_hoist::run(f, am)
@@ -554,7 +562,7 @@ mod tests {
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
 
-    /// The default pipeline must preserve the EXACT canonical pass order (26
+    /// The default pipeline must preserve the EXACT canonical pass order (28
     /// `run` invocations — canonicalize runs twice). Any reorder/insert/drop is
     /// a behavior change and must update this list deliberately.
     #[test]
@@ -578,6 +586,7 @@ mod tests {
                 "reuse_analysis",
                 "dead_store_elim",
                 "mem_gvn",
+                "sroa",
                 "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
@@ -676,7 +685,7 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 27 pass invocations ran.
-        assert_eq!(stats.len(), 27);
+        // All 28 pass invocations ran.
+        assert_eq!(stats.len(), 28);
     }
 }
