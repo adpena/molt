@@ -13,52 +13,141 @@ use crate::bridge::{
 use molt_runtime_core::prelude::*;
 use molt_runtime_core::type_ids::*;
 
-static ITER_SELF_FN: AtomicU64 = AtomicU64::new(0);
-static KWD_MARK_BITS: AtomicU64 = AtomicU64::new(0);
+// The itertools class/next-fn/sentinel slots must live in the runtime's
+// per-interpreter `RuntimeState`, NOT in process-global `static AtomicU64`s.
+// Process-global statics leak object handles across interpreter teardown
+// (and would alias across subinterpreters/isolates): a class object cached by
+// the first interpreter would still be referenced after that interpreter's
+// heap is torn down. The in-tree copy (builtins/itertools.rs) adopted
+// RuntimeState-scoped slots in commit 0c4ee6b9; this satellite mirrors that by
+// boxing the same slot struct into the runtime's extension-state registry,
+// which the runtime clears+drops on every interpreter teardown.
+macro_rules! define_itertools_runtime_state {
+    (@unit $field:ident) => {
+        ()
+    };
+    ($($field:ident),+ $(,)?) => {
+        const ITERTOOLS_RUNTIME_SLOT_COUNT: usize = <[()]>::len(&[
+            $(define_itertools_runtime_state!(@unit $field)),+
+        ]);
 
-static CHAIN_CLASS: AtomicU64 = AtomicU64::new(0);
-static ISLICE_CLASS: AtomicU64 = AtomicU64::new(0);
-static REPEAT_CLASS: AtomicU64 = AtomicU64::new(0);
-static COUNT_CLASS: AtomicU64 = AtomicU64::new(0);
-static CYCLE_CLASS: AtomicU64 = AtomicU64::new(0);
-static ACCUMULATE_CLASS: AtomicU64 = AtomicU64::new(0);
-static BATCHED_CLASS: AtomicU64 = AtomicU64::new(0);
-static COMBINATIONS_CLASS: AtomicU64 = AtomicU64::new(0);
-static COMBINATIONS_WITH_REPLACEMENT_CLASS: AtomicU64 = AtomicU64::new(0);
-static COMPRESS_CLASS: AtomicU64 = AtomicU64::new(0);
-static DROPWHILE_CLASS: AtomicU64 = AtomicU64::new(0);
-static FILTERFALSE_CLASS: AtomicU64 = AtomicU64::new(0);
-static PAIRWISE_CLASS: AtomicU64 = AtomicU64::new(0);
-static GROUPBY_CLASS: AtomicU64 = AtomicU64::new(0);
-static GROUPBY_ITER_CLASS: AtomicU64 = AtomicU64::new(0);
-static PRODUCT_CLASS: AtomicU64 = AtomicU64::new(0);
-static PERMUTATIONS_CLASS: AtomicU64 = AtomicU64::new(0);
-static STARMAP_CLASS: AtomicU64 = AtomicU64::new(0);
-static TAKEWHILE_CLASS: AtomicU64 = AtomicU64::new(0);
-static TEE_ITER_CLASS: AtomicU64 = AtomicU64::new(0);
-static ZIP_LONGEST_CLASS: AtomicU64 = AtomicU64::new(0);
+        pub(crate) struct ItertoolsRuntimeState {
+            $(pub(crate) $field: AtomicU64,)+
+        }
 
-static CHAIN_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static ISLICE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static REPEAT_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static COUNT_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static CYCLE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static ACCUMULATE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static BATCHED_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static COMBINATIONS_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static COMBINATIONS_WITH_REPLACEMENT_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static COMPRESS_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static DROPWHILE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static FILTERFALSE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static PAIRWISE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static GROUPBY_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static GROUPBY_ITER_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static PRODUCT_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static PERMUTATIONS_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static STARMAP_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static TAKEWHILE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static TEE_NEXT_FN: AtomicU64 = AtomicU64::new(0);
-static ZIP_LONGEST_NEXT_FN: AtomicU64 = AtomicU64::new(0);
+        impl ItertoolsRuntimeState {
+            pub(crate) fn new() -> Self {
+                Self {
+                    $($field: AtomicU64::new(0),)+
+                }
+            }
+
+            fn slots(&self) -> Vec<&AtomicU64> {
+                let mut slots = Vec::with_capacity(ITERTOOLS_RUNTIME_SLOT_COUNT);
+                $(slots.push(&self.$field);)+
+                slots
+            }
+        }
+    };
+}
+
+define_itertools_runtime_state! {
+    iter_self_fn,
+    kwd_mark_bits,
+    chain_class,
+    islice_class,
+    repeat_class,
+    count_class,
+    cycle_class,
+    accumulate_class,
+    batched_class,
+    combinations_class,
+    combinations_with_replacement_class,
+    compress_class,
+    dropwhile_class,
+    filterfalse_class,
+    pairwise_class,
+    groupby_class,
+    groupby_iter_class,
+    product_class,
+    permutations_class,
+    starmap_class,
+    takewhile_class,
+    tee_iter_class,
+    zip_longest_class,
+    chain_next_fn,
+    islice_next_fn,
+    repeat_next_fn,
+    count_next_fn,
+    cycle_next_fn,
+    accumulate_next_fn,
+    batched_next_fn,
+    combinations_next_fn,
+    combinations_with_replacement_next_fn,
+    compress_next_fn,
+    dropwhile_next_fn,
+    filterfalse_next_fn,
+    pairwise_next_fn,
+    groupby_next_fn,
+    groupby_iter_next_fn,
+    product_next_fn,
+    permutations_next_fn,
+    starmap_next_fn,
+    takewhile_next_fn,
+    tee_next_fn,
+    zip_longest_next_fn,
+}
+
+impl ItertoolsRuntimeState {
+    /// Release every cached object handle and reset the slots to 0. Invoked by
+    /// the runtime's extension-state teardown (which holds the GIL) on every
+    /// interpreter shutdown — the byte-for-byte analogue of the in-tree
+    /// `clear_atomic_slots` (swap-to-0 + interned-aware release).
+    fn clear(&self) {
+        for slot in self.slots() {
+            let bits = slot.swap(0, Ordering::AcqRel);
+            if bits != 0 {
+                unsafe { bridge::release_runtime_slot_bits(bits) };
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn itertools_runtime_state_init() -> *mut u8 {
+    Box::into_raw(Box::new(ItertoolsRuntimeState::new())) as *mut u8
+}
+
+unsafe extern "C" fn itertools_runtime_state_clear(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (*(ptr as *const ItertoolsRuntimeState)).clear();
+    }
+}
+
+unsafe extern "C" fn itertools_runtime_state_drop(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr as *mut ItertoolsRuntimeState));
+    }
+}
+
+fn itertools_state(_py: &PyToken) -> &'static ItertoolsRuntimeState {
+    let ptr = bridge::runtime_state_get_or_init(
+        b"molt-runtime-itertools/object-slots/v1",
+        itertools_runtime_state_init,
+        itertools_runtime_state_clear,
+        itertools_runtime_state_drop,
+    );
+    assert!(
+        !ptr.is_null(),
+        "molt itertools runtime state initialization failed"
+    );
+    unsafe { &*(ptr as *const ItertoolsRuntimeState) }
+}
 
 /// Helper: init-once pattern for AtomicU64 slots.
 fn init_atomic_bits(_py: &PyToken, slot: &AtomicU64, f: impl FnOnce() -> u64) -> u64 {
@@ -78,7 +167,7 @@ fn builtin_func_bits(_py: &PyToken, slot: &AtomicU64, fn_ptr: u64, arity: u64) -
 }
 
 fn kwd_mark_bits(_py: &PyToken) -> u64 {
-    init_atomic_bits(_py, &KWD_MARK_BITS, || alloc_kwd_mark(_py))
+    init_atomic_bits(_py, &itertools_state(_py).kwd_mark_bits, || alloc_kwd_mark(_py))
 }
 
 #[unsafe(no_mangle)]
@@ -89,7 +178,7 @@ pub extern "C" fn molt_itertools_kwd_mark() -> u64 {
 fn iter_self_bits(_py: &PyToken) -> u64 {
     builtin_func_bits(
         _py,
-        &ITER_SELF_FN,
+        &itertools_state(_py).iter_self_fn,
         molt_itertools_iter_self as *const () as usize as u64,
         1,
     )
@@ -722,232 +811,253 @@ struct ZipLongestData {
 }
 
 fn chain_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &CHAIN_CLASS,
+        &state.chain_class,
         "chain",
         24,
-        &CHAIN_NEXT_FN,
+        &state.chain_next_fn,
         molt_itertools_chain_next as *const () as usize as u64,
     )
 }
 
 fn islice_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &ISLICE_CLASS,
+        &state.islice_class,
         "islice",
         56,
-        &ISLICE_NEXT_FN,
+        &state.islice_next_fn,
         molt_itertools_islice_next as *const () as usize as u64,
     )
 }
 
 fn repeat_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &REPEAT_CLASS,
+        &state.repeat_class,
         "repeat",
         24,
-        &REPEAT_NEXT_FN,
+        &state.repeat_next_fn,
         molt_itertools_repeat_next as *const () as usize as u64,
     )
 }
 
 fn count_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &COUNT_CLASS,
+        &state.count_class,
         "count",
         24,
-        &COUNT_NEXT_FN,
+        &state.count_next_fn,
         molt_itertools_count_next as *const () as usize as u64,
     )
 }
 
 fn cycle_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &CYCLE_CLASS,
+        &state.cycle_class,
         "cycle",
         24,
-        &CYCLE_NEXT_FN,
+        &state.cycle_next_fn,
         molt_itertools_cycle_next as *const () as usize as u64,
     )
 }
 
 fn accumulate_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &ACCUMULATE_CLASS,
+        &state.accumulate_class,
         "accumulate",
         48,
-        &ACCUMULATE_NEXT_FN,
+        &state.accumulate_next_fn,
         molt_itertools_accumulate_next as *const () as usize as u64,
     )
 }
 
 fn batched_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &BATCHED_CLASS,
+        &state.batched_class,
         "batched",
         40,
-        &BATCHED_NEXT_FN,
+        &state.batched_next_fn,
         molt_itertools_batched_next as *const () as usize as u64,
     )
 }
 
 fn combinations_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &COMBINATIONS_CLASS,
+        &state.combinations_class,
         "combinations",
         16,
-        &COMBINATIONS_NEXT_FN,
+        &state.combinations_next_fn,
         molt_itertools_combinations_next as *const () as usize as u64,
     )
 }
 
 fn combinations_with_replacement_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &COMBINATIONS_WITH_REPLACEMENT_CLASS,
+        &state.combinations_with_replacement_class,
         "combinations_with_replacement",
         16,
-        &COMBINATIONS_WITH_REPLACEMENT_NEXT_FN,
+        &state.combinations_with_replacement_next_fn,
         molt_itertools_combinations_with_replacement_next as *const () as usize as u64,
     )
 }
 
 fn compress_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &COMPRESS_CLASS,
+        &state.compress_class,
         "compress",
         24,
-        &COMPRESS_NEXT_FN,
+        &state.compress_next_fn,
         molt_itertools_compress_next as *const () as usize as u64,
     )
 }
 
 fn dropwhile_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &DROPWHILE_CLASS,
+        &state.dropwhile_class,
         "dropwhile",
         32,
-        &DROPWHILE_NEXT_FN,
+        &state.dropwhile_next_fn,
         molt_itertools_dropwhile_next as *const () as usize as u64,
     )
 }
 
 fn filterfalse_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &FILTERFALSE_CLASS,
+        &state.filterfalse_class,
         "filterfalse",
         24,
-        &FILTERFALSE_NEXT_FN,
+        &state.filterfalse_next_fn,
         molt_itertools_filterfalse_next as *const () as usize as u64,
     )
 }
 
 fn pairwise_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &PAIRWISE_CLASS,
+        &state.pairwise_class,
         "pairwise",
         32,
-        &PAIRWISE_NEXT_FN,
+        &state.pairwise_next_fn,
         molt_itertools_pairwise_next as *const () as usize as u64,
     )
 }
 
 fn groupby_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &GROUPBY_CLASS,
+        &state.groupby_class,
         "groupby",
         56,
-        &GROUPBY_NEXT_FN,
+        &state.groupby_next_fn,
         molt_itertools_groupby_next as *const () as usize as u64,
     )
 }
 
 fn groupby_iter_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &GROUPBY_ITER_CLASS,
+        &state.groupby_iter_class,
         "groupby_iterator",
         24,
-        &GROUPBY_ITER_NEXT_FN,
+        &state.groupby_iter_next_fn,
         molt_itertools_groupby_iter_next as *const () as usize as u64,
     )
 }
 
 fn product_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &PRODUCT_CLASS,
+        &state.product_class,
         "product",
         16,
-        &PRODUCT_NEXT_FN,
+        &state.product_next_fn,
         molt_itertools_product_next as *const () as usize as u64,
     )
 }
 
 fn permutations_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &PERMUTATIONS_CLASS,
+        &state.permutations_class,
         "permutations",
         16,
-        &PERMUTATIONS_NEXT_FN,
+        &state.permutations_next_fn,
         molt_itertools_permutations_next as *const () as usize as u64,
     )
 }
 
 fn starmap_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &STARMAP_CLASS,
+        &state.starmap_class,
         "starmap",
         24,
-        &STARMAP_NEXT_FN,
+        &state.starmap_next_fn,
         molt_itertools_starmap_next as *const () as usize as u64,
     )
 }
 
 fn takewhile_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &TAKEWHILE_CLASS,
+        &state.takewhile_class,
         "takewhile",
         32,
-        &TAKEWHILE_NEXT_FN,
+        &state.takewhile_next_fn,
         molt_itertools_takewhile_next as *const () as usize as u64,
     )
 }
 
 fn tee_iter_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &TEE_ITER_CLASS,
+        &state.tee_iter_class,
         "tee",
         24,
-        &TEE_NEXT_FN,
+        &state.tee_next_fn,
         molt_itertools_tee_next as *const () as usize as u64,
     )
 }
 
 fn zip_longest_class(_py: &PyToken) -> u64 {
+    let state = itertools_state(_py);
     itertools_class(
         _py,
-        &ZIP_LONGEST_CLASS,
+        &state.zip_longest_class,
         "zip_longest",
         16,
-        &ZIP_LONGEST_NEXT_FN,
+        &state.zip_longest_next_fn,
         molt_itertools_zip_longest_next as *const () as usize as u64,
     )
 }
@@ -2826,7 +2936,8 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
     if class_bits == 0 {
         return false;
     }
-    let class = CHAIN_CLASS.load(Ordering::Acquire);
+    let state = itertools_state(_py);
+    let class = state.chain_class.load(Ordering::Acquire);
     if class_bits == class {
         let iterables_bits = unsafe { chain_iterables_bits(ptr) };
         let current_bits = unsafe { chain_current_bits(ptr) };
@@ -2838,7 +2949,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = ISLICE_CLASS.load(Ordering::Acquire);
+    let class = state.islice_class.load(Ordering::Acquire);
     if class_bits == class {
         let iter_bits = unsafe { islice_iter_bits(ptr) };
         if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
@@ -2846,7 +2957,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = REPEAT_CLASS.load(Ordering::Acquire);
+    let class = state.repeat_class.load(Ordering::Acquire);
     if class_bits == class {
         let obj_bits = unsafe { repeat_obj_bits(ptr) };
         if obj_bits != 0 && !obj_from_bits(obj_bits).is_none() {
@@ -2854,7 +2965,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = COUNT_CLASS.load(Ordering::Acquire);
+    let class = state.count_class.load(Ordering::Acquire);
     if class_bits == class {
         let current_bits = unsafe { count_current_bits(ptr) };
         let step_bits = unsafe { count_step_bits(ptr) };
@@ -2866,7 +2977,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = CYCLE_CLASS.load(Ordering::Acquire);
+    let class = state.cycle_class.load(Ordering::Acquire);
     if class_bits == class {
         let list_bits = unsafe { cycle_saved_bits(ptr) };
         if list_bits != 0 && !obj_from_bits(list_bits).is_none() {
@@ -2874,7 +2985,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = ACCUMULATE_CLASS.load(Ordering::Acquire);
+    let class = state.accumulate_class.load(Ordering::Acquire);
     if class_bits == class {
         let iter_bits = unsafe { accumulate_iter_bits(ptr) };
         let func_bits = unsafe { accumulate_func_bits(ptr) };
@@ -2895,7 +3006,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = BATCHED_CLASS.load(Ordering::Acquire);
+    let class = state.batched_class.load(Ordering::Acquire);
     if class_bits == class {
         let iter_bits = unsafe { batched_iter_bits(ptr) };
         if iter_bits != 0 && !obj_from_bits(iter_bits).is_none() {
@@ -2903,7 +3014,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = COMBINATIONS_CLASS.load(Ordering::Acquire);
+    let class = state.combinations_class.load(Ordering::Acquire);
     if class_bits == class {
         let data_ptr = unsafe { combinations_data_ptr(ptr) };
         if !data_ptr.is_null() {
@@ -2916,7 +3027,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = COMBINATIONS_WITH_REPLACEMENT_CLASS.load(Ordering::Acquire);
+    let class = state.combinations_with_replacement_class.load(Ordering::Acquire);
     if class_bits == class {
         let data_ptr = unsafe { combinations_with_replacement_data_ptr(ptr) };
         if !data_ptr.is_null() {
@@ -2929,7 +3040,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = COMPRESS_CLASS.load(Ordering::Acquire);
+    let class = state.compress_class.load(Ordering::Acquire);
     if class_bits == class {
         let data_iter_bits = unsafe { compress_data_iter_bits(ptr) };
         let selectors_iter_bits = unsafe { compress_selectors_iter_bits(ptr) };
@@ -2941,7 +3052,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = DROPWHILE_CLASS.load(Ordering::Acquire);
+    let class = state.dropwhile_class.load(Ordering::Acquire);
     if class_bits == class {
         let predicate_bits = unsafe { dropwhile_predicate_bits(ptr) };
         let iter_bits = unsafe { dropwhile_iter_bits(ptr) };
@@ -2953,7 +3064,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = FILTERFALSE_CLASS.load(Ordering::Acquire);
+    let class = state.filterfalse_class.load(Ordering::Acquire);
     if class_bits == class {
         let predicate_bits = unsafe { filterfalse_predicate_bits(ptr) };
         let iter_bits = unsafe { filterfalse_iter_bits(ptr) };
@@ -2965,7 +3076,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = PAIRWISE_CLASS.load(Ordering::Acquire);
+    let class = state.pairwise_class.load(Ordering::Acquire);
     if class_bits == class {
         let iter_bits = unsafe { pairwise_iter_bits(ptr) };
         let prev_bits = unsafe { pairwise_prev_bits(ptr) };
@@ -2977,7 +3088,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = GROUPBY_CLASS.load(Ordering::Acquire);
+    let class = state.groupby_class.load(Ordering::Acquire);
     if class_bits == class {
         let iter_bits = unsafe { groupby_iter_bits(ptr) };
         let keyfunc_bits = unsafe { groupby_keyfunc_bits(ptr) };
@@ -2998,7 +3109,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = GROUPBY_ITER_CLASS.load(Ordering::Acquire);
+    let class = state.groupby_iter_class.load(Ordering::Acquire);
     if class_bits == class {
         let parent_bits = unsafe { groupby_iter_parent_bits(ptr) };
         let target_bits = unsafe { groupby_iter_target_bits(ptr) };
@@ -3010,7 +3121,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = PRODUCT_CLASS.load(Ordering::Acquire);
+    let class = state.product_class.load(Ordering::Acquire);
     if class_bits == class {
         let data_ptr = unsafe { product_data_ptr(ptr) };
         if !data_ptr.is_null() {
@@ -3025,7 +3136,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = PERMUTATIONS_CLASS.load(Ordering::Acquire);
+    let class = state.permutations_class.load(Ordering::Acquire);
     if class_bits == class {
         let data_ptr = unsafe { permutations_data_ptr(ptr) };
         if !data_ptr.is_null() {
@@ -3038,7 +3149,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = STARMAP_CLASS.load(Ordering::Acquire);
+    let class = state.starmap_class.load(Ordering::Acquire);
     if class_bits == class {
         let func_bits = unsafe { starmap_func_bits(ptr) };
         let iter_bits = unsafe { starmap_iter_bits(ptr) };
@@ -3050,7 +3161,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = TAKEWHILE_CLASS.load(Ordering::Acquire);
+    let class = state.takewhile_class.load(Ordering::Acquire);
     if class_bits == class {
         let predicate_bits = unsafe { takewhile_predicate_bits(ptr) };
         let iter_bits = unsafe { takewhile_iter_bits(ptr) };
@@ -3062,7 +3173,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = TEE_ITER_CLASS.load(Ordering::Acquire);
+    let class = state.tee_iter_class.load(Ordering::Acquire);
     if class_bits == class {
         let data_ptr = unsafe { tee_data_ptr(ptr) };
         if !data_ptr.is_null() {
@@ -3084,7 +3195,7 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = ZIP_LONGEST_CLASS.load(Ordering::Acquire);
+    let class = state.zip_longest_class.load(Ordering::Acquire);
     if class_bits == class {
         let data_ptr = unsafe { zip_longest_data_ptr(ptr) };
         if !data_ptr.is_null() {
