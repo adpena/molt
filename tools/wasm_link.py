@@ -309,6 +309,127 @@ def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
     return bytes(output)
 
 
+def _flatten_rec_groups(data: bytes) -> bytes | None:
+    """Rewrite the type section so a recursive type group (`0x4E`) of plain
+    function types is re-emitted as a run of standalone function types.
+
+    wasm-ld 22 / LLD 22 (LLVM 22 toolchain drift) emits the merged type section
+    as a single GC-proposal *recursive type group* even when every member is an
+    ordinary MVP `func` type with no actual recursion. The rec-group encoding
+    (`0x4E`) is only valid under the GC proposal, so a pre-GC parser — molt's own
+    wasmtime-based host runner, Cloudflare Workers' V8, and `wasm-opt` without
+    `--all-features` — rejects the module with "rec group usage requires `gc`
+    proposal to be enabled". Flattening the group back to standalone types is a
+    pure *encoding* canonicalization: a singleton-or-flat run of `func` types is
+    semantically identical to one rec group of the same types, and because the
+    members keep their exact sequential order, every existing type index (in the
+    function section, `call_indirect`, etc.) stays valid with no renumbering.
+
+    Returns the rewritten module, or ``None`` when there is no type section or no
+    rec group to flatten. Fails closed (raises ``ValueError``) if a rec group
+    contains anything other than plain `func` types, since collapsing real
+    subtype/recursive structure would change the module's meaning.
+
+    Function parameter/result value types are walked with full awareness of the
+    multi-byte typed-reference encodings (`0x64 (ref ht)` / `0x63 (ref null ht)`,
+    each followed by a heap-type LEB128) that LLD 22 introduces alongside the rec
+    group, so the byte spans are skipped exactly — a single-byte value-type
+    assumption would desynchronize the walk.
+    """
+    REC_GROUP = 0x4E
+    FUNC_FORM = 0x60
+    REF_FORMS = (0x63, 0x64)  # (ref null ht), (ref ht): prefix + heaptype LEB128
+
+    try:
+        sections = _parse_sections(data)
+    except ValueError:
+        return None
+
+    type_section_index = -1
+    payload = b""
+    for idx, (sid, sec_payload) in enumerate(sections):
+        if sid == 1:
+            type_section_index = idx
+            payload = sec_payload
+            break
+    if type_section_index < 0:
+        return None
+
+    offset = 0
+    group_count, offset = _read_varuint(payload, offset)
+
+    def _skip_value_type(buf: bytes, pos: int) -> int:
+        # Numtypes / vectype / abstract heap-type reftypes are a single byte;
+        # the concrete-reference forms (0x63/0x64) carry a trailing heap-type
+        # LEB128 whose byte-length is sign-agnostic, so an unsigned-LEB skip
+        # advances past it correctly.
+        form = buf[pos]
+        pos += 1
+        if form in REF_FORMS:
+            _heap_type, pos = _read_varuint(buf, pos)
+        return pos
+
+    def _read_func_type(buf: bytes, pos: int) -> tuple[bytes, int]:
+        # buf[pos] is the 0x60 func form byte. Returns (encoded_func, new_pos).
+        start = pos
+        if buf[pos] != FUNC_FORM:
+            raise ValueError(
+                f"type section: expected func form 0x60, found {hex(buf[pos])}"
+            )
+        pos += 1
+        param_count, pos = _read_varuint(buf, pos)
+        for _ in range(param_count):
+            pos = _skip_value_type(buf, pos)
+        result_count, pos = _read_varuint(buf, pos)
+        for _ in range(result_count):
+            pos = _skip_value_type(buf, pos)
+        return buf[start:pos], pos
+
+    flat_types: list[bytes] = []
+    saw_rec_group = False
+    for _ in range(group_count):
+        form = payload[offset]
+        if form == REC_GROUP:
+            saw_rec_group = True
+            offset += 1
+            member_count, offset = _read_varuint(payload, offset)
+            for _member in range(member_count):
+                if payload[offset] != FUNC_FORM:
+                    raise ValueError(
+                        "rec group flatten: group member is not a plain func "
+                        f"type (form {hex(payload[offset])}); cannot flatten a "
+                        "real recursive/subtype group without changing semantics"
+                    )
+                encoded, offset = _read_func_type(payload, offset)
+                flat_types.append(encoded)
+        elif form == FUNC_FORM:
+            encoded, offset = _read_func_type(payload, offset)
+            flat_types.append(encoded)
+        else:
+            raise ValueError(
+                "rec group flatten: unsupported type form "
+                f"{hex(form)} in type section; expected func (0x60) or rec "
+                "group (0x4E) of func types"
+            )
+
+    if not saw_rec_group:
+        return None
+    if offset != len(payload):
+        raise ValueError(
+            "rec group flatten: trailing bytes after type section "
+            f"({offset} != {len(payload)})"
+        )
+
+    new_payload = bytearray()
+    new_payload.extend(_write_varuint(len(flat_types)))
+    for encoded in flat_types:
+        new_payload.extend(encoded)
+
+    new_sections = list(sections)
+    new_sections[type_section_index] = (1, bytes(new_payload))
+    return _build_sections(new_sections)
+
+
 def _parse_custom_section(payload: bytes) -> tuple[str, bytes]:
     name_len, offset = _read_varuint(payload, 0)
     end = offset + name_len
@@ -2719,6 +2840,9 @@ def _tree_shake_runtime(
 
         # Feature flags matching wasm_optimize.py defaults -- avoid
         # --all-features which enables custom-descriptors (rejected by V8).
+        # `--disable-gc` keeps wasm-opt from re-encoding the type section as a
+        # GC-proposal recursive type group (`0x4E`), which non-GC engines (the
+        # molt host runner, Cloudflare V8) reject — see wasm_optimize.py.
         feature_flags = [
             "--enable-bulk-memory",
             "--enable-mutable-globals",
@@ -2727,7 +2851,7 @@ def _tree_shake_runtime(
             "--enable-simd",
             "--enable-multivalue",
             "--enable-reference-types",
-            "--enable-gc",
+            "--disable-gc",
             "--enable-tail-call",
             "--disable-custom-descriptors",
         ]
@@ -5115,6 +5239,22 @@ def _run_wasm_ld(
                 file=sys.stderr,
             )
             return 1
+        # wasm-ld 22 emits the merged type section as a GC-proposal recursive
+        # type group even when every member is a plain MVP func type. Flatten it
+        # back to standalone types before ANY downstream step: the molt host
+        # runner / Cloudflare V8 / wasm-opt all reject the `0x4E` rec-group
+        # encoding without the GC proposal, and the linker's own
+        # `_parse_type_section` assumes the standalone-`func` form. Doing this
+        # first keeps every later type-section-aware pass operating on a
+        # canonical MVP type section.
+        try:
+            flattened = _flatten_rec_groups(linked_bytes)
+        except ValueError as exc:
+            print(f"Failed to flatten wasm rec groups: {exc}", file=sys.stderr)
+            return 1
+        if flattened is not None:
+            linked.write_bytes(flattened)
+            linked_bytes = flattened
         public_export_map = {
             name: export_symbol_map[name]
             for name in preserved_output_exports
