@@ -6825,6 +6825,138 @@ class SimpleTIRGenerator(
             collector.visit(stmt)
         return captured
 
+    def _collect_comp_walrus_shared_names(
+        self, body: Sequence[ast.stmt]
+    ) -> list[str]:
+        """Names that are a comprehension walrus (``:=``) target AND are also
+        bound by a non-comprehension assignment in the same function scope.
+
+        A walrus inside a comprehension leaks its binding to the enclosing
+        function scope (PEP 572), but the inline-comprehension lowering stores
+        that target through a boxed cell while a *separate* binding of the same
+        name (a plain assignment, a ``while``/``if`` test walrus, a ``for``
+        target, ...) is lowered as a plain SSA local.  When such a name lives
+        across a loop back-edge the two representations diverge — the comp cell
+        is never updated by the SSA writer and vice-versa — producing a stale
+        post-loop value (e.g. ``while (n := next(it)) is not None: xs = [n := n
+        + 1 for _ in r]`` leaving ``n`` at the last comp value instead of the
+        loop-terminating ``None``).  Returning such names lets the caller box
+        them at function entry so every binding site shares one cell.
+
+        Names bound *only* by a comprehension walrus are excluded: their cell is
+        the single source of truth (the post-comp sync mirrors it into the SSA
+        local) and needs no unification.  Nested functions/classes are separate
+        scopes and are not traversed.
+        """
+
+        outer = self
+
+        comp_walrus: set[str] = set()
+        non_comp_assigned: set[str] = set()
+
+        class _Scan(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self._in_comp_depth = 0
+
+            def _record_assign_targets(self, target: ast.expr) -> None:
+                for name in outer._collect_target_names(target):
+                    non_comp_assigned.add(name)
+
+            def visit_Assign(self, node: ast.Assign) -> None:
+                for target in node.targets:
+                    self._record_assign_targets(target)
+                self.visit(node.value)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                self._record_assign_targets(node.target)
+                if node.value is not None:
+                    self.visit(node.value)
+
+            def visit_AugAssign(self, node: ast.AugAssign) -> None:
+                self._record_assign_targets(node.target)
+                self.visit(node.value)
+
+            def visit_For(self, node: ast.For) -> None:
+                self._record_assign_targets(node.target)
+                self.generic_visit(node)
+
+            def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+                self._record_assign_targets(node.target)
+                self.generic_visit(node)
+
+            def visit_With(self, node: ast.With) -> None:
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        self._record_assign_targets(item.optional_vars)
+                self.generic_visit(node)
+
+            def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        self._record_assign_targets(item.optional_vars)
+                self.generic_visit(node)
+
+            def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+                if isinstance(node.target, ast.Name):
+                    if self._in_comp_depth > 0:
+                        comp_walrus.add(node.target.id)
+                    else:
+                        non_comp_assigned.add(node.target.id)
+                self.visit(node.value)
+
+            def _visit_comprehension(
+                self, node: ast.expr, parts: Sequence[ast.expr]
+            ) -> None:
+                # The iterable of the *first* generator is evaluated in the
+                # enclosing scope; everything else (element, filters, nested
+                # generators) is comprehension-internal for walrus-leak purposes.
+                generators = node.generators  # type: ignore[attr-defined]
+                if generators:
+                    self.visit(generators[0].iter)
+                self._in_comp_depth += 1
+                try:
+                    for part in parts:
+                        self.visit(part)
+                    for idx, comp in enumerate(generators):
+                        if idx != 0:
+                            self.visit(comp.iter)
+                        for if_node in comp.ifs:
+                            self.visit(if_node)
+                finally:
+                    self._in_comp_depth -= 1
+
+            def visit_ListComp(self, node: ast.ListComp) -> None:
+                self._visit_comprehension(node, [node.elt])
+
+            def visit_SetComp(self, node: ast.SetComp) -> None:
+                self._visit_comprehension(node, [node.elt])
+
+            def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+                self._visit_comprehension(node, [node.elt])
+
+            def visit_DictComp(self, node: ast.DictComp) -> None:
+                self._visit_comprehension(node, [node.key, node.value])
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                return
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                return
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                return
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return
+
+        scanner = _Scan()
+        for stmt in body:
+            scanner.visit(stmt)
+        shared = comp_walrus & non_comp_assigned
+        shared -= self.global_decls
+        shared -= self.nonlocal_decls
+        return sorted(shared)
+
     def _prebox_scope_cell_vars(
         self, *, body: Sequence[ast.stmt], arg_nodes: Sequence[ast.arg]
     ) -> None:
@@ -6837,6 +6969,11 @@ class SimpleTIRGenerator(
         for name in sorted(self._collect_scope_cell_vars(body, local_candidates)):
             self._box_local(name)
             self.closure_locals.add(name)
+        # Unify storage for names bound by both a comprehension walrus and a
+        # non-comprehension assignment: box them so the inline-comprehension
+        # cell and the SSA-local writer share one cell across loop back-edges.
+        for name in self._collect_comp_walrus_shared_names(body):
+            self._box_local(name)
 
     def _emit_free_var_load(self, name: str) -> MoltValue | None:
         cell = self._load_free_var_cell(name)
