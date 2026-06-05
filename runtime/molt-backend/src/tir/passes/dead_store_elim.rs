@@ -5,10 +5,17 @@
 //! or escape of that object, the earlier store is dead and can be removed.
 //!
 //! Pattern 2: when the final stores to a typed-class instance target an
-//! `ObjectNewBoundStack` value allocated in the same block, and that stack
-//! object is not used by the terminator, those stores are also dead.  The
-//! object cannot be observed outside the block, and any intervening observer
-//! already invalidates the pending-store state below.
+//! `ObjectNewBoundStack` value allocated in the same block, AND that stack
+//! object is provably unobservable outside the block, those stores are also
+//! dead.  "Unobservable outside the block" requires BOTH that the object is not
+//! used by the terminator AND that its alias root is not referenced in any other
+//! block (see `compute_escaping_roots`): TIR's SSA admits *dominance-based*
+//! cross-block uses, so a value can be read in a later block without appearing in
+//! this block's terminator arguments.  Checking the terminator alone is unsound —
+//! it dropped a constructor's field stores whenever a CFG split (try/except, or
+//! any branch) separated the construction from a later field read, yielding a
+//! silent zero-default field read (Task #20 P0).  Any intervening observer within
+//! the block still invalidates the pending-store state below.
 //!
 //! The most common producer of this pattern is the frontend's class-
 //! instantiation fold combined with the `__init__` inliner: the inlined
@@ -47,9 +54,13 @@
 //! - Any op whose operand list contains `obj` or a tracked transparent
 //!   alias and whose effects we don't recognize is treated as a possible
 //!   read or escape => S1 stays live.
-//! - We scope the search to a single block: dead stores across blocks are
-//!   left live unless overwritten before the block ends. Cross-block
+//! - We scope the forward overwrite walk to a single block: dead stores across
+//!   blocks are left live unless overwritten before the block ends. Cross-block
 //!   elimination belongs in a full memory dataflow pass with alias facts.
+//! - Pattern 2's "object confined to this block" precondition is, by contrast,
+//!   a WHOLE-FUNCTION fact (`compute_escaping_roots`): a stack object whose
+//!   pointer is referenced in any other block is observable downstream, so its
+//!   final stores stay live.
 //! - Stores with no resolvable offset attr stay live.
 //! - Only `StoreAttr` ops with `_original_kind in {"store", "store_init"}`
 //!   are considered - other StoreAttr variants (set_attr_name,
@@ -64,6 +75,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
+use crate::tir::blocks::BlockId;
 use crate::tir::blocks::Terminator;
 use crate::tir::blocks::TirBlock;
 use crate::tir::function::TirFunction;
@@ -165,7 +177,11 @@ fn terminator_uses_root(terminator: &Terminator, root: ValueId, aliases: &AliasU
 /// only make `operand_aliases_root` MORE often true → MORE pending stores
 /// invalidated (observers detected) → strictly more conservative. We therefore
 /// never eliminate a store the old code would have kept live.
-fn run_block(block: &mut TirBlock, alias: &AliasAnalysisResult) -> usize {
+fn run_block(
+    block: &mut TirBlock,
+    alias: &AliasAnalysisResult,
+    escaping_roots: &HashSet<ValueId>,
+) -> usize {
     // Walk forward.  For each store at (obj, offset), record (idx, obj,
     // offset).  When we see a later store at the same (obj, offset)
     // with no intervening observer, mark the earlier one for removal.
@@ -205,8 +221,30 @@ fn run_block(block: &mut TirBlock, alias: &AliasAnalysisResult) -> usize {
         }
     }
 
+    // Pattern 2: the FINAL store to a stack object is dead iff the object is
+    // unobservable outside this block.
+    //
+    // SOUNDNESS: TIR is MLIR-style block-argument SSA in name only — the SSA
+    // construction admits *dominance-based* cross-block uses (a value defined
+    // in a dominating block may be referenced in a dominated block WITHOUT being
+    // threaded as a block argument; codegen resolves it via the dominance tree).
+    // So an object whose pointer is captured (e.g. a `Copy` alias) can be read
+    // by a `LoadAttr` in a LATER block while this block's terminator carries no
+    // argument for it. The former `!terminator_uses_root` check modeled escape
+    // via block-argument threading ALONE and therefore dropped the constructor's
+    // field stores whenever a try/except (or any CFG split) separated the object
+    // construction from a later field read — a silent zero-default miscompile.
+    //
+    // The correct precondition is whole-function: the object's alias root must
+    // not be referenced in ANY block other than this one (`escaping_roots` is the
+    // precomputed superset of roots used outside their producing block, covering
+    // operands, terminator-referenced values, AND block-argument bindings). When
+    // the root is confined to this block, the local `may_observe_slot` forward
+    // walk above has already witnessed every observation, so a surviving `pending`
+    // store is the genuinely-final, unread write and is safe to drop.
     for (&(root, _offset), &idx) in &pending {
         if stack_object_roots.contains(&root)
+            && !escaping_roots.contains(&root)
             && !terminator_uses_root(&block.terminator, root, &alias.aliases)
         {
             dead_indices.push(idx);
@@ -228,12 +266,122 @@ fn run_block(block: &mut TirBlock, alias: &AliasAnalysisResult) -> usize {
     removed
 }
 
+/// The alias-roots that are referenced in a block OTHER than the one that
+/// produces them — i.e. the roots that escape their producing block via a
+/// dominance-based cross-block SSA use, a block-argument binding, or a
+/// terminator reference. Pattern 2 must keep a stack object's final stores live
+/// when its root is in this set: such an object is observable downstream and its
+/// constructed fields are read after this block.
+///
+/// We first map every value to its producing block (op result, or block-argument
+/// binding), then scan every reference (op operand, terminator-referenced value,
+/// and branch/cond/switch argument) and union the *referencing* block into the
+/// root's use set. A root escapes when its use set contains any block other than
+/// the one that produced it.
+///
+/// This is intentionally a CONSERVATIVE SUPERSET: a value with no recorded
+/// producer block (e.g. a function parameter, or a root that is only ever an
+/// operand) is treated as escaping the moment it is referenced in two distinct
+/// blocks, and any reference whose producer is unknown is treated as escaping.
+/// Over-reporting an escape only makes Pattern 2 keep more stores live (strictly
+/// safe). Under-reporting would re-open the silent zero-default miscompile, so
+/// the analysis fails closed.
+fn compute_escaping_roots(func: &TirFunction, alias: &AliasAnalysisResult) -> HashSet<ValueId> {
+    // value-root -> the single block that produces it (None marks "seen in >1
+    // producing block" or "producer unknown", which forces escaping treatment).
+    let mut producer: HashMap<ValueId, Option<BlockId>> = HashMap::new();
+    let mut note_producer = |root: ValueId, bid: BlockId| {
+        producer
+            .entry(root)
+            .and_modify(|slot| {
+                if *slot != Some(bid) {
+                    *slot = None;
+                }
+            })
+            .or_insert(Some(bid));
+    };
+    for (&bid, block) in func.blocks.iter() {
+        for arg in &block.args {
+            note_producer(alias.root(arg.id), bid);
+        }
+        for op in &block.ops {
+            for result in &op.results {
+                note_producer(alias.root(*result), bid);
+            }
+        }
+    }
+
+    let mut escaping: HashSet<ValueId> = HashSet::new();
+    let note_use = |root: ValueId, bid: BlockId, escaping: &mut HashSet<ValueId>| {
+        match producer.get(&root) {
+            // Referenced outside its single producing block => escapes.
+            Some(Some(prod)) if *prod != bid => {
+                escaping.insert(root);
+            }
+            Some(Some(_)) => {}
+            // Ambiguous/unknown producer => fail closed.
+            _ => {
+                escaping.insert(root);
+            }
+        }
+    };
+    for (&bid, block) in func.blocks.iter() {
+        for op in &block.ops {
+            for operand in &op.operands {
+                note_use(alias.root(*operand), bid, &mut escaping);
+            }
+        }
+        match &block.terminator {
+            Terminator::Branch { args, .. } => {
+                for a in args {
+                    note_use(alias.root(*a), bid, &mut escaping);
+                }
+            }
+            Terminator::CondBranch {
+                cond,
+                then_args,
+                else_args,
+                ..
+            } => {
+                note_use(alias.root(*cond), bid, &mut escaping);
+                for a in then_args.iter().chain(else_args.iter()) {
+                    note_use(alias.root(*a), bid, &mut escaping);
+                }
+            }
+            Terminator::Switch {
+                value,
+                cases,
+                default_args,
+                ..
+            } => {
+                note_use(alias.root(*value), bid, &mut escaping);
+                for (_, _, args) in cases {
+                    for a in args {
+                        note_use(alias.root(*a), bid, &mut escaping);
+                    }
+                }
+                for a in default_args {
+                    note_use(alias.root(*a), bid, &mut escaping);
+                }
+            }
+            Terminator::Return { values } => {
+                for a in values {
+                    note_use(alias.root(*a), bid, &mut escaping);
+                }
+            }
+            Terminator::Unreachable => {}
+        }
+    }
+    escaping
+}
+
 /// Public entry point - run dead-store elimination on every block.
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let alias = am.get::<AliasAnalysis>(func).clone();
+    let escaping_roots = compute_escaping_roots(func, &alias);
     let mut total_removed = 0usize;
     for block in func.blocks.values_mut() {
-        total_removed += run_block(block, &alias);
+        total_removed += run_block(block, &alias, &escaping_roots);
     }
     PassStats {
         name: "dead_store_elim",
@@ -776,6 +924,74 @@ mod tests {
                 .iter()
                 .any(|op| op.opcode == OpCode::StoreAttr),
             "terminator live-out must keep the final store"
+        );
+    }
+
+    /// REGRESSION (Task #20, P0 silent-wrong-value): a stack object constructed
+    /// in the entry block whose field is read in a LATER block via a
+    /// *dominance-based* cross-block SSA use — the object value is NOT threaded
+    /// through the entry terminator's branch args (TIR admits dominance uses).
+    /// The former Pattern 2 escape check inspected ONLY the terminator args, so
+    /// it dropped the constructor's field stores, and the post-branch field read
+    /// returned a zero-default (the `0.0` miscompile triggered by any try/except
+    /// or CFG split between construction and the first field read).
+    ///
+    /// The stores MUST be kept live: the object is observable outside its
+    /// producing block.
+    #[test]
+    fn stack_object_field_read_in_dominated_block_keeps_stores() {
+        let mut func = entry_only_func();
+        let cls = ValueId(0);
+        let x = ValueId(1);
+        let y = ValueId(2);
+        let inst = ValueId(3);
+        let loaded = ValueId(4);
+
+        let next_id = BlockId(1);
+
+        // Entry: alloc + two field stores, then an UNCONDITIONAL branch to the
+        // successor carrying NO arguments (the object flows via dominance, not a
+        // block argument — exactly the shape the SSA construction emits when a
+        // CFG split separates construction from the first field read).
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_object_alloc(OpCode::ObjectNewBoundStack, cls, inst));
+        entry.ops.push(make_store(vec![inst, x], 0, "store_init"));
+        entry.ops.push(make_store(vec![inst, y], 8, "store_init"));
+        entry.terminator = Terminator::Branch {
+            target: next_id,
+            args: vec![],
+        };
+
+        // Successor: read field 0 off `inst` (a value defined in the dominating
+        // entry block, referenced here without a block-argument binding).
+        let mut load = make_op(OpCode::LoadAttr, vec![inst], vec![loaded]);
+        load.attrs.insert("value".into(), AttrValue::Int(0));
+        load.attrs
+            .insert("_original_kind".into(), AttrValue::Str("load".into()));
+        let next_block = TirBlock {
+            id: next_id,
+            args: vec![],
+            ops: vec![load],
+            terminator: Terminator::Return { values: vec![] },
+        };
+        func.blocks.insert(next_id, next_block);
+
+        let stats = run_fresh(&mut func);
+        assert_eq!(
+            stats.ops_removed, 0,
+            "a stack object read in a dominated block escapes its producing \
+             block; its constructor field stores MUST stay live"
+        );
+        assert_eq!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .filter(|op| op.opcode == OpCode::StoreAttr)
+                .count(),
+            2,
+            "both field stores must survive when the object is read downstream"
         );
     }
 }
