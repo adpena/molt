@@ -75,7 +75,7 @@
 //!    **all four** maps (plus `label_id_map`) with every key remapped to the
 //!    fresh block ids.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::super::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
 use super::super::call_graph::CallGraph;
@@ -1066,6 +1066,7 @@ pub fn run_inliner(
     call_graph: &CallGraph,
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
+    non_inlinable: &HashSet<String>,
 ) -> InlinerStats {
     // Rollback lever (production codegen): `MOLT_DISABLE_INLINING=1` makes the
     // inliner a no-op, so a regression can be bisected/disabled with a single env
@@ -1093,6 +1094,13 @@ pub fn run_inliner(
     let inlinable_bodies: HashMap<String, TirFunction> = module
         .functions
         .iter()
+        // A callee whose canonical definition is linked externally (e.g. a
+        // shared-stdlib-partition symbol that the native/wasm driver will
+        // externalize into `stdlib_shared.o`) has external linkage: this module
+        // does not own its body, so splicing a private copy at the call site is
+        // unsound (it drops the external reference and forks the definition).
+        // Refused unconditionally — the `Call` survives as an external reference.
+        .filter(|f| !non_inlinable.contains(&f.name))
         .filter(|f| is_inlineable(f, call_graph, summaries, tti))
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
@@ -1805,7 +1813,7 @@ mod tests {
         let mut m = module(vec![caller, callee]);
         let (cg, sm) = analysis(&m);
         let tti = TargetInfo::native_release_fast();
-        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
         assert_eq!(stats.sites_inlined, 1, "one site inlined");
         assert_eq!(stats.functions_changed, 1, "g changed");
         // No Call op remains in g.
@@ -1928,7 +1936,7 @@ mod tests {
         let mut m = module(vec![g, callee]);
         let (cg, sm) = analysis(&m);
         let tti = TargetInfo::native_release_fast();
-        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
         assert_eq!(stats.sites_inlined, 1, "c() inlined into g");
         let g = m.functions.iter().find(|f| f.name == "g").unwrap();
         let collide_count: usize = g
@@ -1968,7 +1976,7 @@ mod tests {
         let mut m = module(vec![g, callee]);
         let (cg, sm) = analysis(&m);
         let tti = TargetInfo::native_release_fast();
-        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
         assert_eq!(stats.sites_inlined, 1);
         let g = m.functions.iter().find(|f| f.name == "g").unwrap();
         let calls: usize = g
@@ -2030,7 +2038,7 @@ mod tests {
         let mut m = module(vec![g, callee]);
         let (cg, sm) = analysis(&m);
         let tti = TargetInfo::native_release_fast();
-        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
         assert_eq!(stats.sites_inlined, 2, "both call sites inlined");
         let g = m.functions.iter().find(|f| f.name == "g").unwrap();
         let calls: usize = g
@@ -2184,7 +2192,7 @@ mod tests {
         let mut m = module(vec![caller, callee]);
         let (cg, sm) = analysis(&m);
         let tti = TargetInfo::native_release_fast();
-        let stats = run_inliner(&mut m, &cg, &sm, &tti);
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
         assert_eq!(stats.sites_inlined, 1, "obs inlined into c");
         let c = m.functions.iter().find(|f| f.name == "c").unwrap();
         let calls: usize = c
