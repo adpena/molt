@@ -138,3 +138,17 @@ pub(crate) static ALLOC_BYTES_DICT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ALLOC_BYTES_TUPLE: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ALLOC_BYTES_LIST: AtomicU64 = AtomicU64::new(0);
 pub(crate) static PEAK_RSS_BYTES: AtomicU64 = AtomicU64::new(0);
+
+// Deallocation tracking counters (RC drop-insertion substrate, design 20).
+// Incremented at the `dec_ref_ptr` zero-transition — the single actual
+// deallocation path. The `live_objects = ALLOC_COUNT - DEALLOC_COUNT` identity
+// is the leak gauge MOLT_PROFILE / MOLT_ASSERT_NO_LEAK consult. Per-type
+// counters mirror the alloc-side per-type counters so a leak can be attributed
+// to a concrete object family.
+pub(crate) static DEALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEALLOC_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEALLOC_OBJECT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEALLOC_BIGINT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEALLOC_STRING_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEALLOC_DICT_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEALLOC_TUPLE_COUNT: AtomicU64 = AtomicU64::new(0);

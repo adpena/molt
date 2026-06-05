@@ -10,9 +10,9 @@ use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 use crate::tir::blocks::{BlockId, Terminator};
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 use crate::tir::ops::OpCode;
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
@@ -463,10 +463,9 @@ pub(crate) fn repr_by_value_for(
     // pre-seed, then propagate it across value-preserving SSA edges (`Copy`
     // chains and phis) so loop-carried induction variables — whose phi has no
     // direct `fits_inline_int47` fact but whose every incoming value is proven —
-    // inherit the carrier.
-    let mut seed = raw_i64_safe_value_seed(tir_func, vr);
-    seed.extend(gpu_intrinsic_raw_i64_values(tir_func));
-    let overflow_safe_values = propagate_raw_i64_safe_values(tir_func, seed);
+    // inherit the carrier. Shared with the RC drop-insertion raw-scalar filter
+    // (`raw_i64_safe_values_for`) — single source of truth.
+    let overflow_safe_values = raw_i64_safe_values_for(tir_func, vr);
     for &id in &overflow_safe_values {
         repr_by_value.insert(id, Repr::RawI64Safe);
     }
@@ -482,6 +481,34 @@ pub(crate) fn value_range_for(
 ) -> crate::tir::passes::value_range::ValueRangeResult {
     let scev = crate::tir::passes::scev::compute_scev(tir_func);
     crate::tir::passes::value_range::compute_value_range(tir_func, &scev)
+}
+
+/// The set of `ValueId`s the backend may carry as a **bare i64** (`RawI64Safe`):
+/// physically not NaN-boxed, no heap reference, raw machine arithmetic legal.
+///
+/// This is the SAME computation that mints `Repr::RawI64Safe` in
+/// [`repr_by_value_for`] — the value-range proof seed + the overflow-peel
+/// `CheckedAdd` full-range carriers + the GPU-index pre-seed, propagated across
+/// value-identity SSA edges. Factored out here so it is available **on every
+/// target** (the RC drop-insertion pass, design 20, runs in the shared TIR
+/// pipeline on native/LLVM/WASM and must filter these raw scalars out of the
+/// drop set — inserting a `DecRef` for a bare i64 register would pass a raw
+/// integer to `molt_dec_ref_obj`, a type confusion). `repr_by_value_for` now
+/// delegates its raw-i64 raise to this function (single source of truth).
+///
+/// `vr` MUST have been computed on this exact `tir_func` so its `ValueId`s line
+/// up. The result is a strict subset of the values that genuinely fit i64, so a
+/// missed promotion is at worst a perf bail (a spurious-but-harmless DecRef on a
+/// value that turns out inline — the runtime `molt_dec_ref_obj` fast-paths
+/// non-pointer tags), never an unsound carrier.
+#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
+pub(crate) fn raw_i64_safe_values_for(
+    tir_func: &TirFunction,
+    vr: &crate::tir::passes::value_range::ValueRangeResult,
+) -> std::collections::HashSet<ValueId> {
+    let mut seed = raw_i64_safe_value_seed(tir_func, vr);
+    seed.extend(gpu_intrinsic_raw_i64_values(tir_func));
+    propagate_raw_i64_safe_values(tir_func, seed)
 }
 
 /// Seed the raw-i64-safe set from the value-range proof: an **op-result**
@@ -504,7 +531,7 @@ pub(crate) fn value_range_for(
 /// all-incomings path. Excluding phis here loses no real promotion: the only
 /// phis the range analysis proves are AddRec IVs, whose incomings it also
 /// proves.
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 fn raw_i64_safe_value_seed(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,
@@ -546,7 +573,7 @@ fn raw_i64_safe_value_seed(
 /// (the legacy name-keyed chain marked them unconditionally raw-safe; this
 /// reproduces exactly that population, and only that population — bounded GPU
 /// index intrinsics, never an arbitrary runtime call).
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::HashSet<ValueId> {
     let mut values = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
@@ -594,7 +621,7 @@ fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::Has
 /// subset of the values that genuinely fit i64 (each proven by value-range or a
 /// structurally-bounded GPU index), propagating across value-identity edges
 /// cannot introduce an unsound carrier.
-#[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
+#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 fn propagate_raw_i64_safe_values(
     tir_func: &TirFunction,
     seed: std::collections::HashSet<ValueId>,
