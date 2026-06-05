@@ -654,7 +654,7 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 26 pass invocations ran.
-        assert_eq!(stats.len(), 26);
+        // All 27 pass invocations ran.
+        assert_eq!(stats.len(), 27);
     }
 }
