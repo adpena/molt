@@ -1402,6 +1402,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.stable_module_funcs: set[str] = set()
         self.module_declared_funcs: dict[str, str] = {}
         self.module_declared_classes: set[str] = set()
+        # Static class graph for this module — the soundness substrate for the
+        # zero-arg ``super()`` fold (see ``_collect_module_class_graph``).
+        # ``module_subclassed_names``: names referenced as a base anywhere.
+        # ``module_class_bases``: class name -> list of base-name lists across
+        # all class statements defining that name (``["<opaque>"]`` for a class
+        # whose bases are not all simple names).
+        self.module_subclassed_names: set[str] = set()
+        self.module_class_bases: dict[str, list[list[str]]] = {}
         self.stable_module_classes: set[str] = set()
         self.module_defined_funcs: set[str] = set()
         self.class_definition_pending: set[str] = set()
@@ -2111,6 +2119,184 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if method in methods:
                 return methods[method], name
         return None, None
+
+    def _static_class_bases(self, class_name: str) -> list[str] | None:
+        """Return the single static base-name list for ``class_name`` usable to
+        compute a C3 MRO, or ``None`` when it cannot be computed soundly.
+
+        Sources, in order: the module class graph collected pre-pass
+        (``module_class_bases`` — covers classes defined *later* in source than
+        the current method body), then the dependency-closure class table
+        (``self.classes``).  Returns ``None`` if the class has multiple
+        conflicting definitions, an opaque (non-simple-name / keyword) base, a
+        dynamically-built class, or is otherwise not statically resolvable.
+        """
+        if class_name == "object":
+            return ["object"]
+        defs = self.module_class_bases.get(class_name)
+        if defs is not None:
+            if len(defs) != 1:
+                return None  # re-bound / conditional class def — not foldable
+            entry = defs[0]
+            if "<opaque>" in entry:
+                return None
+            return list(entry)
+        info = self.classes.get(class_name)
+        if info is not None:
+            if info.get("dynamic") or info.get("custom_metaclass"):
+                return None
+            return list(info.get("bases", []) or ["object"])
+        # Unknown name (builtin base like Exception, or not-yet-seen): treat as
+        # un-foldable so a hidden interposition can never be missed.
+        return None
+
+    def _static_mro_names(
+        self, class_name: str, _stack: tuple[str, ...] = ()
+    ) -> list[str] | None:
+        """Compute the C3 linearization of ``class_name`` from the static class
+        graph, or ``None`` when any contributing class is not statically
+        resolvable (forcing the super fold to fail-closed).
+        """
+        if class_name in _stack:
+            return None  # cyclic inheritance — not resolvable
+        if class_name == "object":
+            return ["object"]
+        bases = self._static_class_bases(class_name)
+        if bases is None:
+            return None
+        base_mros: list[list[str]] = []
+        for base in bases:
+            base_mro = self._static_mro_names(base, _stack + (class_name,))
+            if base_mro is None:
+                return None
+            base_mros.append(base_mro)
+        base_mros.append(list(bases))
+        merged = self._c3_merge(base_mros)
+        if merged is None:
+            return None  # C3 inconsistency — CPython would raise; don't fold
+        return [class_name] + merged
+
+    def _static_method_owner_after(
+        self, mro: list[str], start: str, method: str
+    ) -> str | None:
+        """The first class defining ``method`` strictly after ``start`` in
+        ``mro``, mirroring ``super(start, ...).method`` resolution.  Returns
+        ``None`` if ``start`` is absent, no class after it defines ``method``,
+        or any class after it is not statically resolvable (so its method set
+        is unknown).
+        """
+        if start not in mro:
+            return None
+        for name in mro[mro.index(start) + 1 :]:
+            if name == "object":
+                # ``object`` defines a small fixed set; the methods exercised by
+                # the fold (user methods) are never on ``object``, so reaching
+                # object means "not found above" — bail rather than guess.
+                return None
+            info = self.classes.get(name)
+            if info is None:
+                # A class on the path whose method table we cannot see — bail.
+                return None
+            if method in info.get("methods", {}):
+                return name
+            # If this class is statically a subclass-graph node but absent from
+            # the (dep-closure) class table, we cannot know whether it defines
+            # the method; the caller restricts this to entry-module folding
+            # where every class on a subclass MRO is in self.classes.
+        return None
+
+    def _visible_subclasses_of(self, class_name: str) -> list[str] | None:
+        """All classes in the module class graph that have ``class_name`` in
+        their static MRO (proper subclasses), or ``None`` if any candidate's
+        MRO is not statically computable (fail-closed).
+        """
+        subclasses: list[str] = []
+        for other in self.module_class_bases:
+            if other == class_name:
+                continue
+            mro = self._static_mro_names(other)
+            if mro is None:
+                # Cannot prove this class is NOT a differently-ordered subclass.
+                if class_name in self._reachable_base_names(other):
+                    return None
+                continue
+            if class_name in mro:
+                subclasses.append(other)
+        return subclasses
+
+    def _reachable_base_names(
+        self, class_name: str, _seen: set[str] | None = None
+    ) -> set[str]:
+        """Transitive set of base names reachable from ``class_name`` over the
+        static module class graph (best-effort; used only to decide whether an
+        un-resolvable class might be a subclass of the fold target)."""
+        if _seen is None:
+            _seen = set()
+        if class_name in _seen:
+            return _seen
+        _seen.add(class_name)
+        defs = self.module_class_bases.get(class_name)
+        if not defs:
+            return _seen
+        for entry in defs:
+            for base in entry:
+                if base != "<opaque>":
+                    self._reachable_base_names(base, _seen)
+        return _seen
+
+    def _super_fold_is_sound(self, class_name: str, method: str) -> bool:
+        """Soundness predicate for the static zero-arg ``super()`` fold of
+        ``super().method(...)`` inside ``class_name.method``.
+
+        The fold rewrites the call to a direct call on the first class defining
+        ``method`` strictly after ``class_name`` in *``class_name``'s own* MRO.
+        For a receiver whose runtime type is the subclass ``S``, CPython instead
+        resolves to the first class defining ``method`` after ``class_name`` in
+        ``S``'s MRO.  These agree for every possible receiver iff that
+        successor-owner is identical across ``class_name`` and every subclass of
+        ``class_name``.  Linear hierarchies always satisfy this; diamonds (where
+        a subclass interposes a cooperative C3 sibling that defines ``method``)
+        do not — that is the parity bug this guard fixes.
+
+        Cross-module soundness: the frontend only sees this module's dependency
+        closure, so a downstream module could subclass ``class_name`` invisibly.
+        We therefore restrict the fold to the entry module, whose classes are
+        import-closed (nothing imports the program entry point).  Within the
+        entry module the static class graph (``module_class_bases``) is complete,
+        including subclasses defined *after* ``class_name`` in source order.
+
+        When the predicate returns ``False`` the fold bails and ``super()``
+        lowers to the runtime super path, which the backend fuses into the
+        allocation-free ``call_super_method_ic`` — already the fast path.
+        """
+        is_entry = self.module_name == "__main__" or (
+            self.entry_module is not None and self.module_name == self.entry_module
+        )
+        if not is_entry:
+            return False
+        # The defining class must itself be a statically resolvable entry-module
+        # class graph node.
+        if class_name not in self.module_class_bases:
+            return False
+        own_mro = self._static_mro_names(class_name)
+        if own_mro is None:
+            return False
+        expected_owner = self._static_method_owner_after(own_mro, class_name, method)
+        if expected_owner is None:
+            return False
+        subclasses = self._visible_subclasses_of(class_name)
+        if subclasses is None:
+            return False
+        for sub in subclasses:
+            sub_mro = self._static_mro_names(sub)
+            if sub_mro is None:
+                return False
+            sub_owner = self._static_method_owner_after(sub_mro, class_name, method)
+            if sub_owner != expected_owner:
+                # A subclass routes super() through a different class — the
+                # static fold would skip a cooperative override. Do not fold.
+                return False
+        return True
 
     def _resolve_super_method_info(
         self, class_name: str, method: str
@@ -3708,6 +3894,83 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _collect_module_class_names(self, node: ast.Module) -> set[str]:
         return {stmt.name for stmt in node.body if isinstance(stmt, ast.ClassDef)}
 
+    def _collect_module_class_graph(
+        self, node: ast.Module
+    ) -> tuple[dict[str, list[list[str]]], set[str]]:
+        """Build the module-wide static class graph used to reason about the
+        zero-arg ``super()`` fold *before* any method body is compiled.
+
+        Returns ``(bases_by_class, subclassed_names)``:
+
+        * ``bases_by_class`` maps every class-statement name in this module
+          (top-level, nested, or function-local) to the list of *base-name
+          lists* across all class statements that define that name.  A name can
+          have multiple definitions (re-binding / conditional class defs); the
+          fold must hold for every one, so all are retained.  A class whose
+          bases are not all simple ``ast.Name`` references contributes the
+          sentinel ``["<opaque>"]`` for that definition, which forces any
+          MRO computation through it to bail (fail-closed).
+
+        * ``subclassed_names`` is the set of names referenced as a base anywhere
+          (the conservative "is this class ever subclassed" view), including
+          dotted/attribute bases and names appearing inside computed bases.
+
+        ``super()`` in ``C.method`` resolves to the class following ``C`` in
+        ``type(self).__mro__``.  Because the method is inherited, ``self`` may be
+        any subclass instance, and a diamond subclass can interpose a cooperative
+        C3 sibling between ``C`` and ``C``'s lexical next base.  The fold is only
+        sound when the *method-resolution successor* of ``C`` is identical across
+        ``C`` and every visible subclass of ``C`` — which requires the full base
+        graph of classes that may be defined *after* ``C`` in source order.
+        """
+        bases_by_class: dict[str, list[list[str]]] = {}
+        subclassed: set[str] = set()
+        _OPAQUE = "<opaque>"
+
+        def simple_base_name(expr: ast.expr) -> str | None:
+            if isinstance(expr, ast.Name):
+                return expr.id
+            return None
+
+        def record_subclassed(expr: ast.expr) -> None:
+            if isinstance(expr, ast.Name):
+                subclassed.add(expr.id)
+                return
+            if isinstance(expr, ast.Attribute):
+                current: ast.expr | None = expr
+                while isinstance(current, ast.Attribute):
+                    subclassed.add(current.attr)
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    subclassed.add(current.id)
+                return
+            for sub in ast.walk(expr):
+                if isinstance(sub, ast.Name):
+                    subclassed.add(sub.id)
+
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.ClassDef):
+                continue
+            base_names: list[str] = []
+            opaque = False
+            # A keyword base (metaclass=, or any keyword) makes the class
+            # dynamically built: treat its MRO as un-foldable.
+            if stmt.keywords:
+                opaque = True
+            for base_expr in stmt.bases:
+                record_subclassed(base_expr)
+                name = simple_base_name(base_expr)
+                if name is None:
+                    opaque = True
+                else:
+                    base_names.append(name)
+            for kw in stmt.keywords:
+                if isinstance(kw.value, (ast.Name, ast.Attribute)):
+                    record_subclassed(kw.value)
+            entry = [_OPAQUE] if opaque else (base_names or ["object"])
+            bases_by_class.setdefault(stmt.name, []).append(entry)
+        return bases_by_class, subclassed
+
     def _collect_module_class_mutations(self, node: ast.Module) -> set[str]:
         class_names = {
             stmt.name for stmt in node.body if isinstance(stmt, ast.ClassDef)
@@ -3963,6 +4226,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_mutated = self.mutated_classes
         prev_declared = self.module_declared_funcs
         prev_declared_classes = self.module_declared_classes
+        prev_subclassed_names = self.module_subclassed_names
+        prev_class_bases = self.module_class_bases
         prev_stable_classes = self.stable_module_classes
         prev_reserved = self.reserved_func_symbols
         prev_defined = self.module_defined_funcs
@@ -3986,6 +4251,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_const_dicts = self._collect_module_const_dicts(node)
         self.module_declared_funcs = self._collect_module_func_kinds(node)
         self.module_declared_classes = self._collect_module_class_names(node)
+        (
+            self.module_class_bases,
+            self.module_subclassed_names,
+        ) = self._collect_module_class_graph(node)
         self.stable_module_classes = self._collect_stable_module_classes(node)
         self.class_definition_pending = set(self.module_declared_classes)
         self.reserved_func_symbols = {}
@@ -4161,6 +4430,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.mutated_classes = prev_mutated
         self.module_declared_funcs = prev_declared
         self.module_declared_classes = prev_declared_classes
+        self.module_subclassed_names = prev_subclassed_names
+        self.module_class_bases = prev_class_bases
         self.stable_module_classes = prev_stable_classes
         self.reserved_func_symbols = prev_reserved
         self.module_defined_funcs = prev_defined
@@ -17950,6 +18221,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if isinstance(arg, (ast.Starred,)):
                 return None  # *args spread — needs builder
         method_name = node.func.attr
+        # SOUNDNESS GATE for the static super fold.  ``super().method()`` in
+        # ``current_class.method`` resolves to the first class defining
+        # ``method`` after ``current_class`` in ``type(self).__mro__``.  Folding
+        # statically picks that successor in ``current_class``'s *own* MRO, which
+        # equals the runtime answer for every possible receiver only when the
+        # successor-owner is identical across ``current_class`` and all of its
+        # subclasses.  Linear hierarchies satisfy this; a diamond subclass
+        # (``Final(Left, Right)`` interposing ``Right`` between ``Left`` and
+        # ``Base``) does not — that is the parity bug.  ``_super_fold_is_sound``
+        # verifies the successor-owner is stable across the whole entry-module
+        # subclass graph (and bails for non-entry modules, whose subclasses may
+        # be defined downstream and are invisible here).  When it bails, super()
+        # lowers to the runtime path, which the backend fuses into the
+        # allocation-free ``call_super_method_ic`` — already the fast path.
+        if not self._super_fold_is_sound(self.current_class, method_name):
+            return None
         method_info, owner_class = self._resolve_super_method_info(
             self.current_class, method_name
         )
