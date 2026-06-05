@@ -45,8 +45,12 @@ fn count_types(wasm: &[u8]) -> usize {
 // -----------------------------------------------------------------------
 
 #[test]
-fn type_section_has_at_least_39_static_types() {
-    // The WASM backend defines 39 static types (STATIC_TYPE_COUNT = 39).
+fn type_section_has_at_least_51_static_types() {
+    // The WASM backend defines 51 static types (STATIC_TYPE_COUNT = 51).
+    // The exact static signatures are pinned by index in the in-crate guard
+    // `wasm::tests::static_type_section_signatures_are_pinned_to_static_type_count`
+    // (which can see the private STATIC_TYPE_COUNT const). This integration
+    // test only asserts the lower bound, since it cannot see the const.
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
@@ -61,8 +65,8 @@ fn type_section_has_at_least_39_static_types() {
 
     let type_count = count_types(&wasm);
     assert!(
-        type_count >= 39,
-        "should have at least 39 static types, found {type_count}"
+        type_count >= 51,
+        "should have at least 51 static types, found {type_count}"
     );
 }
 
@@ -251,11 +255,11 @@ fn user_function_with_params_adds_dynamic_type() {
     });
 
     let type_count = count_types(&wasm);
-    // 39 static types + at least 1 dynamic type for the 3-param function
+    // 51 static types + at least 1 dynamic type for the 3-param function
     // (if arity 3 isn't already covered by a static type with matching signature)
     assert!(
-        type_count >= 39,
-        "should have >= 39 types with dynamic user function type, found {type_count}"
+        type_count >= 51,
+        "should have >= 51 types with dynamic user function type, found {type_count}"
     );
 }
 
@@ -390,7 +394,7 @@ fn high_arity_static_types_exist() {
 
     let sigs = extract_type_signatures(&wasm);
     // Types 35-38: high-arity (9, 10, 11, 12 params) -> i64
-    assert!(sigs.len() >= 39);
+    assert!(sigs.len() >= 51);
     assert_eq!(sigs[35], (9, 1), "type 35 should be (i64*9) -> i64");
     assert_eq!(sigs[36], (10, 1), "type 36 should be (i64*10) -> i64");
     assert_eq!(sigs[37], (11, 1), "type 37 should be (i64*11) -> i64");
