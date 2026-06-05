@@ -14,6 +14,7 @@
 use molt_backend::llvm_backend::lowering::{append_terminator_successors, compute_function_rpo};
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
+use molt_backend::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::ValueId;
 
@@ -400,4 +401,163 @@ fn llvm_rpo_self_loop_is_not_revisited() {
 
     let rpo = compute_function_rpo(&func);
     assert_eq!(rpo, vec![entry, exit]);
+}
+
+/// Append a `CheckException` op to `block`'s op list whose handler target is
+/// the label `handler_label`. This is the mid-block exception edge that a
+/// terminator successor list cannot express.
+fn push_check_exception(func: &mut TirFunction, block: BlockId, handler_label: i64) {
+    let mut attrs = std::collections::HashMap::new();
+    attrs.insert("value".to_string(), AttrValue::Int(handler_label));
+    func.blocks.get_mut(&block).unwrap().ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::CheckException,
+        operands: vec![],
+        results: vec![],
+        attrs,
+        source_span: None,
+    });
+}
+
+#[test]
+fn llvm_rpo_includes_exception_edge_only_reachable_handler() {
+    // CFG (regression for the LLVM exception-CFG bug):
+    //   entry  --CheckException(handler)-->  handler   (mid-block exception edge)
+    //   entry  --Branch-->                   exit
+    //   handler-->                           exit
+    //   exit   -->                           return
+    //
+    // The handler block is reachable ONLY via the implicit exception edge of a
+    // `CheckException` op — it appears in NO terminator's successor list. The
+    // RPO MUST still include it: if it does not, `lower_block` never emits the
+    // handler's ops, the pass-5 sweep stamps a bare `unreachable` into it, and
+    // SimplifyCFG folds the `CheckException` arm's conditional branch into an
+    // `llvm.assume` that the exception is never pending — silently skipping the
+    // handler at runtime.
+    let mut func = make_func_with_blocks("exc_handler", 3);
+    let entry = func.entry_block;
+    let handler = BlockId(1);
+    let exit = BlockId(2);
+
+    // The handler's label id (CheckException's `value` attr resolves to the
+    // owning block via `func.label_id_map`, i.e. BlockId.0 -> label).
+    let handler_label: i64 = 100;
+    func.label_id_map.insert(handler.0, handler_label);
+
+    push_check_exception(&mut func, entry, handler_label);
+    set_term(
+        &mut func,
+        entry,
+        Terminator::Branch {
+            target: exit,
+            args: vec![],
+        },
+    );
+    set_term(
+        &mut func,
+        handler,
+        Terminator::Branch {
+            target: exit,
+            args: vec![],
+        },
+    );
+    set_term(&mut func, exit, Terminator::Return { values: vec![] });
+
+    let rpo = compute_function_rpo(&func);
+
+    assert_eq!(
+        rpo.len(),
+        3,
+        "entry, handler, and exit must all appear in RPO: {:?}",
+        rpo
+    );
+    assert!(
+        rpo.contains(&handler),
+        "exception-edge-only-reachable handler must be in RPO: {:?}",
+        rpo
+    );
+    assert_eq!(rpo[0], entry, "entry must be first: {:?}", rpo);
+
+    let pos_entry = position_of(&rpo, entry);
+    let pos_handler = position_of(&rpo, handler);
+    let pos_exit = position_of(&rpo, exit);
+    assert!(
+        pos_entry < pos_handler,
+        "entry (which raises into the handler) must precede the handler: {:?}",
+        rpo
+    );
+    assert!(
+        pos_handler < pos_exit,
+        "handler must precede the post-handler merge: {:?}",
+        rpo
+    );
+    // Exit is the join of the normal edge and the handler edge, so it is last.
+    assert_eq!(rpo[2], exit, "post-handler merge must be last: {:?}", rpo);
+}
+
+#[test]
+fn llvm_rpo_includes_handler_reachable_only_transitively_via_exception_edge() {
+    // CFG:
+    //   entry  --CheckException(handler)-->  handler        (mid-block exc edge)
+    //   entry  --Branch-->                   exit
+    //   handler--Branch-->                   handler_body   (chained handler)
+    //   handler_body --> return
+    //   exit   --> return
+    //
+    // `handler_body` has no terminator-edge predecessor reachable from entry
+    // either — it is reachable ONLY through the handler, which is itself
+    // reachable only via the exception edge. The traversal must follow the
+    // exception edge and then the handler's normal terminator edges to reach
+    // `handler_body`.
+    let mut func = make_func_with_blocks("exc_chain", 4);
+    let entry = func.entry_block;
+    let handler = BlockId(1);
+    let handler_body = BlockId(2);
+    let exit = BlockId(3);
+
+    let handler_label: i64 = 42;
+    func.label_id_map.insert(handler.0, handler_label);
+
+    push_check_exception(&mut func, entry, handler_label);
+    set_term(
+        &mut func,
+        entry,
+        Terminator::Branch {
+            target: exit,
+            args: vec![],
+        },
+    );
+    set_term(
+        &mut func,
+        handler,
+        Terminator::Branch {
+            target: handler_body,
+            args: vec![],
+        },
+    );
+    set_term(
+        &mut func,
+        handler_body,
+        Terminator::Return { values: vec![] },
+    );
+    set_term(&mut func, exit, Terminator::Return { values: vec![] });
+
+    let rpo = compute_function_rpo(&func);
+
+    assert_eq!(rpo.len(), 4, "all four blocks must appear: {:?}", rpo);
+    for b in [entry, handler, handler_body, exit] {
+        assert!(
+            rpo.contains(&b),
+            "block {:?} must appear in RPO: {:?}",
+            b,
+            rpo
+        );
+    }
+    let pos_handler = position_of(&rpo, handler);
+    let pos_body = position_of(&rpo, handler_body);
+    assert!(
+        pos_handler < pos_body,
+        "handler must precede its transitively-reachable body: {:?}",
+        rpo
+    );
 }

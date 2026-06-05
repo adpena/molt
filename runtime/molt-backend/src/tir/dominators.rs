@@ -34,7 +34,18 @@ pub fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
     }
 }
 
-fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
+/// Map each exception-handler label id to the `BlockId` that owns it.
+///
+/// `CheckException`/`TryStart`/`TryEnd` ops encode their handler target as a
+/// *label id* in the `value` attribute (not a `BlockId`), because the implicit
+/// exception edge leaves mid-block and so cannot be expressed as a terminator
+/// successor. This is the inverse of `func.label_id_map` and is the single
+/// source of truth for resolving those label ids to blocks.
+///
+/// Public so the LLVM lowering driver can reuse exactly this edge-resolution
+/// logic (via [`exception_successors`]) when building its block-lowering order,
+/// instead of re-deriving the label→block mapping in `lowering.rs`.
+pub fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
     func.label_id_map
         .iter()
         .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
@@ -64,7 +75,22 @@ pub enum CfgEdgePolicy {
     TerminatorOnly,
 }
 
-fn exception_successors(block: &TirBlock, label_to_block: &HashMap<i64, BlockId>) -> Vec<BlockId> {
+/// Collect the implicit exception-edge successors of `block`.
+///
+/// `CheckException`/`TryStart`/`TryEnd` ops branch to a handler block *mid-block*
+/// (their `value` attribute is the handler's label id), which a terminator
+/// successor list cannot express. This is the single source of truth for those
+/// edges; both the dominator/reachability analyses here and the LLVM lowering
+/// driver's block-ordering pass route through it so there is exactly one place
+/// that knows how a TIR block reaches its handler.
+///
+/// Public so `lowering.rs::compute_function_rpo` can include exception-reachable
+/// handler blocks in its lowering order instead of duplicating the
+/// edge-extraction logic.
+pub fn exception_successors(
+    block: &TirBlock,
+    label_to_block: &HashMap<i64, BlockId>,
+) -> Vec<BlockId> {
     let mut successors = Vec::new();
     for op in &block.ops {
         if matches!(
