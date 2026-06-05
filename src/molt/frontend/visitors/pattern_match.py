@@ -106,8 +106,12 @@ class PatternMatchMixin(_MixinBase):
 
     def _validate_match_pattern(self, pattern: ast.pattern) -> None:
         if isinstance(pattern, ast.MatchOr):
+            # CPython requires each OR alternative to bind the same *set* of
+            # names (order-independent); _collect_pattern_capture_names now
+            # returns a source-ordered list, so compare as sets here.
             bindings = [
-                self._collect_pattern_capture_names(sub) for sub in pattern.patterns
+                set(self._collect_pattern_capture_names(sub))
+                for sub in pattern.patterns
             ]
             if bindings:
                 baseline = bindings[0]
