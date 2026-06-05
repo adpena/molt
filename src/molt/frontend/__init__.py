@@ -6287,13 +6287,20 @@ class SimpleTIRGenerator(
             return None
         return node.body if truth else node.orelse
 
-    def _collect_namedexpr_names(self, node: ast.AST) -> set[str]:
-        names: set[str] = set()
+    def _collect_namedexpr_names(self, node: ast.AST) -> list[str]:
+        # Source order, deduplicated.  Walrus (:=) targets are synced to the
+        # enclosing scope by iterating this result and emitting INDEX / module-
+        # attr-set ops per name (see _collect_inline_comp_walrus_names callers),
+        # so a set leaked PYTHONHASHSEED order into the emitted IR (#34,
+        # walrus-target class).  Set-semantics consumers wrap in set(...).
+        names: list[str] = []
+        seen: set[str] = set()
 
         class NamedExprCollector(ast.NodeVisitor):
             def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-                if isinstance(node.target, ast.Name):
-                    names.add(node.target.id)
+                if isinstance(node.target, ast.Name) and node.target.id not in seen:
+                    seen.add(node.target.id)
+                    names.append(node.target.id)
                 self.generic_visit(node.value)
 
             def visit_Lambda(self, node: ast.Lambda) -> None:
@@ -6522,7 +6529,7 @@ class SimpleTIRGenerator(
             exprs.append(node.elt)
         namedexpr_targets: set[str] = set()
         for expr in exprs:
-            namedexpr_targets |= self._collect_namedexpr_names(expr)
+            namedexpr_targets |= set(self._collect_namedexpr_names(expr))
         assigned = self._collect_assigned_names(
             [ast.Expr(value=expr) for expr in exprs]
         )
@@ -6714,7 +6721,7 @@ class SimpleTIRGenerator(
             exprs.append(node.elt)
         names: set[str] = set()
         for expr in exprs:
-            names |= self._collect_namedexpr_names(expr)
+            names |= set(self._collect_namedexpr_names(expr))
         names -= target_names
         return names
 
@@ -11295,12 +11302,17 @@ class SimpleTIRGenerator(
 
     def _collect_inline_comp_walrus_names(
         self, exprs: Sequence[ast.AST], ifs: Sequence[ast.AST]
-    ) -> set[str]:
-        walrus_names: set[str] = set()
-        for expr in exprs:
-            walrus_names |= self._collect_namedexpr_names(expr)
-        for if_node in ifs:
-            walrus_names |= self._collect_namedexpr_names(if_node)
+    ) -> list[str]:
+        # Source order, deduplicated (deterministic): the result drives boxing
+        # and the post-loop walrus-target sync emission, so it must not depend
+        # on hash order (#34).
+        walrus_names: list[str] = []
+        seen: set[str] = set()
+        for node in (*exprs, *ifs):
+            for name in self._collect_namedexpr_names(node):
+                if name not in seen:
+                    seen.add(name)
+                    walrus_names.append(name)
         return walrus_names
 
     def _collect_inline_comp_lambda_free_vars(
@@ -14213,7 +14225,7 @@ class SimpleTIRGenerator(
             return None
         if not self.is_async():
             assigned = self._collect_assigned_names(node.body + node.orelse)
-            assigned |= self._collect_namedexpr_names(node.test)
+            assigned |= set(self._collect_namedexpr_names(node.test))
             if self.current_func_name == "molt_main":
                 # Module-scope if-branch bindings use the module dict as their
                 # mutable store instead of synthesising boxed-local cells.
@@ -15173,7 +15185,7 @@ class SimpleTIRGenerator(
             self._emit_counted_while(index_name, bound, body)
             return None
         assigned = self._collect_assigned_names(node.body)
-        assigned |= self._collect_namedexpr_names(node.test)
+        assigned |= set(self._collect_namedexpr_names(node.test))
         self._prepare_mutable_control_flow_bindings(assigned)
         guard_map = self._emit_hoisted_loop_guards(node.body)
 
