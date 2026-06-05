@@ -154,6 +154,35 @@ def _async_programs() -> list[Path]:
 ASYNC_PROGRAMS = _async_programs()
 
 
+# Programs that exercise other set-iteration -> IR-emission leaks of the #34
+# class beyond async spill: unpacking/star targets and structural-pattern
+# capture names flow through ``_collect_target_names`` /
+# ``_collect_pattern_capture_names`` into the function's co_varnames tuple via
+# ``_collect_assigned_names_ordered``.  Both returned sets historically, leaking
+# hash order into the emitted IR.  These are the regression surface for that
+# class; the names are pinned so a regression in any one is attributable.
+_HASH_ORDER_LEAK_PROGRAMS = [
+    "unpack_assignment.py",
+    "stress_structures_pass.py",
+    "stress_structures_fail.py",
+    "sum_map_function_defaults.py",
+    "ws_pair_basic.py",
+    "match_guard_capture_order.py",
+    "pattern_matching_core_matrix.py",
+    "pattern_matching_class_guard_matrix.py",
+    "pep634_pattern_matching_more.py",
+]
+
+
+def _hash_order_leak_programs() -> list[Path]:
+    if not BASIC_DIR.is_dir():
+        return []
+    return [BASIC_DIR / name for name in _HASH_ORDER_LEAK_PROGRAMS]
+
+
+HASH_ORDER_LEAK_PROGRAMS = _hash_order_leak_programs()
+
+
 # ---------------------------------------------------------------------------
 # Tests: compile-twice in-process
 # ---------------------------------------------------------------------------
@@ -231,22 +260,15 @@ def test_ir_hashseed_independence(program: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "program",
-    ASYNC_PROGRAMS,
-    ids=[p.name for p in ASYNC_PROGRAMS],
-)
-@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
-def test_async_spill_hashseed_independence(program: Path, parse_codec: str) -> None:
-    """Async-spill IR must be byte-identical across hash seeds, unpinned.
+def _assert_outcome_hashseed_stable(program: Path, parse_codec: str) -> None:
+    """Compile *program* under several fixed seeds + an explicit random seed +
+    the unpinned ``"random"`` path and assert a single byte-identical outcome.
 
-    Includes ``"random"`` so the compiler runs under a fresh, process-chosen
-    hash seed — the only configuration that proves the offset assignment does
-    not depend on dict/set iteration order rather than merely agreeing for a
-    hand-picked seed set.
+    ``"random"`` is decisive: it runs the compiler under a fresh, process-chosen
+    hash seed, so it catches a leak even when a hand-picked fixed-seed set
+    happens to agree (which is exactly how #34 evaded the original test).
     """
     source = program.read_text()
-    # Fixed seeds + an explicit random one + the unpinned ("random") path.
     seeds = ["0", "1", "42", "12345", str(_random_seed()), "random"]
     reference = _compile_outcome_subprocess(
         source, pythonhashseed=seeds[0], parse_codec=parse_codec
@@ -260,6 +282,35 @@ def test_async_spill_hashseed_independence(program: Path, parse_codec: str) -> N
             f"PYTHONHASHSEED={seed} vs PYTHONHASHSEED={seeds[0]} — a hash-order "
             f"leak into IR emission (regression of #34)"
         )
+
+
+@pytest.mark.parametrize(
+    "program",
+    ASYNC_PROGRAMS,
+    ids=[p.name for p in ASYNC_PROGRAMS],
+)
+@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
+def test_async_spill_hashseed_independence(program: Path, parse_codec: str) -> None:
+    """Async-spill IR must be byte-identical across hash seeds, unpinned."""
+    _assert_outcome_hashseed_stable(program, parse_codec)
+
+
+@pytest.mark.parametrize(
+    "program",
+    HASH_ORDER_LEAK_PROGRAMS,
+    ids=[p.name for p in HASH_ORDER_LEAK_PROGRAMS],
+)
+@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
+def test_unpack_and_pattern_hashseed_independence(
+    program: Path, parse_codec: str
+) -> None:
+    """Unpacking-target and pattern-capture names must not leak hash order.
+
+    These flow through ``_collect_target_names`` / ``_collect_pattern_capture
+    _names`` into the function's co_varnames tuple; both returned sets before
+    the fix, so the emitted IR depended on PYTHONHASHSEED.
+    """
+    _assert_outcome_hashseed_stable(program, parse_codec)
 
 
 def _random_seed() -> int:
