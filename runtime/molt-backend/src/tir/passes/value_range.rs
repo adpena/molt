@@ -525,7 +525,7 @@ impl Analysis for ValueRange {
 /// SAME value so the multi-operand stack-machine spelling `Copy(v, v)` resolves
 /// to `v`. A plain attribute-free copy (`is_plain_value_copy`) is the `None`-kind
 /// case and is also accepted.
-fn copy_value_source(op: &TirOp) -> Option<ValueId> {
+pub(crate) fn copy_value_source(op: &TirOp) -> Option<ValueId> {
     if op.opcode != OpCode::Copy || op.results.len() != 1 || op.operands.is_empty() {
         return None;
     }
