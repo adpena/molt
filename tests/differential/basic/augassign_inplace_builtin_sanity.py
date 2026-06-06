@@ -35,25 +35,45 @@ e = 2
 e **= 10
 show("int **=", e)
 
-# Shifts stay within the signed-i64 window. The bigint-promotion boundary of
-# `<<` (shift >= ~63) is a SEPARATE, operator-spelling-agnostic concern handled
-# by the overflow/representation arc and is intentionally NOT exercised here:
-# the LLVM bitwise fast lane lowers `<<` to a raw machine shift with no overflow
-# guard, so `1 << 80` is mis-lowered on LLVM for the binary `<<` and the
-# in-place `<<=` ALIKE (verified). Coupling this in-place-routing test to that
-# pre-existing gap would conflate two unrelated bugs. See the baton note.
+# Shifts, including the bigint-promotion boundary of `<<` (shift past i64). The
+# in-place `<<=`/`>>=` fast lane is the SAME emitter as the binary `<<`/`>>`, so
+# these results must be byte-identical including BigInt promotion. (The raw I64
+# shift lane is now gated on the value-range RawI64Safe proof — count proven in
+# [0, 63] AND result fits inline — so an overflowing `<<=` bails to the
+# BigInt-correct boxed runtime; see shift_overflow_matrix.py for the full lane
+# contract. This deliberately exercises that boundary in the in-place spelling.)
 f = 1
 f <<= 20
 show("int <<=", f)
+
+# In-place `<<=` PAST the i64 window: must promote to a bigint, not wrap.
+fbig = 1
+fbig <<= 80
+show("int <<= bigint", fbig)
+
+fbig2 = 0xFF
+fbig2 <<= 100
+show("int <<= bigint 2", fbig2)
 
 g = 1024
 g >>= 4
 show("int >>=", g)
 
+# In-place `>>=` of a bigint back down into the i64 window.
+gbig = 1 << 90
+gbig >>= 85
+show("int >>= from bigint", gbig)
+
 h = 0xFF
 h <<= 8
 h >>= 4
 show("int <<= then >>=", h)
+
+# `<<=` then `>>=` straddling the i64 boundary in both directions.
+hbig = 1
+hbig <<= 70
+hbig >>= 5
+show("int <<= then >>= across i64", hbig)
 
 # Accumulating loop to exercise the hot int fast lane for //= and %=.
 acc = 1_000_000
