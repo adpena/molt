@@ -1634,6 +1634,10 @@ class _GeneratorProtocol(Protocol):
         self, item: "ast.FunctionDef", params: list[str]
     ) -> "ast.expr | None": ...
 
+    def _inline_body_external_names(
+        self, expr: "ast.expr", params: list[str]
+    ) -> "frozenset[str]": ...
+
     def _extract_inline_init_assigns(
         self, item: "ast.FunctionDef", params: list[str]
     ) -> "list[tuple[str, ast.expr]] | None": ...
