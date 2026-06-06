@@ -274,20 +274,39 @@ impl IntRange {
 
     /// Python left shift `self << s` by a *constant* `s >= 0`:
     /// `[lo << s, hi << s]` in i128 (saturating). `s < 0` returns FULL.
+    ///
+    /// The product is computed with `checked_mul` because `lo`/`hi` at an i64
+    /// extreme times `2^s` for `s >= 64` overflows **i128 itself** (`|i64::MIN| =
+    /// 2^63`, `2^63 * 2^64 > i128::MAX`). An overflowing endpoint has definitively
+    /// left the i64 domain in that direction, so it saturates to the matching i64
+    /// extreme by sign — a sound widening (`from_i128` then clamps the in-range
+    /// endpoint). This is what lets `(x << 80)` on an unbounded `x` (FULL range)
+    /// yield a sound FULL result instead of panicking on i128 overflow.
     fn shl_const(self, s: i64) -> IntRange {
         if s < 0 {
             return IntRange::FULL_I64;
         }
+        if self.lo == 0 && self.hi == 0 {
+            return IntRange::point(0); // 0 << s == 0 for every s.
+        }
         if s >= 127 {
             // A non-zero operand shifted this far overflows i64 in both
-            // directions; only an all-zero operand stays inline.
-            if self.lo == 0 && self.hi == 0 {
-                return IntRange::point(0);
-            }
+            // directions (handled by the checked path below too, but this avoids
+            // forming a 2^127 shift amount).
             return IntRange::FULL_I64;
         }
         let mul = 1i128 << s;
-        IntRange::from_i128((self.lo as i128) * mul, (self.hi as i128) * mul)
+        // A `checked_mul` overflow means the endpoint exceeds i128 — definitively
+        // outside i64 — so saturate to the i64 extreme matching the product's
+        // sign (the sign of the endpoint, since `mul > 0`).
+        let shl_endpoint = |x: i64| -> i128 {
+            match (x as i128).checked_mul(mul) {
+                Some(p) => p,
+                None if x < 0 => i64::MIN as i128,
+                None => i64::MAX as i128,
+            }
+        };
+        IntRange::from_i128(shl_endpoint(self.lo), shl_endpoint(self.hi))
     }
 
     /// True if the whole interval is `>= 0`.
@@ -499,6 +518,17 @@ impl ValueRangeResult {
         let bound = self.resolve(bound);
         self.symbolic_lt_bound.insert((bid, var), bound);
     }
+
+    /// Test-only: directly seed the global range of `v` to `[lo, hi]`. Used by
+    /// sibling-pass unit tests (e.g. LICM's throw-disproof gate) that need to
+    /// exercise range-dependent logic against a hand-built result without
+    /// standing up a full TIR function + the analysis pipeline. The
+    /// `global_range` field is private, so this is the sanctioned cross-module
+    /// test seam.
+    #[cfg(test)]
+    pub(crate) fn set_global_range_for_test(&mut self, v: ValueId, lo: i64, hi: i64) {
+        self.global_range.insert(v, IntRange::new(lo, hi));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +719,30 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
     // …) from their operands' already-proven ranges, to a fixpoint. This is the
     // producer that lets a value DERIVED from an induction variable — not just
     // the IV itself — be proven inline (the SROA hot-loop field-promotion gap).
+    //
+    // CRUCIAL INVARIANT this first sweep establishes (relied on by the phi-range
+    // narrowing below): it NEVER assigns a range to a phi / block argument, so
+    // every op-result range it computes is derived under the assumption that all
+    // phis are FULL (unknown). A *bounded interior* range it produces for any
+    // value (see `is_phi_independent_bound`) is therefore phi-independent by
+    // construction — it did not assume any range for any phi.
     propagate_op_ranges(func, &mut result);
+
+    // ---- loop-header phi-range narrowing ------------------------------------
+    // Narrow a loop-header phi to the JOIN of its incoming-edge ranges when every
+    // incoming range is phi-INDEPENDENT (a bounded interior range proven by the
+    // FULL-phi sweep above). The licensing structure is a re-bounding op on the
+    // back edge — a
+    // `x & const_mask` makes the carried value's range `[0, mask]` REGARDLESS of
+    // the phi, so a masked-shift accumulator (`s = (s << 1) & MASK`) recovers its
+    // raw-i64 lane. An unbounded accumulator (`total = total + i`, `acc = acc <<
+    // 1`) has a FULL back-edge range under the FULL-phi sweep, so it is never
+    // narrowed (the mandatory bigint soundness gate). After narrowing, re-run the
+    // forward sweep so values DERIVED from the now-narrowed phi (`s << 1`) are
+    // ranged too — the producer that actually feeds the raw-i64 seed.
+    if narrow_loop_header_phis(func, &loop_bodies, &mut result) {
+        propagate_op_ranges(func, &mut result);
+    }
 
     // ---- edge-sensitive guard narrowing -------------------------------------
     // For a header `CondBranch(cond -> then=body, else=exit)` where
@@ -916,6 +969,228 @@ fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeResult) {
     }
 }
 
+/// True if `r` is a phi-INDEPENDENT, genuinely BOUNDED range — the licensing
+/// condition for using an incoming as a phi-narrowing JOIN contributor (see
+/// [`narrow_loop_header_phis`]).
+///
+/// "Non-FULL" alone is INSUFFICIENT. The transfer functions ([`IntRange::add`],
+/// `sub`, `mul`, `neg`, `shl_const`, …) *saturate* to the i64 endpoints rather
+/// than collapsing to the exact `FULL_I64` sentinel, so a phi-DEPENDENT
+/// computation under the all-phis-FULL sweep can yield a range like
+/// `add(FULL, [1,1]) = [i64::MIN + 1, i64::MAX]` — not `is_full()`, yet
+/// effectively unbounded and entirely a function of the FULL phi's magnitude. An
+/// unbounded counter `i = i + 1` with an opaque loop bound is exactly this
+/// shape, and treating its near-full back-edge range as a "bound" would wrongly
+/// narrow the IV (the `e2e_nonconst_bound_no_nsw_not_proven` soundness gate).
+///
+/// A genuine phi-independent re-bound (`x & MASK` ⇒ `[0, MASK]`, `x % c` ⇒
+/// `[0, c-1]`) has bounds that are *constants drawn from the program*, strictly
+/// INTERIOR to the i64 domain — never touching either extreme. Requiring the
+/// range to be strictly interior (`lo > i64::MIN && hi < i64::MAX`) therefore
+/// rejects every saturated/unbounded transfer result while accepting every real
+/// masked/modular bound. This is sound and loses no raw-i64 promotion: a bound
+/// that reaches an i64 extreme cannot fit the `2**46` inline window anyway, so it
+/// could never license a raw carrier even if narrowed.
+#[inline]
+fn is_phi_independent_bound(r: IntRange) -> bool {
+    r.lo > i64::MIN && r.hi < i64::MAX
+}
+
+/// Narrow loop-header phis (block arguments of `LoopHeader` blocks) to the JOIN
+/// of their incoming-edge ranges — the targeted producer that restores the
+/// raw-i64 lane for a **masked back-edge accumulator** (`s = (s << 1) & MASK`),
+/// whose carried value is re-bounded to `[0, MASK]` independently of the phi.
+/// Returns `true` if any phi was narrowed (so the caller re-runs the forward
+/// sweep to range values derived from the narrowed phi).
+///
+/// ## The soundness boundary (why a masked back edge licenses narrowing and an
+/// unbounded accumulator does not)
+///
+/// A header phi's range is the JOIN (union) of the ranges of the values flowing
+/// into it on every reachable incoming edge — *provided each of those ranges is
+/// independent of the phi itself*. The danger is circularity: an accumulator
+/// `total = total + i` carries `total + i` on the back edge, whose range depends
+/// on `total`'s range (the phi). "Narrowing" it from a range that already
+/// assumed a bound on the phi would be unsound — the accumulator can exceed the
+/// inline window and even i64, requiring a heap BigInt; a false inline proof is
+/// a silent truncation miscompile (the worst bug class).
+///
+/// This pass sidesteps the circularity WITHOUT a bespoke dependency analysis, by
+/// exploiting an invariant the forward sweep ([`propagate_op_ranges`]) already
+/// guarantees: **it never assigns a range to a phi**, so every op-result range
+/// in `global_range` at this point was computed treating *all* phis as FULL
+/// (unknown). Consequently, any incoming value whose current range is a genuine
+/// **bounded interior** range ([`is_phi_independent_bound`]) is phi-INDEPENDENT
+/// by construction — its bound was derived without assuming anything about any
+/// phi. That is exactly the licensing condition:
+///
+///   * Masked back edge `s_next = (s << 1) & MASK`: under the FULL-phi sweep,
+///     `s << 1` is FULL (operand `s` is FULL) but the `& MASK` re-bounds it to
+///     `[0, MASK]` regardless — a *constant* range derived purely from the mask.
+///     `s_next` is a bounded interior range ⇒ phi-independent ⇒ a valid JOIN
+///     incoming.
+///   * Unbounded accumulator back edge `total + i` / `acc << 1`: under the
+///     FULL-phi sweep these are FULL or saturated-to-the-i64-extreme (a FULL
+///     operand poisons the transfer). Not a bounded interior range ⇒ the
+///     all-incomings test fails ⇒ NOT narrowed. The phi keeps its FULL range and
+///     correctly falls to the boxed BigInt carrier.
+///
+/// We narrow ONLY when EVERY incoming is a bounded interior range (so the JOIN is
+/// itself bounded and every contributor is phi-independent); a single
+/// FULL/saturated incoming makes the phi unprovable, so we refuse — fail-closed.
+/// The narrowed range is the JOIN of the incomings; it is a sound
+/// over-approximation of every value the phi can hold (each iteration's value
+/// flows in on some edge), and it holds for the phi everywhere it is live
+/// (header, body, and the loop-exit use), so it is placed as a global fact,
+/// mirroring the IV-range placement.
+///
+/// ## Why a single narrowing round + one re-sweep is sound (no fixpoint)
+///
+/// Narrowing reads ONLY the FULL-phi sweep results. A *second* narrowing round
+/// would read ranges the re-sweep computed AFTER the first round narrowed some
+/// phi — those are no longer guaranteed phi-independent (they may incorporate
+/// the just-narrowed phi's bound), so iterating narrow→sweep→narrow could feed a
+/// phi-dependent range back into a phi and lose soundness. We therefore narrow
+/// exactly once, from the FULL-phi baseline, then re-sweep once to propagate the
+/// narrowed phi ranges to derived values. This is complete for any set of
+/// *independent* masked accumulators (each proven under the same FULL-phi
+/// baseline); a phi whose mask depends on another narrowed phi is a conservative
+/// miss (sound), never a miscompile.
+fn narrow_loop_header_phis(
+    func: &TirFunction,
+    loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
+    result: &mut ValueRangeResult,
+) -> bool {
+    // Only header phis are candidates: a loop-header block argument is the
+    // canonical loop-carried (phi) value. Non-header block args (e.g. a plain
+    // join point) are out of scope — the masked-accumulator shape this targets
+    // is loop-carried. `loop_bodies`' keys are exactly the recognized headers.
+    if loop_bodies.is_empty() {
+        return false;
+    }
+
+    // Collect, per header block argument, the values flowing in on every
+    // reachable incoming edge (preheader entry + back edges). Dead-edge
+    // insensitive (the standard SCCP phi semantics): an unreachable source block
+    // delivers no value, so its fabricated args (e.g. the vestigial
+    // `loop_end → header` `ConstNone`s the SSA lift keeps as loop metadata) must
+    // not contribute — counting them would inject a spurious FULL incoming and
+    // defeat every narrow. Shares the `executable_reachable_blocks` oracle with
+    // the raw-i64-safe phi propagation (`propagate_raw_i64_safe_values`).
+    let reachable = dominators::executable_reachable_blocks(func);
+    let mut incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
+    for block in func.blocks.values() {
+        if !reachable.contains(&block.id) {
+            continue;
+        }
+        let mut add = |target: BlockId, args: &[ValueId]| {
+            for (index, &arg) in args.iter().enumerate() {
+                incomings.entry((target, index)).or_default().push(arg);
+            }
+        };
+        match &block.terminator {
+            Terminator::Branch { target, args } => add(*target, args),
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+                ..
+            } => {
+                add(*then_block, then_args);
+                add(*else_block, else_args);
+            }
+            Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            } => {
+                for (_, target, args) in cases {
+                    add(*target, args);
+                }
+                add(*default, default_args);
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => {}
+        }
+    }
+
+    // Decide narrowings against the FROZEN FULL-phi sweep state (read-only over
+    // `result`), then apply them in one batch. Computing every narrowing from
+    // the same pre-narrow snapshot is what makes the rule a single round (no
+    // phi's narrowed range can leak into another phi's decision this round).
+    let mut narrowings: Vec<(ValueId, IntRange)> = Vec::new();
+    let mut headers: Vec<BlockId> = loop_bodies.keys().copied().collect();
+    headers.sort_unstable_by_key(|b| b.0); // deterministic order.
+    for header in headers {
+        let Some(header_block) = func.blocks.get(&header) else {
+            continue;
+        };
+        for (index, arg) in header_block.args.iter().enumerate() {
+            let phi = arg.id;
+            // If the phi already has a proven range (an AddRec IV ranged above),
+            // that fact is authoritative — never widen/disturb it.
+            if result.global_range.contains_key(&result.resolve(phi)) {
+                continue;
+            }
+            let Some(srcs) = incomings.get(&(header, index)) else {
+                continue; // no reachable incoming edges → cannot narrow.
+            };
+            if srcs.is_empty() {
+                continue;
+            }
+            // JOIN the incoming ranges. Bail to "no narrow" the instant any
+            // incoming is FULL (phi-dependent or simply unproven) — fail-closed.
+            // A self-referential incoming (the phi feeding itself directly, with
+            // no re-bounding op) resolves to the phi, whose range is absent here
+            // (we skipped already-ranged phis) ⇒ FULL ⇒ bails. So a bare
+            // `x = x` / rotate-without-mask phi never narrows.
+            let mut joined: Option<IntRange> = None;
+            let mut all_independent = true;
+            for &src in srcs {
+                let r = result.range_of(src); // resolves copies; FULL if unknown.
+                if !is_phi_independent_bound(r) {
+                    all_independent = false;
+                    break;
+                }
+                joined = Some(match joined {
+                    None => r,
+                    Some(acc) => acc.join(r),
+                });
+            }
+            if !all_independent {
+                continue;
+            }
+            // Every incoming is a phi-independent bounded fact ⇒ the JOIN is a
+            // sound, bounded bound on the phi.
+            if let Some(range) = joined {
+                debug_assert!(
+                    is_phi_independent_bound(range),
+                    "JOIN of interior bounds must itself be an interior bound"
+                );
+                narrowings.push((result.resolve(phi), range));
+            }
+        }
+    }
+
+    if narrowings.is_empty() {
+        return false;
+    }
+    for (phi, range) in narrowings {
+        // The phi had no prior range (checked above); insert the JOIN as a weak
+        // global fact. Meet with any concurrently-inserted fact for the same
+        // canonical value (two header args resolving to one source — rare) so we
+        // never widen.
+        let existing = result
+            .global_range
+            .get(&phi)
+            .copied()
+            .unwrap_or(IntRange::FULL_I64);
+        result.global_range.insert(phi, existing.meet(range));
+    }
+    true
+}
+
 /// The transfer function for one op: the range of its result computed from the
 /// (already-proven) ranges of its operands. `None` when the opcode is not a
 /// modeled integer operation; `Some(FULL_I64)` when modeled but unprovable.
@@ -993,17 +1268,35 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
             }
         }
     }
-    // Constant-fold integer `Add`/`Sub`/`Mul` of known constants to a fixpoint,
-    // so derived lengths like `n + 1` (the `[True] * (n + 1)` sieve shape) and
-    // `len = SameAs(n_plus_1)` resolve to numeric bounds. All arithmetic is
-    // checked — an overflow drops the value (left unknown), never wraps.
+    // Constant-fold integer `Add`/`Sub`/`Mul`/`Shl`/`Shr`/bitwise of known
+    // constants to a fixpoint, so derived lengths like `n + 1` (the
+    // `[True] * (n + 1)` sieve shape) AND constant bit-masks like `(1 << 32) - 1`
+    // resolve to numeric bounds. The mask case is load-bearing for the masked
+    // back-edge accumulator (`s = (s << 1) & MASK`): `bit_and`'s constant-mask
+    // rule (`a & m, m >= 0 ⇒ [0, m]` for ANY `a`) requires `MASK` to be a known
+    // constant — without folding `(1 << k) - 1`, the mask stays a non-constant
+    // and `bit_and` falls back to the both-non-negative rule, which fails on the
+    // FULL (negative-`lo`) shift result, leaving the masked value FULL and the
+    // accumulator off the raw lane. All arithmetic is CHECKED in i64 — an
+    // overflow (`1 << 70` would exceed i64) drops the value (left unknown,
+    // correctly forcing the boxed BigInt path), never wraps. A negative shift
+    // count yields no fold (it is a runtime `ValueError`, no static value).
     let mut changed = true;
     while changed {
         changed = false;
         for block in func.blocks.values() {
             for op in &block.ops {
-                if !matches!(op.opcode, OpCode::Add | OpCode::Sub | OpCode::Mul)
-                    || op.operands.len() != 2
+                if !matches!(
+                    op.opcode,
+                    OpCode::Add
+                        | OpCode::Sub
+                        | OpCode::Mul
+                        | OpCode::Shl
+                        | OpCode::Shr
+                        | OpCode::BitAnd
+                        | OpCode::BitOr
+                        | OpCode::BitXor
+                ) || op.operands.len() != 2
                 {
                     continue;
                 }
@@ -1017,6 +1310,28 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
                     OpCode::Add => a.checked_add(b),
                     OpCode::Sub => a.checked_sub(b),
                     OpCode::Mul => a.checked_mul(b),
+                    // `a << b`: only fold a non-negative, in-i64-range count whose
+                    // result fits i64 (checked). A count `>= 64`, `< 0`, or an
+                    // overflowing result yields no constant (boxed BigInt path).
+                    OpCode::Shl => {
+                        if (0..64).contains(&b) {
+                            a.checked_shl(b as u32).filter(|&v| (v >> b) == a)
+                        } else {
+                            None
+                        }
+                    }
+                    // `a >> b`: arithmetic floor shift; only a non-negative,
+                    // in-range count. `a >> b` never overflows i64.
+                    OpCode::Shr => {
+                        if (0..64).contains(&b) {
+                            Some(a >> b)
+                        } else {
+                            None
+                        }
+                    }
+                    OpCode::BitAnd => Some(a & b),
+                    OpCode::BitOr => Some(a | b),
+                    OpCode::BitXor => Some(a ^ b),
                     _ => None,
                 };
                 if let Some(v) = folded {
@@ -2041,5 +2356,400 @@ mod tests {
              exceed the inline window and even i64, requiring a boxed BigInt"
         );
         assert!(vr.range_of(next_t).is_full(), "total + i range must be FULL");
+    }
+
+    /// Build a single-latch loop whose header carries ONE phi `s` (start `s0`),
+    /// with a body that computes `s_next = (s << shift) & mask` (when `mask` is
+    /// `Some`) or `s_next = s << shift` (when `mask` is `None`), branching back
+    /// with `s_next`. The loop is gated by a constant counter `for _ in
+    /// range(trip)` so it is a recognized counted loop (header role set). Returns
+    /// `(func, s_phi, s_next, shl_result)`.
+    ///
+    /// This is the masked-shift-accumulator shape (#43): with `mask = Some`, the
+    /// back-edge value is re-bounded to `[0, mask]` independently of the phi, so
+    /// the phi must narrow; with `mask = None`, the back-edge `s << 1` is FULL
+    /// (operand `s` is FULL), so the phi must NOT narrow (adversarial / bigint).
+    fn masked_shift_loop(
+        s0: i64,
+        shift: i64,
+        mask: Option<i64>,
+        trip: i64,
+    ) -> (TirFunction, ValueId, ValueId, ValueId) {
+        let mut func = TirFunction::new("msl".into(), vec![], TirType::None);
+        // Counter machinery (drives a constant trip count so the header is a
+        // recognized loop with a constant guard) + the accumulator.
+        let start_i = func.fresh_value();
+        let stop_v = func.fresh_value();
+        let step = func.fresh_value();
+        let s_start = func.fresh_value();
+        let shift_c = func.fresh_value();
+        let mask_c = func.fresh_value();
+        let iv = func.fresh_value();
+        let s_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let shl_res = func.fresh_value();
+        let s_next = func.fresh_value();
+        let next_i = func.fresh_value();
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            let mut ops = vec![
+                cint(start_i, 0),
+                cint(stop_v, trip),
+                cint(step, 1),
+                cint(s_start, s0),
+                cint(shift_c, shift),
+            ];
+            if let Some(m) = mask {
+                ops.push(cint(mask_c, m));
+            }
+            entry.ops = ops;
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![start_i, s_start],
+            };
+        }
+        func.blocks.insert(
+            header,
+            Blk {
+                id: header,
+                args: vec![
+                    TirValue { id: iv, ty: TirType::I64 },
+                    TirValue { id: s_phi, ty: TirType::I64 },
+                ],
+                ops: vec![op(OpCode::Lt, vec![iv, stop_v], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        let mut body_ops = vec![op(OpCode::Shl, vec![s_phi, shift_c], vec![shl_res])];
+        // The carried value: masked (re-bounds to [0, mask]) or bare (FULL).
+        if mask.is_some() {
+            body_ops.push(op(OpCode::BitAnd, vec![shl_res, mask_c], vec![s_next]));
+        } else {
+            // No mask: the carried value IS the shift result. Use a plain copy so
+            // the back-edge arg is a distinct id (mirrors `s = s << 1`).
+            body_ops.push(op(OpCode::Copy, vec![shl_res], vec![s_next]));
+        }
+        body_ops.push(op_nsw(OpCode::Add, vec![iv, step], vec![next_i]));
+        func.blocks.insert(
+            body,
+            Blk {
+                id: body,
+                args: vec![],
+                ops: body_ops,
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![next_i, s_next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            Blk {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(exit, LoopRole::LoopEnd);
+        (func, s_phi, s_next, shl_res)
+    }
+
+    #[test]
+    fn masked_back_edge_phi_narrows_and_is_raw_safe() {
+        // s = (s << 1) & MASK, MASK = 2**32 - 1. The masked back-edge value is
+        // [0, MASK] INDEPENDENT of the phi, so the phi must narrow to [0, MASK].
+        use crate::representation_plan::raw_i64_safe_values_for;
+        let mask = (1i64 << 32) - 1;
+        let (func, s_phi, s_next, shl_res) = masked_shift_loop(1, 1, Some(mask), 64);
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+
+        // The back-edge masked value is bounded by the mask (phi-independent).
+        assert_eq!(
+            vr.range_of(s_next),
+            IntRange::new(0, mask),
+            "masked back-edge value must be [0, MASK] under the FULL-phi sweep"
+        );
+        // The header phi is narrowed to the JOIN of {start=[1,1], [0, MASK]}.
+        assert_eq!(
+            vr.range_of(s_phi),
+            IntRange::new(0, mask),
+            "masked-accumulator phi must narrow to the JOIN of its incomings"
+        );
+        assert!(
+            vr.fits_inline_int47(s_phi),
+            "[0, 2**32-1] fits the 2**46 inline window"
+        );
+        // The re-sweep ranges the shift result `s << 1` to [0, MASK<<1], which
+        // fits the inline window — the value the raw-i64 shift seed needs.
+        assert_eq!(vr.range_of(shl_res), IntRange::new(0, mask << 1));
+        assert!(vr.fits_inline_int47(shl_res));
+
+        // End-to-end: the shift result IS now a raw-i64-safe carrier (count 1 in
+        // [0,63] AND result fits inline) — the boxed `molt_lshift` lane is gone.
+        let raw = raw_i64_safe_values_for(&func, &vr);
+        assert!(
+            raw.contains(&shl_res),
+            "the masked-accumulator shift must be raw-i64-safe post-narrowing"
+        );
+        assert!(
+            raw.contains(&s_phi),
+            "the narrowed phi must propagate to a raw-i64 carrier (all incomings raw)"
+        );
+    }
+
+    #[test]
+    fn non_masked_back_edge_phi_does_not_narrow() {
+        // ADVERSARIAL (the soundness gate): s = s << 1 with NO mask. The
+        // back-edge value `s << 1` has FULL range (operand `s` is FULL under the
+        // FULL-phi sweep), so the phi must NOT narrow — it can grow into a heap
+        // BigInt (`1 << 70` overflows i64), and a false inline proof would be a
+        // silent truncation miscompile.
+        use crate::representation_plan::raw_i64_safe_values_for;
+        let (func, s_phi, s_next, shl_res) = masked_shift_loop(1, 1, None, 70);
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+
+        assert!(
+            vr.range_of(s_next).is_full(),
+            "unmasked `s << 1` back-edge must stay FULL (phi-dependent)"
+        );
+        assert!(
+            vr.range_of(s_phi).is_full(),
+            "unmasked doubling phi must NOT narrow — it grows past i64"
+        );
+        assert!(
+            !vr.fits_inline_int47(s_phi),
+            "unbounded doubling accumulator must never be proven inline"
+        );
+        assert!(
+            !vr.fits_inline_int47(shl_res),
+            "the unproven shift result must never be proven inline"
+        );
+        // End-to-end: NOT raw-i64-safe — the boxed BigInt-correct lane is kept.
+        let raw = raw_i64_safe_values_for(&func, &vr);
+        assert!(
+            !raw.contains(&shl_res),
+            "an unbounded doubling shift must NOT be raw-i64-safe (would truncate)"
+        );
+        assert!(
+            !raw.contains(&s_phi),
+            "the unbounded doubling phi must NOT be raw-i64-safe"
+        );
+    }
+
+    #[test]
+    fn masked_back_edge_narrows_with_wider_shift() {
+        // s = (s << 4) & (2**28 - 1): a wider per-step shift, still bounded by
+        // the mask. The phi narrows to [0, mask]; the shift result [0, mask<<4]
+        // must still fit the inline window (mask<<4 = 2**32-16 < 2**46).
+        let mask = (1i64 << 28) - 1;
+        let (func, s_phi, s_next, shl_res) = masked_shift_loop(3, 4, Some(mask), 20);
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        assert_eq!(vr.range_of(s_next), IntRange::new(0, mask));
+        assert_eq!(vr.range_of(s_phi), IntRange::new(0, mask));
+        assert_eq!(vr.range_of(shl_res), IntRange::new(0, mask << 4));
+        assert!(vr.fits_inline_int47(shl_res));
+    }
+
+    #[test]
+    fn masked_back_edge_does_not_narrow_when_mask_overflows_window() {
+        // s = (s << 1) & (2**48 - 1): the mask itself exceeds the 2**46 inline
+        // window, so the phi narrows to [0, 2**48-1] (a SOUND fact) but it must
+        // NOT be proven inline — the value genuinely can exceed the window.
+        let mask = (1i64 << 48) - 1;
+        let (func, s_phi, _s_next, shl_res) = masked_shift_loop(1, 1, Some(mask), 100);
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        assert_eq!(
+            vr.range_of(s_phi),
+            IntRange::new(0, mask),
+            "phi narrows to the (sound) masked bound even when it exceeds the window"
+        );
+        assert!(
+            !vr.fits_inline_int47(s_phi),
+            "a [0, 2**48-1] phi must NOT be proven inline (exceeds 2**46)"
+        );
+        assert!(
+            !vr.fits_inline_int47(shl_res),
+            "the shift result of an out-of-window masked phi must not be inline"
+        );
+    }
+
+    #[test]
+    fn masked_back_edge_narrows_with_derived_mask_and_vestigial_loopend() {
+        // REAL-COMPILE FIDELITY: the frontend lowering of
+        //   MASK = (1 << 32) - 1; s = 1
+        //   for _ in range(N): s = (s << 1) & MASK
+        // differs from `masked_shift_loop` in two structural ways that BOTH must
+        // be tolerated for the narrowing to fire end-to-end (observed in the
+        // bench_masked_shift_accumulator TIR dump):
+        //
+        //   (1) MASK is a DERIVED constant `(1 << 32) - 1`, not a literal
+        //       `ConstInt`. Its `[0, MASK]` re-bound only materializes once
+        //       `collect_constants_and_lengths` folds `Shl`/`Sub` of constants so
+        //       `bit_and`'s constant-mask rule sees a known non-negative mask.
+        //   (2) The SSA lift keeps a VESTIGIAL `loop_end -> header` back edge whose
+        //       args are fabricated `ConstNone`s. That block is UNREACHABLE (no
+        //       predecessor) and so must be excluded by the
+        //       `executable_reachable_blocks` oracle — otherwise its FULL ConstNone
+        //       incoming poisons the phi JOIN and defeats the narrow.
+        //
+        // This is the adversarial mirror of the unit `masked_shift_loop`: same
+        // licensing structure, but built in the shape the compiler actually emits.
+        let mut func = TirFunction::new("dm".into(), vec![], TirType::None);
+        // Mask materials: one=1, k=32, then mask = (one << k) - 1 (DERIVED).
+        let one_c = func.fresh_value();
+        let k_c = func.fresh_value();
+        let mask_shl = func.fresh_value();
+        let mask = func.fresh_value();
+        // Counter + accumulator seeds.
+        let start_i = func.fresh_value();
+        let stop_v = func.fresh_value();
+        let step = func.fresh_value();
+        let s_start = func.fresh_value();
+        let shift_c = func.fresh_value();
+        // Header phis.
+        let iv = func.fresh_value();
+        let s_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        // Body values.
+        let shl_res = func.fresh_value();
+        let s_next = func.fresh_value();
+        let next_i = func.fresh_value();
+        // Vestigial loop-end ConstNone.
+        let dead_none = func.fresh_value();
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let dead_end = func.fresh_block();
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![
+                cint(one_c, 1),
+                cint(k_c, 32),
+                // mask = (1 << 32) - 1 — derived, must be const-folded.
+                op(OpCode::Shl, vec![one_c, k_c], vec![mask_shl]),
+                cint(start_i, 0),
+                op(OpCode::Sub, vec![mask_shl, one_c], vec![mask]),
+                cint(stop_v, 64),
+                cint(step, 1),
+                cint(s_start, 1),
+                cint(shift_c, 1),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![start_i, s_start],
+            };
+        }
+        func.blocks.insert(
+            header,
+            Blk {
+                id: header,
+                args: vec![
+                    TirValue { id: iv, ty: TirType::I64 },
+                    TirValue { id: s_phi, ty: TirType::I64 },
+                ],
+                ops: vec![op(OpCode::Lt, vec![iv, stop_v], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.insert(
+            body,
+            Blk {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    op(OpCode::Shl, vec![s_phi, shift_c], vec![shl_res]),
+                    op(OpCode::BitAnd, vec![shl_res, mask], vec![s_next]),
+                    op_nsw(OpCode::Add, vec![iv, step], vec![next_i]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![next_i, s_next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            Blk {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        // The vestigial, UNREACHABLE loop-end: branches back to the header with
+        // fabricated ConstNone args. No block branches INTO it.
+        func.blocks.insert(
+            dead_end,
+            Blk {
+                id: dead_end,
+                args: vec![],
+                ops: vec![op(OpCode::ConstNone, vec![], vec![dead_none])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![dead_none, dead_none],
+                },
+            },
+        );
+        func.loop_roles.insert(dead_end, LoopRole::LoopEnd);
+
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+
+        let mask_val = (1i64 << 32) - 1;
+        // The derived mask folded to a constant.
+        assert_eq!(
+            vr.range_of(mask),
+            IntRange::point(mask_val),
+            "derived mask (1 << 32) - 1 must const-fold to a point range"
+        );
+        // The masked back-edge value is [0, MASK] under the FULL-phi sweep,
+        // independent of the (unreachable) ConstNone edge.
+        assert_eq!(
+            vr.range_of(s_next),
+            IntRange::new(0, mask_val),
+            "masked back-edge `(s << 1) & MASK` must be [0, MASK]"
+        );
+        // The phi narrows to the JOIN despite the vestigial ConstNone back edge.
+        assert_eq!(
+            vr.range_of(s_phi),
+            IntRange::new(0, mask_val),
+            "phi must narrow to [0, MASK] — the unreachable ConstNone edge must NOT \
+             poison the JOIN"
+        );
+        assert!(vr.fits_inline_int47(s_phi), "[0, 2**32-1] fits the inline window");
+        // The shift result feeds the raw-i64 seed.
+        assert_eq!(vr.range_of(shl_res), IntRange::new(0, mask_val << 1));
+        assert!(vr.fits_inline_int47(shl_res));
+        use crate::representation_plan::raw_i64_safe_values_for;
+        let raw = raw_i64_safe_values_for(&func, &vr);
+        assert!(
+            raw.contains(&shl_res) && raw.contains(&s_phi),
+            "the derived-mask masked accumulator must reach the raw-i64 lane \
+             end-to-end (shift result + phi both raw)"
+        );
     }
 }
