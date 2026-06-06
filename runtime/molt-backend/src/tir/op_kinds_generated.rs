@@ -25,7 +25,7 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "inplace_sub" => Some(OpCode::InplaceSub),
         "inplace_mul" => Some(OpCode::InplaceMul),
         "div" => Some(OpCode::Div),
-        "floor_div" => Some(OpCode::FloorDiv),
+        "floordiv" | "floor_div" => Some(OpCode::FloorDiv),
         "mod" => Some(OpCode::Mod),
         "pow" => Some(OpCode::Pow),
         "neg" => Some(OpCode::Neg),

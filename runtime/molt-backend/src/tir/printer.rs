@@ -444,7 +444,8 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::InplaceSub => "inplace_sub",
         OpCode::InplaceMul => "inplace_mul",
         OpCode::Div => "div",
-        OpCode::FloorDiv => "floor_div",
+        // Canonical wire spelling (op_kinds.toml); matches lower_to_simple.
+        OpCode::FloorDiv => "floordiv",
         OpCode::Mod => "mod",
         OpCode::Pow => "pow",
         OpCode::Neg => "neg",
