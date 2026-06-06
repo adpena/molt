@@ -103,7 +103,15 @@ BASELINE_PATH = HONESTY_DIR / "honesty_baseline.json"
 # Default calibration snapshot consumed in --check mode (committed so CI is
 # deterministic and does not have to rebuild the world on every PR).
 DEFAULT_RESULTS_PATH = HONESTY_DIR / "native_calibration.jsonl"
+# The WASM dimension's committed snapshot, produced by tools/wasm_diff.py (the
+# wasm analogue of native_calibration.jsonl: each row is a wasm-backend RAW
+# status from a `molt build --target wasm` + `node wasm/run_wasm.js` run). When
+# present, cmd_check reality-checks every `wasm` manifest dimension against it,
+# exactly the way native is checked. When absent, wasm `fail` dims cannot be
+# confirmed (fail-closed) and `uncalibrated` wasm dims are simply not checked.
+WASM_RESULTS_PATH = HONESTY_DIR / "wasm_calibration.jsonl"
 MOLT_DIFF_PATH = ROOT / "tests" / "molt_diff.py"
+WASM_DIFF_PATH = ROOT / "tools" / "wasm_diff.py"
 TOO_DYNAMIC_MANIFEST_PATH = ROOT / "tools" / "stdlib_full_coverage_manifest.py"
 
 # --- the status vocabulary -------------------------------------------------
@@ -380,6 +388,23 @@ def _dim_matches_native(dim_key: str) -> bool:
     return dim_key.split("@", 1)[0] == "native"
 
 
+def _dim_matches_wasm(dim_key: str) -> bool:
+    """The committed wasm snapshot (wasm_calibration.jsonl) is the WASM dimension.
+    A manifest dimension applies to it when its backend is wasm (with or without a
+    @version suffix). Symmetric to _dim_matches_native.
+    """
+    return dim_key.split("@", 1)[0] == "wasm"
+
+
+def _wasm_results_path() -> Path:
+    """The wasm snapshot, resolved RELATIVE TO the (possibly monkeypatched)
+    manifest directory rather than the frozen module constant, so the test
+    sandbox -- which redirects MANIFEST_PATH/BASELINE_PATH at a tmp dir -- also
+    isolates the wasm snapshot (no real wasm rows leak into a sandbox check).
+    """
+    return MANIFEST_PATH.parent / WASM_RESULTS_PATH.name
+
+
 def reality_check(
     data: dict,
     results: dict[str, dict],
@@ -468,6 +493,23 @@ def reality_check(
 # --------------------------------------------------------------------------
 # Baseline (the one-way ratchet on the count of known-bad dimensions)
 # --------------------------------------------------------------------------
+
+
+def _count_fail_dims(data: dict, dim_filter) -> int:
+    """Count `fail` dimensions whose key passes `dim_filter` (e.g. wasm-only)."""
+    n = 0
+    for entry in manifest_tests(data).values():
+        dims = entry.get("dimensions", {})
+        if not isinstance(dims, dict):
+            continue
+        for dim_key, status in dims.items():
+            if (
+                dim_filter(dim_key)
+                and isinstance(status, dict)
+                and status.get("status") == STATUS_FAIL
+            ):
+                n += 1
+    return n
 
 
 def fail_ceilings(data: dict) -> dict[str, int]:
@@ -588,6 +630,33 @@ def cmd_check(results_path: Path, verbose: bool) -> int:
     if results is not None:
         problems += reality_check(data, results, too_dynamic)
 
+    # WASM dimension: reality-check the `wasm` manifest dims against the committed
+    # wasm snapshot when it exists (symmetric to native). If the snapshot is
+    # absent but the manifest carries `wasm` fail dims, that is a fail-closed gap
+    # (a debt that cannot be confirmed); a wasm `uncalibrated` dim needs no
+    # snapshot and is never reality-checked.
+    wasm_fail_dims = _count_fail_dims(data, _dim_matches_wasm)
+    wasm_results_path = _wasm_results_path()
+    if wasm_results_path.exists():
+        try:
+            wasm_results = load_results(wasm_results_path)
+            problems += reality_check(
+                data,
+                wasm_results,
+                too_dynamic,
+                dim_filter=_dim_matches_wasm,
+                results_backend="wasm",
+            )
+        except GuardError as exc:
+            problems.append(str(exc))
+    elif wasm_fail_dims:
+        problems.append(
+            f"manifest has {wasm_fail_dims} `wasm` fail dimension(s) but no wasm "
+            f"calibration snapshot at {_rel(wasm_results_path)}. A wasm debt cannot "
+            "be confirmed without it (fail-closed). Generate it with "
+            f"{_rel(WASM_DIFF_PATH)} (MOLT_DIFF_RESULTS_JSONL=...)."
+        )
+
     baseline = load_baseline()
     if not baseline:
         problems.append(
@@ -614,6 +683,24 @@ def cmd_check(results_path: Path, verbose: bool) -> int:
                 f"calibration {results_path.name}: {len(results)} tests, "
                 f"{obs_fail} SILENT (untracked-channel) failures observed"
             )
+        wpath = _wasm_results_path()
+        if wpath.exists():
+            try:
+                wres = load_results(wpath)
+                wobs = sum(
+                    1
+                    for rec in wres.values()
+                    if rec["raw_status"] in FAILING_RAW_STATUSES
+                    and not rec["expect_molt_fail"]
+                )
+                print(
+                    f"wasm calibration {wpath.name}: {len(wres)} tests, "
+                    f"{wobs} SILENT (untracked-channel) failures observed"
+                )
+            except GuardError:
+                pass
+        else:
+            print("wasm calibration: (no snapshot — wasm dims uncalibrated)")
 
     if problems:
         print("\nSUITE HONESTY GUARD FAILED:\n", file=sys.stderr)
@@ -718,6 +805,44 @@ def cmd_calibrate(paths: list[str], results_out: Path, jobs: int, profile: str) 
     return 0
 
 
+def cmd_calibrate_wasm(
+    paths: list[str], results_out: Path, jobs: int, profile: str
+) -> int:
+    """Produce the WASM snapshot via tools/wasm_diff.py (the wasm analogue of
+    cmd_calibrate). Each test is built `--target wasm` and run through the
+    canonical node host shim; the raw wasm status is appended to results_out."""
+    if not WASM_DIFF_PATH.exists():
+        print(f"tools/wasm_diff.py not found at {WASM_DIFF_PATH}", file=sys.stderr)
+        return 1
+    targets = paths or ["tests/differential/basic"]
+    results_out.parent.mkdir(parents=True, exist_ok=True)
+    if results_out.exists():
+        results_out.unlink()
+    env = dict(os.environ)
+    env["MOLT_DIFF_RESULTS_JSONL"] = str(results_out)
+    env.setdefault("MOLT_TARGET", "wasm")
+    cmd = [
+        sys.executable,
+        "-u",
+        str(WASM_DIFF_PATH),
+        "--build-profile",
+        profile,
+        "--jobs",
+        str(jobs),
+        *targets,
+    ]
+    print(f"calibrating wasm: {' '.join(cmd)}", file=sys.stderr)
+    proc = subprocess.run(cmd, env=env)
+    if not results_out.exists():
+        print(f"wasm calibration produced no results at {results_out}", file=sys.stderr)
+        return 1
+    print(
+        f"wasm calibration results written to {results_out} "
+        f"(wasm_diff exit {proc.returncode})"
+    )
+    return 0
+
+
 def cmd_reconcile(results_path: Path) -> int:
     """Rewrite the manifest's NATIVE dimensions + baseline from a calibration run.
 
@@ -809,6 +934,11 @@ def main(argv: list[str]) -> int:
         help="run molt_diff to produce a results snapshot",
     )
     ap.add_argument(
+        "--calibrate-wasm",
+        action="store_true",
+        help="run wasm_diff to produce the WASM snapshot (wasm_calibration.jsonl)",
+    )
+    ap.add_argument(
         "--calibrate-out",
         help="where --calibrate writes results (default: committed snapshot)",
     )
@@ -837,6 +967,13 @@ def main(argv: list[str]) -> int:
                 else DEFAULT_RESULTS_PATH
             )
             return cmd_calibrate(args.paths, out, args.jobs, args.profile)
+        if args.calibrate_wasm:
+            out = (
+                Path(args.calibrate_out).expanduser()
+                if args.calibrate_out
+                else WASM_RESULTS_PATH
+            )
+            return cmd_calibrate_wasm(args.paths, out, args.jobs, args.profile)
         if args.reconcile:
             return cmd_reconcile(results_path)
         if args.update_baseline:

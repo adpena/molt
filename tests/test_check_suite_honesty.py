@@ -97,6 +97,10 @@ def sandbox(guard, tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
+    # The wasm snapshot is resolved relative to the (monkeypatched) manifest dir,
+    # so it lands inside the sandbox; it does not exist until a test writes it.
+    wasm_results = hdir / "wasm_calibration.jsonl"
+
     monkeypatch.setattr(guard, "MANIFEST_PATH", manifest)
     monkeypatch.setattr(guard, "BASELINE_PATH", baseline)
     monkeypatch.setattr(guard, "DEFAULT_RESULTS_PATH", results)
@@ -105,6 +109,7 @@ def sandbox(guard, tmp_path, monkeypatch):
         MANIFEST_PATH = manifest
         BASELINE_PATH = baseline
         RESULTS_PATH = results
+        WASM_RESULTS_PATH = wasm_results
 
         @staticmethod
         def load(path):
@@ -117,6 +122,12 @@ def sandbox(guard, tmp_path, monkeypatch):
         @staticmethod
         def set_results(rows):
             results.write_text(
+                "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+            )
+
+        @staticmethod
+        def set_wasm_results(rows):
+            wasm_results.write_text(
                 "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
             )
 
@@ -416,6 +427,63 @@ def test_uncalibrated_dimension_not_reality_checked(sandbox, guard):
     # The seed has an llvm 'uncalibrated' dim; it must pass lint and never be
     # reality-checked against the native results.
     sandbox.make_baseline()
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 0
+
+
+# --- WASM dimension reality-check (task #55) ------------------------------
+
+
+def _add_wasm_fail(handle, guard, test_path):
+    """Add a `wasm` fail dim for test_path to the sandbox manifest."""
+    m = handle.load(handle.MANIFEST_PATH)
+    entry = m["tests"].setdefault(test_path, {"dimensions": {}})
+    entry["dimensions"]["wasm"] = {
+        "status": "fail",
+        "tracking": "#59",
+        "root_cause": "wasm-only codegen gap",
+        "evidence": "wasm calibration synthetic",
+    }
+    handle.save(handle.MANIFEST_PATH, m)
+
+
+def test_wasm_fail_confirmed_by_snapshot_is_green(sandbox, guard):
+    # A `wasm` fail dim whose test fails in the wasm snapshot is a confirmed
+    # debt -> green (mirrors the native confirmed-fail path).
+    _add_wasm_fail(sandbox, guard, REAL_PASS_TEST)
+    sandbox.make_baseline()  # ceiling native=1, wasm=1
+    sandbox.set_wasm_results([{"file": REAL_PASS_TEST, "raw_status": "fail"}])
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 0
+
+
+def test_wasm_fail_without_snapshot_is_red(sandbox, guard):
+    # A `wasm` fail dim with NO wasm snapshot cannot be confirmed -> fail-closed.
+    _add_wasm_fail(sandbox, guard, REAL_PASS_TEST)
+    sandbox.make_baseline()
+    assert not sandbox.WASM_RESULTS_PATH.exists()
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 1
+
+
+def test_wasm_fail_now_passing_is_red(sandbox, guard):
+    # Down-only: a `wasm` fail dim whose test now PASSES on wasm -> remove it.
+    _add_wasm_fail(sandbox, guard, REAL_PASS_TEST)
+    sandbox.make_baseline()
+    sandbox.set_wasm_results([{"file": REAL_PASS_TEST, "raw_status": "pass"}])
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 1
+
+
+def test_wasm_untracked_failure_in_snapshot_is_red(sandbox, guard):
+    # A silent wasm failure in the snapshot with no `wasm` fail dim -> red.
+    sandbox.make_baseline()
+    sandbox.set_wasm_results([{"file": REAL_PASS_TEST, "raw_status": "fail"}])
+    assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 1
+
+
+def test_wasm_snapshot_isolated_from_real(sandbox, guard):
+    # The wasm snapshot resolves relative to the (monkeypatched) manifest dir, so
+    # a sandbox with no wasm snapshot and no wasm dims is green even though a real
+    # wasm_calibration.jsonl exists in the repo (no real rows leak in).
+    sandbox.make_baseline()
+    assert not sandbox.WASM_RESULTS_PATH.exists()
     assert guard.cmd_check(sandbox.RESULTS_PATH, False) == 0
 
 
