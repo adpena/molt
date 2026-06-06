@@ -1,0 +1,1261 @@
+# @generated SEED — hand-reviewed; thereafter the SINGLE SOURCE OF TRUTH.
+# Op-kind registry (molt task #57, phase 2). See
+# docs/design/foundation/25_op_kind_registry.md.
+#
+# This table is the ONE place the cross-component op-"kind"-string vocabulary
+# lives. tools/gen_op_kinds.py renders it into:
+#   - runtime/molt-backend/src/tir/op_kinds_generated.rs  (mapper + classifier
+#     + per-OpCode effect-oracle arms), and
+#   - src/molt/frontend/lowering/op_kinds_generated.py    (canonical spellings).
+# tests/test_gen_op_kinds.py re-renders in memory and asserts equality with the
+# checked-in generated files, so any drift is a test failure. Do NOT edit the
+# generated files by hand; edit this table and regenerate.
+#
+# THREE INDEPENDENT MAPPINGS over the shared kind vocabulary, kept distinct
+# because they group differently (load-bearing: e.g. `range_new` is a mapper
+# alias of the CallBuiltin group BUT an individual member of the fresh-value
+# classifier set):
+#   - classifier_* (below) — three FLAT sets of individual kinds (the flat
+#                  matches! arms in alias_analysis.rs) + the fresh-value prefix.
+#   - [[opcode]]   — per-OpCode effect oracle (exhaustive over the enum).
+#   - [[kind]]     — the kind_to_opcode mapper: OpCode-equivalence groups
+#                  (canonical + aliases, the |-grouped arms).
+#
+# NB: TOML requires bare top-level keys (the classifier arrays) to precede any
+# [[array-of-tables]] section, so they appear first.
+
+# ===========================================================================
+# CopyLowering classifier (alias_analysis.rs). FLAT sets of individual kinds +
+# the fresh-value prefix rule. A Copy carrying _original_kind = k is classified
+# by these; an unlisted k falls to the fail-closed _ => TransparentAlias
+# default (leak-safe, never UAF — docs/design/foundation/20).
+# ===========================================================================
+
+# copy_kind_mints_fresh_owned_ref: mints a fresh +1 owned reference.
+classifier_fresh_value = [
+    "aiter",
+    "ascii_from_obj",
+    "complex_from_obj",
+    "contains",
+    "dict_from_obj",
+    "dict_items",
+    "dict_keys",
+    "dict_new",
+    "dict_values",
+    "enumerate",
+    "float_from_obj",
+    "int_from_obj",
+    "int_from_str_of_obj",
+    "iter",
+    "list_fill_new",
+    "list_from_range",
+    "list_new",
+    "object_new",
+    "range_new",
+    "repr_from_obj",
+    "set_new",
+    "slice",
+    "slice_new",
+    "str_from_obj",
+    "string_format",
+    "string_join",
+    "tuple_from_list",
+    "tuple_new",
+]
+
+# ...and the prefix form (the vec_* vectorized-reduction family, each calling a
+# dedicated molt_vec_* runtime reduction returning a fresh boxed result).
+classifier_fresh_value_prefixes = [
+    "vec_",
+]
+
+# classify_copy_kind inert bucket: no surviving heap reference to own
+# (line/trace_*/missing/nop, the read-only repr/layout guards).
+classifier_inert_marker = [
+    "guard_bool",
+    "guard_dict_shape",
+    "guard_float",
+    "guard_int",
+    "guard_layout",
+    "guard_layout_ptr",
+    "guard_none",
+    "guard_str",
+    "line",
+    "missing",
+    "nop",
+    "trace_enter_slot",
+    "trace_exit",
+]
+
+# copy_kind_is_explicit_no_heap_move: provable no-incref pure move of operand 0
+# (bare copy, the named SSA/var moves, the validate-and-pass-through guards).
+classifier_no_heap_move = [
+    "copy",
+    "copy_var",
+    "guard_tag",
+    "guard_type",
+    "identity_alias",
+    "load_var",
+    "store_var",
+]
+
+# ===========================================================================
+# Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
+#
+# Drives opcode_may_throw / opcode_is_side_effecting / opcode_effects
+# (tir/passes/effects.rs). The generated match is EXHAUSTIVE — no wildcard arm
+# for a listed OpCode — so a newly added OpCode variant fails to compile until
+# given an explicit effect row here. Structural kill for bug-class instance #1
+# (the matches!-default-false trap that silently classified a new opcode as
+# no-effect; the ModuleImportFrom lesson).
+#
+#   may_throw       : opcode_may_throw — DCE must preserve even if result dead.
+#   side_effecting  : opcode_is_side_effecting — has an observable side effect.
+#   purity          : opcode_effects triple for LICM/GVN —
+#                     "pure"           (consistent+effect_free+nothrow),
+#                     "pure_may_throw" (consistent+effect_free, may raise),
+#                     "impure"         (not a pure computation).
+# ===========================================================================
+
+[[opcode]]
+name = "Add"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Sub"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Mul"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "CheckedAdd"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "InplaceAdd"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "InplaceSub"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "InplaceMul"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Div"
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+
+[[opcode]]
+name = "FloorDiv"
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+
+[[opcode]]
+name = "Mod"
+may_throw = true
+side_effecting = false
+purity = "pure_may_throw"
+
+[[opcode]]
+name = "Pow"
+may_throw = false
+side_effecting = false
+purity = "pure_may_throw"
+
+[[opcode]]
+name = "Neg"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Pos"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Eq"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Ne"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Lt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Le"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Gt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Ge"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Is"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "IsNot"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "In"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "NotIn"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "BitAnd"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "BitOr"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "BitXor"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "BitNot"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Shl"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Shr"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "And"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Or"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Not"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Bool"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Alloc"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "StackAlloc"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "ObjectNewBound"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ObjectNewBoundStack"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "Free"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "LoadAttr"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "StoreAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "DelAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "Index"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "StoreIndex"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "DelIndex"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "Call"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "CallMethod"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "CallBuiltin"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "OrdAt"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "BoxVal"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "UnboxVal"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "TypeGuard"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "IncRef"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "DecRef"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "BuildList"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "BuildDict"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "BuildTuple"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "BuildSet"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "BuildSlice"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "GetIter"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "IterNext"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "IterNextUnboxed"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "ForIter"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "AllocTask"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "StateSwitch"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "StateTransition"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "StateYield"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ChanSendYield"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ChanRecvYield"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ClosureLoad"
+may_throw = true
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "ClosureStore"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "Yield"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "YieldFrom"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "Raise"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "CheckException"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ExceptionPending"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "TryStart"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "TryEnd"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "StateBlockStart"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "StateBlockEnd"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ConstInt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "ConstBigInt"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "ConstFloat"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "ConstStr"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "ConstBool"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "ConstNone"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "ConstBytes"
+may_throw = false
+side_effecting = false
+purity = "pure"
+
+[[opcode]]
+name = "Copy"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "Import"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ImportFrom"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleCacheGet"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleCacheSet"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleCacheDel"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleGetAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleImportFrom"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleGetGlobal"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleGetName"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleSetAttr"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleDelGlobal"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ModuleDelGlobalIfPresent"
+may_throw = true
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "WarnStderr"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+[[opcode]]
+name = "ScfIf"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "ScfFor"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "ScfWhile"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "ScfYield"
+may_throw = false
+side_effecting = false
+purity = "impure"
+
+[[opcode]]
+name = "Deopt"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
+# ===========================================================================
+# kind_to_opcode mapper (ssa.rs). OpCode-equivalence groups: canonical = the
+# JSON wire kind, aliases = alternate spellings that map identically (the
+# |-grouped arms). A kind with NO row here has no first-class opcode — it is
+# lifted to Copy{_original_kind} and restored / symbol-dispatched.
+# ===========================================================================
+
+[[kind]]
+canonical = "add"
+aliases = []
+mapper_opcode = "Add"
+
+[[kind]]
+canonical = "sub"
+aliases = []
+mapper_opcode = "Sub"
+
+[[kind]]
+canonical = "mul"
+aliases = []
+mapper_opcode = "Mul"
+
+[[kind]]
+canonical = "inplace_add"
+aliases = []
+mapper_opcode = "InplaceAdd"
+
+[[kind]]
+canonical = "inplace_sub"
+aliases = []
+mapper_opcode = "InplaceSub"
+
+[[kind]]
+canonical = "inplace_mul"
+aliases = []
+mapper_opcode = "InplaceMul"
+
+[[kind]]
+canonical = "div"
+aliases = []
+mapper_opcode = "Div"
+
+[[kind]]
+canonical = "floor_div"
+aliases = []
+mapper_opcode = "FloorDiv"
+
+[[kind]]
+canonical = "mod"
+aliases = []
+mapper_opcode = "Mod"
+
+[[kind]]
+canonical = "pow"
+aliases = []
+mapper_opcode = "Pow"
+
+[[kind]]
+canonical = "neg"
+aliases = []
+mapper_opcode = "Neg"
+
+[[kind]]
+canonical = "pos"
+aliases = []
+mapper_opcode = "Pos"
+
+[[kind]]
+canonical = "eq"
+aliases = ["string_eq"]
+mapper_opcode = "Eq"
+
+[[kind]]
+canonical = "ne"
+aliases = []
+mapper_opcode = "Ne"
+
+[[kind]]
+canonical = "lt"
+aliases = []
+mapper_opcode = "Lt"
+
+[[kind]]
+canonical = "le"
+aliases = []
+mapper_opcode = "Le"
+
+[[kind]]
+canonical = "gt"
+aliases = []
+mapper_opcode = "Gt"
+
+[[kind]]
+canonical = "ge"
+aliases = []
+mapper_opcode = "Ge"
+
+[[kind]]
+canonical = "is"
+aliases = []
+mapper_opcode = "Is"
+
+[[kind]]
+canonical = "is_not"
+aliases = []
+mapper_opcode = "IsNot"
+
+[[kind]]
+canonical = "in"
+aliases = []
+mapper_opcode = "In"
+
+[[kind]]
+canonical = "not_in"
+aliases = []
+mapper_opcode = "NotIn"
+
+[[kind]]
+canonical = "bit_and"
+aliases = []
+mapper_opcode = "BitAnd"
+
+[[kind]]
+canonical = "bit_or"
+aliases = []
+mapper_opcode = "BitOr"
+
+[[kind]]
+canonical = "bit_xor"
+aliases = []
+mapper_opcode = "BitXor"
+
+[[kind]]
+canonical = "bit_not"
+aliases = []
+mapper_opcode = "BitNot"
+
+[[kind]]
+canonical = "shl"
+aliases = ["lshift"]
+mapper_opcode = "Shl"
+
+[[kind]]
+canonical = "shr"
+aliases = ["rshift"]
+mapper_opcode = "Shr"
+
+[[kind]]
+canonical = "and"
+aliases = []
+mapper_opcode = "And"
+
+[[kind]]
+canonical = "or"
+aliases = []
+mapper_opcode = "Or"
+
+[[kind]]
+canonical = "not"
+aliases = []
+mapper_opcode = "Not"
+
+[[kind]]
+canonical = "bool"
+aliases = ["cast_bool", "builtin_bool"]
+mapper_opcode = "Bool"
+
+[[kind]]
+canonical = "alloc"
+aliases = []
+mapper_opcode = "Alloc"
+
+[[kind]]
+canonical = "stack_alloc"
+aliases = []
+mapper_opcode = "StackAlloc"
+
+[[kind]]
+canonical = "object_new_bound"
+aliases = []
+mapper_opcode = "ObjectNewBound"
+
+[[kind]]
+canonical = "object_new_bound_stack"
+aliases = []
+mapper_opcode = "ObjectNewBoundStack"
+
+[[kind]]
+canonical = "free"
+aliases = []
+mapper_opcode = "Free"
+
+[[kind]]
+canonical = "get_attr"
+aliases = ["get_attr_generic_ptr", "get_attr_generic_obj", "get_attr_name", "guarded_field_get", "load", "load_attr"]
+mapper_opcode = "LoadAttr"
+
+[[kind]]
+canonical = "set_attr"
+aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "guarded_field_set_init", "store", "store_init"]
+mapper_opcode = "StoreAttr"
+
+[[kind]]
+canonical = "del_attr"
+aliases = ["del_attr_name", "del_attr_generic_ptr", "del_attr_generic_obj"]
+mapper_opcode = "DelAttr"
+
+[[kind]]
+canonical = "index"
+aliases = []
+mapper_opcode = "Index"
+
+[[kind]]
+canonical = "store_index"
+aliases = ["index_set"]
+mapper_opcode = "StoreIndex"
+
+[[kind]]
+canonical = "del_index"
+aliases = []
+mapper_opcode = "DelIndex"
+
+[[kind]]
+canonical = "call"
+aliases = ["call_func", "call_internal", "call_indirect", "call_bind", "call_function", "call_guarded", "invoke_ffi"]
+mapper_opcode = "Call"
+
+[[kind]]
+canonical = "gpu_thread_id"
+aliases = ["gpu_block_id", "gpu_block_dim", "gpu_grid_dim", "gpu_barrier"]
+mapper_opcode = "Call"
+group = "gpu"
+
+[[kind]]
+canonical = "call_method"
+aliases = []
+mapper_opcode = "CallMethod"
+
+[[kind]]
+canonical = "call_builtin"
+aliases = ["builtin_print", "print", "range_new"]
+mapper_opcode = "CallBuiltin"
+
+[[kind]]
+canonical = "ord_at"
+aliases = []
+mapper_opcode = "OrdAt"
+
+[[kind]]
+canonical = "box"
+aliases = ["box_from_raw_int"]
+mapper_opcode = "BoxVal"
+
+[[kind]]
+canonical = "unbox"
+aliases = ["unbox_to_raw_int"]
+mapper_opcode = "UnboxVal"
+
+[[kind]]
+canonical = "type_guard"
+aliases = []
+mapper_opcode = "TypeGuard"
+
+[[kind]]
+canonical = "inc_ref"
+aliases = []
+mapper_opcode = "IncRef"
+
+[[kind]]
+canonical = "dec_ref"
+aliases = []
+mapper_opcode = "DecRef"
+
+[[kind]]
+canonical = "build_list"
+aliases = []
+mapper_opcode = "BuildList"
+
+[[kind]]
+canonical = "build_dict"
+aliases = []
+mapper_opcode = "BuildDict"
+
+[[kind]]
+canonical = "build_tuple"
+aliases = []
+mapper_opcode = "BuildTuple"
+
+[[kind]]
+canonical = "build_set"
+aliases = []
+mapper_opcode = "BuildSet"
+
+[[kind]]
+canonical = "build_slice"
+aliases = []
+mapper_opcode = "BuildSlice"
+
+[[kind]]
+canonical = "get_iter"
+aliases = []
+mapper_opcode = "GetIter"
+
+[[kind]]
+canonical = "iter_next"
+aliases = []
+mapper_opcode = "IterNext"
+
+[[kind]]
+canonical = "iter_next_unboxed"
+aliases = []
+mapper_opcode = "IterNextUnboxed"
+
+[[kind]]
+canonical = "checked_add"
+aliases = []
+mapper_opcode = "CheckedAdd"
+
+[[kind]]
+canonical = "for_iter"
+aliases = []
+mapper_opcode = "ForIter"
+
+[[kind]]
+canonical = "state_switch"
+aliases = []
+mapper_opcode = "StateSwitch"
+
+[[kind]]
+canonical = "state_transition"
+aliases = []
+mapper_opcode = "StateTransition"
+
+[[kind]]
+canonical = "state_yield"
+aliases = []
+mapper_opcode = "StateYield"
+
+[[kind]]
+canonical = "chan_send_yield"
+aliases = []
+mapper_opcode = "ChanSendYield"
+
+[[kind]]
+canonical = "chan_recv_yield"
+aliases = []
+mapper_opcode = "ChanRecvYield"
+
+[[kind]]
+canonical = "closure_load"
+aliases = []
+mapper_opcode = "ClosureLoad"
+
+[[kind]]
+canonical = "closure_store"
+aliases = []
+mapper_opcode = "ClosureStore"
+
+[[kind]]
+canonical = "alloc_task"
+aliases = []
+mapper_opcode = "AllocTask"
+
+[[kind]]
+canonical = "yield"
+aliases = []
+mapper_opcode = "Yield"
+
+[[kind]]
+canonical = "yield_from"
+aliases = []
+mapper_opcode = "YieldFrom"
+
+[[kind]]
+canonical = "raise"
+aliases = []
+mapper_opcode = "Raise"
+
+[[kind]]
+canonical = "check_exception"
+aliases = []
+mapper_opcode = "CheckException"
+
+[[kind]]
+canonical = "exception_pending"
+aliases = []
+mapper_opcode = "ExceptionPending"
+
+[[kind]]
+canonical = "try_start"
+aliases = []
+mapper_opcode = "TryStart"
+
+[[kind]]
+canonical = "try_end"
+aliases = []
+mapper_opcode = "TryEnd"
+
+[[kind]]
+canonical = "state_block_start"
+aliases = []
+mapper_opcode = "StateBlockStart"
+
+[[kind]]
+canonical = "state_block_end"
+aliases = []
+mapper_opcode = "StateBlockEnd"
+
+[[kind]]
+canonical = "const"
+aliases = ["const_int", "load_const"]
+mapper_opcode = "ConstInt"
+
+[[kind]]
+canonical = "const_bigint"
+aliases = []
+mapper_opcode = "ConstBigInt"
+
+[[kind]]
+canonical = "const_float"
+aliases = []
+mapper_opcode = "ConstFloat"
+
+[[kind]]
+canonical = "const_str"
+aliases = []
+mapper_opcode = "ConstStr"
+
+[[kind]]
+canonical = "const_bool"
+aliases = []
+mapper_opcode = "ConstBool"
+
+[[kind]]
+canonical = "const_none"
+aliases = []
+mapper_opcode = "ConstNone"
+
+[[kind]]
+canonical = "const_bytes"
+aliases = []
+mapper_opcode = "ConstBytes"
+
+[[kind]]
+canonical = "copy"
+aliases = ["store_var", "load_var"]
+mapper_opcode = "Copy"
+
+[[kind]]
+canonical = "import"
+aliases = ["import_name", "module_import"]
+mapper_opcode = "Import"
+
+[[kind]]
+canonical = "import_from"
+aliases = []
+mapper_opcode = "ImportFrom"
+
+[[kind]]
+canonical = "module_cache_get"
+aliases = []
+mapper_opcode = "ModuleCacheGet"
+
+[[kind]]
+canonical = "module_cache_set"
+aliases = []
+mapper_opcode = "ModuleCacheSet"
+
+[[kind]]
+canonical = "module_cache_del"
+aliases = []
+mapper_opcode = "ModuleCacheDel"
+
+[[kind]]
+canonical = "module_get_attr"
+aliases = []
+mapper_opcode = "ModuleGetAttr"
+
+[[kind]]
+canonical = "module_import_from"
+aliases = []
+mapper_opcode = "ModuleImportFrom"
+
+[[kind]]
+canonical = "module_get_global"
+aliases = []
+mapper_opcode = "ModuleGetGlobal"
+
+[[kind]]
+canonical = "module_get_name"
+aliases = []
+mapper_opcode = "ModuleGetName"
+
+[[kind]]
+canonical = "module_set_attr"
+aliases = []
+mapper_opcode = "ModuleSetAttr"
+
+[[kind]]
+canonical = "module_del_global"
+aliases = []
+mapper_opcode = "ModuleDelGlobal"
+
+[[kind]]
+canonical = "module_del_global_if_present"
+aliases = []
+mapper_opcode = "ModuleDelGlobalIfPresent"
+
+[[kind]]
+canonical = "warn_stderr"
+aliases = []
+mapper_opcode = "WarnStderr"

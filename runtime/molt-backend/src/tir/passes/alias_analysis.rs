@@ -358,65 +358,34 @@ pub(crate) enum CopyLowering {
 /// requires *proving* its runtime returns a fresh +1 (and is leak-tested), so a
 /// wrong guess can never turn a leak into a double-free.
 pub(crate) fn copy_kind_mints_fresh_owned_ref(kind: &str) -> bool {
-    // Vectorized reduction family (`vec_*`) — each calls a dedicated `molt_vec_*`
-    // runtime reduction returning a fresh boxed result.
-    if kind.starts_with("vec_") {
+    // The fresh-value allow-list is the single-source-of-truth op-kind registry
+    // (`runtime/molt-backend/src/tir/op_kinds.toml`'s `classifier_fresh_value` +
+    // `classifier_fresh_value_prefixes`, generated into
+    // [`crate::tir::op_kinds_generated`]; see
+    // `docs/design/foundation/25_op_kind_registry.md`). Membership means the
+    // kind's runtime mints a fresh +1 owned reference that must be dropped on its
+    // own. Editing the set means editing the table + regenerating; the sync test
+    // (`tests/test_gen_op_kinds.py`) pins them in lock-step.
+    //
+    // Prefix form first (the `vec_*` vectorized-reduction family — each calls a
+    // dedicated `molt_vec_*` runtime reduction returning a fresh boxed result),
+    // then the exact set.
+    use crate::tir::op_kinds_generated::{
+        copy_kind_mints_fresh_owned_ref_table, FRESH_VALUE_PREFIXES,
+    };
+    if FRESH_VALUE_PREFIXES.iter().any(|p| kind.starts_with(p)) {
         return true;
     }
-    matches!(
-        kind,
-        // Scalar / string conversions and formatting — each allocates a fresh
-        // owned object (`molt_int_from_obj`, `molt_float_from_obj`,
-        // `molt_str_from_obj`, `molt_repr_from_obj`, `molt_format_builtin`).
-        "int_from_obj"
-            | "float_from_obj"
-            | "str_from_obj"
-            | "repr_from_obj"
-            | "ascii_from_obj"
-            | "string_format"
-            | "string_join"
-            | "int_from_str_of_obj"
-            // Subscript / slice — `molt_slice` / `molt_slice_new` build a fresh
-            // object (the review's P0 #1 double-free vector).
-            | "slice"
-            | "slice_new"
-            // Membership test — `molt_contains` returns a fresh bool object.
-            | "contains"
-            // Container constructors / views — each allocates a fresh container.
-            | "list_new"
-            | "list_fill_new"
-            | "list_from_range"
-            | "dict_new"
-            | "dict_from_obj"
-            | "dict_keys"
-            | "dict_values"
-            | "dict_items"
-            | "set_new"
-            | "tuple_new"
-            | "tuple_from_list"
-            | "enumerate"
-            | "range_new"
-            // Iterators — `molt_iter` / `molt_aiter` return an OWNED reference
-            // (for self-iterables like generators they return operand 0 *incref'd*,
-            // i.e. a genuine +1; for containers they allocate a fresh iterator).
-            // Either way the result is independently owned and must be dropped on
-            // its own — NOT a no-incref alias. (This is the review's Finding #2(a)
-            // generator-iterator case: `iter(gen)` increfs, so the AllocTask ref
-            // and the iter ref are TWO references, balanced by two DecRefs.)
-            | "iter"
-            | "aiter"
-            // Object / type / number construction.
-            | "object_new"
-            | "complex_from_obj"
-    )
+    copy_kind_mints_fresh_owned_ref_table(kind)
     // NOTE: the variadic builders `list_int_new` / `frozenset_new` are
-    // deliberately OMITTED. They are not simple single-call passthroughs (they
-    // take a count/size in `op.value` and may stream follow-up element ops), are
-    // rare, and are not yet lowered by the LLVM `Copy` arm. Omitting them is
-    // fail-closed-safe: the drop pass treats them as transparent aliases (their
-    // fresh +1 leaks rather than being released — never a UAF), and the backend
-    // gate leaves the (pre-existing) passthrough untouched. Promoting them is a
-    // follow-up that must land WITH their explicit LLVM lowering.
+    // deliberately OMITTED from the table. They are not simple single-call
+    // passthroughs (they take a count/size in `op.value` and may stream follow-up
+    // element ops), are rare, and are not yet lowered by the LLVM `Copy` arm.
+    // Omitting them is fail-closed-safe: the drop pass treats them as transparent
+    // aliases (their fresh +1 leaks rather than being released — never a UAF),
+    // and the backend gate leaves the (pre-existing) passthrough untouched.
+    // Promoting them is a follow-up that must land WITH their explicit LLVM
+    // lowering.
 }
 
 /// Classify a `Copy`'s `_original_kind` into its lowering class — THE single
@@ -433,28 +402,26 @@ pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
     if copy_kind_mints_fresh_owned_ref(k) {
         return CopyLowering::FreshValue;
     }
-    match k {
-        // ── Inert markers: no surviving heap reference to own. ──
-        // `line` / `trace_*` / `missing` carry dedicated (RC-inert) backend
-        // lowerings; `nop` is an explicit no-op. The read-only representation
-        // guards (`guard_int`/`guard_float`/`guard_str`/`guard_bool`/`guard_none`)
-        // clobber nothing and yield no droppable reference. The layout guards
-        // (`guard_layout`/`guard_dict_shape`/`guard_layout_ptr`) produce a RAW
-        // BOOL (`molt_guard_layout_ptr` → `from_bool`), never a heap reference —
-        // drop-irrelevant — and clobber no heap memory.
-        "line" | "trace_enter_slot" | "trace_exit" | "missing" | "nop"
-        | "guard_layout" | "guard_dict_shape" | "guard_layout_ptr" | "guard_int"
-        | "guard_float" | "guard_str" | "guard_bool" | "guard_none" => {
-            CopyLowering::InertMarker
-        }
-        // ── Everything else (incl. the explicit pure moves `copy`/`copy_var`/
-        //    `store_var`/`load_var`/`identity_alias`, the pass-through guards
-        //    `guard_tag`/`guard_type`, AND any UNKNOWN kind) → transparent alias.
-        //    FAIL-CLOSED: an unrecognized fresh value mislabelled here leaks (its
-        //    +1 is never released) but can never be double-freed, because the drop
-        //    pass emits NO independent `DecRef` for a non-`FreshValue` `Copy`. ──
-        _ => CopyLowering::TransparentAlias,
+    // ── Inert markers: no surviving heap reference to own. ──
+    // `line` / `trace_*` / `missing` carry dedicated (RC-inert) backend
+    // lowerings; `nop` is an explicit no-op. The read-only representation guards
+    // (`guard_int`/`guard_float`/`guard_str`/`guard_bool`/`guard_none`) clobber
+    // nothing and yield no droppable reference. The layout guards
+    // (`guard_layout`/`guard_dict_shape`/`guard_layout_ptr`) produce a RAW BOOL
+    // (`molt_guard_layout_ptr` → `from_bool`), never a heap reference —
+    // drop-irrelevant — and clobber no heap memory. The set is the registry's
+    // `classifier_inert_marker` (op_kinds.toml, generated into
+    // [`crate::tir::op_kinds_generated`]; docs/design/foundation/25).
+    if crate::tir::op_kinds_generated::copy_kind_is_inert_marker_table(k) {
+        return CopyLowering::InertMarker;
     }
+    // ── Everything else (incl. the explicit pure moves `copy`/`copy_var`/
+    //    `store_var`/`load_var`/`identity_alias`, the pass-through guards
+    //    `guard_tag`/`guard_type`, AND any UNKNOWN kind) → transparent alias.
+    //    FAIL-CLOSED: an unrecognized fresh value mislabelled here leaks (its
+    //    +1 is never released) but can never be double-freed, because the drop
+    //    pass emits NO independent `DecRef` for a non-`FreshValue` `Copy`. ──
+    CopyLowering::TransparentAlias
 }
 
 /// Returns whether an `OpCode::Copy` op is an EXPLICIT transparent local alias:
@@ -485,13 +452,13 @@ fn copy_is_known_local_alias(op: &TirOp) -> bool {
 /// are unknown (an unmapped op like `list_append` mutates the heap) and its result
 /// is not provably operand 0, so it stays `GenericHeap` / its own alias root.
 pub(crate) fn copy_kind_is_explicit_no_heap_move(kind: Option<&str>) -> bool {
+    // The explicit no-heap-move set is the registry's `classifier_no_heap_move`
+    // (op_kinds.toml, generated into [`crate::tir::op_kinds_generated`];
+    // docs/design/foundation/25). A bare `Copy` with no `_original_kind` is the
+    // SSA converter's pure value move and is likewise a no-heap move.
     match kind {
         None => true,
-        Some(k) => matches!(
-            k,
-            "copy" | "copy_var" | "store_var" | "load_var" | "identity_alias"
-                | "guard_tag" | "guard_type"
-        ),
+        Some(k) => crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(k),
     }
 }
 
