@@ -1295,16 +1295,6 @@
         }
       }
     },
-    "tests/differential/stdlib/asyncio_close_running_loop.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'oom'); confirmed deterministic in a clean isolated jobs=1 re-run (raw 'oom') AND a second full-output re-run that hung for the entire 240s outer timeout with NO verdict/result line (true infinite-loop, not a transient RSS spike); NOT fixed per crash-class policy, summarized for supervisor (task #55 calib55b storm-batch)",
-          "root_cause": "loop.run_forever() does not terminate when loop.stop() is called from a call_soon-scheduled callback -> infinite event-loop spin -> unbounded allocation -> OOM (the most severe class). The test: loop.call_soon(attempt_close) then loop.run_forever(), where attempt_close()'s finally calls loop.stop(). CPython exits 0 (RuntimeError on close of a running loop is caught, stop() breaks run_forever); Molt hangs. SUPERVISOR-TICKET: distinct from #3's task-result propagation \u2014 this is a run_forever/stop termination bug in the event-loop driver.",
-          "status": "fail",
-          "tracking": "asyncio-run-forever-hang (crash-class HANG/OOM) #3"
-        }
-      }
-    },
     "tests/differential/stdlib/asyncio_ensure_future_loop_mismatch.py": {
       "dimensions": {
         "native": {
