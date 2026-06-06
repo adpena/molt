@@ -1893,6 +1893,56 @@ mod tests {
         );
     }
 
+    /// The shift-overflow contract's count-validity gate (task #34): a `Shl`/
+    /// `Shr` result whose machine shift COUNT is proven outside `[0, 63]` must
+    /// NOT be a raw-i64-safe carrier, *even when its result range fits the
+    /// inline window*. `0 << 70` ranges to `[0, 0]` (fits inline) yet a raw
+    /// machine `shl` by 70 is LLVM poison / a wasm wrong-value mask-mod-64, so
+    /// the seed (`raw_i64_safe_values_for` — the single source of truth the
+    /// LLVM/WASM shift lanes consult) must exclude it, routing the shift to the
+    /// BigInt-/exception-correct boxed runtime. The proven-`[0, 63]` count case
+    /// (`5 << 3`) stays raw.
+    #[test]
+    fn shl_count_outside_0_63_is_not_raw_i64_safe() {
+        use crate::representation_plan::raw_i64_safe_values_for;
+        let mut func = TirFunction::new("shl_count_gate".into(), vec![], TirType::None);
+        let zero = func.fresh_value();
+        let big_count = func.fresh_value();
+        let bad_res = func.fresh_value(); // 0 << 70  (result fits inline, count > 63)
+        let five = func.fresh_value();
+        let small_count = func.fresh_value();
+        let good_res = func.fresh_value(); // 5 << 3   (result fits inline, count in [0,63])
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![
+                cint(zero, 0),
+                cint(big_count, 70),
+                op(OpCode::Shl, vec![zero, big_count], vec![bad_res]),
+                cint(five, 5),
+                cint(small_count, 3),
+                op(OpCode::Shl, vec![five, small_count], vec![good_res]),
+            ];
+            entry.terminator = Terminator::Return { values: vec![] };
+        }
+        let scev = compute_scev(&func);
+        let vr = compute_value_range(&func, &scev);
+        // Both results are range-proven inside the inline window...
+        assert_eq!(vr.range_of(bad_res), IntRange::point(0), "0<<70 == 0");
+        assert!(vr.fits_inline_int47(bad_res));
+        assert_eq!(vr.range_of(good_res), IntRange::point(40), "5<<3 == 40");
+        assert!(vr.fits_inline_int47(good_res));
+        // ...but only the in-range-count shift may carry a raw i64.
+        let raw = raw_i64_safe_values_for(&func, &vr);
+        assert!(
+            !raw.contains(&bad_res),
+            "0<<70: machine count 70 is out of [0,63] — must NOT be raw-i64-safe"
+        );
+        assert!(
+            raw.contains(&good_res),
+            "5<<3: count 3 is in [0,63] and result fits inline — stays raw"
+        );
+    }
+
     #[test]
     fn e2e_unbounded_accumulator_stays_unranged() {
         // The mandatory bigint_accumulator soundness gate: an accumulator phi
