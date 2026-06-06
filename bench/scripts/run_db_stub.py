@@ -25,7 +25,9 @@ def main() -> int:
     )
 
     exports = ROOT / "demo" / "molt_worker_app" / "molt_exports.json"
-    worker_bin = Path(env.get("WORKER_BIN", str(ROOT / "target" / "debug" / "molt-worker")))
+    worker_bin = Path(
+        env.get("WORKER_BIN", str(ROOT / "target" / "debug" / "molt-worker"))
+    )
     if not worker_bin.exists():
         build = context.run(
             ["cargo", "build", "-p", "molt-worker"],

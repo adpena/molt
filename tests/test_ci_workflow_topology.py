@@ -64,14 +64,14 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "Run bench CLI native smoke tests" in ci_text
     assert (
         "tests/test_bench_tool.py::"
-        "test_bench_cli_native_smoke_contract_batch_reuses_compiler"
-        in ci_text
+        "test_bench_cli_native_smoke_contract_batch_reuses_compiler" in ci_text
     )
     assert "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" not in (
         ci_text
     )
-    assert "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok" not in (
-        ci_text
+    assert (
+        "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok"
+        not in (ci_text)
     )
     assert "tests/test_bench_harness.py" in ci_text
     assert "tests/test_bench_tool.py" in ci_text

@@ -91,11 +91,20 @@ def main() -> int:
     ap.add_argument(
         "--scenarios",
         nargs="+",
-        default=["cold", "inc-value_range", "inc-function_compiler", "inc-modules", "test-lib"],
+        default=[
+            "cold",
+            "inc-value_range",
+            "inc-function_compiler",
+            "inc-modules",
+            "test-lib",
+        ],
     )
     ap.add_argument("--json-out", default=None)
-    ap.add_argument("--cold-clean", action="store_true",
-                    help="rm -rf target dir before the cold scenario (true cold)")
+    ap.add_argument(
+        "--cold-clean",
+        action="store_true",
+        help="rm -rf target dir before the cold scenario (true cold)",
+    )
     args = ap.parse_args()
 
     env = os.environ.copy()
@@ -103,7 +112,8 @@ def main() -> int:
 
     touch_files = {
         "value_range": REPO_ROOT / "runtime/molt-backend/src/tir/passes/value_range.rs",
-        "function_compiler": REPO_ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs",
+        "function_compiler": REPO_ROOT
+        / "runtime/molt-backend/src/native_backend/function_compiler.rs",
         "modules": REPO_ROOT / "runtime/molt-runtime/src/builtins/modules.rs",
         "gvn": REPO_ROOT / "runtime/molt-backend/src/tir/passes/gvn.rs",
     }
@@ -120,7 +130,10 @@ def main() -> int:
             rc, elapsed, tail = _run(cmd, env, REPO_ROOT)
             rc_last, tail_last = rc, tail
             samples.append(round(elapsed, 2))
-            print(f"  [{label}] run {i+1}/{args.runs}: {elapsed:.2f}s rc={rc}", flush=True)
+            print(
+                f"  [{label}] run {i + 1}/{args.runs}: {elapsed:.2f}s rc={rc}",
+                flush=True,
+            )
             if rc != 0:
                 print(f"    FAILED:\n{tail}", flush=True)
                 break
@@ -144,20 +157,24 @@ def main() -> int:
 
     for scen in args.scenarios:
         if scen == "cold":
+
             def cold_prep():
                 if args.cold_clean:
                     td = Path(args.target_dir)
                     if td.exists():
                         shutil.rmtree(td)
+
             measure("cold", cold_prep, _build_cmd(args))
         elif scen.startswith("inc-"):
-            key = scen[len("inc-"):]
+            key = scen[len("inc-") :]
             f = touch_files[key]
             measure(scen, (lambda f=f: _touch(f)), _build_cmd(args))
         elif scen == "test-lib":
-            measure("test-lib",
-                    (lambda: _touch(touch_files["value_range"])),
-                    _build_cmd(args, ["--tests", "--no-run"]))
+            measure(
+                "test-lib",
+                (lambda: _touch(touch_files["value_range"])),
+                _build_cmd(args, ["--tests", "--no-run"]),
+            )
         else:
             print(f"unknown scenario: {scen}", file=sys.stderr)
 
@@ -168,7 +185,9 @@ def main() -> int:
             "features": args.features,
             "runs": args.runs,
             "target_dir": args.target_dir,
-            "cargo": subprocess.run(["cargo", "--version"], capture_output=True, text=True).stdout.strip(),
+            "cargo": subprocess.run(
+                ["cargo", "--version"], capture_output=True, text=True
+            ).stdout.strip(),
         },
         "results": results,
     }

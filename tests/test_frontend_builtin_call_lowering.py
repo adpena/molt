@@ -935,7 +935,9 @@ def test_stable_user_class_ctor_lowers_to_structural_allocation() -> None:
 
 
 def test_unstable_globals_user_class_ctor_lowers_via_call_bind() -> None:
-    ir = compile_to_tir("globals()\nclass A:\n    pass\n\ndef make():\n    return A()\n")
+    ir = compile_to_tir(
+        "globals()\nclass A:\n    pass\n\ndef make():\n    return A()\n"
+    )
     main_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____make"
     )
@@ -957,12 +959,16 @@ def test_unstable_globals_user_class_ctor_lowers_via_call_bind() -> None:
         and len(op.get("args") or []) >= 1
         and op["args"][0] in class_vars
         for op in main_ops
-    ), "expected globals-escaped class constructor to lower via call_bind on the class object"
+    ), (
+        "expected globals-escaped class constructor to lower via call_bind on the class object"
+    )
     assert all(
         op.get("kind")
         not in {"alloc_class", "alloc_class_static", "alloc_class_trusted"}
         for op in main_ops
-    ), "globals-escaped class constructor should not lower via synthetic object allocation"
+    ), (
+        "globals-escaped class constructor should not lower via synthetic object allocation"
+    )
     assert all(op.get("kind") != "object_new_bound" for op in main_ops)
 
 
@@ -1017,9 +1023,7 @@ def test_importlib_import_module_literal_from_import_lowers_to_module_import() -
 
 def test_importlib_import_module_literal_in_function_lowers_to_module_import() -> None:
     func_ops = _importlib_literal_function_ops(
-        "import importlib\n"
-        "def f():\n"
-        "    return importlib.import_module('json')\n",
+        "import importlib\ndef f():\n    return importlib.import_module('json')\n",
         "__main____f",
     )
     assert "json" in _module_import_targets(func_ops)
@@ -1037,7 +1041,9 @@ def test_importlib_import_module_literal_respects_local_shadowing() -> None:
     assert "json" not in _module_import_targets(func_ops)
 
 
-def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime() -> None:
+def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime() -> (
+    None
+):
     gen = SimpleTIRGenerator(
         known_modules={"importlib"},
         stdlib_allowlist={"importlib"},
@@ -1059,11 +1065,10 @@ def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime(
 
 
 def test_sum_generator_expr_lowers_without_generator_task_or_builtin_call() -> None:
-    ir = compile_to_tir(
-        "def f(data):\n"
-        "    return sum(v for v in data if v % 2 == 0)\n"
+    ir = compile_to_tir("def f(data):\n    return sum(v for v in data if v % 2 == 0)\n")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
 
     assert any(op.get("kind") == "loop_start" for op in func_ops)
     assert any(op.get("kind") == "add" for op in func_ops)
@@ -1083,10 +1088,11 @@ def test_sum_generator_expr_lowers_without_generator_task_or_builtin_call() -> N
 
 def test_sum_generator_expr_tuple_target_lowers_inline() -> None:
     ir = compile_to_tir(
-        "def f(pairs):\n"
-        "    return sum(a * b for a, b in pairs if a > 2)\n"
+        "def f(pairs):\n    return sum(a * b for a, b in pairs if a > 2)\n"
     )
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
 
     assert any(op.get("kind") == "unpack_sequence" for op in func_ops)
     assert any(op.get("kind") == "mul" for op in func_ops)
@@ -1096,10 +1102,11 @@ def test_sum_generator_expr_tuple_target_lowers_inline() -> None:
 
 def test_sum_generator_expr_with_start_stays_on_builtin_path() -> None:
     ir = compile_to_tir(
-        "def f(data, start):\n"
-        "    return sum((v for v in data), start)\n"
+        "def f(data, start):\n    return sum((v for v in data), start)\n"
     )
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
 
     assert any(op.get("kind") == "alloc_task" for op in func_ops)
     assert any(
@@ -1115,7 +1122,9 @@ def test_sum_generator_expr_target_shadow_does_not_leak() -> None:
         "    total = sum(v for v in data)\n"
         "    return v + total\n"
     )
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
 
     assert all(op.get("kind") != "alloc_task" for op in func_ops)
     store_vars = [
@@ -1134,7 +1143,9 @@ def test_dict_comprehension_result_methods_use_exact_dict_ops() -> None:
         "    inverted = {v: k for k, v in data.items()}\n"
         "    return total + len(inverted)\n"
     )
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
 
     assert any(op.get("kind") == "dict_values" for op in func_ops)
     assert any(op.get("kind") == "dict_items" for op in func_ops)

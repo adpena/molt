@@ -104,7 +104,9 @@ def test_batch_runs_and_writes_json_report(tmp_path: Path, monkeypatch) -> None:
 
         raise AssertionError(f"Unexpected subprocess command: {cmd}")
 
-    monkeypatch.setattr(mod.harness_memory_guard, "guarded_completed_process", _fake_run)
+    monkeypatch.setattr(
+        mod.harness_memory_guard, "guarded_completed_process", _fake_run
+    )
 
     rc = mod.main(
         [
@@ -145,7 +147,9 @@ def test_missing_analyzer_is_nonfatal_without_requirement(
             return subprocess.CompletedProcess(cmd, 0, stdout="build ok", stderr="")
         raise AssertionError(f"Unexpected subprocess command: {cmd}")
 
-    monkeypatch.setattr(mod.harness_memory_guard, "guarded_completed_process", _fake_run)
+    monkeypatch.setattr(
+        mod.harness_memory_guard, "guarded_completed_process", _fake_run
+    )
 
     rc = mod.main([str(source), "--json-out", str(json_out)])
 

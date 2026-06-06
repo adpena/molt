@@ -776,7 +776,7 @@ def _append_guarded_command_profile(
     orphaned_process_groups: Sequence[int],
     peak: memory_guard.RssViolation | None = None,
     peak_total: memory_guard.RssViolation | None = None,
-    ) -> tuple[Path, str | None]:
+) -> tuple[Path, str | None]:
     source = _effective_env(env)
     path = command_profile_log_path(source)
     max_bytes = _max_bytes_from_mb(
@@ -829,8 +829,7 @@ def _append_guarded_command_profile(
     except OSError as exc:
         return (
             path,
-            "memory_guard: command profile write failed: "
-            f"path={path} error={exc}\n",
+            f"memory_guard: command profile write failed: path={path} error={exc}\n",
         )
     return path, None
 

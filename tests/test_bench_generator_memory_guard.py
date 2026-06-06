@@ -10,7 +10,9 @@ BENCH_GENERATOR = ROOT / "tests" / "benchmarks" / "bench_generator.py"
 
 
 def _load_bench_generator():
-    spec = importlib.util.spec_from_file_location("bench_generator_memory_guard", BENCH_GENERATOR)
+    spec = importlib.util.spec_from_file_location(
+        "bench_generator_memory_guard", BENCH_GENERATOR
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
