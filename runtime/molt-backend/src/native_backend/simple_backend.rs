@@ -2817,6 +2817,26 @@ impl SimpleBackend {
                 }
             }
         }
+        // ── RC drop insertion: terminal phase for the skip_ir_passes path ──────
+        // The whole-program module phase (which runs the drop finalizer over its
+        // TIR module, see `run_module_pipeline`) is SKIPPED for `skip_ir_passes`
+        // builds — the stdlib-cache object and the per-batch application codegen,
+        // which forgo inlining/promotion and do per-function-only optimization.
+        // Drop insertion is a per-function correctness concern (it closes the
+        // expression-temporary leak), NOT a whole-program optimization, so it must
+        // still run there. With no module phase, the (already-run, cached)
+        // per-function pipeline is the last transform, so drops run here as the
+        // terminal step — over the SimpleIR carrier, post-cache (the cache never
+        // stores drop-inserted ops keyed by the drop-free input hash). Runs BEFORE
+        // `split_megafunctions` so DecRef/value-def pairs stay within one function
+        // (the non-skip path likewise drops in the module phase, before splitting).
+        // The LLVM lane has its own module phase below and is excluded here.
+        if self.skip_ir_passes && !use_llvm {
+            let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
+                crate::tir::target_info::SimdCaps::detect_host(),
+            );
+            crate::tir::drop_phase::finalize_simple_ir_drops(&mut ir.functions, &native_tti);
+        }
         // Dead function elimination: remove functions that are unreachable from
         // the entry point after inlining.  This reduces code size for both the
         // native object and the downstream linker's work.
@@ -3030,6 +3050,22 @@ impl SimpleBackend {
                 tir_funcs = Vec::with_capacity(externs.len() + module.functions.len());
                 tir_funcs.extend(externs.into_iter().map(|f| (true, f)));
                 tir_funcs.extend(module.functions.into_iter().map(|f| (false, f)));
+            } else {
+                // skip_ir_passes (LLVM batched / stdlib-cache path): the
+                // whole-program module phase — which runs the terminal drop
+                // finalizer over its TIR module — is skipped. Drop insertion is a
+                // per-function correctness concern, so it still runs here on the
+                // per-function-pipeline output, the last transform in this mode.
+                // (The non-skip branch above ran drops inside `run_module_pipeline`.)
+                // Funnels through the same `finalize_function_drops` entry as the
+                // module/SimpleIR finalizers (uniform refine + double-process guard).
+                for (is_extern, tir_func) in tir_funcs.iter_mut() {
+                    if !*is_extern {
+                        let _ = crate::tir::drop_phase::finalize_function_drops(
+                            tir_func, &llvm_tti,
+                        );
+                    }
+                }
             }
 
             llvm.function_return_types = tir_funcs
