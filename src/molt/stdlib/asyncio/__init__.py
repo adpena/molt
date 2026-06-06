@@ -967,6 +967,12 @@ def _debug_asyncio_shutdown_enabled() -> bool:
 _DEBUG_ASYNCIO_SHUTDOWN = _debug_asyncio_shutdown_enabled()
 
 _UNSET = object()
+# Upper bound (seconds) on how long ``run_forever`` blocks between turns when a
+# timer is scheduled further out, so a ``stop()``/wakeup arriving from another
+# thread is observed promptly instead of waiting out a long deadline. Idle waits
+# with no scheduled timer also use this bound, keeping the idle loop blocking
+# (never busy-spinning) while staying responsive to cross-thread wakeups.
+_RUN_FOREVER_IDLE_CAP = 0.05
 _PROC_STDIO_INHERIT = 0
 _PROC_STDIO_PIPE = 1
 _PROC_STDIO_DEVNULL = 2
@@ -3775,6 +3781,8 @@ class _EventLoop(AbstractEventLoop):
         )
 
     def close(self) -> None:
+        if self.is_running():
+            raise RuntimeError("Cannot close a running event loop")
         if self.is_closed():
             return
         _require_asyncio_intrinsic(molt_event_loop_close, "event_loop_close")(
@@ -4029,11 +4037,67 @@ class _EventLoop(AbstractEventLoop):
         return result
 
     def run_forever(self) -> None:
-        async def _spin() -> None:
-            while not self._stopping:
-                await sleep(0.0)
+        # CPython-faithful imperative driver: each iteration runs one event-loop
+        # turn (ready ``call_soon`` handles, due timers, and one scheduler drain
+        # so awaited tasks advance) and then checks ``self._stopping``. This is a
+        # direct port of ``BaseEventLoop.run_forever``'s
+        # ``while True: self._run_once(); if self._stopping: break`` loop.
+        #
+        # The previous implementation drove a ``while not self._stopping: await
+        # sleep(0)`` coroutine through ``run_until_complete``. That busy-wait
+        # never observed a ``stop()`` scheduled from a ``call_soon`` callback
+        # (the callback's turn was never reached), so ``_stopping`` never flipped
+        # and each spin allocated a fresh sleep future -> unbounded allocation ->
+        # OOM. Driving the loop directly makes the stop handshake deterministic
+        # and the idle loop block instead of spin.
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
+        if self.is_running():
+            raise RuntimeError("This event loop is already running")
+        prev = _get_running_loop()
+        _set_running_loop(self)
+        _require_asyncio_intrinsic(molt_event_loop_start, "event_loop_start")(
+            self._loop_handle
+        )
+        # NB: ``_stopping`` is intentionally NOT reset here. CPython's
+        # ``run_forever`` only clears it in the ``finally`` block, so a
+        # ``stop()`` issued before ``run_forever`` (``_stopping`` already True)
+        # runs exactly one turn and returns -- matching
+        # ``asyncio_run_forever_prestopped``.
+        try:
+            while True:
+                ran = self._run_once()
+                if self._stopping:
+                    break
+                # Only block when the turn did no work: an active loop (callbacks
+                # still firing) advances immediately, while a genuinely idle loop
+                # blocks instead of busy-spinning.
+                if ran == 0:
+                    self._run_forever_idle_wait()
+        finally:
+            self._stopping = False
+            _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
+                self._loop_handle
+            )
+            _set_running_loop(prev)
 
-        self.run_until_complete(_spin())
+    def _run_forever_idle_wait(self) -> None:
+        # Block (never busy-spin) between turns. When a timer is scheduled, sleep
+        # until just before its deadline; otherwise yield with a short bounded
+        # sleep so external wakeups (worker threads completing tasks, I/O, timers
+        # re-enqueued by the sleep worker) are observed promptly on the next turn.
+        # Mirrors CPython blocking on the selector with the computed timeout.
+        if self._stopping:
+            return
+        delay = self._next_deadline_delay()
+        if delay <= 0.0:
+            # Work is due right now (or a zero-delay timer/ready task is pending);
+            # take the next turn immediately without sleeping.
+            return
+        # Cap the wait so a stop()/wakeup arriving from another thread is observed
+        # without waiting out a long timer deadline.
+        wait = delay if delay < _RUN_FOREVER_IDLE_CAP else _RUN_FOREVER_IDLE_CAP
+        _time.sleep(wait)
 
     async def shutdown_asyncgens(self) -> None:
         _require_asyncio_intrinsic(molt_asyncgen_shutdown, "asyncgen_shutdown")()
