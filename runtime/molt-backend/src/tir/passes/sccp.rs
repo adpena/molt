@@ -62,44 +62,15 @@ enum ConstVal {
 /// Prevents embedding excessively large data structures in the binary.
 const MAX_COMPOUND_ELEMENTS: usize = 1000;
 
-/// Returns `true` if the op may throw and thus should not be folded inside
-/// a try region (its execution may transfer to an exception handler).
-#[inline]
-fn may_throw(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::Raise
-            | OpCode::Index
-            | OpCode::StoreIndex
-            | OpCode::LoadAttr
-            | OpCode::StoreAttr
-            | OpCode::DelAttr
-            | OpCode::DelIndex
-            | OpCode::Import
-            | OpCode::ImportFrom
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::GetIter
-            | OpCode::IterNext
-            | OpCode::IterNextUnboxed
-            | OpCode::ForIter
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::ClosureLoad
-            | OpCode::ClosureStore
-    )
-}
-
 /// Build a set of ValueIds that are results of ops inside try regions.
 /// When `has_exception_handling` is true, we must not rewrite these ops
 /// to constants because the op's execution may transfer control to a
 /// handler, and removing the op would change observable behavior.
+///
+/// "May throw" is sourced from the single op-kind registry oracle
+/// (`effects::op_may_throw`, backed by `op_kinds.toml`) rather than a local
+/// hand-list — a duplicate list is exactly the drift that mis-classified
+/// `Shl`/`Shr`/`Pow` as non-throwing and let SCCP/DCE drop a dead `1 << -1`.
 fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
     let mut result_set = HashSet::new();
     for block in func.blocks.values() {
@@ -110,7 +81,7 @@ fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
                 OpCode::TryEnd => try_depth = try_depth.saturating_sub(1),
                 _ => {}
             }
-            if try_depth > 0 && may_throw(op.opcode) {
+            if try_depth > 0 && effects::op_may_throw(op) {
                 for &r in &op.results {
                     result_set.insert(r);
                 }
@@ -723,12 +694,39 @@ fn eval_binary_pow(operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
         (ConstVal::Int(base), ConstVal::Int(exp)) => {
             if *exp >= 0 && *exp <= 63 {
                 // Safe small exponent — use checked pow to avoid overflow panic.
+                // A negative exponent (`2 ** -1` → float `0.5`, `0 ** -1` →
+                // ZeroDivisionError) is intentionally NOT folded here: it leaves
+                // the int domain, so the runtime `Pow` op (which is float- and
+                // exception-correct) handles it. `exp == 0` is `1` for any base.
                 base.checked_pow(*exp as u32).map(ConstVal::Int)
             } else {
                 None
             }
         }
-        (ConstVal::Float(x), ConstVal::Float(y)) => Some(ConstVal::Float(x.powf(*y))),
+        (ConstVal::Float(x), ConstVal::Float(y)) => {
+            // `float ** float` may diverge from a real, finite float — and SCCP's
+            // `ConstVal` lattice cannot represent those results, so folding them
+            // would be a silent miscompile. CPython's `float.__pow__`:
+            //   * `0.0 ** negative`  → raises ZeroDivisionError (observable)
+            //   * `negative ** non-integer` → returns `complex` (NOT a float)
+            //   * any result that is inf/NaN (overflow / domain edge) likewise
+            //     cannot be trusted to match CPython's value/exception contract.
+            // Refuse to fold in every one of those cases (return None → the op
+            // stays as Bottom and the runtime evaluates it). Only a finite real
+            // float result that the IEEE `powf` reproduces exactly is folded.
+            if *x == 0.0 && *y < 0.0 {
+                return None; // ZeroDivisionError at runtime
+            }
+            if *x < 0.0 && y.fract() != 0.0 {
+                return None; // complex result at runtime
+            }
+            let result = x.powf(*y);
+            if result.is_finite() {
+                Some(ConstVal::Float(result))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
