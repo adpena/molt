@@ -16,6 +16,7 @@ pub mod drop_insertion;
 pub mod effects;
 pub mod escape_analysis;
 pub mod fast_math;
+pub mod generator_fusion;
 pub mod gvn;
 pub mod inliner;
 pub mod ip_summary;
