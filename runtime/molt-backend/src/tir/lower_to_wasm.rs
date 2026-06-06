@@ -853,8 +853,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::StateBlockStart
         | OpCode::StateBlockEnd
         | OpCode::WarnStderr
-        | OpCode::IncRef
-        | OpCode::DecRef
         // ConstBigInt needs a data segment + molt_bigint_from_str, which the
         // LIR fast lane does not model — bail the function to the generic
         // emitter (which handles `const_bigint` natively).
@@ -865,6 +863,26 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             ctx.instructions.push(Instruction::Call(0));
             if let Some(result) = op.result_values.first() {
                 ctx.emit_set(result.id);
+            }
+        }
+        // RC drop-insertion ops (design 20, §4.3 Phase 4). `molt_dec_ref_obj` /
+        // `molt_inc_ref_obj` take the NaN-boxed value by value and fast-path
+        // non-pointers, so passing the operand's boxed form is always safe; the
+        // repr filter in the drop pass already excludes raw-scalar carriers, so
+        // the operand here is a heap-carrying (NaN-boxed-pointer) value. A NAMED
+        // runtime call keeps the function in the LIR fast lane rather than
+        // bailing it (`Call(0)`) to the generic emitter — preserving the WASM
+        // perf contract for drop-inserted functions. Neither op has a result.
+        OpCode::DecRef => {
+            if let Some(&operand) = tir_op.operands.first() {
+                emit_get_boxed_for_repr(ctx, operand);
+                ctx.emit_runtime_call("dec_ref_obj");
+            }
+        }
+        OpCode::IncRef => {
+            if let Some(&operand) = tir_op.operands.first() {
+                emit_get_boxed_for_repr(ctx, operand);
+                ctx.emit_runtime_call("inc_ref_obj");
             }
         }
     }
@@ -1429,89 +1447,78 @@ fn peephole_set_get_to_tee(instructions: Vec<Instruction<'static>>) -> Vec<Instr
     let mut i = 0;
     while i < instructions.len() {
         // Pattern 1: local.set X; local.get X -> local.tee X
-        if i + 1 < instructions.len() {
-            if let (Instruction::LocalSet(set_idx), Instruction::LocalGet(get_idx)) =
+        if i + 1 < instructions.len()
+            && let (Instruction::LocalSet(set_idx), Instruction::LocalGet(get_idx)) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                if set_idx == get_idx {
-                    out.push(Instruction::LocalTee(*set_idx));
-                    i += 2;
-                    continue;
-                }
-            }
+            && set_idx == get_idx
+        {
+            out.push(Instruction::LocalTee(*set_idx));
+            i += 2;
+            continue;
         }
         // Pattern 2: i64.const 0; i64.eq -> i64.eqz (test for zero)
-        if i + 1 < instructions.len() {
-            if let (Instruction::I64Const(0), Instruction::I64Eq) =
+        if i + 1 < instructions.len()
+            && let (Instruction::I64Const(0), Instruction::I64Eq) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                out.push(Instruction::I64Eqz);
-                i += 2;
-                continue;
-            }
+        {
+            out.push(Instruction::I64Eqz);
+            i += 2;
+            continue;
         }
         // Pattern 3: i32.const 0; i32.eq -> i32.eqz
-        if i + 1 < instructions.len() {
-            if let (Instruction::I32Const(0), Instruction::I32Eq) =
+        if i + 1 < instructions.len()
+            && let (Instruction::I32Const(0), Instruction::I32Eq) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                out.push(Instruction::I32Eqz);
-                i += 2;
-                continue;
-            }
+        {
+            out.push(Instruction::I32Eqz);
+            i += 2;
+            continue;
         }
         // Pattern 4: i64.const 1; i64.mul -> (eliminated, multiply by 1 is identity)
-        if i + 1 < instructions.len() {
-            if let (Instruction::I64Const(1), Instruction::I64Mul) =
+        if i + 1 < instructions.len()
+            && let (Instruction::I64Const(1), Instruction::I64Mul) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                // Value already on stack; skip the const+mul.
-                i += 2;
-                continue;
-            }
+        {
+            // Value already on stack; skip the const+mul.
+            i += 2;
+            continue;
         }
         // Pattern 5: i64.const 0; i64.add -> (eliminated, add 0 is identity)
-        if i + 1 < instructions.len() {
-            if let (Instruction::I64Const(0), Instruction::I64Add) =
+        if i + 1 < instructions.len()
+            && let (Instruction::I64Const(0), Instruction::I64Add) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                i += 2;
-                continue;
-            }
+        {
+            i += 2;
+            continue;
         }
         // Pattern 6: i64.const 0; i64.sub -> (eliminated, sub 0 is identity)
-        if i + 1 < instructions.len() {
-            if let (Instruction::I64Const(0), Instruction::I64Sub) =
+        if i + 1 < instructions.len()
+            && let (Instruction::I64Const(0), Instruction::I64Sub) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                i += 2;
-                continue;
-            }
+        {
+            i += 2;
+            continue;
         }
         // Pattern 7: i64.const -1; i64.xor -> (equivalent to bit_not, but keep xor)
         // Not folded: -1 xor is the canonical bit_not, no simpler form exists.
 
         // Pattern 8: f64.const 0.0; f64.add -> (eliminated, add 0 is identity)
-        if i + 1 < instructions.len() {
-            if let (Instruction::F64Const(z), Instruction::F64Add) =
+        if i + 1 < instructions.len()
+            && let (Instruction::F64Const(z), Instruction::F64Add) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                if f64::from(*z) == 0.0 {
-                    i += 2;
-                    continue;
-                }
-            }
+            && f64::from(*z) == 0.0
+        {
+            i += 2;
+            continue;
         }
         // Pattern 9: f64.const 1.0; f64.mul -> (eliminated, multiply by 1 is identity)
-        if i + 1 < instructions.len() {
-            if let (Instruction::F64Const(one), Instruction::F64Mul) =
+        if i + 1 < instructions.len()
+            && let (Instruction::F64Const(one), Instruction::F64Mul) =
                 (&instructions[i], &instructions[i + 1])
-            {
-                if f64::from(*one) == 1.0 {
-                    i += 2;
-                    continue;
-                }
-            }
+            && f64::from(*one) == 1.0
+        {
+            i += 2;
+            continue;
         }
         out.push(instructions[i].clone());
         i += 1;

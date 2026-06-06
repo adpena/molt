@@ -59,7 +59,7 @@ pub const PIPELINE_PASS_CAPACITY_HINT: usize = 32;
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// This is the public entry point. It builds the canonical 28-pass pipeline
+/// This is the public entry point. It builds the canonical 30-pass pipeline
 /// ([`pass_manager::build_default_pipeline`](crate::tir::pass_manager::build_default_pipeline))
 /// and runs it through the [`PassManager`](crate::tir::pass_manager::PassManager),
 /// which threads a per-function
@@ -165,6 +165,8 @@ mod tests {
                 "overflow_peel",
                 "copy_prop",
                 "dce",
+                "drop_insertion",
+                "refcount_elim_post",
             ],
         );
     }

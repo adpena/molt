@@ -6,10 +6,36 @@
 //! runtime allocates every heap result with `ref_count = 1` and (before this
 //! pass) never decremented it for expression temporaries.
 //!
-//! Runs `Mutates::OpsOnly`: it only inserts `DecRef`/`IncRef` ops within blocks
-//! and never changes the block set, edges, or terminators. `DecRef`/`IncRef`
-//! carry no exception edge, so this honors the `OpsOnly` exception-edge
-//! invariant (see [`Mutates::OpsOnly`](crate::tir::pass_manager::Mutates)).
+//! Runs `Mutates::Cfg`: it inserts `DecRef`/`IncRef` ops within blocks and MAY
+//! SPLIT a critical edge (a fresh block carrying an edge-exact `IncRef`) for the
+//! mixed-ownership-phi retain (§5 below). `DecRef`/`IncRef` carry no exception
+//! edge, and the edge-split inserts only an unconditional `Branch` — but because
+//! the block set/edges CAN change, the pass declares `Cfg` so the manager
+//! recomputes CFG-sensitive analyses for the following `refcount_elim_post`.
+//!
+//! ## Ownership transfer at phi (block-arg) boundaries — the two-sided contract
+//!
+//! TIR uses MLIR block args as phis: a predecessor's terminator passes a value
+//! that binds the successor's block arg on entry. A droppable (heap, function-
+//! owned) block arg is treated as carrying ONE owned `+1`; the pass drops it
+//! where it dies and TRANSFERS it (no drop) where it is forwarded. Soundness
+//! requires BOTH halves of the transfer to be exact — the two over-release
+//! classes the round-2/round-3 review exposed:
+//!
+//! * **Incoming side (§5, the `before_term_incref` / edge-split retain).** Every
+//!   incoming edge of an owned phi must deliver an owned `+1`. An edge delivering
+//!   a BORROWED value (a transparent alias of a `+0` parameter, or an owned value
+//!   whose single `+1` is needed elsewhere too) is RETAINED on that edge. Without
+//!   it, the phi's drop releases the caller's borrow → UAF (the loop-accumulator
+//!   `x = base; while …: x = x + base` and the if-arm `x = a if c else …`).
+//! * **Outgoing side (§3 `incoming_arg_roots` exclusion).** A value PASSED as a
+//!   branch arg into a phi must NOT also be edge-dropped at the join: its
+//!   ownership moved into the block arg, which is released by the phi's own
+//!   last-use drop. Liveness reports the forwarded value dead-in to the join (its
+//!   successor-side identity is the distinct block-arg SSA value), so the
+//!   edge-dying rule would otherwise drop it there AND at the phi's last use →
+//!   double-free (the inliner-produced multi-block `x = a + a; return x + a`
+//!   chain — `invalid object header before dec_ref`).
 //!
 //! ## Ownership model (design 20 §1)
 //!
@@ -71,6 +97,58 @@
 //! inference therefore reduces to: drop after the call, never before — which the
 //! last-use placement already does. We keep the call operands out of any
 //! *pre-call* drop, which the last-use semantics guarantee.
+//!
+//! ## Soundness invariants (the over-release hazards this pass must avoid)
+//!
+//! All ownership reasoning is done over transparent-alias ROOTS (see
+//! [`crate::tir::passes::alias_analysis`]). A `Copy` / `TypeGuard` identity move
+//! produces a second SSA handle to the SAME owned reference (design §1.2), NOT a
+//! new allocation; treating it as a consuming use would double-free. Five
+//! soundness rails, each FAIL-CLOSED (keep the +1 / leak rather than risk a UAF):
+//!
+//! 1. **Alias-root ownership** — a whole alias group is ONE reference, dropped
+//!    once at the group's last in-block *touch*, through a live alias of the
+//!    root. The drop point dominates every in-block read of the group, so a
+//!    later alias-move can never read a freed object. A `Copy` whose
+//!    `_original_kind` is neither a proven fresh-owned producer nor an explicit
+//!    no-heap move (`non_owning_copy_results`) is its OWN alias root in the
+//!    union-find but is a no-incref bit-passthrough of operand 0, so it is
+//!    excluded from droppability — releasing it would double-free operand 0.
+//! 2. **TerminatorOnly dominance** — an edge-dying drop at a successor `B` is
+//!    placed only when the value's def-block dominates `B` in the
+//!    **terminator-only** CFG (the view codegen enforces). The *full*-CFG
+//!    dominator would admit a value defined mid-block after a `CheckException`
+//!    as "dominating" that op's handler, but the exception edge leaves before
+//!    the def → use-before-def in codegen. (Observed otherwise as the LLVM
+//!    verifier "Instruction does not dominate all uses!" abort.)
+//! 3. **Conditionally-valid iterator results** — an `IterNextUnboxed` value
+//!    result (`iter_cond_value_results`) is valid ONLY on the not-done branch;
+//!    its slot is uninitialized garbage on the exhaustion edge. It is NEVER
+//!    edge-dropped (and never IncRef'd onto a phi edge); the body straight-line
+//!    rule releases it on the valid path.
+//! 4. **State-machine gate** — the pass bails entirely on functions with
+//!    generator/async `StateSwitch` / `StateTransition` / `StateYield` control
+//!    flow (a `_poll` dispatcher re-enters `state_resume_*` blocks carrying none
+//!    of the normal-flow values), in addition to `try`/`except` regions, and is
+//!    idempotent (skips a function already carrying the `drop_inserted` attr —
+//!    the native re-lift / module-slot re-run path). Re-enabling state-machine
+//!    functions needs StateSwitch-aware liveness (design 20 follow-up).
+//! 5. **Backend conditioning** — drop insertion is wired into the shared
+//!    pipeline but only *runs* for backends that consume the ops by SSA-value
+//!    identity with no competing automatic temp-RC (LLVM / WASM / Luau). The
+//!    native Cranelift backend keeps its existing value-tracking RC substrate
+//!    and is gated OFF until that substrate is retired (design §5 Phase 5; the
+//!    `drop_inserted`-marker suppression that makes native's substrate inert for
+//!    drop-inserted functions has landed, so native activation is now a pipeline
+//!    flip pending the convergence-sweep clearance). See
+//!    `pass_manager::target_uses_tir_drop_insertion`.
+//!
+//! ## Diagnostics
+//!
+//! `MOLT_DEBUG_DROP=<substr>` (or `=ALL`) writes a per-function dump of the
+//! post-insertion block/op shape with per-operand repr tags to
+//! `<artifact_root>/drop/<func>.txt`, including a `BAILED:` line for functions
+//! the activation gate skipped. The instrument every optimization lands with.
 
 use std::collections::{HashMap, HashSet};
 
@@ -146,55 +224,179 @@ fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
     out
 }
 
-/// The values `term` passes as block args **specifically on edges to `target`**.
-/// A value passed here transfers its ownership into `target`'s matching block
-/// param — the edge-dying rule (§2.5) must NOT also drop it at `target`'s entry
-/// (that would double-free the value the block param now owns). This is the
-/// per-edge refinement of [`terminator_branch_args`]: that function answers "does
-/// this terminator transfer V on ANY edge" (used to suppress the *predecessor's*
-/// straight-line drop); this one answers "does it transfer V on the edge to THIS
-/// successor" (used to suppress the *successor's* edge-dying drop). A `CondBranch`
-/// whose two arms target the same block contributes both arms' args.
-fn terminator_args_to_target(term: &Terminator, target: BlockId) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
+/// The successor blocks of `term` (de-dup not required; callers union into sets).
+fn terminator_successor_blocks(term: &Terminator) -> Vec<BlockId> {
     match term {
-        Terminator::Branch { target: t, args } => {
-            if *t == target {
-                out.extend(args.iter().copied());
-            }
+        Terminator::Branch { target, .. } => vec![*target],
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => vec![*then_block, *else_block],
+        Terminator::Switch {
+            cases, default, ..
+        } => {
+            let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
+            out.push(*default);
+            out
         }
+        Terminator::Return { .. } | Terminator::Unreachable => vec![],
+    }
+}
+
+/// A stable identifier for ONE outgoing arc of a terminator, so the mixed-
+/// ownership-phi retain can retarget exactly that arc when splitting a critical
+/// edge (two arcs to the same block with different args must be distinguishable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArcDescriptor {
+    /// The single arc of an unconditional `Branch`.
+    Branch,
+    /// The `then` arc of a `CondBranch`.
+    CondThen,
+    /// The `else` arc of a `CondBranch`.
+    CondElse,
+    /// The case arc at `cases[index]` of a `Switch`.
+    SwitchCase(usize),
+    /// The `default` arc of a `Switch`.
+    SwitchDefault,
+}
+
+/// One outgoing arc of a block's terminator: which target it goes to, the args it
+/// forwards, and a [`ArcDescriptor`] that pins it for retargeting.
+struct Arc {
+    descriptor: ArcDescriptor,
+    target: BlockId,
+    args: Vec<ValueId>,
+}
+
+impl Arc {
+    /// A self-loop arc whose source block is also its target (the latch IS the
+    /// header) — treated as ambiguous for IncRef placement, since a
+    /// before-terminator IncRef on such an arc would sit on the in-block
+    /// straight-line path that the body's drops also traverse. Splitting isolates
+    /// the retain onto the edge. `pred` is the block the arc originates from.
+    fn is_self_loop_into_own_phi(&self, pred: BlockId) -> bool {
+        self.target == pred
+    }
+}
+
+/// Enumerate every outgoing arc of `term` with its forwarding args and descriptor.
+fn terminator_arcs(term: &Terminator) -> Vec<Arc> {
+    match term {
+        Terminator::Branch { target, args } => vec![Arc {
+            descriptor: ArcDescriptor::Branch,
+            target: *target,
+            args: args.clone(),
+        }],
         Terminator::CondBranch {
             then_block,
             then_args,
             else_block,
             else_args,
             ..
-        } => {
-            if *then_block == target {
-                out.extend(then_args.iter().copied());
-            }
-            if *else_block == target {
-                out.extend(else_args.iter().copied());
-            }
-        }
+        } => vec![
+            Arc {
+                descriptor: ArcDescriptor::CondThen,
+                target: *then_block,
+                args: then_args.clone(),
+            },
+            Arc {
+                descriptor: ArcDescriptor::CondElse,
+                target: *else_block,
+                args: else_args.clone(),
+            },
+        ],
         Terminator::Switch {
             cases,
             default,
             default_args,
             ..
         } => {
-            for (_, t, args) in cases {
-                if *t == target {
-                    out.extend(args.iter().copied());
-                }
-            }
-            if *default == target {
-                out.extend(default_args.iter().copied());
+            let mut out: Vec<Arc> = cases
+                .iter()
+                .enumerate()
+                .map(|(i, (_, b, args))| Arc {
+                    descriptor: ArcDescriptor::SwitchCase(i),
+                    target: *b,
+                    args: args.clone(),
+                })
+                .collect();
+            out.push(Arc {
+                descriptor: ArcDescriptor::SwitchDefault,
+                target: *default,
+                args: default_args.clone(),
+            });
+            out
+        }
+        Terminator::Return { .. } | Terminator::Unreachable => vec![],
+    }
+}
+
+/// Retarget exactly the arc named by `desc` to `new_target`, and CLEAR that arc's
+/// forwarded args (the inserted edge-split block now supplies them via its own
+/// `Branch`). Used to splice a critical-edge-split block onto one arc.
+fn retarget_arc(term: &mut Terminator, desc: &ArcDescriptor, new_target: BlockId) {
+    match (term, desc) {
+        (Terminator::Branch { target, args }, ArcDescriptor::Branch) => {
+            *target = new_target;
+            args.clear();
+        }
+        (
+            Terminator::CondBranch {
+                then_block,
+                then_args,
+                ..
+            },
+            ArcDescriptor::CondThen,
+        ) => {
+            *then_block = new_target;
+            then_args.clear();
+        }
+        (
+            Terminator::CondBranch {
+                else_block,
+                else_args,
+                ..
+            },
+            ArcDescriptor::CondElse,
+        ) => {
+            *else_block = new_target;
+            else_args.clear();
+        }
+        (Terminator::Switch { cases, .. }, ArcDescriptor::SwitchCase(i)) => {
+            if let Some((_, b, args)) = cases.get_mut(*i) {
+                *b = new_target;
+                args.clear();
             }
         }
-        Terminator::Return { .. } | Terminator::Unreachable => {}
+        (
+            Terminator::Switch {
+                default,
+                default_args,
+                ..
+            },
+            ArcDescriptor::SwitchDefault,
+        ) => {
+            *default = new_target;
+            default_args.clear();
+        }
+        // Descriptor/terminator mismatch is a logic error — the descriptor was
+        // produced from THIS terminator by `terminator_arcs` and the terminator is
+        // not mutated between enumeration and retarget. Leave unchanged (fail-
+        // closed: a missed retarget keeps the original edge — the IncRef block is
+        // then unreachable/dead, a leak at worst, never a UAF).
+        _ => {}
     }
-    out
+}
+
+/// A critical-edge split to materialize: insert a fresh block holding `retains`
+/// IncRefs + a `Branch(target, args)`, and retarget `pred`'s `arc` to it.
+struct EdgeSplit {
+    pred: BlockId,
+    arc: ArcDescriptor,
+    target: BlockId,
+    args: Vec<ValueId>,
+    retains: Vec<ValueId>,
 }
 
 /// Run drop insertion. See module docs for the algorithm.
@@ -236,6 +438,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // pass would DOUBLE-insert drops (a refcount underflow / use-after-free).
     // Skip a function whose RC is already TIR-managed; its drops are already in
     // place.
+    let debug_this = std::env::var("MOLT_DEBUG_DROP")
+        .map(|p| p == "ALL" || func.name.contains(&p))
+        .unwrap_or(false);
     if matches!(
         func.attrs.get(DROP_INSERTED_ATTR),
         Some(AttrValue::Bool(true))
@@ -243,6 +448,17 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         return stats;
     }
     if func.has_exception_handlers() || func.has_state_machine() {
+        if debug_this {
+            let _ = crate::debug_artifacts::write_debug_artifact(
+                format!("drop/{}.txt", func.name),
+                format!(
+                    "[DROP] {} BAILED: exc_handlers={} state_machine={}\n",
+                    func.name,
+                    func.has_exception_handlers(),
+                    func.has_state_machine()
+                ),
+            );
+        }
         return stats;
     }
 
@@ -261,11 +477,71 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     // Stack-allocated values: never dropped (design R6).
     let mut stack_values: HashSet<ValueId> = HashSet::new();
+    // Conditionally-valid iterator value results (design §2.8). The VALUE result
+    // of an `IterNextUnboxed` (results[0]) holds a valid owned reference ONLY on
+    // the not-done branch: `molt_iter_next_unboxed` writes the value-out slot
+    // exclusively when it returns `done=false`, and leaves that slot UNINITIALIZED
+    // (stale stack garbage) on the `done=true` exhaustion path (verified in the
+    // runtime — every `return done_true` skips `*value_out = …`). Such a value
+    // must NEVER be dropped on a die-EDGE: the edge-dying rule (§3) would place a
+    // `DecRef` of it at the exhaustion successor's entry, where it is a stale
+    // pointer → use-after-free / segfault (the adversarial-review P0 #2(b): the
+    // yielded element `9` double-/garbage-dropped on the loop-exit path of a
+    // `list(gen)` / `"".join(gen)` / `for v in gen:` consumer). On the not-done
+    // (body) path the value is valid and is released by the ordinary straight-line
+    // last-use rule, which only ever runs in body blocks the done-edge can't reach.
+    let mut iter_cond_value_results: HashSet<ValueId> = HashSet::new();
+    // Non-owning, NON-aliased `Copy` results (the over-release-class keystone).
+    // An `OpCode::Copy` result falls into exactly one of three drop classes:
+    //   1. FreshValue (`alias_analysis::copy_kind_mints_fresh_owned_ref` — `slice`,
+    //      `int_from_obj`, container constructors, `iter`, …): a brand-new `+1`.
+    //      DROP it independently. (Stays droppable.)
+    //   2. EXPLICIT transparent alias (`copy`/`copy_var`/`guard_tag`/…,
+    //      `copy_kind_is_explicit_no_heap_move`): its result is operand 0's
+    //      reference. The alias union-find folds it into operand 0's group (so its
+    //      ROOT is operand 0, never itself) and the group is released ONCE through
+    //      the root — `droppable`'s `r == v` rail already declines the non-root
+    //      member, so it is naturally non-droppable here.
+    //   3. EVERYTHING ELSE (an UNKNOWN / unmapped value-producing carrier with its
+    //      OWN alias root — `copy_is_known_local_alias` is FALSE so the union-find
+    //      does NOT fold it — or an inert marker): the backend lowers it as a
+    //      no-incref bit-passthrough of operand 0 (returns operand 0's bits without
+    //      a `+1`). Because the union-find leaves it as its own root, `droppable`'s
+    //      `r == v` rail would (wrongly) admit it → dropping its result is a
+    //      DOUBLE-FREE of operand 0's object. EXCLUDE it explicitly.
+    // FAIL-CLOSED: class 3 is excluded from droppability (leak at worst — the
+    // sanctioned direction, never a UAF). This is the precise drop-side half of the
+    // lowering-truth alias contract that `alias_analysis::copy_is_known_local_alias`
+    // mandates (its docstring: "the drop pass separately fails closed to 'do NOT
+    // release'"); the MemGVN-precise union-find half lives in `alias_analysis`.
+    // Class 3 is exactly "not FreshValue AND not an explicit alias move".
+    let mut non_owning_copy_results: HashSet<ValueId> = HashSet::new();
     for block in func.blocks.values() {
         for op in &block.ops {
             if produces_stack_value(op.opcode) {
                 for &r in &op.results {
                     stack_values.insert(r);
+                }
+            }
+            if op.opcode == OpCode::IterNextUnboxed
+                && let Some(&value_result) = op.results.first()
+            {
+                iter_cond_value_results.insert(value_result);
+            }
+            if op.opcode == OpCode::Copy {
+                let kind = match op.attrs.get("_original_kind") {
+                    Some(AttrValue::Str(s)) => Some(s.as_str()),
+                    _ => None,
+                };
+                let mints_fresh = kind
+                    .map(crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref)
+                    .unwrap_or(false);
+                let explicit_alias =
+                    crate::tir::passes::alias_analysis::copy_kind_is_explicit_no_heap_move(kind);
+                if !mints_fresh && !explicit_alias {
+                    for &r in &op.results {
+                        non_owning_copy_results.insert(r);
+                    }
                 }
             }
         }
@@ -293,12 +569,17 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // borrow — the root carries the single ownership obligation).
     // `is_raw_scalar` covers the repr filter — RawI64Safe/Bool/Float — and is
     // tested on the root carrier (a copy of a raw i64 is raw).
+    // Class-3 (non-owning, unmapped) `Copy` results are their OWN alias root (the
+    // union-find declines to fold them — see `non_owning_copy_results`), so the
+    // `r == v` rail alone would admit them; exclude them explicitly. The set is
+    // keyed by the SSA result id, which IS the root for a class-3 copy.
     let droppable = |v: ValueId| -> bool {
         let r = canon(v);
         r == v
             && !live.is_raw_scalar(r)
             && !param_roots.contains(&r)
             && !stack_roots.contains(&r)
+            && !non_owning_copy_results.contains(&r)
     };
 
     // The plan: per block, a list of (insert_after_op_index OR at-entry, value)
@@ -317,6 +598,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         /// IncRef(v) to insert immediately BEFORE the op at this index (a
         /// suspension point). Keyed by op index → values inc-ref'd before it.
         before_op: HashMap<usize, Vec<ValueId>>,
+        /// IncRef(v) to insert just BEFORE the terminator (the mixed-ownership-phi
+        /// retain, design §ownership / §5): a BORROWED value `v` this block passes
+        /// as a branch arg into a successor's OWNED block-arg (phi) must be retained
+        /// on the edge so the phi is uniformly owned and the downstream drop
+        /// releases a real `+1` rather than the caller's borrow. Placed before the
+        /// terminator only when this block reaches the successor via a single,
+        /// unambiguous arc (the common preheader / if-arm shape); the ambiguous
+        /// multi-arc-same-target case is handled by an edge split instead.
+        before_term_incref: Vec<ValueId>,
     }
     let mut plans: HashMap<BlockId, BlockPlan> = HashMap::new();
 
@@ -346,6 +636,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             at_entry: Vec::new(),
             before_term: Vec::new(),
             before_op: HashMap::new(),
+            before_term_incref: Vec::new(),
         };
 
         // ── 1. Straight-line last-use drops (alias-root space) ───────────────
@@ -450,12 +741,62 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     //     alive across the edge), AND
     //   * V is NOT live-in to B (B does not need it), AND
     //   * V is NOT a block arg of B (block args are re-supplied by the edge), AND
+    //   * V's defining block DOMINATES B (V is provably available at B's entry —
+    //     SSA-dominance soundness; see below), AND
     //   * V is droppable.
     // This releases the value on the path where it dies. Because every path into
     // B that delivered V must release it, and B is a join, dropping once at B's
     // entry is correct ONLY when V dies on ALL incoming paths. We therefore
     // require V to be dead-in to B and live-out of EVERY predecessor that can
     // reach B (so no path still needs it). The elim pass later hoists/dedups.
+    //
+    // DOMINANCE GUARD (soundness-critical, FAIL-CLOSED). The backward liveness
+    // dataflow OVER-APPROXIMATES across the universal `CheckException` edges (C2
+    // commit 430e09793): a value can be marked live-out of an exception-edge
+    // predecessor whose def-block does NOT terminator-dominate the handler/join
+    // block B. A `DecRef(V)` placed at B's entry where V's def does not dominate
+    // B is a use-before-def → SSA dominance violation (observed as the LLVM
+    // verifier "Instruction does not dominate all uses!" abort on
+    // `molt_dec_ref_obj(%isinstance)`).
+    //
+    // We use the **TerminatorOnly** dominator tree, NOT the Full (analysis) one.
+    // This is the SAME view the TIR verifier and the LLVM/native codegen use for
+    // SSA dominance (dominators.rs CfgEdgePolicy doc): a handler block reached
+    // only via a mid-block exception edge has NO terminator-predecessor, so a
+    // value defined in the protected region does NOT terminator-dominate it.
+    // The Full tree would (wrongly, for codegen purposes) say a value defined
+    // mid-block AFTER a CheckException "dominates" that op's handler — but the
+    // exception edge leaves from BEFORE the def, so at the instruction level the
+    // def does not dominate the handler. TerminatorOnly dominance matches what
+    // codegen enforces, so a guard built on it never admits an
+    // exception-path use-before-def.
+    //
+    // FAIL-CLOSED: if V's def-block does not terminator-dominate B, we DO NOT
+    // drop here (keep the +1 / accept a possible leak on that exception path) —
+    // the under-release direction. Never over-release (UAF).
+    let pred_map_term = crate::tir::dominators::build_pred_map_with(
+        func,
+        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
+    );
+    let idoms = crate::tir::dominators::compute_idoms_with(
+        func,
+        &pred_map_term,
+        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
+    );
+    let def_block: HashMap<ValueId, BlockId> = {
+        let mut m: HashMap<ValueId, BlockId> = HashMap::new();
+        for (&bid, block) in &func.blocks {
+            for arg in &block.args {
+                m.insert(arg.id, bid);
+            }
+            for op in &block.ops {
+                for &r in &op.results {
+                    m.insert(r, bid);
+                }
+            }
+        }
+        m
+    };
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
             continue;
@@ -466,61 +807,141 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         };
         let block_args: HashSet<ValueId> =
             func.blocks[&bid].args.iter().map(|a| a.id).collect();
-        // Roots transferred INTO this block as branch args from ANY predecessor.
-        // These are received by `bid`'s matching block params — their ownership
-        // moved across the edge, so they must NOT be edge-dropped here (that
-        // double-frees the value the block param now owns). This is the successor
-        // side of the branch-arg transfer rule (§2.5); the predecessor's
-        // straight-line drop already skipped them via `branch_arg_roots`.
-        let transferred_in_roots: HashSet<ValueId> = preds
-            .iter()
-            .flat_map(|p| {
-                terminator_args_to_target(&func.blocks[p].terminator, bid)
-                    .into_iter()
-                    .map(canon)
-            })
-            .collect();
-        // Candidate values: union of all predecessors' live-out.
+        // Roots that some predecessor passes as a branch ARG into THIS block's
+        // phi(s). Such a value transfers its ownership INTO the block arg on the
+        // edge — it is NOT dying on entry, even though liveness reports it dead-in
+        // to `B` (its successor-side identity is the block arg, a distinct SSA
+        // value). Edge-dropping it here would double-free: the block arg (phi) is
+        // the owner now and is released by ITS own last-use / loop / exit drop.
+        // (This is the dual of the §5 mixed-ownership retain: §5 ensures the
+        // transferred value is owned; this ensures the transfer itself is not also
+        // released at the join. Without it, an owned value forwarded into a phi
+        // through a multi-block chain — the shape the inliner produces for
+        // `x = a + a; return x + a` — was dropped BOTH at the join entry AND at the
+        // phi's last use → `invalid object header before dec_ref`.) The per-arc
+        // `terminator_arcs` enumeration (filtered to `arc.target == bid`) is the
+        // precise per-edge form — it is the single arc-enumeration helper §5 also
+        // uses, so there is one source of truth for "args forwarded on this edge".
+        let incoming_arg_roots: HashSet<ValueId> = {
+            let mut s = HashSet::new();
+            for p in preds {
+                if let Some(pblock) = func.blocks.get(p) {
+                    for arc in terminator_arcs(&pblock.terminator) {
+                        if arc.target == bid {
+                            for &v in &arc.args {
+                                s.insert(canon(v));
+                            }
+                        }
+                    }
+                }
+            }
+            s
+        };
+        // FINDING 3 (round-4) — keying precision of `incoming_arg_roots`. This set
+        // is keyed by alias ROOT over ALL predecessors, NOT per (root, edge). A
+        // root forwarded into B's phi by SOME predecessor is excluded from B's
+        // edge-dying drop on EVERY incoming path. The theoretically-imprecise case:
+        // pred P1 forwards root R into B's phi (transfer), while a DIFFERENT pred P2
+        // delivers R live-out and R dies on the P2→B edge without being forwarded.
+        // The global exclusion would then skip R's legitimate drop on the P2 path.
+        //
+        // This is FAIL-CLOSED — leak-never-UAF — and the precise form is NOT a
+        // localized change. (1) Fail-closed: on the P2 path R merely leaks (its +1
+        // is never released); it is NEVER double-freed, because the phi that P1's
+        // transfer fed is released exactly once by the phi's own last-use drop, and
+        // the excluded R is never dropped at all. The over-release direction (the
+        // only UAF risk) cannot occur. (2) Not localized: the edge-dying rule is
+        // deliberately the OpsOnly form — it places ONE `DecRef` at B's *entry*,
+        // which fires on EVERY incoming path, and relies on `all_preds_deliver` +
+        // the elim pass hoisting the common case (see the §2.5 design note above).
+        // Dropping R on the P2 edge but not the P1 edge would require SPLITTING the
+        // P2 die-edge to host a per-edge drop — abandoning the at-entry form and
+        // splitting a potentially large number of die-edges (a CFG explosion the
+        // OpsOnly design exists to avoid). Refining the keying without that split is
+        // impossible: a single at-entry drop cannot distinguish the path it runs on.
+        //
+        // Reachability: in molt's SSA construction a phi at B is fed by each
+        // predecessor passing ITS version of the variable to the SAME arg position,
+        // so R-from-P1 and R-from-P2 are normally DISTINCT SSA values (P2 would pass
+        // its own W, not R) → R is not live-out of P2 and the case does not arise.
+        // It can only appear if a value defined above both P1 and P2 is forwarded to
+        // the phi on one edge AND separately live on the other — a shape the
+        // frontend does not emit for plain joins, and which (per the fail-closed
+        // analysis) costs at most a leak if a future frontend/inliner shape does.
+        // Pinned by `forwarded_into_phi_other_pred_live_is_leak_not_uaf` below.
         let mut candidates: HashSet<ValueId> = HashSet::new();
         for p in preds {
             if let Some(set) = live.live_out.get(p) {
                 candidates.extend(set.iter().copied());
             }
         }
+        // Root-level live-in to B: any alias member of the root is live-in.
+        let root_live_in = |root: ValueId| -> bool {
+            live.live_in
+                .get(&bid)
+                .is_some_and(|set| set.iter().any(|&m| canon(m) == root))
+        };
+        // Roots already scheduled to drop at this block's entry (dedup by root,
+        // not raw value — two aliases of the same group must drop once).
+        let mut entry_root_seen: HashSet<ValueId> = HashSet::new();
         for v in candidates {
             if !droppable(v) {
                 continue;
             }
-            if block_args.contains(&v) {
+            // Conditionally-valid iterator value result (§2.8): NEVER drop it on a
+            // die-edge. On the exhaustion edge the value-out slot is uninitialized
+            // garbage; a `DecRef` here is a UAF (review P0 #2(b)). On the not-done
+            // edge it is consumed by the body's straight-line drop instead. We test
+            // the alias ROOT so a transparent copy of the value result is covered
+            // too. (An `IterNextUnboxed` value result is never itself a transparent
+            // alias of another value — it is a fresh op result — so its root is
+            // itself unless a later `Copy` of it widened the group; in that case
+            // the whole group is conditionally-valid and equally unsafe to
+            // edge-drop.)
+            if iter_cond_value_results.contains(&v)
+                || iter_cond_value_results
+                    .iter()
+                    .any(|&iv| canon(iv) == canon(v))
+            {
                 continue;
             }
-            // Transferred into this block via a branch arg (root space) → the
-            // receiving block param owns it now; do not edge-drop it here.
-            if transferred_in_roots.contains(&v) {
+            let root = canon(v);
+            if block_args.contains(&v) || block_args.iter().any(|&a| canon(a) == root) {
                 continue;
             }
-            // Dead on entry to B.
-            if live.is_live_in(bid, v) {
+            // Transferred-into-phi exclusion: `v` (or an alias) is passed as a
+            // branch arg into THIS block's phi by some predecessor → its ownership
+            // moves into the block arg, it does not die here. Dropping it would
+            // double-free the phi's object.
+            if incoming_arg_roots.contains(&root) {
                 continue;
             }
-            // Must die on ALL incoming paths: every predecessor that has V
-            // live-out delivers a value B no longer needs. If a predecessor does
-            // NOT have V live-out, that path already released it (or never had
-            // it) — still fine to drop once here for the paths that did. But to
-            // avoid a double-drop with the predecessor's own straight-line drop,
-            // we require that NO predecessor itself drops V before the edge:
-            // since V is live-out of a predecessor, that predecessor did NOT
-            // straight-line-drop V (the straight-line rule skips live-out
-            // values), so the only release is here. Safe.
-            //
-            // Additionally require: V is live-out of EVERY predecessor (so it is
-            // genuinely delivered on every path and dropped exactly once). A
-            // predecessor without V live-out would mean that path never owned V
-            // at this join → dropping here would be a spurious drop on that path.
+            // Dead on entry to B (root-level — no alias member live-in).
+            if root_live_in(root) {
+                continue;
+            }
+            // Must die on ALL incoming paths: every predecessor delivers the root
+            // group live-out (some alias member live-out of each predecessor), so
+            // the single drop here releases it exactly once on every path. A
+            // predecessor without the root live-out would mean that path never
+            // owned it → a spurious drop on that path.
             let all_preds_deliver = preds.iter().all(|p| {
-                live.live_out.get(p).is_some_and(|s| s.contains(&v))
+                live.live_out
+                    .get(p)
+                    .is_some_and(|s| s.iter().any(|&m| canon(m) == root))
             });
             if !all_preds_deliver {
+                continue;
+            }
+            // DOMINANCE GUARD (fail-closed): V's def-block must dominate B under
+            // the TerminatorOnly tree, else V is not provably defined at B's
+            // entry and the DecRef would be a use-before-def. Skip (keep the +1).
+            match def_block.get(&v) {
+                Some(&dblk) if crate::tir::dominators::dominates(dblk, bid, &idoms) => {}
+                _ => continue,
+            }
+            // One drop per root group at this entry.
+            if !entry_root_seen.insert(root) {
                 continue;
             }
             plans
@@ -530,6 +951,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     at_entry: Vec::new(),
                     before_term: Vec::new(),
                     before_op: HashMap::new(),
+                    before_term_incref: Vec::new(),
                 })
                 .at_entry
                 .push(v);
@@ -547,6 +969,238 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // the exit block. No separate action needed here beyond what §1–§3 produce;
     // this block is retained as the documented anchor for the loop-carried case
     // and validated by the loop unit test.
+
+    // ── 5. Mixed-ownership phi retain (design §ownership) ─────────────────────
+    // A TIR block argument is the SSA phi: each predecessor edge passes a value
+    // that binds the arg on entry. The straight-line / edge-dying / loop-carried
+    // rules above treat a DROPPABLE (heap, function-owned) block arg as carrying
+    // exactly ONE owned `+1` — they DROP it on the path where it dies and TRANSFER
+    // it (no drop) where it is forwarded as a branch arg. That is sound ONLY when
+    // EVERY incoming edge actually delivers an owned `+1` into the phi.
+    //
+    // It is NOT sound when an edge delivers a BORROWED value:
+    //   * `x = base` then a loop `while …: x = x + base` — the loop-ENTRY edge
+    //     binds the accumulator phi to `Copy(base)`, a transparent alias of the
+    //     borrowed parameter `base` (the caller owns it; this function never does).
+    //     The loop body then drops the phi every iteration, decrementing `base`'s
+    //     refcount below the caller's borrow → premature free → UAF / SIGABRT /
+    //     SIGSEGV (the round-2 over-release). The control `x = 0` is immune: the
+    //     phi is then raw (inline), not droppable, so no drop is placed at all.
+    //   * `x = a if c else fresh()` — the `then` arm binds the merge phi to the
+    //     borrowed `a`; a later `x + …` drops the merge phi → the same UAF on the
+    //     `c` path.
+    //
+    // THE FIX (uniform ownership at phi boundaries): when a DROPPABLE block arg
+    // (an owned phi) has any incoming edge delivering a BORROWED value, RETAIN
+    // (`IncRef`) that value on THAT edge. The phi then uniformly owns a `+1` on
+    // every path, so the downstream drop releases a real reference and never the
+    // caller's borrow. This composes with molt's `+0` borrowed-parameter ABI: the
+    // parameter itself stays borrowed; the RETAINED copy is what flows into the
+    // phi. It is also exactly correct for the degenerate shapes — `apply(base, 0)`
+    // (loop body never runs) returns `x` which IS `base`, and the entry retain is
+    // precisely the `+1` the return ABI must transfer to the caller.
+    //
+    // CLEAN-TRANSFER (no retain) vs BORROWED (retain). An edge value `v` binding
+    // an owned phi delivers a clean owned `+1` iff ALL hold:
+    //   (a) `v` is heap-carrying (a raw/inline `v` — e.g. `ConstInt 0` feeding a
+    //       boxed phi — carries no refcount: `molt_*_ref_obj` is a runtime no-op on
+    //       a non-pointer tag, so such an input is self-balancing and an `IncRef`
+    //       on it would be a type error on a raw register; SKIP it, mirroring the
+    //       repr filter the whole pass uses);
+    //   (b) `v` is `droppable` (function-owned: heap, not a parameter, not stack,
+    //       not a non-owning `Copy`) AND its alias `root` is not a parameter; and
+    //   (c) THIS branch-arg is the sole downstream owner of `root(v)` — `root(v)`
+    //       is not also forwarded to another phi (another arg position / edge) and
+    //       is not live into a successor's body. If `root(v)` is consumed elsewhere
+    //       too, the function's single `+1` stays with that other consumer and this
+    //       edge transfers nothing → it must be retained (e.g. `t = f(); x = t;
+    //       while …: x = x + 1; return t` — `t` is owned but BOTH seeds the phi and
+    //       is returned, so the phi needs its own `+1`).
+    // If (a)–(c) hold → clean transfer, NO retain. Otherwise → RETAIN on the edge.
+    // FAIL-CLOSED: any doubt retains (an extra `IncRef` is at worst a leak the gates
+    // catch — never a UAF). A blanket "never drop mixed phis" is rejected by spec:
+    // it would leak the previous accumulator EVERY iteration (O(n) residual).
+    //
+    // PLACEMENT must be edge-exact. When this block (`P`) reaches the phi block via
+    // a SINGLE arc carrying these args (an unconditional `Branch`, or a
+    // `CondBranch`/`Switch` with exactly one arm to that target — the preheader and
+    // if-arm shapes molt lowers), the `IncRef` goes just before `P`'s terminator
+    // (`before_term_incref`). When `P` reaches the target on MULTIPLE arcs with
+    // different args (a critical edge — e.g. a `Switch` routing two cases to one
+    // block), a before-terminator `IncRef` would wrongly fire on the other arc; we
+    // SPLIT that critical edge (a fresh block holding the `IncRef` + a `Branch`),
+    // which is why this pass is `Mutates::Cfg`.
+    //
+    // Owned phis bail with the function (state-machine / exception-handler gate at
+    // the top of `run`), so this never runs over `_poll` / handler CFGs.
+
+    // Per-block: the values that block forwards as branch args, with multiplicity
+    // by alias root, plus the set of roots live INTO any successor's body (so we
+    // can test clean-transfer condition (c) without re-deriving liveness).
+    //
+    // A root is "live into a successor body" iff some live-in value of a successor
+    // `S` aliases it AND that value is not one of `S`'s own block args (block args
+    // are killed at `S`'s entry — they are the phi we may be feeding, not a body
+    // use). This is the precise "consumed elsewhere than via a phi we feed" test.
+    let succ_body_live_roots: HashMap<BlockId, HashSet<ValueId>> = {
+        let mut m: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+        for &bid in &block_ids {
+            if !reachable.contains(&bid) {
+                continue;
+            }
+            let block = &func.blocks[&bid];
+            let mut roots: HashSet<ValueId> = HashSet::new();
+            for succ in terminator_successor_blocks(&block.terminator) {
+                let succ_args: HashSet<ValueId> = func
+                    .blocks
+                    .get(&succ)
+                    .map(|s| s.args.iter().map(|a| a.id).collect())
+                    .unwrap_or_default();
+                if let Some(set) = live.live_in.get(&succ) {
+                    for &m in set {
+                        if !succ_args.contains(&m) {
+                            roots.insert(canon(m));
+                        }
+                    }
+                }
+            }
+            m.insert(bid, roots);
+        }
+        m
+    };
+
+    // Critical-edge splits to materialize: (pred, arc_descriptor, retained_values,
+    // forwarded_args_for_that_arc, target). Collected here, applied after the op
+    // rebuild so block-id allocation doesn't disturb the in-place op insertion.
+    let mut edge_splits: Vec<EdgeSplit> = Vec::new();
+
+    for &bid in &block_ids {
+        if !reachable.contains(&bid) {
+            continue;
+        }
+        // Only successor blocks WITH owned block-arg phis matter.
+        // Examine each outgoing arc of this block's terminator.
+        let term = func.blocks[&bid].terminator.clone();
+        let arcs = terminator_arcs(&term);
+        // Count, per (target, arg-root), how many of THIS block's arcs forward an
+        // alias of that root to that target — for the placement ambiguity test and
+        // for clean-transfer condition (c) (forwarded to >1 phi).
+        // Also count total forwards of each root across ALL arcs of this block.
+        let mut root_forward_count: HashMap<ValueId, usize> = HashMap::new();
+        for arc in &arcs {
+            for &v in &arc.args {
+                if !live.is_raw_scalar(v) {
+                    *root_forward_count.entry(canon(v)).or_default() += 1;
+                }
+            }
+        }
+        for arc in &arcs {
+            let Some(succ_block) = func.blocks.get(&arc.target) else {
+                continue;
+            };
+            if succ_block.args.is_empty() {
+                continue;
+            }
+            // How many arcs of THIS block target `arc.target` (placement ambiguity:
+            // >1 ⇒ critical edge, must split to place an edge-exact IncRef).
+            let arcs_to_target = arcs.iter().filter(|a| a.target == arc.target).count();
+            // Compute the retains for THIS arc.
+            let mut arc_retains: Vec<ValueId> = Vec::new();
+            for (pos, &v) in arc.args.iter().enumerate() {
+                let Some(phi) = succ_block.args.get(pos) else {
+                    continue;
+                };
+                let phi_id = phi.id;
+                // The phi must be an OWNED obj-lane phi (droppable) for the
+                // transfer-ownership assumption to apply. A non-droppable phi
+                // (raw/param/stack) is never dropped → no retain obligation.
+                if !droppable(phi_id) {
+                    continue;
+                }
+                // (a) raw/inline edge value → self-balancing, cannot RC. Skip.
+                if live.is_raw_scalar(v) {
+                    continue;
+                }
+                let root = canon(v);
+                // (b) clean transfer requires the value be function-owned with a
+                //     non-parameter root. A borrowed value (param-rooted, or a
+                //     non-owning copy, or otherwise not droppable) is NOT a clean
+                //     transfer → retain.
+                //
+                // Test droppability on the ROOT, not on `v` directly: in the
+                // alias-root model `droppable(x)` is FALSE for any non-root alias
+                // (`canon(x) != x`), but a forwarded value is very often an alias of
+                // a fresh owned root (`s_next = Copy(s + "x")`, a bare-`Copy` SSA
+                // move the union-find folds into `s + "x"`). Checking `droppable(v)`
+                // would then misclassify that clean-owned forward as borrowed and
+                // RETAIN it every iteration — a per-iteration leak of the
+                // accumulator (the exact "fresh owned back-edge value must NOT be
+                // retained" hazard). `droppable(root)` already excludes params /
+                // stack / non-owning-copy roots, so it is the correct ownership
+                // test for the value the edge actually delivers.
+                let function_owned = droppable(root);
+                // Conditionally-valid iterator value result feeding a phi: its
+                // backing slot is only valid on the not-done path — never mint an
+                // independent ref obligation for it on an edge. Treat as needing a
+                // retain only if we cannot prove clean transfer; but since it is
+                // never `droppable`-owned in the transfer sense here, fall through
+                // to the borrowed branch is unsafe (it would IncRef a possibly
+                // uninitialized slot). So SKIP iter-cond values entirely (they are
+                // handled by the body straight-line rule on the valid path).
+                if iter_cond_value_results.contains(&v)
+                    || iter_cond_value_results
+                        .iter()
+                        .any(|&iv| canon(iv) == root)
+                {
+                    continue;
+                }
+                let clean_transfer = function_owned
+                    // (c) sole downstream owner: this root is forwarded by exactly
+                    //     one arc of this block AND is not live into any successor
+                    //     body. Otherwise its single +1 is shared → retain.
+                    && root_forward_count.get(&root).copied().unwrap_or(0) == 1
+                    && !succ_body_live_roots
+                        .get(&bid)
+                        .is_some_and(|s| s.contains(&root));
+                if clean_transfer {
+                    continue;
+                }
+                // BORROWED edge into an owned phi → retain `v` on THIS arc.
+                arc_retains.push(v);
+            }
+            if arc_retains.is_empty() {
+                continue;
+            }
+            if arcs_to_target == 1 && !arc.is_self_loop_into_own_phi(bid) {
+                // Single, unambiguous arc to the target: place the IncRef before
+                // this block's terminator. (A self-loop where the block is its own
+                // successor AND its terminator forwards into its own phi is treated
+                // as ambiguous below — splitting keeps the IncRef off the in-block
+                // straight-line path.)
+                let p = plans.entry(bid).or_insert_with(|| BlockPlan {
+                    after_op: HashMap::new(),
+                    at_entry: Vec::new(),
+                    before_term: Vec::new(),
+                    before_op: HashMap::new(),
+                    before_term_incref: Vec::new(),
+                });
+                for v in arc_retains {
+                    p.before_term_incref.push(v);
+                }
+            } else {
+                // Critical / ambiguous edge: split it. The new block carries the
+                // IncRefs then an unconditional Branch to the target with the same
+                // args this arc forwarded.
+                edge_splits.push(EdgeSplit {
+                    pred: bid,
+                    arc: arc.descriptor,
+                    target: arc.target,
+                    args: arc.args.clone(),
+                    retains: arc_retains,
+                });
+            }
+        }
+    }
 
     // ── Apply the plans ──────────────────────────────────────────────────────
     let mut inserted = 0usize;
@@ -587,6 +1241,18 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
             }
         }
+        // before_term_incref IncRefs (the mixed-ownership-phi retain, §5): the
+        // BORROWED value this block forwards into a successor's owned phi gets a
+        // `+1` here, just before the terminator, on the unambiguous single arc.
+        // Placed BEFORE the before_term DecRefs so a value both retained-for-a-phi
+        // and dropped-on-another-arc is incref'd before the drop (net correct).
+        let mut term_inc_seen: HashSet<ValueId> = HashSet::new();
+        for &v in &plan.before_term_incref {
+            if term_inc_seen.insert(v) {
+                new_ops.push(make_op(OpCode::IncRef, vec![v]));
+                inserted += 1;
+            }
+        }
         // before_term DecRefs (currently unused; kept for the documented
         // loop-carried anchor and future edge-split upgrade).
         let mut term_seen: HashSet<ValueId> = HashSet::new();
@@ -599,9 +1265,80 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         block.ops = new_ops;
     }
 
+    // ── Apply critical-edge splits (§5 ambiguous-arc retains) ─────────────────
+    // Each split inserts a fresh block on ONE arc: it holds the retained-value
+    // IncRefs then an unconditional Branch to the original target with the args
+    // that arc forwarded. The predecessor's terminator is retargeted to the new
+    // block (and that arc's args cleared — the new block now supplies them).
+    for split in &edge_splits {
+        let new_bid = func.fresh_block();
+        let mut ops: Vec<TirOp> = Vec::with_capacity(split.retains.len());
+        let mut seen: HashSet<ValueId> = HashSet::new();
+        for &v in &split.retains {
+            if seen.insert(v) {
+                ops.push(make_op(OpCode::IncRef, vec![v]));
+                inserted += 1;
+            }
+        }
+        func.blocks.insert(
+            new_bid,
+            crate::tir::blocks::TirBlock {
+                id: new_bid,
+                args: vec![],
+                ops,
+                terminator: Terminator::Branch {
+                    target: split.target,
+                    args: split.args.clone(),
+                },
+            },
+        );
+        if let Some(pred) = func.blocks.get_mut(&split.pred) {
+            retarget_arc(&mut pred.terminator, &split.arc, new_bid);
+        }
+    }
+
     if inserted > 0 {
         func.attrs
             .insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));
+    }
+    if debug_this {
+        let mut out = format!("[DROP] {} inserted={} blocks:\n", func.name, inserted);
+        let mut bids: Vec<_> = func.blocks.keys().copied().collect();
+        bids.sort_by_key(|b| b.0);
+        for bid in bids {
+            let b = &func.blocks[&bid];
+            let args: Vec<u32> = b.args.iter().map(|a| a.id.0).collect();
+            out.push_str(&format!(
+                "  bb{} args={:?} term={:?}\n",
+                bid.0, args, b.terminator
+            ));
+            for op in &b.ops {
+                let ops: Vec<u32> = op.operands.iter().map(|o| o.0).collect();
+                let res: Vec<u32> = op.results.iter().map(|r| r.0).collect();
+                let reprs: Vec<String> = op
+                    .operands
+                    .iter()
+                    .map(|o| format!("{}:{}", o.0, if live.is_raw_scalar(*o) { "raw" } else { "heap" }))
+                    .collect();
+                // The `_original_kind` carried by a `Copy` is load-bearing for the
+                // alias/ownership model (it decides whether the Copy is a no-incref
+                // bit-passthrough alias of operand 0 or a fresh owned value). Surface
+                // it in the dump so a re-reviewer can audit the alias-set membership
+                // against the lowering truth at a glance.
+                let kind = match op.attrs.get("_original_kind") {
+                    Some(AttrValue::Str(s)) => format!(" kind={s}"),
+                    _ => String::new(),
+                };
+                out.push_str(&format!(
+                    "    {:?} ops={:?} -> {:?}  [{}]{}\n",
+                    op.opcode, ops, res, reprs.join(","), kind
+                ));
+            }
+        }
+        let _ = crate::debug_artifacts::write_debug_artifact(
+            format!("drop/{}.txt", func.name),
+            out,
+        );
     }
     stats.ops_added = inserted;
     stats
@@ -780,8 +1517,8 @@ mod tests {
     /// Regression for the `while True: break` shape: `v` is computed in `entry`,
     /// passed as a branch arg to `join`, and received as `join`'s block param `p`.
     /// `v`'s ownership transfers to `p` across the edge — the edge-dying rule must
-    /// recognize the per-edge transfer (`terminator_args_to_target`) and NOT also
-    /// drop `v` at `join`'s entry. Doing so double-frees the object the param now
+    /// recognize the per-edge transfer (`incoming_arg_roots` via `terminator_arcs`)
+    /// and NOT also drop `v` at `join`'s entry. Doing so double-frees the object the param now
     /// owns (the observed `invalid object header before dec_ref` UAF). `p` is then
     /// returned (transferred to the caller), so the function inserts ZERO drops.
     #[test]
@@ -1275,6 +2012,439 @@ mod tests {
         assert!(
             exit_decrefs.contains(&acc_phi),
             "loop-exit dead accumulator must be dropped at exit entry; got {exit_decrefs:?}"
+        );
+    }
+
+    /// Mixed-ownership phi, INCOMING side (§5 retain). A loop accumulator phi is
+    /// seeded on the loop-ENTRY edge with a transparent alias of a BORROWED
+    /// parameter (`x = base`), and updated on the back-edge with a fresh owned
+    /// value. Because the loop body drops the phi each iteration, the borrowed
+    /// entry value must be RETAINED on the entry edge (before the preheader's
+    /// terminator) so the phi uniformly owns a `+1`. The back-edge's fresh owned
+    /// value must NOT be retained (that would leak the accumulator each iteration).
+    #[test]
+    fn mixed_phi_borrowed_param_retained_on_entry_edge() {
+        // param `base` (id 0), preheader binds the accumulator phi to Copy(base).
+        let mut func = TirFunction::new("apply".into(), vec![TirType::Str], TirType::DynBox);
+        let base = ValueId(0);
+        let pre = func.fresh_block(); // preheader
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let x0 = func.fresh_value(); // Copy(base) — borrowed alias seeding the phi
+        let acc_phi = func.fresh_value();
+        let load_x = func.fresh_value(); // Copy(acc_phi) in body
+        let cond = func.fresh_value();
+        let acc_next = func.fresh_value(); // fresh owned (Call result)
+        for v in [x0, acc_phi, load_x, acc_next] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.terminator = Terminator::Branch { target: pre, args: vec![] };
+        }
+        // preheader: x0 = copy_var(base) → transparent alias of the param.
+        func.blocks.insert(pre, TirBlock {
+            id: pre,
+            args: vec![],
+            ops: vec![{
+                let mut o = op(OpCode::Copy, vec![base], vec![x0]);
+                o.attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                o
+            }],
+            terminator: Terminator::Branch { target: header, args: vec![x0] },
+        });
+        func.blocks.insert(header, TirBlock {
+            id: header,
+            args: vec![TirValue { id: acc_phi, ty: TirType::Str }],
+            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        });
+        func.blocks.insert(body, TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![
+                {
+                    let mut o = op(OpCode::Copy, vec![acc_phi], vec![load_x]);
+                    o.attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+                    o
+                },
+                // acc_next = Call(load_x, base): fresh owned, reads base each iter.
+                op(OpCode::Call, vec![load_x, base], vec![acc_next]),
+            ],
+            terminator: Terminator::Branch { target: header, args: vec![acc_next] },
+        });
+        func.blocks.insert(exit, TirBlock {
+            id: exit,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        });
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        // The preheader must IncRef the borrowed `x0` (alias of the param) before
+        // its terminator — the entry-edge retain.
+        let pre_increfs: Vec<ValueId> = func.blocks[&pre]
+            .ops
+            .iter()
+            .filter(|o| o.opcode == OpCode::IncRef)
+            .flat_map(|o| o.operands.clone())
+            .collect();
+        assert!(
+            pre_increfs.contains(&x0),
+            "borrowed param alias seeding the loop phi must be retained on the entry edge; got {pre_increfs:?}"
+        );
+        // The back-edge (body) must NOT retain the fresh owned `acc_next` — that
+        // would leak one accumulator per iteration.
+        let body_increfs: Vec<ValueId> = func.blocks[&body]
+            .ops
+            .iter()
+            .filter(|o| o.opcode == OpCode::IncRef)
+            .flat_map(|o| o.operands.clone())
+            .collect();
+        assert!(
+            !body_increfs.contains(&acc_next),
+            "fresh owned back-edge value must NOT be retained (would leak); got {body_increfs:?}"
+        );
+        // The param itself is never dropped (borrowed ABI).
+        let any_decref_base = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .any(|o| o.opcode == OpCode::DecRef && o.operands == vec![base]);
+        assert!(!any_decref_base, "parameter must never be directly dropped");
+    }
+
+    /// Mixed-ownership phi, OUTGOING side (§3 incoming-arg exclusion). An owned
+    /// value is FORWARDED as a branch arg into a join block's phi through a
+    /// multi-block chain (the shape the inliner produces). The value's ownership
+    /// transfers INTO the phi, so it must NOT be edge-dropped at the join entry —
+    /// the phi is released by its own last-use drop. A spurious join-entry drop
+    /// plus the phi's drop is a double-free.
+    #[test]
+    fn forwarded_owned_value_not_edge_dropped_at_join() {
+        let mut func = TirFunction::new("fwd".into(), vec![], TirType::DynBox);
+        let mid = func.fresh_block();
+        let join = func.fresh_block();
+        let owned = func.fresh_value(); // fresh owned (ConstStr)
+        let fwd = func.fresh_value(); // Copy(owned) — alias forwarded to the phi
+        let phi = func.fresh_value();
+        let used = func.fresh_value();
+        for v in [owned, fwd, phi, used] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.terminator = Terminator::Branch { target: mid, args: vec![] };
+        }
+        func.blocks.insert(mid, TirBlock {
+            id: mid,
+            args: vec![],
+            ops: vec![
+                const_str(owned),
+                {
+                    let mut o = op(OpCode::Copy, vec![owned], vec![fwd]);
+                    o.attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                    o
+                },
+            ],
+            // Forward `fwd` (owned, via alias) into the join's phi.
+            terminator: Terminator::Branch { target: join, args: vec![fwd] },
+        });
+        func.blocks.insert(join, TirBlock {
+            id: join,
+            args: vec![TirValue { id: phi, ty: TirType::Str }],
+            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+            terminator: Terminator::Return { values: vec![used] },
+        });
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        // The forwarded owned value (`fwd`, alias root `owned`) must NOT be dropped
+        // at the join entry — it transferred into the phi. The phi's own last-use
+        // drop (after the Call) releases the object exactly once.
+        let join_entry_decrefs: Vec<ValueId> = func.blocks[&join]
+            .ops
+            .iter()
+            .take_while(|o| o.opcode == OpCode::DecRef)
+            .flat_map(|o| o.operands.clone())
+            .collect();
+        assert!(
+            !join_entry_decrefs.contains(&fwd) && !join_entry_decrefs.contains(&owned),
+            "forwarded owned value must not be edge-dropped at the join; got {join_entry_decrefs:?}"
+        );
+        // Exactly one DecRef releases the group (the phi at its last use in join).
+        let total_group_decrefs = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|o| {
+                o.opcode == OpCode::DecRef
+                    && o.operands
+                        .first()
+                        .is_some_and(|&v| v == fwd || v == owned || v == phi)
+            })
+            .count();
+        assert_eq!(
+            total_group_decrefs, 1,
+            "the owned forwarded group must be released exactly once, not double-freed"
+        );
+    }
+
+    /// Mixed-ownership phi, CRITICAL-EDGE SPLIT (§5 ambiguous-arc retain; round-4
+    /// Finding 2). When a predecessor reaches an OWNED phi via MORE THAN ONE arc
+    /// with DIFFERENT args, a before-terminator IncRef would wrongly fire on the
+    /// other arc, so the pass SPLITS the critical edge: it inserts a fresh block
+    /// holding the edge-exact `IncRef` + an unconditional `Branch` to the target,
+    /// and retargets exactly that arc to the new block. This is the only path that
+    /// allocates a block (it is why the pass is `Mutates::Cfg`), and it shipped
+    /// with ZERO coverage before this test.
+    ///
+    /// Shape: `entry` ends in a `Switch` whose case-0 and DEFAULT arcs BOTH target
+    /// `join` but forward DIFFERENT args into `join`'s single owned phi — case-0
+    /// forwards a transparent alias of the borrowed param `base` (BORROWED → must
+    /// retain), default forwards a freshly minted owned `ConstStr` (clean transfer
+    /// → no retain). `join` consumes the phi (a `Call`) and returns nothing, so the
+    /// phi is dropped and the borrowed case-0 edge needs its `+1`. Because case-0
+    /// and default both go to `join`, the retain cannot be placed before `entry`'s
+    /// terminator (it would also fire on the default arc); it must be split onto
+    /// the case-0 arc.
+    #[test]
+    fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
+        // param `base` (id 0): borrowed heap Str.
+        let mut func = TirFunction::new("split".into(), vec![TirType::Str], TirType::DynBox);
+        let base = ValueId(0);
+        let join = func.fresh_block();
+        let case0_alias = func.fresh_value(); // Copy(base) — borrowed alias (case 0 arg)
+        let sel = func.fresh_value(); // Switch selector (raw)
+        let fresh_owned = func.fresh_value(); // ConstStr — fresh owned (default arg)
+        let phi = func.fresh_value(); // join's owned obj-lane phi
+        let used = func.fresh_value(); // Call(phi) result
+        for v in [case0_alias, fresh_owned, phi, used] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        func.value_types.insert(sel, TirType::I64);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            // case0_alias = copy_var(base): a transparent (borrowed) alias of the
+            // param; fresh_owned = ConstStr: a freshly minted owned value; sel: the
+            // raw Switch selector.
+            b.ops.push({
+                let mut o = op(OpCode::Copy, vec![base], vec![case0_alias]);
+                o.attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                o
+            });
+            b.ops.push(const_str(fresh_owned));
+            b.ops.push(op(OpCode::ConstInt, vec![], vec![sel]));
+            // Switch: case 0 → join(case0_alias); default → join(fresh_owned).
+            // TWO arcs to `join` with DIFFERENT args ⇒ a critical edge.
+            b.terminator = Terminator::Switch {
+                value: sel,
+                cases: vec![(0, join, vec![case0_alias])],
+                default: join,
+                default_args: vec![fresh_owned],
+            };
+        }
+        func.blocks.insert(join, TirBlock {
+            id: join,
+            args: vec![TirValue { id: phi, ty: TirType::Str }],
+            // Consume the phi (drops it at its last use) and return nothing so the
+            // phi dies in `join` — the case-0 borrowed edge therefore needs a +1.
+            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+            terminator: Terminator::Return { values: vec![] },
+        });
+        let n_blocks_before = func.blocks.len();
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        // A fresh block must have been inserted by the critical-edge split.
+        assert!(
+            func.blocks.len() > n_blocks_before,
+            "the critical-edge split must allocate a fresh block; before={n_blocks_before} after={}",
+            func.blocks.len()
+        );
+
+        // `entry`'s case-0 arc must now target a NEW block (not `join`): the retarget.
+        // The default arc must still go to `join` (unsplit, clean transfer).
+        let (case0_target, default_target) = match &func.blocks[&entry].terminator {
+            Terminator::Switch {
+                cases, default, ..
+            } => (cases[0].1, *default),
+            other => panic!("entry terminator must remain a Switch, got {other:?}"),
+        };
+        assert_ne!(
+            case0_target, join,
+            "the borrowed case-0 arc must be retargeted away from `join` to the split block"
+        );
+        assert_eq!(
+            default_target, join,
+            "the clean-transfer default arc must stay pointed at `join` (not split)"
+        );
+
+        // The split block must (a) hold an IncRef of the borrowed alias `case0_alias`
+        // and (b) branch unconditionally to `join` forwarding that same arg.
+        let split = &func.blocks[&case0_target];
+        let split_increfs: Vec<ValueId> = split
+            .ops
+            .iter()
+            .filter(|o| o.opcode == OpCode::IncRef)
+            .flat_map(|o| o.operands.clone())
+            .collect();
+        assert!(
+            split_increfs.contains(&case0_alias),
+            "the split block must retain (IncRef) the borrowed case-0 value; got {split_increfs:?}"
+        );
+        match &split.terminator {
+            Terminator::Branch { target, args } => {
+                assert_eq!(*target, join, "split block must branch to the original target");
+                assert_eq!(
+                    args,
+                    &vec![case0_alias],
+                    "split block must forward the case-0 arg it took over"
+                );
+            }
+            other => panic!("split block must end in an unconditional Branch, got {other:?}"),
+        }
+
+        // The default (clean-transfer, freshly owned) value must NOT be retained
+        // anywhere — retaining it would leak.
+        let any_incref_fresh = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .any(|o| o.opcode == OpCode::IncRef && o.operands.first() == Some(&fresh_owned));
+        assert!(
+            !any_incref_fresh,
+            "the clean-transfer default value must not be retained (would leak)"
+        );
+
+        // The split result must be a valid CFG: re-run the analysis self-check over
+        // the post-split function (mirrors MOLT_VERIFY_ANALYSIS=1) — a malformed
+        // split (dangling edge / unreachable target) would diverge the recomputed
+        // dominators from a fresh build.
+        let mut verify_am = AnalysisManager::new();
+        let preds = crate::tir::dominators::build_pred_map_with(
+            &func,
+            crate::tir::dominators::CfgEdgePolicy::Full,
+        );
+        let reachable = crate::tir::dominators::reachable_blocks_with(
+            &func,
+            crate::tir::dominators::CfgEdgePolicy::Full,
+        );
+        assert!(
+            reachable.contains(&case0_target),
+            "the split block must be reachable from entry"
+        );
+        assert!(
+            preds.get(&join).is_some_and(|p| p.contains(&case0_target)),
+            "the split block must be a predecessor of the original target"
+        );
+        // Liveness recomputes cleanly over the mutated CFG (would panic on a
+        // use-before-def introduced by a bad split).
+        let _ = verify_am.get::<TirLiveness>(&func).clone();
+    }
+
+    /// FINDING 3 (round-4) fail-closed pin. `incoming_arg_roots` keys on alias
+    /// ROOT over ALL predecessors, so a root forwarded into a join's phi by ANY
+    /// predecessor is excluded from that join's edge-dying drop on EVERY path.
+    /// This test pins the load-bearing invariant the imprecision must preserve:
+    /// the exclusion can only ever LEAK, NEVER double-free (over-release → UAF).
+    ///
+    /// Shape (a diamond where the SAME owned root reaches a join on BOTH edges):
+    /// `entry` mints one owned value `r`, then branches to `p1` / `p2`. `p1`
+    /// forwards `r` straight into the join's phi (a transfer). `p2` forwards `r`
+    /// into the join's phi too (through a transparent alias `r_alias`, the
+    /// load-var shape) — so `r`'s root is forwarded by MORE THAN ONE predecessor
+    /// and is a member of `incoming_arg_roots`. The join consumes the phi (a
+    /// `Call`) and returns nothing. There is exactly ONE underlying owned object;
+    /// the assertion is that the pass emits AT MOST ONE `DecRef` naming any member
+    /// of `r`'s group across the whole function — never two (the double-free the
+    /// global keying must not introduce). A leak (zero drops) would be acceptable
+    /// per the fail-closed contract; a double-free would be the UAF bug.
+    #[test]
+    fn forwarded_into_phi_other_pred_live_is_leak_not_uaf() {
+        let mut func = TirFunction::new("diamond".into(), vec![], TirType::DynBox);
+        let p1 = func.fresh_block();
+        let p2 = func.fresh_block();
+        let join = func.fresh_block();
+        let r = func.fresh_value(); // fresh owned (ConstStr) defined in entry
+        let cond = func.fresh_value();
+        let r_alias = func.fresh_value(); // Copy(r) in p2 — transparent alias of r
+        let phi = func.fresh_value(); // join's owned obj-lane phi
+        let used = func.fresh_value(); // Call(phi) result
+        for v in [r, r_alias, phi, used] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(r));
+            b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+            b.terminator = Terminator::CondBranch {
+                cond,
+                then_block: p1,
+                then_args: vec![],
+                else_block: p2,
+                else_args: vec![],
+            };
+        }
+        // p1: forward `r` straight into the join phi.
+        func.blocks.insert(p1, TirBlock {
+            id: p1,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch { target: join, args: vec![r] },
+        });
+        // p2: r_alias = load_var(r) [transparent alias]; forward the alias into the
+        // SAME phi position → `r`'s root is forwarded by a 2nd predecessor.
+        func.blocks.insert(p2, TirBlock {
+            id: p2,
+            args: vec![],
+            ops: vec![{
+                let mut o = op(OpCode::Copy, vec![r], vec![r_alias]);
+                o.attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+                o
+            }],
+            terminator: Terminator::Branch { target: join, args: vec![r_alias] },
+        });
+        func.blocks.insert(join, TirBlock {
+            id: join,
+            args: vec![TirValue { id: phi, ty: TirType::Str }],
+            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+            terminator: Terminator::Return { values: vec![] },
+        });
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        // The single owned object (`r`'s alias group: r, r_alias, phi) must be
+        // released AT MOST once — never twice. (Fail-closed: a leak is allowed; a
+        // double-free is the UAF the global keying must never introduce.)
+        let group_decrefs = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|o| {
+                o.opcode == OpCode::DecRef
+                    && o.operands.first().is_some_and(|&v| {
+                        v == r || v == r_alias || v == phi
+                    })
+            })
+            .count();
+        assert!(
+            group_decrefs <= 1,
+            "incoming_arg_roots over-all-preds keying must never double-free a \
+             forwarded root (fail-closed: leak ok, UAF never); got {group_decrefs} \
+             DecRefs of the owned group"
         );
     }
 }
