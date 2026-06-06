@@ -376,43 +376,59 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         pass("copy_prop", OpsOnly, |f, _am, _tti| passes::copy_prop::run(f)),
         pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
-        // ── RC drop insertion (design 20) — NOT YET WIRED (Phase-5 blocked) ──
-        // The pass + its `refcount_elim_post` elision step are complete,
-        // unit-tested, alias-root-CORRECT primitives (see `drop_insertion.rs` /
-        // `refcount_elim::run_post_drop`). This session FIXED the original
-        // activation blocker — the use-after-free abort (`invalid object header
-        // before dec_ref`) at n≥50k — which was NOT a carrier-resolution problem
-        // but a borrow-alias double-drop: the lowered loop loads its carried
-        // accumulator via `load_var`→`Copy` every iteration, and the per-SSA-value
-        // drop pass dropped EACH copy of the one live object (a refcount underflow
-        // → premature free → UAF). The fix made liveness + drop placement operate
-        // in ALIAS-ROOT space (design §1.2: `Copy`/`TypeGuard` are borrow aliases
-        // holding no new reference); each heap object is now dropped exactly once.
-        // The `drop_inserted` marker also now round-trips losslessly through
-        // `lower_from_simple` (the native module-phase re-lift), and the pass is
-        // idempotent on a re-lifted function.
+        // ── RC drop insertion (design 20) — STILL DORMANT (Phase-5 in progress) ──
+        // This session advanced Phase 5 substantially but DID NOT reach a sound
+        // activation: wiring the two passes below into the production pipeline
+        // introduces double-free use-after-free (`invalid object header before
+        // dec_ref`) on a broad class of real programs (a 40-sample differential
+        // sweep on native showed 13/40 new UAF regressions — module-globals +
+        // short-circuit `and`/`or`, `*args`/`**kwargs` eval order, closures,
+        // `nonlocal`, comprehension scopes, custom-class dispatch). The drop pass's
+        // single-entry-dominance placement (per-block last-use + edge-dying
+        // at-successor-entry) OVER-DROPS values whose ownership is actually
+        // transferred or whose lifetime extends past the function on those shapes.
+        // Per the zero-workarounds policy, shipping that is unacceptable, so the
+        // activation stays dormant until the drop pass is sound on the full
+        // differential corpus.
         //
-        // REMAINING ACTIVATION BLOCKER (Phase 5 — retire the legacy native RC):
-        // the native backend runs its OWN Swift-ARC-style value-tracking RC
-        // (`tracked_obj_vars` + `drain_cleanup_tracked`, retain-at-store /
-        // release-at-scope-exit) IN PARALLEL with the TIR drops. For a loop-carried
-        // accumulator (`s = s + "x"`, `total = total + 1`) that tracking NEGATES
-        // the TIR `DecRef(old)` — the carried object is never freed, so the
-        // headline leak case (loop accumulators) is NOT closed by activation alone
-        // (measured: string-concat 0/n freed; bigint-accumulator only the 2 dead
-        // intermediates/iter freed, the carried value leaks → O(n) RSS). Closing it
-        // requires SUPPRESSING the native value-tracking RC for `drop_inserted`
-        // functions (the §4.1 `loop_reassign_old_val` dec-side guard and the
-        // store_var inc-side guard added this session are the first two of the
-        // family; the full set — heap-result registration into `tracked_*`,
-        // `drain_cleanup_tracked_dedup` at every exit/label/check_exception site,
-        // and the func-end last_use extension — must all be gated so the TIR drops
-        // become the SOLE RC authority). That is a multi-site change with real
-        // double-free risk and is left as the Phase-5 arc. Until it lands, wiring
-        // these passes ships an O(n) residual leak on loop accumulators, so they
-        // stay dormant. To activate (AFTER Phase 5), append:
+        // WHAT LANDED THIS SESSION (all behavior-neutral while dormant; correct,
+        // unit-tested hardening that the activation will rely on):
+        //  * Drop-pass soundness fixes: `terminator_args_to_target` — a branch arg
+        //    transferred to a successor's block param is NOT edge-dropped (fixed a
+        //    `while True: break` double-free); `TirFunction::has_state_machine()` —
+        //    the pass now also bails on lowered coroutine `_poll` state machines
+        //    (`StateSwitch` without `StateBlock*` delimiters), which otherwise
+        //    placed a `DecRef` in a re-entrant resume block before the value's def
+        //    (an LLVM-verifier failure + native double-free).
+        //  * `refcount_elim::run` now honors the `drop_inserted` marker (falls back
+        //    to the balance-preserving subset, like `run_post_drop`) so the
+        //    module-phase pipeline RE-RUN cannot strip the drops via Step 5/6.
+        //  * The native value-tracking RC is gated on `drop_inserted` at its SINGLE
+        //    source (heap-result registration) + the join-slot exit teardown + the
+        //    func-end last_use extension + the slot-store/slot-load inc-ref paths +
+        //    the SimpleIR `rc_coalescing` skip-set (search `design 20 §4.1` in
+        //    `function_compiler.rs`). With the pass dormant, `drop_inserted` is
+        //    never set, so EVERY one of these gates is inert — zero behavior change.
+        //
+        // VERIFIED WHILE ACTIVE (before deactivation): memory corpus 4/4 +
+        // 4 per-site + the 2×30M leak repros all byte-identical / leak-closed /
+        // OOM-free on native (string-concat 0→n freed, bigint accumulator O(n)→O(1)
+        // RSS); peel 9/9 native + 9/9 llvm with the raw lane unchanged (0% perf
+        // delta on the 30M raw loop); LLVM string/bigint/fib leak-closed too. The
+        // ONLY blocker is the broad-shape over-drop above.
+        //
+        // REMAINING WORK (the baton): make the drop pass's ownership-transfer set
+        // complete — at minimum, a value consumed by a module-global store
+        // (`ModuleCacheSet`/`ModuleSetAttr`) or any other store that hands the
+        // single owning reference to a longer-lived container must NOT be dropped
+        // (mirror the Return / branch-arg transfer rule); then re-run the full
+        // `tests/differential/basic` corpus on BOTH native and llvm under
+        // `MOLT_ASSERT_NO_LEAK=1` until the new-UAF set is empty. To activate, append:
         //   pass("drop_insertion", OpsOnly, |f, am, _tti| passes::drop_insertion::run(f, am)),
         //   pass("refcount_elim_post", OpsOnly, |f, am, _tti| passes::refcount_elim::run_post_drop(f, am)),
+        // and restore the +2 entries in the two pinned pass-name lists + the
+        // `stats.len()` assertion (30 vs 28) in this file's tests and
+        // `passes/mod.rs`.
     ];
     PassManager::new(passes, target_info)
 }
@@ -603,8 +619,9 @@ mod tests {
     /// The default pipeline must preserve the EXACT canonical pass order (28
     /// `run` invocations — canonicalize runs twice). Any reorder/insert/drop is
     /// a behavior change and must update this list deliberately. (The RC
-    /// drop-insertion arc — design 20 — is a complete primitive but NOT wired
-    /// here yet; see the activation note in `build_default_pipeline`.)
+    /// drop-insertion arc — design 20 — is a complete, hardened primitive but is
+    /// NOT wired here: production activation is blocked on a broad-shape over-drop
+    /// UAF — see the dormant-activation note in `build_default_pipeline`.)
     #[test]
     fn default_pipeline_preserves_canonical_pass_order() {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
@@ -725,9 +742,9 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 28 pass invocations ran. (The RC drop-insertion pass, design 20,
-        // is intentionally NOT in this pipeline yet — see the activation note in
-        // `build_default_pipeline`.)
+        // All 28 pass invocations ran. (The design-20 RC tail — `drop_insertion`
+        // + `refcount_elim_post` — is a complete primitive but NOT wired into the
+        // pipeline; see the dormant-activation note in `build_default_pipeline`.)
         assert_eq!(stats.len(), 28);
     }
 }

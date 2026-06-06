@@ -114,8 +114,25 @@ fn build_heap_exposed_set(func: &TirFunction) -> HashSet<ValueId> {
 /// Runs the full elision: balanced-pair removal (Steps 2–4), the deferred-RC
 /// non-heap-exposed removal (Step 5), and the unique-ownership DecRef→Free
 /// promotion (Step 6).
+///
+/// EXCEPTION (RC drop-insertion substrate, design 20 §3.1): if the function is
+/// already `drop_inserted` (the TIR drop pass made it the sole RC authority),
+/// Steps 5/6 are UNSOUND on it — they would delete the lone ownership-release
+/// `DecRef`s the drop pass placed (re-introducing the whole-program leak). This
+/// pass runs at pipeline slot 12 (before drop insertion) on the FIRST pass over a
+/// function, so it normally sees no drops; but the LLVM/native module phase
+/// RE-RUNS the whole pipeline on already-drop-inserted functions (post-inline
+/// rebuild / module-slot promotion). On that re-run the marker is set, so this
+/// pass must fall back to the balance-preserving subset — exactly what
+/// [`run_post_drop`] does. The drop pass itself is idempotent (it bails on the
+/// marker), so the only remaining hazard is THIS pass stripping the drops; the
+/// marker check closes it.
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    run_with(func, am, false)
+    let already_drop_inserted = matches!(
+        func.attrs.get(super::drop_insertion::DROP_INSERTED_ATTR),
+        Some(crate::tir::ops::AttrValue::Bool(true))
+    );
+    run_with(func, am, already_drop_inserted)
 }
 
 /// Post-drop-insertion elision (the `refcount_elim_post` invocation, design 20

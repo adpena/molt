@@ -146,6 +146,57 @@ fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
     out
 }
 
+/// The values `term` passes as block args **specifically on edges to `target`**.
+/// A value passed here transfers its ownership into `target`'s matching block
+/// param — the edge-dying rule (§2.5) must NOT also drop it at `target`'s entry
+/// (that would double-free the value the block param now owns). This is the
+/// per-edge refinement of [`terminator_branch_args`]: that function answers "does
+/// this terminator transfer V on ANY edge" (used to suppress the *predecessor's*
+/// straight-line drop); this one answers "does it transfer V on the edge to THIS
+/// successor" (used to suppress the *successor's* edge-dying drop). A `CondBranch`
+/// whose two arms target the same block contributes both arms' args.
+fn terminator_args_to_target(term: &Terminator, target: BlockId) -> HashSet<ValueId> {
+    let mut out = HashSet::new();
+    match term {
+        Terminator::Branch { target: t, args } => {
+            if *t == target {
+                out.extend(args.iter().copied());
+            }
+        }
+        Terminator::CondBranch {
+            then_block,
+            then_args,
+            else_block,
+            else_args,
+            ..
+        } => {
+            if *then_block == target {
+                out.extend(then_args.iter().copied());
+            }
+            if *else_block == target {
+                out.extend(else_args.iter().copied());
+            }
+        }
+        Terminator::Switch {
+            cases,
+            default,
+            default_args,
+            ..
+        } => {
+            for (_, t, args) in cases {
+                if *t == target {
+                    out.extend(args.iter().copied());
+                }
+            }
+            if *default == target {
+                out.extend(default_args.iter().copied());
+            }
+        }
+        Terminator::Return { .. } | Terminator::Unreachable => {}
+    }
+    out
+}
+
 /// Run drop insertion. See module docs for the algorithm.
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
@@ -153,19 +204,30 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         ..Default::default()
     };
 
-    // Conservative activation gate: functions with real exception-handler regions
-    // (`try`/`except`) or generator/async state regions (`StateBlockStart/End`)
-    // carry non-standard, already-lowered control flow — the coroutine `_poll`
-    // state machine re-enters blocks via `StateSwitch`, so a value can be
-    // "defined later" in a block that a straight-line liveness walk treats as
-    // dominating. Drop placement over that shape is unsound without
-    // state-region-aware liveness (design §2.9's frame-finalizer model handles
-    // the suspension itself, but NOT the post-lowering state-machine CFG).
-    // Mirrors the loop_unroll / block_versioning / type_guard_hoist bail on the
-    // same predicate. The straight-line / loop / exception-CHECK (non-handler)
-    // functions — which is the overwhelming majority and every leak in the
-    // bug evidence — are fully covered. Re-enabling for state-machine functions
-    // is the Phase 4/5 follow-up (needs the StateSwitch-aware liveness).
+    // Conservative activation gate. Drop placement keys on single-entry
+    // dominance (per-block last-use, edge-dying at successor entry), so it is
+    // UNSOUND over any CFG that is not dominator-structured. Two such shapes are
+    // bailed:
+    //
+    //  1. Real exception-HANDLER regions (`try`/`except` → `TryStart`/`TryEnd`,
+    //     or a `StateBlockStart`/`StateBlockEnd`-delimited region) —
+    //     `has_exception_handlers()`. (A bare universal `CheckException` is NOT a
+    //     handler — it propagates to the function exception EXIT — and is fully
+    //     handled as an ordinary CFG successor.)
+    //
+    //  2. A lowered coroutine `_poll` STATE MACHINE (`StateSwitch` dispatch +
+    //     `StateTransition`/`StateYield`/`AllocTask`) — `has_state_machine()`.
+    //     The state dispatch RE-ENTERS resume blocks, so a value defined in one
+    //     state region reaches a resume block the dominator walk does NOT see as
+    //     dominated; a drop placed there is a use-before-def (the LLVM verifier
+    //     rejects it: `dec_ref %v` before `%v = ...`; on native it double-frees).
+    //     Design §2.9's frame-finalizer model handles the high-level SUSPENSION,
+    //     but NOT this post-lowering re-entrant CFG. A generator can be lowered to
+    //     a `_poll` body carrying `StateSwitch` WITHOUT the `StateBlock*`
+    //     delimiters, so predicate (1) alone misses it — hence the dedicated
+    //     `has_state_machine()` check. Re-enabling drops for these is the
+    //     follow-up that needs StateSwitch-aware (def-reaching) liveness.
+    //
     // Idempotency: a function may be re-lifted (the native module path re-lifts
     // `ir.functions` → TIR for the inliner) and re-run through this pipeline (the
     // module-slot-promotion path re-runs `run_pipeline` on promoted functions).
@@ -180,7 +242,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     ) {
         return stats;
     }
-    if func.has_exception_handlers() {
+    if func.has_exception_handlers() || func.has_state_machine() {
         return stats;
     }
 
@@ -404,6 +466,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         };
         let block_args: HashSet<ValueId> =
             func.blocks[&bid].args.iter().map(|a| a.id).collect();
+        // Roots transferred INTO this block as branch args from ANY predecessor.
+        // These are received by `bid`'s matching block params — their ownership
+        // moved across the edge, so they must NOT be edge-dropped here (that
+        // double-frees the value the block param now owns). This is the successor
+        // side of the branch-arg transfer rule (§2.5); the predecessor's
+        // straight-line drop already skipped them via `branch_arg_roots`.
+        let transferred_in_roots: HashSet<ValueId> = preds
+            .iter()
+            .flat_map(|p| {
+                terminator_args_to_target(&func.blocks[p].terminator, bid)
+                    .into_iter()
+                    .map(canon)
+            })
+            .collect();
         // Candidate values: union of all predecessors' live-out.
         let mut candidates: HashSet<ValueId> = HashSet::new();
         for p in preds {
@@ -416,6 +492,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 continue;
             }
             if block_args.contains(&v) {
+                continue;
+            }
+            // Transferred into this block via a branch arg (root space) → the
+            // receiving block param owns it now; do not edge-drop it here.
+            if transferred_in_roots.contains(&v) {
                 continue;
             }
             // Dead on entry to B.
@@ -695,6 +776,58 @@ mod tests {
         assert!(total_decrefs >= 2, "loop accumulator must insert drops, got {total_decrefs}");
     }
 
+    /// Branch-arg transfer to a successor must NOT be edge-dropped (design §2.5).
+    /// Regression for the `while True: break` shape: `v` is computed in `entry`,
+    /// passed as a branch arg to `join`, and received as `join`'s block param `p`.
+    /// `v`'s ownership transfers to `p` across the edge — the edge-dying rule must
+    /// recognize the per-edge transfer (`terminator_args_to_target`) and NOT also
+    /// drop `v` at `join`'s entry. Doing so double-frees the object the param now
+    /// owns (the observed `invalid object header before dec_ref` UAF). `p` is then
+    /// returned (transferred to the caller), so the function inserts ZERO drops.
+    #[test]
+    fn branch_arg_transfer_not_edge_dropped() {
+        let mut func = TirFunction::new("xfer".into(), vec![], TirType::DynBox);
+        let v = func.fresh_value();
+        let p = func.fresh_value();
+        func.value_types.insert(v, TirType::Str);
+        func.value_types.insert(p, TirType::Str);
+        let join = func.fresh_block();
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(v));
+            b.terminator = Terminator::Branch {
+                target: join,
+                args: vec![v],
+            };
+        }
+        func.blocks.insert(join, TirBlock {
+            id: join,
+            args: vec![TirValue { id: p, ty: TirType::Str }],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![p] },
+        });
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        // No DecRef of `v` (transferred to `p`), and none of `p` (returned).
+        let dropped: Vec<ValueId> = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|o| o.opcode == OpCode::DecRef)
+            .map(|o| o.operands[0])
+            .collect();
+        assert!(
+            !dropped.contains(&v),
+            "branch-arg `v` transferred to the successor param must NOT be edge-dropped (double-free); dropped={dropped:?}",
+        );
+        assert_eq!(
+            count_decrefs(&func),
+            0,
+            "transfer-through-edge + return must insert zero drops; dropped={dropped:?}",
+        );
+    }
+
     /// Straight-line temp: v1 = Call(a); v2 = Call(v1); Return(v2).
     /// v1 dies after op 2 → exactly one DecRef(v1). v2 is returned (transferred)
     /// → not dropped.
@@ -797,6 +930,186 @@ mod tests {
             .map(|o| o.operands[0])
             .collect();
         assert!(!decrefs.contains(&s), "stack value must never be dropped");
+    }
+
+    /// A lowered coroutine `_poll` STATE MACHINE (a `StateSwitch` dispatch) must
+    /// get ZERO drops — the pass bails (`has_state_machine`). Regression for the
+    /// LLVM verifier failure where a drop placed in a state-resume block
+    /// referenced a value defined only on the non-taken first-entry path
+    /// (`dec_ref %v` before `%v = ...`; a use-before-def that also double-frees on
+    /// native). A generator can carry `StateSwitch` WITHOUT `StateBlock*`
+    /// delimiters, so the handler bail alone misses it.
+    #[test]
+    fn state_machine_function_gets_no_drops() {
+        let mut func = TirFunction::new("poll".into(), vec![], TirType::DynBox);
+        let st = func.fresh_value();
+        let v = func.fresh_value();
+        func.value_types.insert(st, TirType::I64);
+        func.value_types.insert(v, TirType::Str);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            // A state-machine dispatch op marks this as a lowered `_poll` body.
+            b.ops.push(op(OpCode::StateSwitch, vec![st], vec![]));
+            // A heap temp whose naive last-use drop would be unsound over the
+            // re-entrant state CFG.
+            b.ops.push(const_str(v));
+            b.ops.push(op(OpCode::Call, vec![v], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+        assert!(
+            func.has_state_machine(),
+            "fixture must look like a lowered state machine",
+        );
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        assert_eq!(
+            count_decrefs(&func),
+            0,
+            "state-machine `_poll` body must get zero drops (pass bails)",
+        );
+        assert_eq!(count_increfs(&func), 0);
+    }
+
+    /// Loop-carried phi `s` used on BOTH the loop body (new value computed, old
+    /// `s` dead on the back-edge path) AND the exit path (a non-alias consumer),
+    /// in the real-phi (LLVM) shape. The header phi must be dropped on the path
+    /// where it dies — the back-edge body block — exactly once. Regression for the
+    /// LLVM string-concat leak: the drop pass inserted NO `DecRef(s_phi)` for this
+    /// shape (the accumulator's old value leaked every iteration: `dealloc=5/n`).
+    ///
+    /// Shape (mirrors `string_concat__concat` after lowering):
+    ///   entry: s0 = ConstStr; br header(s0)
+    ///   header(s_phi): cond_br c, body, exit
+    ///   body: s_new = Add(s_phi, "x"); br header(s_new)   // old s_phi dies here
+    ///   exit: r = Len(s_phi); return r                    // s_phi consumed, dies
+    #[test]
+    fn loop_carried_phi_dropped_on_backedge() {
+        let mut func = TirFunction::new("acc".into(), vec![], TirType::I64);
+        let s0 = func.fresh_value();
+        let s_phi = func.fresh_value();
+        let s_alias = func.fresh_value();
+        let lit = func.fresh_value();
+        let cond = func.fresh_value();
+        let s_new = func.fresh_value();
+        let r = func.fresh_value();
+        func.value_types.insert(s0, TirType::Str);
+        func.value_types.insert(s_phi, TirType::Str);
+        func.value_types.insert(s_alias, TirType::Str);
+        func.value_types.insert(lit, TirType::Str);
+        func.value_types.insert(cond, TirType::Bool);
+        func.value_types.insert(s_new, TirType::Str);
+        func.value_types.insert(r, TirType::I64);
+
+        // Mirror the lowered `string_concat__concat` CFG precisely: the cond lives
+        // in a SEPARATE block (`cond_blk`, real bb3) reached from the header, and a
+        // transparent `Copy` of the phi (`s_alias`, real `%11 = copy %9`) is the
+        // value actually consumed on BOTH the loop body and the exit paths. The
+        // exit goes through an intermediate `pre_exit` block (real bb6). This is
+        // the shape the simpler direct-header-cond fixture did NOT reproduce.
+        let header = func.fresh_block();
+        let cond_blk = func.fresh_block();
+        let body = func.fresh_block();
+        let pre_exit = func.fresh_block();
+        let exit = func.fresh_block();
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(s0));
+            b.terminator = Terminator::Branch {
+                target: header,
+                args: vec![s0],
+            };
+        }
+        func.blocks.insert(header, TirBlock {
+            id: header,
+            args: vec![TirValue { id: s_phi, ty: TirType::Str }],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: cond_blk,
+                args: vec![],
+            },
+        });
+        func.blocks.insert(cond_blk, TirBlock {
+            id: cond_blk,
+            args: vec![],
+            // `s_alias = Copy(s_phi)` — a transparent alias (root = s_phi) used by
+            // both successors; plus the loop condition.
+            ops: vec![
+                op(OpCode::Copy, vec![s_phi], vec![s_alias]),
+                op(OpCode::ConstBool, vec![], vec![cond]),
+            ],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: pre_exit,
+                else_args: vec![],
+            },
+        });
+        func.blocks.insert(body, TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![const_str(lit), op(OpCode::Add, vec![s_alias, lit], vec![s_new])],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![s_new],
+            },
+        });
+        func.blocks.insert(pre_exit, TirBlock {
+            id: pre_exit,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: exit,
+                args: vec![],
+            },
+        });
+        // A fresh (non-alias) consumer of the aliased phi → it dies after it.
+        // `Call` borrows its operand and returns a fresh owned value (the real IR
+        // uses a `len`-carrying op here; the only property that matters for
+        // liveness is that the result is NOT a transparent alias).
+        func.blocks.insert(exit, TirBlock {
+            id: exit,
+            args: vec![],
+            ops: vec![op(OpCode::Call, vec![s_alias], vec![r])],
+            terminator: Terminator::Return { values: vec![r] },
+        });
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        // The header phi `s_phi` (and the literal `lit`) are owned heap values that
+        // die — `s_phi` on the back-edge body path and on the exit path, `lit`
+        // after the Add. The pass MUST drop the accumulator; a fully-inert result
+        // is the leak. Assert `s_phi` is dropped somewhere.
+        let dropped: HashSet<ValueId> = func
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|o| o.opcode == OpCode::DecRef)
+            .map(|o| o.operands[0])
+            .collect();
+        assert!(
+            dropped.contains(&s_phi),
+            "loop-carried phi accumulator must be dropped (else it leaks every \
+             iteration); drops={dropped:?}",
+        );
+        // And no double-drop of any root within a single block.
+        let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(&func);
+        for block in func.blocks.values() {
+            let mut roots: HashSet<ValueId> = HashSet::new();
+            for o in &block.ops {
+                if o.opcode == OpCode::DecRef {
+                    assert!(
+                        roots.insert(aliases.root(o.operands[0])),
+                        "double-drop in one block: {:?}",
+                        block.ops,
+                    );
+                }
+            }
+        }
     }
 
     /// Parameters are borrowed — never dropped.
