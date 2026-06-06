@@ -502,6 +502,23 @@ pub(crate) fn runtime_target_at_least(_py: &PyToken<'_>, major: i64, minor: i64)
     info.major > major || (info.major == major && info.minor >= minor)
 }
 
+/// C-ABI view of [`runtime_target_at_least`]. Exposed so satellite stdlib
+/// modules (which link `molt-runtime-core` via the FFI bridge and therefore have
+/// no direct access to the host `RuntimeState`) can version-gate behavior
+/// IDENTICALLY to their in-tree twin — e.g. csv's `QUOTE_STRINGS`/`QUOTE_NOTNULL`
+/// reader semantics, which only apply on CPython 3.13+. Returns `1` when the
+/// configured target Python is `>= major.minor`, else `0`.
+///
+/// # Safety
+/// Pure read of the per-runtime target-version cache behind the GIL; no pointer
+/// arguments. The `unsafe` marker exists only because the C ABI demands it.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_runtime_target_at_least(major: i64, minor: i64) -> i64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        i64::from(runtime_target_at_least(_py, major, minor))
+    })
+}
+
 pub(crate) fn alloc_sys_version_info_tuple(
     _py: &PyToken<'_>,
     info: &PythonVersionInfo,

@@ -368,7 +368,7 @@ pub(crate) use crate::builtins::attr::{
     descriptor_method_bits, descriptor_no_deleter, descriptor_no_setter,
     dir_collect_from_class_bits, dir_collect_from_instance, instance_bits_for_call,
     is_iterator_bits, module_attr_lookup, object_attr_lookup_raw, property_no_deleter,
-    property_no_setter, raise_attr_name_type_error,
+    property_no_setter, raise_attr_name_type_error, setattr_no_attr_error_with_obj,
 };
 pub use crate::builtins::attributes::*;
 #[cfg(not(feature = "stdlib_serial"))]

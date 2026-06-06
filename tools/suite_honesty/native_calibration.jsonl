@@ -310,7 +310,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/compare_rich_result_passthrough.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/compile_parser_modes.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/complex_format.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/complex_format_errors.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/complex_format_errors.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/complex_formatting.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/composite_interactions.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/composite_task_abi.py", "raw_status": "fail"}
@@ -764,7 +764,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/tuple_subclass_mro.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/type_call_constructor_policy.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/type_methods_burndown_surface.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/type_subscript_error_regression.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/type_subscript_error_regression.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/typing_final.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/typing_protocol_parity.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/unary_pos.py", "raw_status": "fail"}

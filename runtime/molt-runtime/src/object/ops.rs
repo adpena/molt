@@ -4259,11 +4259,40 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                         }
                         dec_ref_bits(_py, name_bits);
                     }
-                    // Default __class_getitem__: create a GenericAlias
-                    // directly.  This matches CPython >= 3.12 where every
-                    // type supports subscript via a default that returns
-                    // types.GenericAlias(cls, params).
-                    return crate::builtins::types::molt_generic_alias_new(obj_bits, key_bits);
+                    // CPython rule: a type is subscriptable IFF `__class_getitem__`
+                    // is resolvable on it. The explicit-call path above handles a
+                    // *bindable* `__class_getitem__` (user classes with a plain
+                    // `def __class_getitem__`). The remaining case is the DEFAULT
+                    // `__class_getitem__ = classmethod(GenericAlias)` carried by the
+                    // generic-capable builtins, `collections.abc.*`, `typing.*`, and
+                    // PEP 695 generics — whose bound form is a classmethod wrapping
+                    // the `GenericAlias` *type* (not a function) that the call path
+                    // intentionally does not invoke. For those we PRESENCE-check
+                    // `__class_getitem__` in the MRO (no bind/call) and, when found,
+                    // produce the default `GenericAlias(cls, params)` directly — the
+                    // exact value `classmethod(GenericAlias)(cls, params)` yields.
+                    //
+                    // When `__class_getitem__` is ABSENT from the entire MRO
+                    // (`int`, `str`, `float`, `bool`, `bytes`, `complex`, `object`,
+                    // `range`, `slice`, `bytearray`, a bare user `class C: ...`),
+                    // the type is NOT subscriptable: fall through to the shared
+                    // not-subscriptable raise, which emits
+                    // `TypeError: type 'X' is not subscriptable` for a
+                    // `TYPE_ID_TYPE` receiver — byte-identical to CPython
+                    // 3.12/3.13/3.14. This removes molt's prior unconditional
+                    // default-GenericAlias-for-every-type divergence.
+                    if let Some(cgi_name_bits) =
+                        attr_name_bits_from_bytes(_py, b"__class_getitem__")
+                    {
+                        let present =
+                            class_attr_lookup_raw_mro(_py, ptr, cgi_name_bits).is_some();
+                        dec_ref_bits(_py, cgi_name_bits);
+                        if present {
+                            return crate::builtins::types::molt_generic_alias_new(
+                                obj_bits, key_bits,
+                            );
+                        }
+                    }
                 }
                 if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") {
                     if let Some(call_bits) = attr_lookup_ptr(_py, ptr, name_bits) {

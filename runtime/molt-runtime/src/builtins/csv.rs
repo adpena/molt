@@ -246,6 +246,7 @@ fn csv_parse_line(
     line: &str,
     dialect: &Dialect,
     field_limit: i64,
+    at_eof: bool,
 ) -> Result<Vec<ParsedField>, CsvError> {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -404,8 +405,22 @@ fn csv_parse_line(
         pos += 1;
     }
 
-    // End of line.
-    if in_quotes && dialect.strict {
+    // End of this input chunk while still inside a quoted field: the record is
+    // INCOMPLETE. This is the "needs more data" signal CPython's `_csv` reader
+    // raises so the caller can feed the next physical line and continue parsing
+    // the quoted field (an embedded newline inside `"..."` spans multiple
+    // physical lines). It is independent of `strict` — `strict` only governs the
+    // *after-quote* "expected delimiter" case handled above.
+    //
+    //   - `!at_eof`: more input may follow → always signal `UnexpectedEnd`
+    //     (the `_Reader.__next__` continuation appends the next line and re-parses
+    //     the accumulated buffer).
+    //   - `at_eof`: this is the final chunk. CPython then DIVERGES on `strict`:
+    //       * strict   → raise "unexpected end of data" (`UnexpectedEnd`);
+    //       * non-strict → commit the truncated field as-is (fall through below).
+    //     This mirrors `csv.reader(io.StringIO('"unterminated'))` →
+    //     `[['unterminated']]` in non-strict and an `Error` in strict.
+    if in_quotes && (!at_eof || dialect.strict) {
         return Err(CsvError::UnexpectedEnd);
     }
 
@@ -422,28 +437,62 @@ fn csv_parse_line(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Build a MoltObject list from parsed fields.
-// QUOTE_NONNUMERIC converts unquoted non-empty fields to float.
+//
+// The reader's `quoting` mode controls how UNQUOTED fields are typed (a field
+// that `was_quoted` is always a string). Matching CPython's `_csv` reader:
+//   - QUOTE_NONNUMERIC: unquoted non-empty → float; unquoted empty → `''`
+//     (version-stable across 3.12/3.13/3.14).
+//   - QUOTE_STRINGS:    unquoted non-empty → float; unquoted empty → None.
+//   - QUOTE_NOTNULL:    unquoted empty → None; unquoted non-empty → string.
+//   - all other modes:  string.
+// A quoted empty field (`""`) stays `''` under every mode (it was quoted).
+//
+// VERSION GATE: `QUOTE_STRINGS` (4) and `QUOTE_NOTNULL` (5) were added in 3.12
+// but their READER-side float/None semantics only took effect in CPython 3.13 —
+// on 3.12 the reader treats those modes like plain string parsing (an unquoted
+// field stays a string, empty stays `''`). `QUOTE_NONNUMERIC` float conversion
+// is unaffected (version-stable). Gate the STRINGS/NOTNULL branches on
+// `runtime_target_at_least(3, 13)` so molt matches each target version exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 fn fields_to_list(
     _py: &PyToken<'_>,
     fields: &[ParsedField],
     dialect: &Dialect,
 ) -> Result<u64, u64> {
+    let strings_notnull_active = crate::object::ops_sys::runtime_target_at_least(_py, 3, 13);
     let mut bits_vec: Vec<u64> = Vec::with_capacity(fields.len());
     for field in fields {
-        if dialect.quoting == QUOTE_NONNUMERIC && !field.was_quoted && !field.text.is_empty() {
-            let parsed = match field.text.parse::<f64>() {
-                Ok(value) => value,
-                Err(_) => {
-                    for b in &bits_vec {
-                        dec_ref_bits(_py, *b);
+        if !field.was_quoted {
+            // QUOTE_NOTNULL / QUOTE_STRINGS (3.13+): an unquoted EMPTY field is
+            // None (distinct from a quoted `""`, which stays the empty string).
+            if field.text.is_empty()
+                && strings_notnull_active
+                && (dialect.quoting == QUOTE_NOTNULL || dialect.quoting == QUOTE_STRINGS)
+            {
+                bits_vec.push(MoltObject::none().bits());
+                continue;
+            }
+            // QUOTE_NONNUMERIC (all versions) / QUOTE_STRINGS (3.13+): an unquoted
+            // NON-EMPTY field is parsed as a float (a non-numeric value is a
+            // ValueError, identical to CPython's message).
+            if !field.text.is_empty()
+                && (dialect.quoting == QUOTE_NONNUMERIC
+                    || (strings_notnull_active && dialect.quoting == QUOTE_STRINGS))
+            {
+                let parsed = match field.text.parse::<f64>() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        for b in &bits_vec {
+                            dec_ref_bits(_py, *b);
+                        }
+                        let msg =
+                            format!("could not convert string to float: '{}'", field.text);
+                        return Err(raise_exception::<u64>(_py, "ValueError", &msg));
                     }
-                    let msg = format!("could not convert string to float: '{}'", field.text);
-                    return Err(raise_exception::<u64>(_py, "ValueError", &msg));
-                }
-            };
-            bits_vec.push(MoltObject::from_float(parsed).bits());
-            continue;
+                };
+                bits_vec.push(MoltObject::from_float(parsed).bits());
+                continue;
+            }
         }
 
         let str_ptr = alloc_string(_py, field.text.as_bytes());
@@ -903,7 +952,9 @@ fn parse_sample_rows(
     let mut pending = String::new();
     for physical in split_csv_lines(sample) {
         pending.push_str(&physical);
-        match csv_parse_line(&pending, dialect, field_limit) {
+        // Mid-stream: more physical lines may follow, so an open quote here means
+        // "needs more data" → accumulate and continue (`at_eof = false`).
+        match csv_parse_line(&pending, dialect, field_limit, false) {
             Ok(fields) => {
                 rows.push(fields.into_iter().map(|field| field.text).collect());
                 pending.clear();
@@ -913,7 +964,9 @@ fn parse_sample_rows(
         }
     }
     if !pending.is_empty() {
-        let fields = csv_parse_line(&pending, dialect, field_limit)?;
+        // Final chunk: no more lines follow (`at_eof = true`). A non-strict
+        // dialect commits a truncated quoted field; a strict dialect raises.
+        let fields = csv_parse_line(&pending, dialect, field_limit, true)?;
         rows.push(fields.into_iter().map(|field| field.text).collect());
     }
     Ok(rows)
@@ -1262,7 +1315,11 @@ pub extern "C" fn molt_csv_reader_new(
 
 /// Parse a single line of CSV text into a list<str> of fields.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_csv_reader_parse_line(handle_bits: u64, line_bits: u64) -> u64 {
+pub extern "C" fn molt_csv_reader_parse_line(
+    handle_bits: u64,
+    line_bits: u64,
+    at_eof_bits: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid csv reader handle");
@@ -1270,6 +1327,12 @@ pub extern "C" fn molt_csv_reader_parse_line(handle_bits: u64, line_bits: u64) -
         let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
             return raise_exception::<u64>(_py, "TypeError", "line must be str");
         };
+        // `at_eof` tells the parser whether more physical lines can still follow.
+        // The `_Reader.__next__` continuation passes its `self._eof` flag so an
+        // unterminated quoted field signals `unexpected end of data` (needs more
+        // data) until EOF, where a non-strict dialect instead commits the
+        // truncated field — exactly CPython's `_csv` reader contract.
+        let at_eof = is_truthy(_py, obj_from_bits(at_eof_bits));
         let field_limit = csv_state(_py).field_size_limit;
 
         let dialect = csv_state(_py)
@@ -1280,7 +1343,7 @@ pub extern "C" fn molt_csv_reader_parse_line(handle_bits: u64, line_bits: u64) -
             return raise_exception::<u64>(_py, "ValueError", "csv reader handle not found");
         };
 
-        let fields = match csv_parse_line(&line, &dialect, field_limit) {
+        let fields = match csv_parse_line(&line, &dialect, field_limit, at_eof) {
             Ok(f) => f,
             Err(CsvError::FieldTooLarge) => {
                 return raise_exception::<u64>(_py, "ValueError", "field larger than field limit");
@@ -1332,14 +1395,35 @@ pub extern "C" fn molt_csv_reader_parse_lines(handle_bits: u64, text_bits: u64) 
         let raw_lines = split_csv_lines(&text);
         let mut row_bits_vec: Vec<u64> = Vec::with_capacity(raw_lines.len());
 
-        for line in &raw_lines {
-            // Skip completely blank logical lines.
-            let trimmed = line.trim_matches(|c: char| c == '\r' || c == '\n');
-            if trimmed.is_empty() {
-                continue;
+        // Accumulate physical lines into a logical record, mirroring the
+        // `_Reader.__next__` continuation: a quoted field may embed newlines and
+        // therefore span multiple physical lines. We parse the accumulated buffer
+        // with `at_eof = false` mid-stream (an open quote → "needs more data" →
+        // keep accumulating) and `at_eof = true` once on the final residual so a
+        // non-strict dialect commits a truncated quoted field (or a strict one
+        // raises). Pre-splitting and parsing each physical line independently
+        // would tear an embedded-newline quoted field across rows.
+        let mut pending = String::new();
+        let n_lines = raw_lines.len();
+        for (idx, line) in raw_lines.iter().enumerate() {
+            // Skip completely blank logical lines, but ONLY when not in the
+            // middle of an accumulating (open-quote) record — a blank physical
+            // line inside `"..."` is part of the field's content.
+            if pending.is_empty() {
+                let trimmed = line.trim_matches(|c: char| c == '\r' || c == '\n');
+                if trimmed.is_empty() {
+                    continue;
+                }
             }
-            let fields = match csv_parse_line(line, &dialect, field_limit) {
+            pending.push_str(line);
+            let is_last = idx + 1 == n_lines;
+            let fields = match csv_parse_line(&pending, &dialect, field_limit, is_last) {
                 Ok(f) => f,
+                Err(CsvError::UnexpectedEnd) if !is_last => {
+                    // Open quoted field, more lines available → continue
+                    // accumulating into `pending`.
+                    continue;
+                }
                 Err(CsvError::FieldTooLarge) => {
                     for b in &row_bits_vec {
                         dec_ref_bits(_py, *b);
@@ -1373,6 +1457,7 @@ pub extern "C" fn molt_csv_reader_parse_lines(handle_bits: u64, text_bits: u64) 
                     );
                 }
             };
+            pending.clear();
             match fields_to_list(_py, &fields, &dialect) {
                 Ok(bits) => row_bits_vec.push(bits),
                 Err(bits) => {

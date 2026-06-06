@@ -365,16 +365,6 @@
         }
       }
     },
-    "tests/differential/basic/complex_format_errors.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
-          "status": "fail",
-          "tracking": "numeric-repr"
-        }
-      }
-    },
     "tests/differential/basic/composite_task_abi.py": {
       "dimensions": {
         "native": {
@@ -1076,16 +1066,6 @@
       }
     },
     "tests/differential/basic/type_methods_burndown_surface.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
-          "status": "fail",
-          "tracking": "uncategorized-debt"
-        }
-      }
-    },
-    "tests/differential/basic/type_subscript_error_regression.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",

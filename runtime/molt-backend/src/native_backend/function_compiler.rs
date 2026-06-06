@@ -21560,9 +21560,39 @@ impl SimpleBackend {
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     if direct_field_store_ops.contains(&op_idx) {
+                        // Defense-in-depth (#50): the inlined-constructor direct
+                        // field store writes `*(obj_ptr + offset) = val` with no
+                        // header read, but `obj_ptr` is garbage/NULL when the
+                        // preceding allocation returned the None/exception sentinel
+                        // (a bad `cls_bits` into `object_new_bound`). Writing to it
+                        // corrupts memory / faults. Guard on `tag(obj) == TAG_PTR`;
+                        // when the receiver is not a live pointer the alloc-failure
+                        // pending exception is already set, so skip the store and
+                        // let the post-construction `check_exception` raise the
+                        // clean `TypeError`. A real instance takes the single
+                        // predictable-taken branch, preserving fast-path speed.
+                        let dfs_tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                        let dfs_tag_bits = builder.ins().band(*obj, dfs_tag_mask);
+                        let dfs_ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                        let dfs_is_ptr =
+                            builder.ins().icmp(IntCC::Equal, dfs_tag_bits, dfs_ptr_tag);
+                        let dfs_store_block = builder.create_block();
+                        let dfs_cont_block = builder.create_block();
+                        if let Some(current_block) = builder.current_block() {
+                            builder.insert_block_after(dfs_store_block, current_block);
+                            builder.insert_block_after(dfs_cont_block, dfs_store_block);
+                        }
+                        builder
+                            .ins()
+                            .brif(dfs_is_ptr, dfs_store_block, &[], dfs_cont_block, &[]);
+                        switch_to_block_materialized(&mut builder, dfs_store_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, dfs_store_block);
                         builder
                             .ins()
                             .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                        jump_block(&mut builder, dfs_cont_block, &[]);
+                        switch_to_block_materialized(&mut builder, dfs_cont_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, dfs_cont_block);
                         for name in origin_obj_cleanup {
                             if cleanup_name_excluded(
                                 &name,
@@ -21719,6 +21749,39 @@ impl SimpleBackend {
                     const MOLT_HEADER_FLAGS_OFFSET_FROM_PAYLOAD: i32 = -16;
                     const HEADER_FLAG_HAS_PTRS: i64 = 1;
 
+                    // Defense-in-depth (#50): never dereference the object header
+                    // when the receiver is not a live heap pointer. A failed
+                    // allocation upstream (e.g. `object_new_bound` fed a bad
+                    // `cls_bits`) returns the None/exception sentinel, whose
+                    // NaN-box tag is NOT `TAG_PTR`; `unbox_ptr_value` then yields a
+                    // garbage/NULL address. Reading `flags = *(obj_ptr - 16)` below
+                    // on that address SIGSEGVs (the observed #50 crash). The
+                    // alloc-failure path has already set a pending exception, so the
+                    // correct behavior is to SKIP the store entirely and let the
+                    // post-construction `check_exception` raise the clean
+                    // `TypeError` — exactly what the slow path produces. Guard on
+                    // `tag(obj) == TAG_PTR`; a real instance (the overwhelmingly
+                    // common case) takes the single predictable-taken branch into
+                    // the store, so the fast path stays fast.
+                    let obj_tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                    let obj_tag_bits = builder.ins().band(*obj, obj_tag_mask);
+                    let obj_ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                    let obj_is_ptr = builder.ins().icmp(IntCC::Equal, obj_tag_bits, obj_ptr_tag);
+
+                    let store_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(store_block, current_block);
+                        builder.insert_block_after(merge_block, store_block);
+                    }
+                    // Skip straight to merge when the receiver is not a pointer
+                    // (pending exception propagates to the next check_exception).
+                    builder
+                        .ins()
+                        .brif(obj_is_ptr, store_block, &[], merge_block, &[]);
+                    switch_to_block_materialized(&mut builder, store_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, store_block);
+
                     let flags_val = builder.ins().load(
                         types::I32,
                         MemFlags::trusted(),
@@ -21738,11 +21801,9 @@ impl SimpleBackend {
 
                     let fast_block = builder.create_block();
                     let slow_block = builder.create_block();
-                    let merge_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(fast_block, current_block);
                         builder.insert_block_after(slow_block, fast_block);
-                        builder.insert_block_after(merge_block, slow_block);
                     }
                     builder.set_cold_block(slow_block);
                     builder
@@ -21917,9 +21978,39 @@ impl SimpleBackend {
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
                     if direct_field_store_ops.contains(&op_idx) {
+                        // Defense-in-depth (#50): the inlined-constructor direct
+                        // field store writes `*(obj_ptr + offset) = val` with no
+                        // header read, but `obj_ptr` is garbage/NULL when the
+                        // preceding allocation returned the None/exception sentinel
+                        // (a bad `cls_bits` into `object_new_bound`). Writing to it
+                        // corrupts memory / faults. Guard on `tag(obj) == TAG_PTR`;
+                        // when the receiver is not a live pointer the alloc-failure
+                        // pending exception is already set, so skip the store and
+                        // let the post-construction `check_exception` raise the
+                        // clean `TypeError`. A real instance takes the single
+                        // predictable-taken branch, preserving fast-path speed.
+                        let dfs_tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                        let dfs_tag_bits = builder.ins().band(*obj, dfs_tag_mask);
+                        let dfs_ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                        let dfs_is_ptr =
+                            builder.ins().icmp(IntCC::Equal, dfs_tag_bits, dfs_ptr_tag);
+                        let dfs_store_block = builder.create_block();
+                        let dfs_cont_block = builder.create_block();
+                        if let Some(current_block) = builder.current_block() {
+                            builder.insert_block_after(dfs_store_block, current_block);
+                            builder.insert_block_after(dfs_cont_block, dfs_store_block);
+                        }
+                        builder
+                            .ins()
+                            .brif(dfs_is_ptr, dfs_store_block, &[], dfs_cont_block, &[]);
+                        switch_to_block_materialized(&mut builder, dfs_store_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, dfs_store_block);
                         builder
                             .ins()
                             .store(MemFlags::trusted(), *val, obj_ptr, offset);
+                        jump_block(&mut builder, dfs_cont_block, &[]);
+                        switch_to_block_materialized(&mut builder, dfs_cont_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, dfs_cont_block);
                         for name in origin_obj_cleanup {
                             if cleanup_name_excluded(
                                 &name,
@@ -22007,6 +22098,32 @@ impl SimpleBackend {
                     // acquire and no function call. For heap-pointer values
                     // we must call the runtime to inc_ref + mark_has_ptrs.
                     //
+                    // Defense-in-depth (#50): both the inline store and the runtime
+                    // `molt_object_field_init_ptr` dereference `obj_ptr`, which is
+                    // garbage/NULL when the preceding allocation returned the
+                    // None/exception sentinel. Guard on `tag(obj) == TAG_PTR` and
+                    // skip the init when the receiver is not a live pointer (the
+                    // alloc-failure pending exception then surfaces at the next
+                    // `check_exception` as the clean `TypeError`). Mirrors the
+                    // `store` go-slow guard above.
+                    let init_obj_tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                    let init_obj_tag_bits = builder.ins().band(*obj, init_obj_tag_mask);
+                    let init_obj_ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                    let init_obj_is_ptr =
+                        builder
+                            .ins()
+                            .icmp(IntCC::Equal, init_obj_tag_bits, init_obj_ptr_tag);
+                    let init_guard_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    if let Some(current_block) = builder.current_block() {
+                        builder.insert_block_after(init_guard_block, current_block);
+                        builder.insert_block_after(merge_block, init_guard_block);
+                    }
+                    builder
+                        .ins()
+                        .brif(init_obj_is_ptr, init_guard_block, &[], merge_block, &[]);
+                    switch_to_block_materialized(&mut builder, init_guard_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, init_guard_block);
                     // Check if val is a heap pointer:
                     //   (val & TAG_MASK) == TAG_PTR
                     let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
@@ -22015,11 +22132,9 @@ impl SimpleBackend {
                     let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
                     let fast_block = builder.create_block();
                     let slow_block = builder.create_block();
-                    let merge_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(fast_block, current_block);
                         builder.insert_block_after(slow_block, fast_block);
-                        builder.insert_block_after(merge_block, slow_block);
                     }
                     builder.set_cold_block(slow_block);
                     builder.ins().brif(is_ptr, slow_block, &[], fast_block, &[]);
