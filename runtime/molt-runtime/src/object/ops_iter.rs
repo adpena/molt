@@ -691,6 +691,7 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                     || type_id == TYPE_ID_ZIP
                     || type_id == TYPE_ID_MAP
                     || type_id == TYPE_ID_FILTER
+                    || type_id == TYPE_ID_GLOB_ITER
                 {
                     inc_ref_bits(_py, iter_bits);
                     return iter_bits;
@@ -1016,6 +1017,26 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                     }
                     return res_bits;
+                }
+                if object_type_id(ptr) == TYPE_ID_GLOB_ITER {
+                    // Lazy glob iterator: advance the native streaming state by
+                    // one path and return the `(value, done)` tuple.
+                    let value_bits = crate::builtins::io_path_utils::glob_iter_next_value(_py, ptr);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    if obj_from_bits(value_bits).is_none() {
+                        // Exhausted: `glob_iter_next_value` returns None-bits only
+                        // at end-of-stream (paths are always str/bytes, never None).
+                        return generator_done_tuple(_py, MoltObject::none().bits());
+                    }
+                    let done_bits = MoltObject::from_bool(false).bits();
+                    let tuple_ptr = alloc_tuple(_py, &[value_bits, done_bits]);
+                    dec_ref_bits(_py, value_bits);
+                    if tuple_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    return MoltObject::from_ptr(tuple_ptr).bits();
                 }
                 if object_type_id(ptr) == TYPE_ID_ENUMERATE {
                     let iter_bits = enumerate_target_bits(ptr);
