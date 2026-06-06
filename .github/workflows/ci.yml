@@ -31,6 +31,9 @@ jobs:
       - name: Sync Python environment
         run: uv sync --frozen --group dev
 
+      - name: Type-check frontend Python (ty, zero-diagnostic ratchet)
+        run: uv run ty check src
+
       - name: Check generated status blocks
         run: uv run python3 tools/update_status_blocks.py --check
 

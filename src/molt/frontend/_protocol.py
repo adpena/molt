@@ -1623,7 +1623,11 @@ class _GeneratorProtocol(Protocol):
     def _try_emit_super_static_call(self, node: ast.Call) -> "MoltValue | None": ...
 
     def _fold_bare_super_static(
-        self, node: ast.Call, method_name: str
+        self,
+        node: ast.Call,
+        method_name: str,
+        current_class: str,
+        current_first_param: str,
     ) -> "MoltValue | None": ...
 
     def _method_inline_closure_ok(

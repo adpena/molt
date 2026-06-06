@@ -6790,12 +6790,16 @@ class SimpleTIRGenerator(
                 self.visit(node.value)
 
             def _visit_comprehension(
-                self, node: ast.expr, parts: Sequence[ast.expr]
+                self,
+                node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp,
+                parts: Sequence[ast.expr],
             ) -> None:
                 # The iterable of the *first* generator is evaluated in the
                 # enclosing scope; everything else (element, filters, nested
                 # generators) is comprehension-internal for walrus-leak purposes.
-                generators = node.generators  # type: ignore[attr-defined]
+                # Every caller passes a comprehension node, all four of which
+                # carry ``.generators``.
+                generators = node.generators
                 if generators:
                     self.visit(generators[0].iter)
                 self._in_comp_depth += 1
