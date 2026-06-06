@@ -4907,6 +4907,28 @@ fn prepare_class_impl(
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         }
+        // CPython parity (3.12+): `__build_class__` rejects a `__prepare__`
+        // result that is not a mapping with
+        //   TypeError: <metaclass>.__prepare__() must return a mapping, not <type>
+        // The runtime check is `PyMapping_Check` (`tp_as_mapping->mp_subscript`).
+        // `value_supports_mp_subscript` is the single source of truth for that
+        // contract: an exact dict, a dict subclass / custom mapping (class with
+        // `__getitem__`), and even list/tuple/str/bytes/bytearray/range/
+        // memoryview all pass — the latter then fail downstream on the first
+        // string-keyed store with their own "indices must be integers" message,
+        // exactly as CPython does.  int/object/set/slice/dict-views (no
+        // `mp_subscript`) are rejected here.
+        if !crate::object::ops::value_supports_mp_subscript(_py, val_bits) {
+            let meta_name = class_name_for_error(winner_bits);
+            let ns_type = type_name(_py, obj_from_bits(val_bits)).into_owned();
+            dec_ref_bits(_py, val_bits);
+            dec_ref_bits(_py, winner_bits);
+            dec_ref_bits(_py, kwds_copy_bits);
+            let msg =
+                format!("{meta_name}.__prepare__() must return a mapping, not {ns_type}");
+            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            return None;
+        }
         val_bits
     };
 
