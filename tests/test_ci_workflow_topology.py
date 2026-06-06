@@ -41,6 +41,9 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "group: ${{ github.workflow }}-${{ github.ref }}" in ci_text
     assert "cancel-in-progress: true" in ci_text
     assert "docs-gates:" in ci_text
+    # The frontend-Python ty type-check is a zero-diagnostic ratchet enforced in
+    # CI (pre-commit is not run in Actions), mirroring the pre-commit `ty` hook.
+    assert "uv run ty check src" in ci_text
     assert "python-tooling-smoke:" in ci_text
     assert "rust-build-unit-smoke:" in ci_text
     assert "llvm-backend:" in ci_text

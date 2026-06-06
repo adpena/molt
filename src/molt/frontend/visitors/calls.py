@@ -437,7 +437,7 @@ class CallVisitorMixin(_MixinBase):
     def _emit_guarded_default_value(
         self,
         guard: MoltValue,
-        baked_value: int,
+        baked_value: object,
         emit_live: Callable[[], MoltValue],
     ) -> MoltValue:
         """Select a default argument value under the pristine guard.
@@ -1972,7 +1972,9 @@ class CallVisitorMixin(_MixinBase):
             if self._inline_super_must_fold:
                 raise _InlineSuperFoldRequired
             return None
-        if self.current_class is None or self.current_method_first_param is None:
+        current_class = self.current_class
+        current_first_param = self.current_method_first_param
+        if current_class is None or current_first_param is None:
             if self._inline_super_must_fold:
                 raise _InlineSuperFoldRequired
             return None
@@ -1986,7 +1988,9 @@ class CallVisitorMixin(_MixinBase):
                     raise _InlineSuperFoldRequired
                 return None  # *args spread — needs builder
         method_name = node.func.attr
-        folded = self._fold_bare_super_static(node, method_name)
+        folded = self._fold_bare_super_static(
+            node, method_name, current_class, current_first_param
+        )
         if folded is None and self._inline_super_must_fold:
             # A bare ``super().method()`` that did not fold while inlining a
             # ``__class__``-cell method: the general dispatch fallback would
@@ -1996,13 +2000,20 @@ class CallVisitorMixin(_MixinBase):
         return folded
 
     def _fold_bare_super_static(
-        self, node: ast.Call, method_name: str
+        self,
+        node: ast.Call,
+        method_name: str,
+        current_class: str,
+        current_first_param: str,
     ) -> "MoltValue | None":
         """Fold a confirmed bare ``super().method(*positional)`` call to a
         direct CALL / inline when the MRO is statically resolvable.  Returns
         ``None`` to fall through to the general dispatch path.  The caller
         (``_try_emit_super_static_call``) has already validated the bare-super
-        shape and handles the inline-abort policy.
+        shape and handles the inline-abort policy.  It also proved
+        ``self.current_class`` / ``self.current_method_first_param`` non-None
+        and threads them in as ``current_class`` / ``current_first_param`` so
+        the fold reads the narrowed values rather than the optional attributes.
         """
         # SOUNDNESS GATE for the static super fold.  ``super().method()`` in
         # ``current_class.method`` resolves to the first class defining
@@ -2018,10 +2029,10 @@ class CallVisitorMixin(_MixinBase):
         # be defined downstream and are invisible here).  When it bails, super()
         # lowers to the runtime path, which the backend fuses into the
         # allocation-free ``call_super_method_ic`` — already the fast path.
-        if not self._super_fold_is_sound(self.current_class, method_name):
+        if not self._super_fold_is_sound(current_class, method_name):
             return None
         method_info, owner_class = self._resolve_super_method_info(
-            self.current_class, method_name
+            current_class, method_name
         )
         if method_info is None or owner_class is None:
             return None
@@ -2058,9 +2069,9 @@ class CallVisitorMixin(_MixinBase):
         if len(node.args) != expected_positional:
             return None
 
-        self_val = self._load_local_value(self.current_method_first_param)
-        if self_val is None and self.current_method_first_param in self.free_vars:
-            self_val = self._emit_free_var_load(self.current_method_first_param)
+        self_val = self._load_local_value(current_first_param)
+        if self_val is None and current_first_param in self.free_vars:
+            self_val = self._emit_free_var_load(current_first_param)
         if self_val is None:
             return None
 

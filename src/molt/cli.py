@@ -14013,13 +14013,23 @@ def _start_backend_daemon(
             # reach the backend process. Daemon stderr goes to the log file
             # so it's always available for post-mortem debugging.
             with log_path.open("ab") as log_file:
-                daemon_proc = subprocess.Popen(
-                    [str(backend_bin), "--daemon", "--socket", str(socket_path)],
-                    cwd=project_root,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=daemon_env,
-                    **daemon_popen_kwargs,
+                # The daemon is launched in bytes mode (no ``text``/``encoding``
+                # arg here or in ``daemon_popen_kwargs``, which only carries OS
+                # process-group controls — ``start_new_session`` / ``preexec_fn``
+                # / ``creationflags``).  Splatting the ``dict[str, Any]`` of those
+                # controls erases Popen's bytes-vs-text overload for the checker,
+                # which then infers ``Popen[str]``; cast restores the proven
+                # ``Popen[bytes]`` the declared ``daemon_proc`` slot expects.
+                daemon_proc = cast(
+                    "subprocess.Popen[bytes]",
+                    subprocess.Popen(
+                        [str(backend_bin), "--daemon", "--socket", str(socket_path)],
+                        cwd=project_root,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        env=daemon_env,
+                        **daemon_popen_kwargs,
+                    ),
                 )
                 daemon_pid = daemon_proc.pid
                 _write_backend_daemon_pid(pid_path, daemon_pid)

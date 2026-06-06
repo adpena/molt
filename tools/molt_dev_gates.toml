@@ -87,10 +87,10 @@ globs = [
   "src/molt/**/*.py",
 ]
 gates = [
-  # NOTE: `ty check src` is NOT yet a canonical CI gate (16 pre-existing
-  # diagnostics repo-wide). Adding it is the ty-ratchet follow-up arc: fix the
-  # debt, then add the gate here + in CI in the same change (mirror-reality
-  # first; ratchets are their own arcs).
+  # ty static type check (ratchet cleared 2026-06: the 16 pre-existing
+  # diagnostics are fixed and this gate now enforces zero). Mirrors the
+  # pre-commit `ty` hook and ci.yml docs-gates `ty check src` step.
+  "python3 tools/venv_exec.py python -m ty check src",
   "python3 tools/verified_subset.py check",
   "python3 tools/check_dynamic_policy.py",
 ]
