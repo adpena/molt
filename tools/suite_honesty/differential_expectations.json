@@ -1,5 +1,5 @@
 {
-  "_calibration_scope": "native_calibration.jsonl covers tests/differential/{basic,loop_overflow_peel,memory,pyperformance} (808 tests) on CPython 3.14 PLUS a calibrated slice of tests/differential/stdlib (38 seeded fails, task #55): every silent failure CONFIRMED in a clean isolated jobs=1 re-run (a contended parallel survey produced ~85% build-contention false-fails under heavy multi-agent load, ALL discarded; only mismatch-class, deterministic link-class, and reproduced-OOM fails that survive isolation are seeded). The 38 stdlib seeds = 33 asyncio (taskgroup/ssl/task-factory/gather/as_completed/barrier/call_soon/call_later/call_at/cancel, #3), 1 asyncio_close_running_loop crash-class HANG/OOM (loop.run_forever does not terminate when loop.stop is called from a call_soon callback -> infinite spin -> OOM; distinct from #3 result-propagation), 1 array_basic SIGABRT crash, 1 ast_basic native-micro feature-gap (stdlib_ast excluded from the default native micro profile -> molt_ast_* undefined at link, #13), 3 message/API-parity (_bisect, _opcode, argparse subparsers). The REMAINING ~1897 stdlib tests are still UNCALIBRATED (task #55 follow-up): the guard does not reality-check them until a quiet-machine isolated calibration run seeds them (fail-closed against false greenness, loud about the gap). The 2026-06-06 calib55b continuation surveyed the sorted frontier abc_*/argparse_*/ast_*/asyncio_* (rebuilt iso toolchain onto 520858af4); a host-memory-pressure SIGTERM killed the serial daemon at 21/60, so all build-class survey fails were the ~85-91% false class and were DISCARDED -- the 38 seeds are EXACTLY the contention-immune results that reproduced in clean isolated jobs=1 re-runs (mismatch/link/reproduced-OOM). Two surveyed asyncio tests (bounded_semaphore_overrelease, call_later_cancel) PASSED in isolation and are correctly NOT seeded. Calibrate with the iso toolchain pattern + tools/calib_daemon.py (jobs=1) documented in the README.",
+  "_calibration_scope": "native_calibration.jsonl covers tests/differential/{basic,loop_overflow_peel,memory,pyperformance} (808 tests) on CPython 3.14 PLUS a calibrated slice of tests/differential/stdlib (36 seeded fails, task #55): every silent failure CONFIRMED in a clean isolated jobs=1 re-run (a contended parallel survey produced ~85% build-contention false-fails under heavy multi-agent load, ALL discarded; only mismatch-class, deterministic link-class, and reproduced-OOM fails that survive isolation are seeded). The 36 stdlib seeds = 33 asyncio (taskgroup/ssl/task-factory/gather/as_completed/barrier/call_soon/call_later/call_at/cancel, #3), 1 asyncio_close_running_loop crash-class HANG/OOM (loop.run_forever does not terminate when loop.stop is called from a call_soon callback -> infinite spin -> OOM; distinct from #3 result-propagation), 1 array_basic (was a SIGABRT crash; the crash is now FIXED via the native_handle wrapper and the remaining fail is a separate from-import whole-program-global-DCE NameError on _MOLT_ARRAY_TOLIST), 1 ast_basic native-micro feature-gap (stdlib_ast excluded from the default native micro profile -> molt_ast_* undefined at link, #13), 1 message/API-parity (_opcode stack_effect version-gating; _bisect and argparse subparsers were FIXED 2026-06-06 and removed from the manifest). The REMAINING ~1897 stdlib tests are still UNCALIBRATED (task #55 follow-up): the guard does not reality-check them until a quiet-machine isolated calibration run seeds them (fail-closed against false greenness, loud about the gap). The 2026-06-06 calib55b continuation surveyed the sorted frontier abc_*/argparse_*/ast_*/asyncio_* (rebuilt iso toolchain onto 520858af4); a host-memory-pressure SIGTERM killed the serial daemon at 21/60, so all build-class survey fails were the ~85-91% false class and were DISCARDED -- the 36 seeds are EXACTLY the contention-immune results that reproduced in clean isolated jobs=1 re-runs (mismatch/link/reproduced-OOM). Two surveyed asyncio tests (bounded_semaphore_overrelease, call_later_cancel) PASSED in isolation and are correctly NOT seeded. Calibrate with the iso toolchain pattern + tools/calib_daemon.py (jobs=1) documented in the README.",
   "_comment": "SINGLE SOURCE OF TRUTH for KNOWN-failing differential tests (task #46). An entry here is a DEBT WITH AN OWNER, not an accepted state; it leaves only by being fixed. Every `fail` dimension carries tracking + root_cause + evidence (machine-checked by tools/check_suite_honesty.py). A passing test is the implicit default and is NOT listed. Tests excluded by design (exec/eval/compile) live in TOO_DYNAMIC_EXPECTED_FAILURE_TESTS; tests with an inline `# MOLT_META: expect_fail=molt` marker are tracked there \u2014 neither is duplicated here (the guard forbids overlap).",
   "_compliance_note": "The `compliance` block tracks the pytest compliance suite (tests/compliance/py3{12,13,14}/test_spec.py), a DIFFERENT harness from the differential JSONL. The guard LINTS these entries (every `fail`/`uncalibrated` is validated the same way -- tracking + root_cause + evidence on a fail; loud uncalibrated) but does NOT differential-reality-check them (no shared results file). Each key is 'tests/compliance/<pkg>/test_spec.py::<Class>::<method>'. FINDING THIS SESSION: the py314 PEP-649 deferred-annotation case that earlier reports flagged ('2' != '0') now PASSES on native@3.14 (molt defers annotations correctly) -- it is FIXED and deliberately NOT seeded as a debt (mirrors the stale generator-shape entries). The py313 multiline-docstring case is host-version-gated (skips on a 3.14 host) and could not be cleanly re-confirmed here under build contention, so it is marked native@3.13 'uncalibrated' (loud) pending a py3.13 calibration run, rather than asserted or silently dropped.",
   "_dimensions": "Keys under `dimensions` are '<backend>' or '<backend>@<cpython-version>'. Backends: native, llvm, wasm, luau. `native` (basic + a 28-test stdlib slice) and `wasm` (4 #59 PEP-695/typing E1-inliner build failures, task #55) are calibrated (against native_calibration.jsonl on CPython 3.14). llvm/wasm/luau are UNCALIBRATED at the suite level pending their own calibration lanes (follow-up task #46-llvm-wasm-luau-calibration); add per-test backend dimensions only with verified evidence from those runs, never from description. Per this session's reviews: generator shapes pre-3fe511c3d are now FIXED (do NOT seed); candidate llvm/wasm debts to verify in that lane include sum int->float #37, alias_reassign bigint-carrier, gen.throw shapes #51 (LLVM dominance + a noted native miscompile).",
@@ -1175,43 +1175,33 @@
         }
       }
     },
-    "tests/differential/stdlib/_bisect_basic.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'); confirmed in clean isolated jobs=1 re-run vs the contended survey (task #55 stdlib calibration)",
-          "root_cause": "bisect raises 'TypeError: missing required arguments' instead of executing; arg-handling diverges from CPython's _bisect",
-          "status": "fail",
-          "tracking": "error-message-parity"
-        }
-      }
-    },
     "tests/differential/stdlib/_opcode_basic.py": {
       "dimensions": {
         "native": {
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'); confirmed in clean isolated jobs=1 re-run vs the contended survey (task #55 stdlib calibration)",
-          "root_cause": "_opcode.stack_effect returns wrong values (se_load_const/se_return inverted) and does not raise ValueError on an invalid opcode/oparg",
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'); reproduces against stable CPython 3.14.3 AND 3.13. NOTE: molt's stack_effect matches CPython 3.12 exactly (verified: 3.12 returns se_load_const=1, se_return=-1, se_return_const=0, identical to molt), so this PASSES when the differential oracle is 3.12 and FAILS on 3.13/3.14 (the calibration target). The opcode NUMBERS 100/83/121 map to DIFFERENT instructions across versions: 3.12 {100=LOAD_CONST(+1), 83=RETURN_VALUE(-1), 121=RETURN_CONST(0)}; 3.14 {100->(-1), 83->(+1), 121=INVALID->ValueError}.",
+          "root_cause": "VERSION-GATING FEATURE GAP (not a simple bug): molt_opcode_stack_effect (runtime/molt-runtime/src/builtins/functions.rs) implements ONLY the CPython 3.12 opcode stack-effect tables (opcode_num_popped_312 / opcode_num_pushed_312 / opcode_stack_effect_core_312) with no dispatch on MOLT_PYTHON_VERSION. To match the 3.14 calibration target it must implement 3.13 and 3.14 opcode popped/pushed tables (a faithful port of CPython 3.13/3.14 _PyOpcode stack-effect semantics for ~200 opcodes) and select the table by the runtime target version. A partial/per-test table is forbidden (zero-workarounds); the complete per-version tables are the unit of work.",
           "status": "fail",
-          "tracking": "error-message-parity"
-        }
-      }
-    },
-    "tests/differential/stdlib/argparse_subparsers_basic.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'); confirmed in clean isolated jobs=1 re-run vs the contended survey (task #55 stdlib calibration)",
-          "root_cause": "argparse subparsers dispatch raises ArgumentError 'invalid choice' for a valid subcommand; subparser registration diverges from CPython",
-          "status": "fail",
-          "tracking": "error-message-parity"
+          "tracking": "stack_effect version-gating (3.13/3.14 opcode tables) \u2014 needs full per-version tables"
         }
       }
     },
     "tests/differential/stdlib/array_basic.py": {
       "dimensions": {
         "native": {
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'); confirmed in clean isolated jobs=1 re-run vs the contended survey (task #55 stdlib calibration)",
-          "root_cause": "array ops abort with 'invalid object header before dec_ref' (SIGABRT) after the first few operations instead of running to completion",
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'). The ORIGINAL SIGABRT ('invalid object header before dec_ref') crash-class is FIXED (array now uses the native_handle TYPE_ID_NATIVE_HANDLE wrapper so the handle is a real refcounted object; minimal array repros + the first ~130 lines of array_basic now run byte-identically). The REMAINING failure is a SEPARATE, pre-existing, RC-INDEPENDENT whole-program DCE bug: a NameError on the array module's `_MOLT_ARRAY_TOLIST` global, surfaced only now that the crash no longer masks it.",
+          "root_cause": "FRONTEND whole-program module-global DCE unsoundly drops the `_MOLT_ARRAY_TOLIST = _require_intrinsic('molt_array_tolist')` module-level store in src/molt/stdlib/array.py when the module is imported via `from array import array, typecodes` (narrow from-import). The `tolist()` method reads `_MOLT_ARRAY_TOLIST` (a module global), but the DCE prunes that store, so calling `a.tolist()` raises `NameError: name '_MOLT_ARRAY_TOLIST' is not defined`. PROVEN: (a) adding `import array as _arrmod` (full module import) at the top makes the binding survive and the whole test pass byte-identically except a probe line; (b) the binding store is preserved in dce.rs (ModuleSetAttr is OpcodePurity::Impure + has `module_set_attr_kept_when_result_dead`), so the elimination is in the FRONTEND lowering, before TIR; (c) re-adding `__del__` does NOT change it, so it is independent of this change's removal of __del__/molt_array_drop. The intrinsic symbol `molt_array_tolist` IS linked (present in the binary string table); only the module-global STORE is pruned. NEXT: pinpoint the frontend from-import module-element/global liveness pass (a wrong fix risks miscompiling all programs \u2014 NASA caution); it must trace intra-module global reads inside class method bodies as keep-roots.",
           "status": "fail",
-          "tracking": "uncategorized-crash (RC/object-header)"
+          "tracking": "frontend-whole-program-global-DCE (from-import module-global liveness) \u2014 RC crash FIXED, DCE blocker remains"
+        }
+      }
+    },
+    "tests/differential/stdlib/ast_basic.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'); confirmed in TWO clean isolated jobs=1 re-runs (identical 'Undefined symbols: _molt_ast_get_docstring/_molt_ast_iter_child_nodes/_molt_ast_iter_fields'); deterministic/contention-immune (a missing symbol is a property of the feature-gated archive, not a build-storm artifact); verified the symbols are absent from libmolt_runtime.a and gated by feature=stdlib_ast in builtins/mod.rs (task #55 stdlib calibration)",
+          "root_cause": "native micro profile (the default for small programs) excludes the stdlib_ast cargo feature by design (rustpython-parser ~2MB, binary-size tradeoff), so molt_ast_get_docstring / molt_ast_iter_child_nodes / molt_ast_iter_fields are undefined symbols at link and the binary fails to build; the runtime DEFINES them (builtins/ast.rs, #[unsafe(no_mangle)]) but they are gated behind #[cfg(feature=\"stdlib_ast\")] which native micro never enables (cli.py _runtime_builtin_features_for_profile)",
+          "status": "fail",
+          "tracking": "native-micro-feature-gap (stdlib_ast) #13"
         }
       }
     },
@@ -1222,6 +1212,96 @@
           "root_cause": "async/await runtime gap: task/gather/taskgroup/ssl shapes diverge from CPython",
           "status": "fail",
           "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_as_completed_timeout_results.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch: built+ran+diverged); confirmed in clean isolated jobs=1 re-run (contention-immune mismatch); divergence captured: Molt raises InvalidStateError: Result is not ready, CPython returns the as_completed results (task #55 stdlib calibration)",
+          "root_cause": "async/await runtime gap (bug #3): multi-suspend task result is never set on its future -> _EventLoop.run_until_complete -> Future.result(completed) raises InvalidStateError('Result is not ready') (asyncio/__init__.py:4027 -> 780), exactly signature (a) in the asyncio P0 arc baton; CPython prints [('fast','str'),('timeout','TimeoutError')] and exits 0, Molt exits 1",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_barrier_basic.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch: built+ran+diverged); confirmed in clean isolated jobs=1 re-run -- a mismatch is contention-immune (a build storm can only build-FAIL, not fake a ran+diverged result); divergence captured: CPython stdout '[0, 1]' vs Molt stdout '[]' (task #55 stdlib calibration)",
+          "root_cause": "async/await runtime gap (bug #3): coroutine driver does not propagate gathered task results when coroutines suspend more than once (asyncio.gather + Barrier.wait) -> the result list comes back empty instead of CPython's [0, 1]; silent wrong result (both exit 0)",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_call_at_fifo_tiebreak.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run (contention-immune mismatch); divergence: Molt stdout '[]' + InvalidStateError vs CPython collecting the call_at results (task #55 calib55b storm-batch isolated re-verify)",
+          "root_cause": "async/await runtime gap (bug #3): loop.call_at-scheduled callbacks' results are not propagated to the awaiting coroutine -> Molt raises InvalidStateError('Result is not ready') (asyncio/__init__.py:4027->780) and prints '[]' before reaching the test's order assertion; CPython reaches the assertion (and on 3.14.5 the test's own FIFO-tiebreak assertion is order-sensitive)",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '[]' vs CPython [('at','override'),('later','override')] on line 1 (task #55 calib55b storm-batch)",
+          "root_cause": "async/await runtime gap (bug #3): loop.call_later/call_at callback results not propagated -> Molt first output line is '[]' instead of CPython's [('at','override'),('later','override')] (the closed-loop RuntimeError second line matches); silent partial wrong result (both exit 0)",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_call_later_fifo_tiebreak.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence: Molt InvalidStateError vs CPython ['first','second','third'] (task #55 calib55b storm-batch)",
+          "root_cause": "async/await runtime gap (bug #3): call_later-scheduled results not propagated -> Molt raises InvalidStateError('Result is not ready') and prints '[]'; CPython returns ['first','second','third'] and exits 0",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_call_soon_order.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '[]' vs CPython ['a','b'] (task #55 calib55b storm-batch)",
+          "root_cause": "async/await runtime gap (bug #3): call_soon-scheduled callback results not propagated to the awaiting coroutine -> Molt prints '[]' (empty) and exits 0; CPython prints ['a','b']; silent wrong result",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_cancel_sleep.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '' vs CPython 'cancelled\\ncaught' (task #55 calib55b storm-batch)",
+          "root_cause": "async/await runtime gap (bug #3): cancellation of a sleeping task does not propagate the cancelled/caught path results -> Molt prints '' (empty) and exits 0; CPython prints 'cancelled\\ncaught'; multi-await coroutine result/cancellation not delivered",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_cancel_try_finally.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '[]' exit 0 vs CPython CancelledError exit 1 (task #55 calib55b storm-batch)",
+          "root_cause": "async/await runtime gap (bug #3): CancelledError crossing a try/finally-around-await is not propagated (exactly the try/finally-around-await case named in the asyncio P0 arc baton) -> Molt prints '[]' and exits 0; CPython propagates CancelledError and exits 1",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/stdlib/asyncio_close_running_loop.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'oom'); confirmed deterministic in a clean isolated jobs=1 re-run (raw 'oom') AND a second full-output re-run that hung for the entire 240s outer timeout with NO verdict/result line (true infinite-loop, not a transient RSS spike); NOT fixed per crash-class policy, summarized for supervisor (task #55 calib55b storm-batch)",
+          "root_cause": "loop.run_forever() does not terminate when loop.stop() is called from a call_soon-scheduled callback -> infinite event-loop spin -> unbounded allocation -> OOM (the most severe class). The test: loop.call_soon(attempt_close) then loop.run_forever(), where attempt_close()'s finally calls loop.stop(). CPython exits 0 (RuntimeError on close of a running loop is caught, stop() breaks run_forever); Molt hangs. SUPERVISOR-TICKET: distinct from #3's task-result propagation \u2014 this is a run_forever/stop termination bug in the event-loop driver.",
+          "status": "fail",
+          "tracking": "asyncio-run-forever-hang (crash-class HANG/OOM) #3"
         }
       }
     },
@@ -1452,106 +1532,6 @@
           "root_cause": "async/await runtime gap: task/gather/taskgroup/ssl shapes diverge from CPython",
           "status": "fail",
           "tracking": "#3 (memory/project_asyncio_p0_arc)"
-        }
-      }
-    },
-    "tests/differential/stdlib/ast_basic.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "native-micro-feature-gap (stdlib_ast) #13",
-          "root_cause": "native micro profile (the default for small programs) excludes the stdlib_ast cargo feature by design (rustpython-parser ~2MB, binary-size tradeoff), so molt_ast_get_docstring / molt_ast_iter_child_nodes / molt_ast_iter_fields are undefined symbols at link and the binary fails to build; the runtime DEFINES them (builtins/ast.rs, #[unsafe(no_mangle)]) but they are gated behind #[cfg(feature=\"stdlib_ast\")] which native micro never enables (cli.py _runtime_builtin_features_for_profile)",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail'); confirmed in TWO clean isolated jobs=1 re-runs (identical 'Undefined symbols: _molt_ast_get_docstring/_molt_ast_iter_child_nodes/_molt_ast_iter_fields'); deterministic/contention-immune (a missing symbol is a property of the feature-gated archive, not a build-storm artifact); verified the symbols are absent from libmolt_runtime.a and gated by feature=stdlib_ast in builtins/mod.rs (task #55 stdlib calibration)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_barrier_basic.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): coroutine driver does not propagate gathered task results when coroutines suspend more than once (asyncio.gather + Barrier.wait) -> the result list comes back empty instead of CPython's [0, 1]; silent wrong result (both exit 0)",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch: built+ran+diverged); confirmed in clean isolated jobs=1 re-run -- a mismatch is contention-immune (a build storm can only build-FAIL, not fake a ran+diverged result); divergence captured: CPython stdout '[0, 1]' vs Molt stdout '[]' (task #55 stdlib calibration)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_as_completed_timeout_results.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): multi-suspend task result is never set on its future -> _EventLoop.run_until_complete -> Future.result(completed) raises InvalidStateError('Result is not ready') (asyncio/__init__.py:4027 -> 780), exactly signature (a) in the asyncio P0 arc baton; CPython prints [('fast','str'),('timeout','TimeoutError')] and exits 0, Molt exits 1",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch: built+ran+diverged); confirmed in clean isolated jobs=1 re-run (contention-immune mismatch); divergence captured: Molt raises InvalidStateError: Result is not ready, CPython returns the as_completed results (task #55 stdlib calibration)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_call_at_fifo_tiebreak.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): loop.call_at-scheduled callbacks' results are not propagated to the awaiting coroutine -> Molt raises InvalidStateError('Result is not ready') (asyncio/__init__.py:4027->780) and prints '[]' before reaching the test's order assertion; CPython reaches the assertion (and on 3.14.5 the test's own FIFO-tiebreak assertion is order-sensitive)",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run (contention-immune mismatch); divergence: Molt stdout '[]' + InvalidStateError vs CPython collecting the call_at results (task #55 calib55b storm-batch isolated re-verify)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): loop.call_later/call_at callback results not propagated -> Molt first output line is '[]' instead of CPython's [('at','override'),('later','override')] (the closed-loop RuntimeError second line matches); silent partial wrong result (both exit 0)",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '[]' vs CPython [('at','override'),('later','override')] on line 1 (task #55 calib55b storm-batch)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_call_later_fifo_tiebreak.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): call_later-scheduled results not propagated -> Molt raises InvalidStateError('Result is not ready') and prints '[]'; CPython returns ['first','second','third'] and exits 0",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence: Molt InvalidStateError vs CPython ['first','second','third'] (task #55 calib55b storm-batch)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_call_soon_order.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): call_soon-scheduled callback results not propagated to the awaiting coroutine -> Molt prints '[]' (empty) and exits 0; CPython prints ['a','b']; silent wrong result",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '[]' vs CPython ['a','b'] (task #55 calib55b storm-batch)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_cancel_sleep.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): cancellation of a sleeping task does not propagate the cancelled/caught path results -> Molt prints '' (empty) and exits 0; CPython prints 'cancelled\\ncaught'; multi-await coroutine result/cancellation not delivered",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '' vs CPython 'cancelled\\ncaught' (task #55 calib55b storm-batch)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_cancel_try_finally.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "#3 (memory/project_asyncio_p0_arc)",
-          "root_cause": "async/await runtime gap (bug #3): CancelledError crossing a try/finally-around-await is not propagated (exactly the try/finally-around-await case named in the asyncio P0 arc baton) -> Molt prints '[]' and exits 0; CPython propagates CancelledError and exits 1",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'fail', mismatch); confirmed in clean isolated jobs=1 re-run; divergence captured: Molt '[]' exit 0 vs CPython CancelledError exit 1 (task #55 calib55b storm-batch)"
-        }
-      }
-    },
-    "tests/differential/stdlib/asyncio_close_running_loop.py": {
-      "dimensions": {
-        "native": {
-          "status": "fail",
-          "tracking": "asyncio-run-forever-hang (crash-class HANG/OOM) #3",
-          "root_cause": "loop.run_forever() does not terminate when loop.stop() is called from a call_soon-scheduled callback -> infinite event-loop spin -> unbounded allocation -> OOM (the most severe class). The test: loop.call_soon(attempt_close) then loop.run_forever(), where attempt_close()'s finally calls loop.stop(). CPython exits 0 (RuntimeError on close of a running loop is caught, stop() breaks run_forever); Molt hangs. SUPERVISOR-TICKET: distinct from #3's task-result propagation \u2014 this is a run_forever/stop termination bug in the event-loop driver.",
-          "evidence": "calibrated-run 2026-06-06 native@3.14 via tests/molt_diff.py (raw 'oom'); confirmed deterministic in a clean isolated jobs=1 re-run (raw 'oom') AND a second full-output re-run that hung for the entire 240s outer timeout with NO verdict/result line (true infinite-loop, not a transient RSS spike); NOT fixed per crash-class policy, summarized for supervisor (task #55 calib55b storm-batch)"
         }
       }
     }

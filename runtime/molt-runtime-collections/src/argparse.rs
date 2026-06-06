@@ -137,11 +137,14 @@ struct MutexGroup {
 struct SubGroup {
     title: String,
     dest: Option<String>,
+    /// Whether a subcommand must be provided (argparse `required=True`).
+    required: bool,
     /// sub-command name → sub-parser handle id
     parsers: HashMap<String, i64>,
 }
 
 /// Per-parser state.
+#[derive(Clone)]
 struct ParserState {
     prog: Option<String>,
     description: Option<String>,
@@ -273,7 +276,11 @@ impl ParserState {
     ///
     /// On success returns `Ok(HashMap<String, ParsedVal>)`.
     /// On error returns `Err(error_message)`.
-    fn parse_args_vec(&self, raw: &[String]) -> Result<HashMap<String, ParsedVal>, String> {
+    fn parse_args_vec(
+        &self,
+        raw: &[String],
+        resolve_sub: &dyn Fn(i64) -> Option<ParserState>,
+    ) -> Result<HashMap<String, ParsedVal>, String> {
         let mut result: HashMap<String, ParsedVal> = HashMap::new();
 
         // Install defaults
@@ -405,18 +412,39 @@ impl ParserState {
             } else {
                 // Positional
                 if positional_idx >= positionals.len() {
-                    // Could be a sub-command
+                    // Could be a sub-command. When it matches, the sub-parser
+                    // consumes every remaining token (mirroring CPython's
+                    // `_SubParsersAction.__call__`): record the chosen command in
+                    // the group's `dest`, recursively parse the rest with the
+                    // sub-parser's own state, and merge its results.
                     if let Some(sg) = &self.sub_group {
-                        if let Some(sub_id) = sg.parsers.get(tok.as_str()) {
-                            if let Some(dest) = &sg.dest {
-                                result.insert(dest.clone(), ParsedVal::Str(tok.clone()));
-                            }
-                            result.insert("__sub_id__".to_string(), ParsedVal::Int(*sub_id));
-                        } else {
-                            return Err(format!("invalid choice: {tok}"));
+                        let Some(sub_id) = sg.parsers.get(tok.as_str()).copied() else {
+                            let mut choices: Vec<&str> =
+                                sg.parsers.keys().map(String::as_str).collect();
+                            choices.sort_unstable();
+                            return Err(format!(
+                                "argument {}: invalid choice: '{}' (choose from {})",
+                                sg.dest.as_deref().unwrap_or("command"),
+                                tok,
+                                choices
+                                    .iter()
+                                    .map(|c| format!("'{c}'"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        };
+                        if let Some(dest) = &sg.dest {
+                            result.insert(dest.clone(), ParsedVal::Str(tok.clone()));
                         }
-                        i += 1;
-                        continue;
+                        let Some(sub_state) = resolve_sub(sub_id) else {
+                            return Err(format!("subparser '{tok}' is not configured"));
+                        };
+                        let child = sub_state.parse_args_vec(&raw[i + 1..], resolve_sub)?;
+                        for (key, value) in child {
+                            result.insert(key, value);
+                        }
+                        // The sub-parser consumed the remainder.
+                        return finalize_required(result, &self.args, &self.sub_group);
                     }
                     return Err(format!("unrecognized arguments: {tok}"));
                 }
@@ -427,20 +455,45 @@ impl ParserState {
             }
         }
 
-        // Validate required arguments
-        for a in &self.args {
-            if a.required {
-                match result.get(&a.dest) {
-                    None | Some(ParsedVal::None) => {
-                        return Err(format!("required argument missing: {}", a.name));
-                    }
-                    _ => {}
+        finalize_required(result, &self.args, &self.sub_group)
+    }
+}
+
+/// Validate that all required arguments (and a required subparsers group) are
+/// present, returning the result map unchanged on success.
+fn finalize_required(
+    result: HashMap<String, ParsedVal>,
+    args: &[ArgDef],
+    sub_group: &Option<SubGroup>,
+) -> Result<HashMap<String, ParsedVal>, String> {
+    for a in args {
+        if a.required {
+            match result.get(&a.dest) {
+                None | Some(ParsedVal::None) => {
+                    return Err(format!("required argument missing: {}", a.name));
                 }
+                _ => {}
             }
         }
-
-        Ok(result)
     }
+    if let Some(sg) = sub_group
+        && sg.required
+    {
+        let chosen = sg
+            .dest
+            .as_ref()
+            .map(|dest| matches!(result.get(dest), Some(ParsedVal::Str(_))))
+            .unwrap_or(false);
+        if !chosen {
+            let mut choices: Vec<&str> = sg.parsers.keys().map(String::as_str).collect();
+            choices.sort_unstable();
+            return Err(format!(
+                "the following arguments are required: {}",
+                sg.dest.as_deref().unwrap_or("command")
+            ));
+        }
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -875,18 +928,38 @@ pub extern "C" fn molt_argparse_parse_args(handle_bits: u64, args_bits: u64) -> 
             Err(bits) => return bits,
         };
 
-        let result = argparse_state()
-            .parser_handles
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|state| state.parse_args_vec(&raw));
-
-        let Some(parse_result) = result else {
-            return raise_exception::<u64>(_py, "ValueError", "argparse handle not found");
+        // Snapshot the root parser and every reachable sub-parser state under a
+        // single lock, then parse without holding the lock (the recursive
+        // sub-parser delegation in `parse_args_vec` would otherwise need to
+        // re-enter the same lock). Sub-parsers are static after construction, so
+        // a clone is a faithful view.
+        let states: HashMap<i64, ParserState> = {
+            let parsers = argparse_state().parser_handles.lock().unwrap();
+            if !parsers.contains_key(&id) {
+                return raise_exception::<u64>(_py, "ValueError", "argparse handle not found");
+            }
+            let mut snapshot: HashMap<i64, ParserState> = HashMap::new();
+            let mut pending = vec![id];
+            while let Some(pid) = pending.pop() {
+                if snapshot.contains_key(&pid) {
+                    continue;
+                }
+                let Some(state) = parsers.get(&pid) else {
+                    continue;
+                };
+                if let Some(sg) = &state.sub_group {
+                    for sub_id in sg.parsers.values() {
+                        pending.push(*sub_id);
+                    }
+                }
+                snapshot.insert(pid, state.clone());
+            }
+            snapshot
         };
 
-        match parse_result {
+        let root = states.get(&id).expect("root state snapshotted above");
+        let resolve = |sub_id: i64| states.get(&sub_id).cloned();
+        match root.parse_args_vec(&raw, &resolve) {
             Ok(map) => result_to_dict(_py, map),
             Err(msg) => raise_exception::<u64>(_py, "SystemExit", &msg),
         }
@@ -952,6 +1025,7 @@ pub extern "C" fn molt_argparse_add_subparsers(
     handle_bits: u64,
     title_bits: u64,
     dest_bits: u64,
+    required_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
@@ -960,6 +1034,7 @@ pub extern "C" fn molt_argparse_add_subparsers(
         let title = string_obj_to_owned(obj_from_bits(title_bits))
             .unwrap_or_else(|| "subcommands".to_string());
         let dest = opt_str(dest_bits);
+        let required = is_truthy(_py, obj_from_bits(required_bits));
 
         let group_id = next_handle_id();
         let ok = {
@@ -968,6 +1043,7 @@ pub extern "C" fn molt_argparse_add_subparsers(
                 state.sub_group = Some(SubGroup {
                     title,
                     dest,
+                    required,
                     parsers: HashMap::new(),
                 });
                 true
