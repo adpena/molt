@@ -44,9 +44,7 @@ def _function_contains_yield(
             stack.extend(current.decorator_list)
             stack.extend(current.args.defaults)
             stack.extend(
-                default
-                for default in current.args.kw_defaults
-                if default is not None
+                default for default in current.args.kw_defaults if default is not None
             )
             push_arg_annotations(stack, current.args)
             if current.returns is not None:
