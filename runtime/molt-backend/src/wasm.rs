@@ -6035,7 +6035,7 @@ impl WasmBackend {
                     &locals,
                     func_index,
                     reloc_enabled,
-                    &import_ids,
+                    import_ids,
                     ctx.const_str_scratch_segment,
                 );
             }
@@ -6155,7 +6155,7 @@ impl WasmBackend {
                         {
                             continue;
                         }
-                        if !last_use_local.get(name).is_some_and(|last| *last > rel_idx) {
+                        if last_use_local.get(name).is_none_or(|last| *last <= rel_idx) {
                             continue;
                         }
                         live.insert(local_idx);
@@ -12379,8 +12379,7 @@ impl WasmBackend {
                         // before pushing the callee args so the operand
                         // stack discipline stays correct (`arena_free`
                         // consumes exactly its own argument).
-                        if is_tail_call && arena_local.is_some() {
-                            let arena_idx = arena_local.unwrap();
+                        if is_tail_call && let Some(arena_idx) = arena_local {
                             func.instruction(&Instruction::LocalGet(arena_idx));
                             emit_call(func, reloc_enabled, import_ids["arena_free"]);
                         }
@@ -12494,18 +12493,18 @@ impl WasmBackend {
                             .or_else(|| op.args.as_ref().and_then(|args| args.first()))
                             .expect("load_var/copy_var requires source");
                         let src = locals[src_name];
-                        if let Some(out_name) = op.out.as_ref() {
-                            if out_name != "none" {
-                                // These ops create a second live alias of the
-                                // source object bits. Take a new ref for the
-                                // destination so later cleanup of the source
-                                // name cannot invalidate the alias.
-                                func.instruction(&Instruction::LocalGet(src));
-                                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                                let out = locals[out_name];
-                                func.instruction(&Instruction::LocalGet(src));
-                                func.instruction(&Instruction::LocalSet(out));
-                            }
+                        if let Some(out_name) = op.out.as_ref()
+                            && out_name != "none"
+                        {
+                            // These ops create a second live alias of the
+                            // source object bits. Take a new ref for the
+                            // destination so later cleanup of the source
+                            // name cannot invalidate the alias.
+                            func.instruction(&Instruction::LocalGet(src));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                            let out = locals[out_name];
+                            func.instruction(&Instruction::LocalGet(src));
+                            func.instruction(&Instruction::LocalSet(out));
                         }
                     }
                     "box" | "unbox" | "cast" | "widen" => {

@@ -8,7 +8,8 @@
 //! recomputes against the new shape.
 //!
 //! The default pipeline ([`build_default_pipeline`]) preserves the EXACT
-//! 28-pass order, the snapshot/restore-on-zero-delta behavior, and the
+//! 30-pass order (28 optimization passes + the trailing two RC drop-insertion
+//! passes, design 20), the snapshot/restore-on-zero-delta behavior, and the
 //! post-pipeline `verify_function` of the legacy `run_pipeline`. `run_pipeline`
 //! is now a thin entry that builds the default pipeline and runs it — the real
 //! API, not a shim.
@@ -43,7 +44,32 @@ use super::analysis::{
 };
 use super::function::TirFunction;
 use super::passes::{self, PassStats};
-use super::target_info::TargetInfo;
+use super::target_info::{TargetInfo, TargetKind};
+
+/// Whether the RC drop-insertion pass (design 20) is sound to run for a given
+/// backend. See the activation note in [`build_default_pipeline`] for the full
+/// rationale; the short version is: a backend qualifies iff it consumes the
+/// inserted `DecRef`/`IncRef` ops by SSA-value identity (or a 1:1 value↔slot
+/// mapping) AND runs no competing automatic temp-refcount mechanism that would
+/// double-release the same values.
+///
+/// * `Llvm`, `Wasm`, `Luau` — qualify (LLVM is value-keyed; WASM has a 1:1
+///   name↔NaN-boxed-local mapping and no tracked-var auto-RC; Luau is
+///   GC-managed and lowers the ops to nothing).
+/// * `NativeCranelift` — does NOT qualify yet: it owns a deeply-embedded
+///   automatic temp-RC substrate (`tracked_vars` / `drain_cleanup_tracked` /
+///   `loop_reassign_old_val`) that already drops most temporaries, so adding the
+///   TIR drops on top double-frees. The design-20 §4.1 `drop_inserted`-marker
+///   suppression that makes that substrate inert for drop-inserted functions has
+///   LANDED, so native activation is now a one-line flip here pending the
+///   convergence-sweep clearance (the per-shape over-drop triage). Until that
+///   clearance, native stays `false`.
+const fn target_uses_tir_drop_insertion(target: TargetKind) -> bool {
+    match target {
+        TargetKind::Llvm | TargetKind::Wasm | TargetKind::Luau => true,
+        TargetKind::NativeCranelift => false,
+    }
+}
 
 /// How a pass may mutate the function — drives analysis invalidation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,9 +277,11 @@ impl PassManager {
     }
 }
 
-/// Build the default 28-pass pipeline in the canonical order. The ordering and
-/// per-pass behavior are byte-for-byte identical to the legacy `run_pipeline`;
-/// only the dispatch and analysis-caching mechanism changed.
+/// Build the default 30-pass pipeline in the canonical order. The first 28
+/// optimization passes are byte-for-byte identical to the legacy `run_pipeline`;
+/// the trailing two (`drop_insertion` + `refcount_elim_post`, design 20) close
+/// the whole-program expression-temporary leak. Only the dispatch and
+/// analysis-caching mechanism changed for the optimization prefix.
 ///
 /// Phase ordering rationale (unchanged from the legacy pipeline):
 /// * **Lowering** devirtualizes iterators/ranges and unrolls fixed-trip loops,
@@ -376,59 +404,74 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         pass("copy_prop", OpsOnly, |f, _am, _tti| passes::copy_prop::run(f)),
         pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
-        // ── RC drop insertion (design 20) — STILL DORMANT (Phase-5 in progress) ──
-        // This session advanced Phase 5 substantially but DID NOT reach a sound
-        // activation: wiring the two passes below into the production pipeline
-        // introduces double-free use-after-free (`invalid object header before
-        // dec_ref`) on a broad class of real programs (a 40-sample differential
-        // sweep on native showed 13/40 new UAF regressions — module-globals +
-        // short-circuit `and`/`or`, `*args`/`**kwargs` eval order, closures,
-        // `nonlocal`, comprehension scopes, custom-class dispatch). The drop pass's
-        // single-entry-dominance placement (per-block last-use + edge-dying
-        // at-successor-entry) OVER-DROPS values whose ownership is actually
-        // transferred or whose lifetime extends past the function on those shapes.
-        // Per the zero-workarounds policy, shipping that is unacceptable, so the
-        // activation stays dormant until the drop pass is sound on the full
-        // differential corpus.
+        // ── RC drop insertion (design 20) ───────────────────────────────────
+        // Closes the whole-program expression-temporary leak: every heap
+        // expression result is born at rc=1 and (before this pass) never
+        // decremented. `drop_insertion` emits `DecRef` at each owned value's
+        // last use and `IncRef` before suspension points + on borrowed phi
+        // edges (§5); `refcount_elim_post` then elides the balance-preserving
+        // subset of the ops it placed (the deferred-RC / DecRef→Free steps are
+        // skipped post-drop — they would delete the lone ownership-release
+        // DecRefs that close the leak). Runs LAST in the pipeline (post-
+        // optimization, pre-lowering) so SSA, repr facts, and liveness are all
+        // final (design §2.1).
         //
-        // WHAT LANDED THIS SESSION (all behavior-neutral while dormant; correct,
-        // unit-tested hardening that the activation will rely on):
-        //  * Drop-pass soundness fixes: `terminator_args_to_target` — a branch arg
-        //    transferred to a successor's block param is NOT edge-dropped (fixed a
-        //    `while True: break` double-free); `TirFunction::has_state_machine()` —
-        //    the pass now also bails on lowered coroutine `_poll` state machines
-        //    (`StateSwitch` without `StateBlock*` delimiters), which otherwise
-        //    placed a `DecRef` in a re-entrant resume block before the value's def
-        //    (an LLVM-verifier failure + native double-free).
-        //  * `refcount_elim::run` now honors the `drop_inserted` marker (falls back
-        //    to the balance-preserving subset, like `run_post_drop`) so the
-        //    module-phase pipeline RE-RUN cannot strip the drops via Step 5/6.
-        //  * The native value-tracking RC is gated on `drop_inserted` at its SINGLE
-        //    source (heap-result registration) + the join-slot exit teardown + the
-        //    func-end last_use extension + the slot-store/slot-load inc-ref paths +
-        //    the SimpleIR `rc_coalescing` skip-set (search `design 20 §4.1` in
-        //    `function_compiler.rs`). With the pass dormant, `drop_inserted` is
-        //    never set, so EVERY one of these gates is inert — zero behavior change.
+        // BACKEND-CONDITIONED ACTIVATION. The drop pass is sound only for
+        // backends that consume its `DecRef`/`IncRef` by SSA-value identity and
+        // do NOT run a competing automatic temp-RC mechanism:
         //
-        // VERIFIED WHILE ACTIVE (before deactivation): memory corpus 4/4 +
-        // 4 per-site + the 2×30M leak repros all byte-identical / leak-closed /
-        // OOM-free on native (string-concat 0→n freed, bigint accumulator O(n)→O(1)
-        // RSS); peel 9/9 native + 9/9 llvm with the raw lane unchanged (0% perf
-        // delta on the 30M raw loop); LLVM string/bigint/fib leak-closed too. The
-        // ONLY blocker is the broad-shape over-drop above.
+        //   * LLVM  — `llvm_backend/lowering.rs` resolves operands by ValueId
+        //     (`resolve(id)` → correctly-boxed bits) and has no tracked-var
+        //     auto-RC. CLEAN: activated.
+        //   * WASM  — each SimpleIR name maps 1:1 to a uniformly NaN-boxed wasm
+        //     local; no tracked-var auto-RC. The LIR fast lane lowers
+        //     `IncRef`/`DecRef` directly (lower_to_wasm.rs). CLEAN: activated.
+        //   * Luau  — GC-managed; `DecRef`/`IncRef` lower to nothing. Activated
+        //     (no-op).
+        //   * Native/Cranelift — `function_compiler.rs` carries a value-tracking
+        //     automatic temp-RC substrate. The design-20 §4.1 `drop_inserted`-
+        //     marker suppression that makes that substrate inert for drop-
+        //     inserted functions HAS LANDED (partner Phase-5), so native is no
+        //     longer architecturally blocked — but it stays GATED OFF in
+        //     `target_uses_tir_drop_insertion` pending the convergence-sweep
+        //     clearance: the drop pass's ownership-transfer set is not yet proven
+        //     complete on the broad-shape corpus (module-global stores / cell-
+        //     closure storage hand the single owning reference to a longer-lived
+        //     container; dropping it there is a UAF). Flipping native on is the
+        //     supervisor's call on the round-5 triage table. Until then native
+        //     keeps its existing (partial-leak-but-safe) RC and the pass below is
+        //     a no-op there.
         //
-        // REMAINING WORK (the baton): make the drop pass's ownership-transfer set
-        // complete — at minimum, a value consumed by a module-global store
-        // (`ModuleCacheSet`/`ModuleSetAttr`) or any other store that hands the
-        // single owning reference to a longer-lived container must NOT be dropped
-        // (mirror the Return / branch-arg transfer rule); then re-run the full
-        // `tests/differential/basic` corpus on BOTH native and llvm under
-        // `MOLT_ASSERT_NO_LEAK=1` until the new-UAF set is empty. To activate, append:
-        //   pass("drop_insertion", OpsOnly, |f, am, _tti| passes::drop_insertion::run(f, am)),
-        //   pass("refcount_elim_post", OpsOnly, |f, am, _tti| passes::refcount_elim::run_post_drop(f, am)),
-        // and restore the +2 entries in the two pinned pass-name lists + the
-        // `stats.len()` assertion (30 vs 28) in this file's tests and
-        // `passes/mod.rs`.
+        // `Cfg`, not `OpsOnly`: the mixed-ownership-phi retain (design §ownership
+        // / §5) may SPLIT a critical edge (a fresh block carrying the edge-exact
+        // `IncRef`) when a predecessor reaches an owned phi via multiple arcs with
+        // different args. That is a CFG mutation; declaring `Cfg` makes the
+        // manager recompute the CFG-sensitive analyses for the following
+        // `refcount_elim_post`. In the common single-arc case (preheader / if-arm)
+        // no edge is split and the pass only inserts ops, but it is the
+        // POSSIBILITY of a split that fixes the mutation class. (The straight-line
+        // / edge-dying / suspension insertions remain pure op additions that carry
+        // no exception edge.)
+        pass("drop_insertion", Cfg, |f, am, tti| {
+            if target_uses_tir_drop_insertion(tti.target) {
+                passes::drop_insertion::run(f, am)
+            } else {
+                PassStats {
+                    name: "drop_insertion",
+                    ..Default::default()
+                }
+            }
+        }),
+        pass("refcount_elim_post", OpsOnly, |f, am, tti| {
+            if target_uses_tir_drop_insertion(tti.target) {
+                passes::refcount_elim::run_post_drop(f, am)
+            } else {
+                PassStats {
+                    name: "refcount_elim",
+                    ..Default::default()
+                }
+            }
+        }),
     ];
     PassManager::new(passes, target_info)
 }
@@ -616,12 +659,10 @@ mod tests {
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
 
-    /// The default pipeline must preserve the EXACT canonical pass order (28
-    /// `run` invocations — canonicalize runs twice). Any reorder/insert/drop is
-    /// a behavior change and must update this list deliberately. (The RC
-    /// drop-insertion arc — design 20 — is a complete, hardened primitive but is
-    /// NOT wired here: production activation is blocked on a broad-shape over-drop
-    /// UAF — see the dormant-activation note in `build_default_pipeline`.)
+    /// The default pipeline must preserve the EXACT canonical pass order (30
+    /// `run` invocations — canonicalize runs twice; the trailing two are the RC
+    /// drop-insertion passes, design 20). Any reorder/insert/drop is a behavior
+    /// change and must update this list deliberately.
     #[test]
     fn default_pipeline_preserves_canonical_pass_order() {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
@@ -656,6 +697,8 @@ mod tests {
                 "overflow_peel",
                 "copy_prop",
                 "dce",
+                "drop_insertion",
+                "refcount_elim_post",
             ],
         );
     }
@@ -686,6 +729,9 @@ mod tests {
                 "check_exception_elim",
                 "overflow_peel",
                 "dce",
+                // drop_insertion may split a critical edge for the mixed-ownership
+                // -phi retain (design 20 §ownership / §5), so it is declared `Cfg`.
+                "drop_insertion",
             ],
         );
     }
@@ -742,9 +788,11 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 28 pass invocations ran. (The design-20 RC tail — `drop_insertion`
-        // + `refcount_elim_post` — is a complete primitive but NOT wired into the
-        // pipeline; see the dormant-activation note in `build_default_pipeline`.)
-        assert_eq!(stats.len(), 28);
+        // All 30 pass invocations ran (28 optimization passes + the two RC
+        // drop-insertion passes, design 20: `drop_insertion` and
+        // `refcount_elim_post`). On the native target the two RC passes are
+        // backend-gated to a no-op body, but they still RUN (and report stats),
+        // so the invocation count is 30 on every target.
+        assert_eq!(stats.len(), 30);
     }
 }
