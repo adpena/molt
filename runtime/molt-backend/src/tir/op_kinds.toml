@@ -1313,3 +1313,708 @@ mapper_opcode = "ModuleDelGlobalIfPresent"
 canonical = "warn_stderr"
 aliases = []
 mapper_opcode = "WarnStderr"
+
+# ===========================================================================
+# Frontend pre-serialization op.kind tables (molt task #44, F2a — absorb the
+# three hand-kept frontend tables that previously lived in
+# src/molt/frontend/__init__.py). These describe the FRONTEND's UPPERCASE
+# `op.kind` vocabulary (what the visit/emit walk produces BEFORE
+# serialization lowercases it to the wire `[[kind]]` spelling above), which is a
+# DISTINCT vocabulary from the wire kinds: e.g. the frontend emits
+# `GETATTR_GENERIC_OBJ` which serialization rewrites to the wire kind
+# `get_attr_generic_obj`. tools/gen_op_kinds.py renders these into
+# src/molt/frontend/lowering/op_kinds_generated.py as RAISING_KIND_NAMES,
+# CHECK_EXCEPTION_SKIP_KINDS, AUGASSIGN_OP_KIND and BINOP_OP_KIND, killing the
+# frontend⇄backend dual raising-oracle (the residual task-#42 drift vector).
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# RAISING_KIND_NAMES — frontend `op.kind`s that can raise at runtime, so emit()
+# attaches the expression-level col_offset for traceback caret annotations.
+# Replaces the hand-kept `_RAISING_OP_KINDS` frozenset.
+#
+# Each row is one frontend UPPERCASE `op.kind`, in exactly ONE of two forms:
+#
+#   opcode = "<OpCode>"  — the kind lowercases to a wire `[[kind]]` spelling
+#       whose mapper_opcode is this OpCode, and that OpCode is `may_throw = true`
+#       above. The generator ASSERTS may_throw==true for this OpCode, so flipping
+#       an opcode to nothrow while leaving it raising here is a generation-time
+#       FAILURE — the structural kill for the dual raising-oracle drift. The
+#       toml `[[opcode]]` oracle is canonical for these.
+#
+#   reason = "..."       — a FRONTEND-SPECIFIC raising kind that cannot derive
+#       from the `[[opcode]]` oracle, in two sub-cases documented per row:
+#         (a) pre-specialization: the kind lowercases to a wire kind whose
+#             OpCode is nothrow (the proven typed int/float lane), but the
+#             FRONTEND op is emitted BEFORE type specialization and may lower to
+#             a boxed/dunder path that raises (e.g. `a + b` → TypeError). The
+#             caret col must attach on the pre-specialization op.
+#         (b) preserved-Copy / no-[[kind]]-row: a frontend-internal op.kind that
+#             serialization rewrites to a may-throw wire kind with no first-class
+#             mapper opcode (lifted to Copy{_original_kind} + symbol dispatch);
+#             observably raising by effects.rs/alias_analysis.rs construction.
+# ---------------------------------------------------------------------------
+
+# OPCODE-MAPPED-RAISING: kind ⇒ may_throw OpCode (cross-checked at generation).
+[[frontend_raising_kind]]
+kind = "DIV"
+opcode = "Div"
+
+[[frontend_raising_kind]]
+kind = "FLOORDIV"
+opcode = "FloorDiv"
+
+[[frontend_raising_kind]]
+kind = "MOD"
+opcode = "Mod"
+
+[[frontend_raising_kind]]
+kind = "POW"
+opcode = "Pow"
+
+[[frontend_raising_kind]]
+kind = "LSHIFT"
+opcode = "Shl"
+
+[[frontend_raising_kind]]
+kind = "RSHIFT"
+opcode = "Shr"
+
+[[frontend_raising_kind]]
+kind = "GET_ATTR"
+opcode = "LoadAttr"
+
+[[frontend_raising_kind]]
+kind = "SET_ATTR"
+opcode = "StoreAttr"
+
+[[frontend_raising_kind]]
+kind = "DEL_ATTR"
+opcode = "DelAttr"
+
+[[frontend_raising_kind]]
+kind = "MODULE_GET_ATTR"
+opcode = "ModuleGetAttr"
+
+[[frontend_raising_kind]]
+kind = "MODULE_IMPORT_FROM"
+opcode = "ModuleImportFrom"
+
+[[frontend_raising_kind]]
+kind = "MODULE_GET_GLOBAL"
+opcode = "ModuleGetGlobal"
+
+[[frontend_raising_kind]]
+kind = "INDEX"
+opcode = "Index"
+
+[[frontend_raising_kind]]
+kind = "STORE_INDEX"
+opcode = "StoreIndex"
+
+[[frontend_raising_kind]]
+kind = "DEL_INDEX"
+opcode = "DelIndex"
+
+[[frontend_raising_kind]]
+kind = "CALL"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_FUNC"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_METHOD"
+opcode = "CallMethod"
+
+[[frontend_raising_kind]]
+kind = "CALL_BUILTIN"
+opcode = "CallBuiltin"
+
+[[frontend_raising_kind]]
+kind = "CALL_INDIRECT"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_GUARDED"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "CALL_BIND"
+opcode = "Call"
+
+[[frontend_raising_kind]]
+kind = "GET_ITER"
+opcode = "GetIter"
+
+[[frontend_raising_kind]]
+kind = "ITER_NEXT"
+opcode = "IterNext"
+
+[[frontend_raising_kind]]
+kind = "FOR_ITER"
+opcode = "ForIter"
+
+[[frontend_raising_kind]]
+kind = "IMPORT"
+opcode = "Import"
+
+[[frontend_raising_kind]]
+kind = "IMPORT_FROM"
+opcode = "ImportFrom"
+
+# FRONTEND-SPECIFIC (a) pre-specialization: the typed OpCode (Add/Sub/Mul/Bit*/
+# InplaceAdd/Sub/Mul/Eq/Ne/Lt/Le/Gt/Ge) is nothrow, but the frontend emits the
+# op BEFORE type specialization, so it may lower to a boxed/dunder path that
+# raises (TypeError/__add__ raising/OverflowError); the caret col must attach.
+[[frontend_raising_kind]]
+kind = "ADD"
+reason = "pre-specialization: OpCode::Add is the nothrow typed lane, but a pre-spec `a + b` may lower to boxed molt_add / __add__ which raises"
+
+[[frontend_raising_kind]]
+kind = "SUB"
+reason = "pre-specialization: OpCode::Sub is the nothrow typed lane, but a pre-spec `a - b` may lower to boxed molt_sub / __sub__ which raises"
+
+[[frontend_raising_kind]]
+kind = "MUL"
+reason = "pre-specialization: OpCode::Mul is the nothrow typed lane, but a pre-spec `a * b` may lower to boxed molt_mul / __mul__ which raises"
+
+[[frontend_raising_kind]]
+kind = "BIT_AND"
+reason = "pre-specialization: OpCode::BitAnd is the nothrow typed lane, but a pre-spec `a & b` may lower to boxed molt_bit_and / __and__ which raises"
+
+[[frontend_raising_kind]]
+kind = "BIT_OR"
+reason = "pre-specialization: OpCode::BitOr is the nothrow typed lane, but a pre-spec `a | b` may lower to boxed molt_bit_or / __or__ which raises"
+
+[[frontend_raising_kind]]
+kind = "BIT_XOR"
+reason = "pre-specialization: OpCode::BitXor is the nothrow typed lane, but a pre-spec `a ^ b` may lower to boxed molt_bit_xor / __xor__ which raises"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_ADD"
+reason = "pre-specialization: OpCode::InplaceAdd is the nothrow typed lane, but a pre-spec `a += b` may lower to boxed molt_inplace_add / __iadd__ which raises"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_SUB"
+reason = "pre-specialization: OpCode::InplaceSub is the nothrow typed lane, but a pre-spec `a -= b` may lower to boxed molt_inplace_sub / __isub__ which raises"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_MUL"
+reason = "pre-specialization: OpCode::InplaceMul is the nothrow typed lane, but a pre-spec `a *= b` may lower to boxed molt_inplace_mul / __imul__ which raises"
+
+[[frontend_raising_kind]]
+kind = "EQ"
+reason = "pre-specialization: OpCode::Eq is the nothrow typed lane, but a pre-spec `a == b` may lower to a boxed __eq__ which raises"
+
+[[frontend_raising_kind]]
+kind = "NE"
+reason = "pre-specialization: OpCode::Ne is the nothrow typed lane, but a pre-spec `a != b` may lower to a boxed __ne__ which raises"
+
+[[frontend_raising_kind]]
+kind = "LT"
+reason = "pre-specialization: OpCode::Lt is the nothrow typed lane, but a pre-spec `a < b` may lower to a boxed __lt__ which raises"
+
+[[frontend_raising_kind]]
+kind = "LE"
+reason = "pre-specialization: OpCode::Le is the nothrow typed lane, but a pre-spec `a <= b` may lower to a boxed __le__ which raises"
+
+[[frontend_raising_kind]]
+kind = "GT"
+reason = "pre-specialization: OpCode::Gt is the nothrow typed lane, but a pre-spec `a > b` may lower to a boxed __gt__ which raises"
+
+[[frontend_raising_kind]]
+kind = "GE"
+reason = "pre-specialization: OpCode::Ge is the nothrow typed lane, but a pre-spec `a >= b` may lower to a boxed __ge__ which raises"
+
+# FRONTEND-SPECIFIC (b) preserved-Copy / no-[[kind]]-row: frontend-internal
+# op.kinds that serialization rewrites to a may-throw wire kind with no
+# first-class mapper opcode. The inplace_* arith family serializes to
+# inplace_{div,floordiv,mod,pow,lshift,rshift,matmul,bit_*} (the molt_inplace_*
+# symbols raise ZeroDivisionError / negative-shift ValueError / TypeError); the
+# getattr_*/setattr_*/guarded_getattr family serializes to get_attr_*/set_attr_*
+# wire kinds (LoadAttr/StoreAttr aliases — AttributeError).
+[[frontend_raising_kind]]
+kind = "INPLACE_DIV"
+reason = "preserved-Copy: serializes to wire `inplace_div`; molt_inplace_div raises ZeroDivisionError"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_FLOORDIV"
+reason = "preserved-Copy: serializes to wire `inplace_floordiv`; molt_inplace_floordiv raises ZeroDivisionError"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_MOD"
+reason = "preserved-Copy: serializes to wire `inplace_mod`; molt_inplace_mod raises ZeroDivisionError"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_POW"
+reason = "preserved-Copy: serializes to wire `inplace_pow`; molt_inplace_pow raises (0 ** -1 ZeroDivisionError)"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_LSHIFT"
+reason = "preserved-Copy: serializes to wire `inplace_lshift`; molt_inplace_lshift raises ValueError on negative count"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_RSHIFT"
+reason = "preserved-Copy: serializes to wire `inplace_rshift`; molt_inplace_rshift raises ValueError on negative count"
+
+[[frontend_raising_kind]]
+kind = "INPLACE_MATMUL"
+reason = "preserved-Copy: serializes to wire `inplace_matmul`; molt_inplace_matmul dispatches __imatmul__/__matmul__ which raise"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_GENERIC_OBJ"
+reason = "frontend-internal: serializes to wire `get_attr_generic_obj` (LoadAttr alias, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_GENERIC_PTR"
+reason = "frontend-internal: serializes to wire `get_attr_generic_ptr` (LoadAttr alias, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_NAME"
+reason = "frontend-internal: serializes to wire `get_attr_name` (LoadAttr alias, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_NAME_DEFAULT"
+reason = "frontend-internal: serializes to wire `get_attr_name_default` (attribute fetch with default; raises AttributeError when no default applies)"
+
+[[frontend_raising_kind]]
+kind = "GETATTR_SPECIAL_OBJ"
+reason = "frontend-internal: serializes to wire `get_attr_special_obj` (dunder/special attribute fetch; raises AttributeError)"
+
+[[frontend_raising_kind]]
+kind = "GUARDED_GETATTR"
+reason = "frontend-internal: serializes to a guarded_field_get / get_attr_generic_* wire kind (LoadAttr family, may_throw); raises AttributeError"
+
+[[frontend_raising_kind]]
+kind = "SETATTR_GENERIC_OBJ"
+reason = "frontend-internal: serializes to wire `set_attr_generic_obj` (StoreAttr alias, may_throw); raises AttributeError/TypeError"
+
+[[frontend_raising_kind]]
+kind = "SETATTR_GENERIC_PTR"
+reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAttr alias, may_throw); raises AttributeError/TypeError"
+
+# ---------------------------------------------------------------------------
+# CHECK_EXCEPTION_SKIP_KINDS — frontend `op.kind`s after which emit() does NOT
+# auto-insert a CHECK_EXCEPTION. Replaces the hand-kept inline skip set.
+#
+# This is NOT the complement of may_throw: it is dominated by frontend-only
+# control-flow / structural op.kinds (LABEL/JUMP/IF/PHI/EXCEPTION_*/CALLARGS_*/
+# *_NEW/...) that have no `[[opcode]]` or `[[kind]]` presence at all, plus two
+# DELIBERATE may_throw members (RAISE, STATE_TRANSITION) whose exceptional edge
+# is handled structurally elsewhere (an unconditional raise / a generator state
+# transition's own LOOP_BREAK_IF_EXCEPTION machinery), so a trailing
+# CHECK_EXCEPTION would be dead/wrong. Each row is one frontend UPPERCASE
+# `op.kind`, in exactly ONE form:
+#
+#   opcode = "<OpCode>"                 — opcode-backed; the generator ASSERTS
+#       may_throw==false for it (drift guard: a kind that becomes may_throw must
+#       not silently remain skip-listed).
+#   opcode = "<OpCode>", control_flow = true
+#                                       — opcode-backed AND may_throw, but its
+#       exceptional control flow is structurally handled (RAISE/STATE_TRANSITION);
+#       the generator ASSERTS may_throw==true (the flag must be justified).
+#   reason = "..."                      — frontend-only control-flow/structural
+#       op.kind with no opcode (the bulk of the set).
+# ---------------------------------------------------------------------------
+
+# Opcode-backed, nothrow (cross-checked may_throw == false).
+[[frontend_check_exception_skip]]
+kind = "CHECK_EXCEPTION"
+opcode = "CheckException"
+
+[[frontend_check_exception_skip]]
+kind = "TRY_START"
+opcode = "TryStart"
+
+[[frontend_check_exception_skip]]
+kind = "TRY_END"
+opcode = "TryEnd"
+
+[[frontend_check_exception_skip]]
+kind = "STATE_YIELD"
+opcode = "StateYield"
+
+[[frontend_check_exception_skip]]
+kind = "CONST"
+opcode = "ConstInt"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_NONE"
+opcode = "ConstNone"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_BOOL"
+opcode = "ConstBool"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_STR"
+opcode = "ConstStr"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_FLOAT"
+opcode = "ConstFloat"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_BYTES"
+opcode = "ConstBytes"
+
+[[frontend_check_exception_skip]]
+kind = "IS"
+opcode = "Is"
+
+[[frontend_check_exception_skip]]
+kind = "IS_NOT"
+opcode = "IsNot"
+
+[[frontend_check_exception_skip]]
+kind = "NOT"
+opcode = "Not"
+
+[[frontend_check_exception_skip]]
+kind = "COPY"
+opcode = "Copy"
+
+[[frontend_check_exception_skip]]
+kind = "INC_REF"
+opcode = "IncRef"
+
+[[frontend_check_exception_skip]]
+kind = "DEC_REF"
+opcode = "DecRef"
+
+# Opcode-backed, may_throw, but exceptional edge handled structurally.
+[[frontend_check_exception_skip]]
+kind = "RAISE"
+opcode = "Raise"
+control_flow = true
+
+[[frontend_check_exception_skip]]
+kind = "STATE_TRANSITION"
+opcode = "StateTransition"
+control_flow = true
+
+# Frontend-only control-flow / structural op.kinds (no opcode, no [[kind]] row).
+[[frontend_check_exception_skip]]
+kind = "LABEL"
+reason = "control-flow: basic-block label"
+
+[[frontend_check_exception_skip]]
+kind = "STATE_LABEL"
+reason = "control-flow: generator/coroutine state label"
+
+[[frontend_check_exception_skip]]
+kind = "JUMP"
+reason = "control-flow: unconditional branch"
+
+[[frontend_check_exception_skip]]
+kind = "BR_IF"
+reason = "control-flow: conditional branch"
+
+[[frontend_check_exception_skip]]
+kind = "IF"
+reason = "control-flow: structured-if start"
+
+[[frontend_check_exception_skip]]
+kind = "ELSE"
+reason = "control-flow: structured-if else arm"
+
+[[frontend_check_exception_skip]]
+kind = "END_IF"
+reason = "control-flow: structured-if end"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_START"
+reason = "control-flow: structured-loop start"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_END"
+reason = "control-flow: structured-loop end"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_CONTINUE"
+reason = "control-flow: loop continue edge"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK"
+reason = "control-flow: loop break edge"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK_IF_TRUE"
+reason = "control-flow: conditional loop break"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK_IF_FALSE"
+reason = "control-flow: conditional loop break"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_BREAK_IF_EXCEPTION"
+reason = "control-flow: loop break on pending exception (IS itself the exception check)"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_INDEX_START"
+reason = "control-flow: counted-loop index init"
+
+[[frontend_check_exception_skip]]
+kind = "LOOP_INDEX_NEXT"
+reason = "control-flow: counted-loop index advance"
+
+[[frontend_check_exception_skip]]
+kind = "PHI"
+reason = "structural: SSA phi node"
+
+[[frontend_check_exception_skip]]
+kind = "RAISE_CAUSE"
+reason = "control-flow: raise-from; the raise IS the exceptional transfer"
+
+[[frontend_check_exception_skip]]
+kind = "RERAISE"
+reason = "control-flow: bare re-raise; IS the exceptional transfer"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_PUSH"
+reason = "structural: exception-handler-stack push (handler bookkeeping, not a throw site)"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_POP"
+reason = "structural: exception-handler-stack pop"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_CLEAR"
+reason = "structural: exception-handler-stack clear"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_ENTER"
+reason = "structural: exception-handler-stack scope enter"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_EXIT"
+reason = "structural: exception-handler-stack scope exit"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_DEPTH"
+reason = "structural: read exception-handler-stack depth"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_STACK_SET_DEPTH"
+reason = "structural: set exception-handler-stack depth"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_CLEAR"
+reason = "structural: clear the pending exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_LAST"
+reason = "structural: read the last/current exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_LAST_PENDING"
+reason = "structural: test for a pending exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_SET_CAUSE"
+reason = "structural: set __cause__ on an exception object"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_SET_LAST"
+reason = "structural: set the current/last exception slot"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_CONTEXT_SET"
+reason = "structural: set __context__ on an exception object"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_MATCH_BUILTIN"
+reason = "structural: except-clause type match test (pure predicate)"
+
+[[frontend_check_exception_skip]]
+kind = "CONTEXT_UNWIND_TO"
+reason = "control-flow: unwind handler context to a target depth"
+
+[[frontend_check_exception_skip]]
+kind = "LINE"
+reason = "structural: source-line debug marker"
+
+[[frontend_check_exception_skip]]
+kind = "TRACE_ENTER_SLOT"
+reason = "structural: tracing enter-slot marker"
+
+[[frontend_check_exception_skip]]
+kind = "TRACE_EXIT"
+reason = "structural: tracing exit marker"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_NOT_IMPLEMENTED"
+reason = "const: the NotImplemented singleton"
+
+[[frontend_check_exception_skip]]
+kind = "CONST_ELLIPSIS"
+reason = "const: the Ellipsis singleton"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_NEW"
+reason = "structural: call-args builder allocate"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_PUSH_POS"
+reason = "structural: call-args builder push positional"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_PUSH_KW"
+reason = "structural: call-args builder push keyword"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_EXPAND_STAR"
+reason = "structural: call-args builder *args expand (the trailing CALL carries the check)"
+
+[[frontend_check_exception_skip]]
+kind = "CALLARGS_EXPAND_KWSTAR"
+reason = "structural: call-args builder **kwargs expand (the trailing CALL carries the check)"
+
+[[frontend_check_exception_skip]]
+kind = "BORROW"
+reason = "rc: borrow a reference (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "RELEASE"
+reason = "rc: release a borrowed reference (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_NEW_BUILTIN_EMPTY"
+reason = "structural: construct a builtin exception object (no-arg); construction does not raise"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_NEW_BUILTIN_ONE"
+reason = "structural: construct a builtin exception object (one-arg); construction does not raise"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_NEW_BUILTIN"
+reason = "structural: construct a builtin exception object; construction does not raise"
+
+[[frontend_check_exception_skip]]
+kind = "MISSING"
+reason = "structural: the internal MISSING sentinel marker"
+
+[[frontend_check_exception_skip]]
+kind = "TUPLE_NEW"
+reason = "structural: tuple literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "LIST_NEW"
+reason = "structural: list literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "DICT_NEW"
+reason = "structural: dict literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "SET_NEW"
+reason = "structural: set literal construction (no throw)"
+
+[[frontend_check_exception_skip]]
+kind = "CODE_NEW"
+reason = "structural: code-object construction"
+
+[[frontend_check_exception_skip]]
+kind = "FUNC_NEW"
+reason = "structural: function-object construction"
+
+[[frontend_check_exception_skip]]
+kind = "CODE_SLOT_SET"
+reason = "structural: set a code-object slot"
+
+[[frontend_check_exception_skip]]
+kind = "CLASSMETHOD_NEW"
+reason = "structural: classmethod wrapper construction"
+
+[[frontend_check_exception_skip]]
+kind = "STATICMETHOD_NEW"
+reason = "structural: staticmethod wrapper construction"
+
+[[frontend_check_exception_skip]]
+kind = "PROPERTY_NEW"
+reason = "structural: property wrapper construction"
+
+[[frontend_check_exception_skip]]
+kind = "ret"
+reason = "control-flow: function return; lowercase sentinel kind (not UPPERCASE) — the return edge carries no trailing check"
+
+# ---------------------------------------------------------------------------
+# BINOP_OP_KIND + AUGASSIGN_OP_KIND — the `ast.operator` subclass → frontend
+# `op.kind` maps for binary (`a OP b`) and augmented-assignment (`a OP= b`)
+# lowering. Replaces the hand-kept `_augassign_op_kind` isinstance-chain and the
+# `visit_BinOp` kind-literal chain. Keyed by `ast.operator` subclass __name__.
+#
+# The generator enforces COMPLETENESS: the set of `ast_op` keys here must equal
+# the full set of `ast.operator.__subclasses__()` names — a missing row is a
+# GENERATION-TIME failure (the task-#27 lesson: the hand augassign map silently
+# omitted 7 inplace kinds). `binop_kind` is the binary form, `augassign_kind`
+# the in-place form (which routes through the in-place dunder before the binary
+# fallback, matching CPython).
+# ---------------------------------------------------------------------------
+
+[[binary_op]]
+ast_op = "Add"
+binop_kind = "ADD"
+augassign_kind = "INPLACE_ADD"
+
+[[binary_op]]
+ast_op = "Sub"
+binop_kind = "SUB"
+augassign_kind = "INPLACE_SUB"
+
+[[binary_op]]
+ast_op = "Mult"
+binop_kind = "MUL"
+augassign_kind = "INPLACE_MUL"
+
+[[binary_op]]
+ast_op = "Div"
+binop_kind = "DIV"
+augassign_kind = "INPLACE_DIV"
+
+[[binary_op]]
+ast_op = "FloorDiv"
+binop_kind = "FLOORDIV"
+augassign_kind = "INPLACE_FLOORDIV"
+
+[[binary_op]]
+ast_op = "Mod"
+binop_kind = "MOD"
+augassign_kind = "INPLACE_MOD"
+
+[[binary_op]]
+ast_op = "Pow"
+binop_kind = "POW"
+augassign_kind = "INPLACE_POW"
+
+[[binary_op]]
+ast_op = "BitOr"
+binop_kind = "BIT_OR"
+augassign_kind = "INPLACE_BIT_OR"
+
+[[binary_op]]
+ast_op = "BitAnd"
+binop_kind = "BIT_AND"
+augassign_kind = "INPLACE_BIT_AND"
+
+[[binary_op]]
+ast_op = "BitXor"
+binop_kind = "BIT_XOR"
+augassign_kind = "INPLACE_BIT_XOR"
+
+[[binary_op]]
+ast_op = "LShift"
+binop_kind = "LSHIFT"
+augassign_kind = "INPLACE_LSHIFT"
+
+[[binary_op]]
+ast_op = "RShift"
+binop_kind = "RSHIFT"
+augassign_kind = "INPLACE_RSHIFT"
+
+[[binary_op]]
+ast_op = "MatMult"
+binop_kind = "MATMUL"
+augassign_kind = "INPLACE_MATMUL"
