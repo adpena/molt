@@ -10278,6 +10278,12 @@ def _runtime_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
         project_root / "runtime/molt-obj-model/src",
         project_root / "runtime/molt-obj-model/Cargo.toml",
         project_root / "runtime/molt-obj-model/build.rs",
+        # molt-runtime-tk is linked into the runtime staticlib via the
+        # `stdlib_tk` feature, so its sources must participate in the runtime
+        # fingerprint — otherwise edits to the Tk/Tcl bridge are silently cached
+        # and never recompiled into libmolt_runtime.a.
+        project_root / "runtime/molt-runtime-tk/src",
+        project_root / "runtime/molt-runtime-tk/Cargo.toml",
         project_root / "Cargo.toml",
         project_root / "Cargo.lock",
     )
