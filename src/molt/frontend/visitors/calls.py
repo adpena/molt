@@ -5784,6 +5784,39 @@ class CallVisitorMixin(_MixinBase):
                         init_func = init_method["func"]
                         target_name = init_func.type_hint.split(":", 1)[1]
                         init_args = [res] + args
+                        if init_method.get("has_closure"):
+                            # A closure __init__ (e.g. a bare `super()` body
+                            # captures the implicit `__class__` cell) compiles
+                            # with the cell as its leading parameter; a
+                            # bare-name CALL would omit the cell argument and
+                            # mis-match the symbol arity (LLVM verifier
+                            # rejects; Cranelift only tolerates it when the
+                            # cell is never read). Same invariant as the
+                            # method-call fold: closure targets never get the
+                            # direct symbol CALL — route through the bound
+                            # path, which threads the cell via the function
+                            # object.
+                            init_func_val = self._emit_class_method_func(
+                                class_ref, "__init__"
+                            )
+                            bound_init = MoltValue(self.next_var(), type_hint="method")
+                            self.emit(
+                                MoltOp(
+                                    kind="BOUND_METHOD_NEW",
+                                    args=[init_func_val, res],
+                                    result=bound_init,
+                                )
+                            )
+                            callargs = self._emit_call_args_builder(node)
+                            init_res = MoltValue(self.next_var(), type_hint="Any")
+                            self.emit(
+                                MoltOp(
+                                    kind="CALL_BIND",
+                                    args=[bound_init, callargs],
+                                    result=init_res,
+                                )
+                            )
+                            return res
                         func_obj = None
                         param_count = init_method.get("param_count")
                         defaults = init_method.get("defaults", [])
