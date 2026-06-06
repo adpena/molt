@@ -1453,7 +1453,13 @@ unsafe fn call_type_with_builder(
         }
         let _ = molt_call_bind(init_bits, builder_bits);
         dec_ref_bits(_py, init_bits);
-        inst_bits
+        // Full-binding `__init__` (`*args`/`**kwargs`/keyword-only) lands here
+        // instead of the IC fast path. If it raised, surface the exception
+        // rather than returning the partially-constructed instance — the IC fast
+        // path (try_call_bind_ic_fast TYPE_CALL lane) already does this; routing
+        // through the shared helper keeps the two paths from re-diverging
+        // (task #60).
+        crate::call::class_init::resolve_construct_after_init(_py, inst_bits)
     }
 }
 
@@ -2819,11 +2825,15 @@ unsafe fn try_call_bind_ic_fast(
             };
             frame_stack_pop(_py);
             recursion_guard_exit();
-            if exception_pending(_py) {
-                dec_ref_bits(_py, inst_bits);
-                return Some(MoltObject::none().bits());
-            }
-            return Some(inst_bits);
+            // Same post-`__init__` resolution as every other constructor path:
+            // on a pending exception, drop the instance and yield `none` so the
+            // construct-site `check_exception` / IC propagation guards fire. The
+            // full-binding lane (call_type_with_builder ForwardArgs) routes
+            // through the identical helper — neither can silently swallow a
+            // constructor raise (task #60).
+            return Some(crate::call::class_init::resolve_construct_after_init(
+                _py, inst_bits,
+            ));
         }
 
         None
@@ -3595,7 +3605,19 @@ unsafe fn call_bind_ic_dispatch(
         }
         builder_guard.release();
         let res = molt_call_bind(call_bits, builder_bits);
-        if let Some(entry) = call_bind_ic_entry_for_call(_py, call_bits) {
+        // Only populate the inline cache when the call completed WITHOUT a
+        // pending exception. Building an IC entry runs class-attribute lookups
+        // (`__new__`/`__init__` MRO probes in `call_bind_ic_entry_for_call`)
+        // that reset the exception-pending baseline — which would silently
+        // swallow an exception the call just raised (task #60: a full-binding
+        // constructor `__init__` raise reached here, was reported via the
+        // `none` result + pending flag, then the IC-entry probe cleared the
+        // flag before the caller's `check_exception` could observe it). A call
+        // that raised is also not a useful thing to cache. Skip the cache and
+        // hand back the result with the pending exception intact.
+        if !exception_pending(_py)
+            && let Some(entry) = call_bind_ic_entry_for_call(_py, call_bits)
+        {
             ic_tls_insert(site_id, entry);
         }
         res
@@ -6252,6 +6274,97 @@ mod tests {
             assert_eq!(after, before + 1);
             crate::dec_ref_bits(_py, list_bits);
             crate::dec_ref_bits(_py, list_bits);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // task #60: the constructor `__init__`-exception resolution invariant.
+    //
+    // `resolve_construct_after_init` is the single authority every construct
+    // path (the IC fast path AND the full-binding `call_type_with_builder`
+    // ForwardArgs arm AND `call_class_init_with_args`) routes through after
+    // `__init__` runs. The invariant: it returns the instance iff no exception
+    // is pending; on a pending exception it drops the instance's owning
+    // reference and returns the `none` sentinel so the construct-site
+    // `check_exception` / IC propagation guards fire. A constructor `__init__`
+    // raise must NEVER be swallowed (it was, for full-binding `__init__`,
+    // before this fix).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resolve_construct_after_init_no_pending_returns_instance_unchanged() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let list_ptr = alloc_list(_py, &[MoltObject::from_int(7).bits()]);
+            assert!(!list_ptr.is_null());
+            let inst_bits = MoltObject::from_ptr(list_ptr).bits();
+            let before = unsafe {
+                (*crate::object::header_from_obj_ptr(list_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(crate::molt_exception_pending(), 0, "no exception expected");
+            // No pending exception: the owning reference is handed back as-is.
+            let out =
+                unsafe { crate::call::class_init::resolve_construct_after_init(_py, inst_bits) };
+            assert_eq!(out, inst_bits, "must return the constructed instance");
+            let after = unsafe {
+                (*crate::object::header_from_obj_ptr(list_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(after, before, "success path must not perturb the refcount");
+            dec_ref_bits(_py, inst_bits);
+        });
+    }
+
+    #[test]
+    fn resolve_construct_after_init_pending_drops_instance_and_returns_none() {
+        crate::with_gil_entry_nopanic!(_py, {
+            // Hold an extra owning reference so the helper's drop is observable
+            // without freeing the object out from under the test.
+            let list_ptr = alloc_list(_py, &[MoltObject::from_int(9).bits()]);
+            assert!(!list_ptr.is_null());
+            let inst_bits = MoltObject::from_ptr(list_ptr).bits();
+            super::inc_ref_bits(_py, inst_bits);
+            let before = unsafe {
+                (*crate::object::header_from_obj_ptr(list_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+
+            // Simulate `__init__` having raised: set a pending exception, then
+            // resolve. The helper must drop the instance's owning reference and
+            // surface the raise via a `none` result.
+            let _: u64 =
+                crate::builtins::exceptions::raise_exception(_py, "ValueError", "task60 init raise");
+            assert_eq!(crate::molt_exception_pending(), 1, "exception must be pending");
+
+            let out =
+                unsafe { crate::call::class_init::resolve_construct_after_init(_py, inst_bits) };
+            assert!(
+                MoltObject::from_bits(out).is_none(),
+                "a pending __init__ exception must yield the None sentinel, not the instance"
+            );
+            assert_eq!(
+                crate::molt_exception_pending(),
+                1,
+                "the helper must not clear the pending exception — the caller propagates it"
+            );
+            let after = unsafe {
+                (*crate::object::header_from_obj_ptr(list_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(
+                after,
+                before - 1,
+                "the exception path must drop exactly one (the instance's) owning reference"
+            );
+
+            let _ = crate::molt_exception_clear();
+            assert_eq!(crate::molt_exception_pending(), 0);
+            // Release the extra reference taken above.
+            dec_ref_bits(_py, inst_bits);
         });
     }
 

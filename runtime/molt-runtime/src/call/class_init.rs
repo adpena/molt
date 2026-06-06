@@ -293,6 +293,37 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     }
 }
 
+/// Resolve a constructor's return value after `__init__` has run.
+///
+/// `inst_bits` carries the single owning reference that the constructor path
+/// would otherwise hand back to the caller (the freshly constructed instance).
+/// If `__init__` raised, CPython propagates that exception out of the
+/// `ClassName(...)` construct expression and the instance is discarded; mirror
+/// that here by dropping the owning reference and returning the `none` sentinel.
+/// Returning `none` is load-bearing: every downstream propagation guard keys off
+/// `result.is_none() && exception_pending(_py)` (the IC dispatch guards) and the
+/// frontend's post-construct `check_exception` only fires on the `none` result.
+/// Returning a live instance with a pending exception silently swallows the
+/// raise (task #60).
+///
+/// This is the single authority for the "transfer the instance XOR drop it and
+/// surface the pending exception" decision. EVERY constructor path that invokes
+/// a user `__init__` and would `return inst_bits` MUST route through this helper
+/// so the fast path and the full-binding path can never re-diverge.
+///
+/// # Safety
+/// `inst_bits` must be the sole owning reference produced by the constructor at
+/// the point of the call (exactly the reference the caller's `return inst_bits`
+/// would have transferred). On the exception path that one reference is dropped.
+#[inline]
+pub(crate) unsafe fn resolve_construct_after_init(_py: &PyToken<'_>, inst_bits: u64) -> u64 {
+    if exception_pending(_py) {
+        dec_ref_bits(_py, inst_bits);
+        return MoltObject::none().bits();
+    }
+    inst_bits
+}
+
 pub(crate) unsafe fn call_class_init_with_args(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
@@ -442,7 +473,10 @@ pub(crate) unsafe fn call_class_init_with_args(
                 }
                 let _ = molt_call_bind(init_bits, builder_bits);
             }
-            return inst_bits;
+            // A user-defined exception subclass may override `__init__`; if that
+            // override raised, surface it instead of returning the half-built
+            // exception (task #60, exception-subclass lane).
+            return resolve_construct_after_init(_py, inst_bits);
         }
         if class_bits == builtins.slice {
             match args.len() {
@@ -914,7 +948,10 @@ pub(crate) unsafe fn call_class_init_with_args(
             let _ = molt_callargs_push_pos(builder_bits, arg);
         }
         let _ = molt_call_bind(init_bits, builder_bits);
-        inst_bits
+        // If `__init__` (including a full-binding `*args`/`**kwargs`/keyword-only
+        // signature) raised, propagate it instead of returning the
+        // partially-constructed instance (task #60, args-slice construct lane).
+        resolve_construct_after_init(_py, inst_bits)
     }
 }
 
