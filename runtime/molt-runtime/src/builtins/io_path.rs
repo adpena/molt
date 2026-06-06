@@ -11,8 +11,9 @@ use super::io::{
     PathFlavor, alloc_path_list_bits, alloc_string_list_bits, bytes_sequence_from_bits,
     bytes_slice_from_bits, collect_bytes_like, create_symlink_path, dup_fd,
     filesystem_encode_errors, filesystem_encoding, fspath_bits_with_flavor,
-    glob_dir_fd_arg_from_bits, glob_escape_text, glob_has_magic_text, glob_matches_text,
-    glob_translate_text, path_abspath_text, path_as_uri_text, path_basename_text,
+    glob_dir_fd_arg_from_bits, glob_escape_text, glob_has_magic_text, glob_iter_alloc_object,
+    glob_iter_new_state, glob_translate_text, path_abspath_text, path_as_uri_text,
+    path_basename_text,
     path_compare_text, path_dirname_text, path_expandvars_text, path_expandvars_with_lookup,
     path_from_bits, path_glob_matches, path_isabs_text, path_join_many_text, path_join_raw,
     path_join_text, path_match_text, path_name_text, path_normpath_text, path_parents_text,
@@ -1426,6 +1427,126 @@ pub extern "C" fn molt_glob_translate(
     })
 }
 
+/// Parsed, validated `glob`/`iglob` arguments (shared by the eager list path
+/// and the lazy iterator path so semantics stay identical).
+pub(crate) struct GlobParsedArgs {
+    pub pathname: String,
+    pub root_dir: Option<String>,
+    pub dir_fd: GlobDirFdArg,
+    pub recursive: bool,
+    pub include_hidden: bool,
+    pub bytes_mode: bool,
+    pub sep: char,
+}
+
+/// Validate and normalize the shared `glob(pathname, root_dir, dir_fd,
+/// recursive, include_hidden)` arguments. Must be called inside a GIL entry;
+/// returns raised-exception bits in `Err` (capability, bytes/str mixing,
+/// dir_fd TypeError/OverflowError, wasm dir_fd guard).
+pub(crate) fn glob_parse_args(
+    _py: &PyToken<'_>,
+    pathname_bits: u64,
+    root_dir_bits: u64,
+    dir_fd_bits: u64,
+    recursive_bits: u64,
+    include_hidden_bits: u64,
+) -> Result<GlobParsedArgs, u64> {
+    if !has_capability(_py, "fs.read") {
+        return Err(raise_capability_denied(_py, "fs.read"));
+    }
+    let sep = path_sep_char();
+
+    #[cfg(windows)]
+    let (pathname, pathname_flavor) = match path_string_with_flavor_from_bits(_py, pathname_bits) {
+        Ok((path, flavor)) => (path.replace('/', "\\"), flavor),
+        Err(bits) => return Err(bits),
+    };
+    #[cfg(not(windows))]
+    let (pathname, pathname_flavor) = match path_string_with_flavor_from_bits(_py, pathname_bits) {
+        Ok((path, flavor)) => (path, flavor),
+        Err(bits) => return Err(bits),
+    };
+
+    let root_dir = if obj_from_bits(root_dir_bits).is_none() {
+        None
+    } else {
+        #[cfg(windows)]
+        {
+            match path_string_with_flavor_from_bits(_py, root_dir_bits) {
+                Ok((path, flavor)) => Some((path.replace('/', "\\"), flavor)),
+                Err(bits) => return Err(bits),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            match path_string_with_flavor_from_bits(_py, root_dir_bits) {
+                Ok((path, flavor)) => Some((path, flavor)),
+                Err(bits) => return Err(bits),
+            }
+        }
+    };
+
+    if let Some((_, root_dir_flavor)) = root_dir.as_ref()
+        && *root_dir_flavor != pathname_flavor
+    {
+        let msg = if path_isabs_text(&pathname, sep) {
+            "Can't mix strings and bytes in path components"
+        } else if pathname_flavor == PathFlavor::Bytes {
+            "cannot use a bytes pattern on a string-like object"
+        } else {
+            "cannot use a string pattern on a bytes-like object"
+        };
+        return Err(raise_exception::<_>(_py, "TypeError", msg));
+    }
+
+    let dir_fd = match glob_dir_fd_arg_from_bits(_py, dir_fd_bits) {
+        Err(bits) => return Err(bits),
+        Ok(value) => value,
+    };
+
+    let bytes_mode = pathname_flavor == PathFlavor::Bytes;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let root_dir_is_absolute = root_dir
+            .as_ref()
+            .is_some_and(|(path, _)| path_isabs_text(path, sep));
+        if let GlobDirFdArg::Int(fd) = dir_fd
+            && glob_dir_fd_root_text(fd, bytes_mode).is_none()
+            && !path_isabs_text(&pathname, sep)
+            && !root_dir_is_absolute
+        {
+            return Err(raise_exception::<_>(
+                _py,
+                "NotImplementedError",
+                "glob(dir_fd=...) requires fd-backed path resolution on this wasm host",
+            ));
+        }
+    }
+
+    let recursive = is_truthy(_py, obj_from_bits(recursive_bits));
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let include_hidden = is_truthy(_py, obj_from_bits(include_hidden_bits));
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+
+    Ok(GlobParsedArgs {
+        pathname,
+        root_dir: root_dir.map(|(root, _)| root),
+        dir_fd,
+        recursive,
+        include_hidden,
+        bytes_mode,
+        sep,
+    })
+}
+
+/// `glob.glob(pathname, *, root_dir, dir_fd, recursive, include_hidden)`.
+/// Eager: materializes the full match list. Defined as `list(iglob(...))` —
+/// it drains the same lazy streaming iterator the `iglob` path returns, so the
+/// two are guaranteed to agree (one source of truth: `glob_iter_new_state`).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_glob(
     pathname_bits: u64,
@@ -1435,109 +1556,80 @@ pub extern "C" fn molt_glob(
     include_hidden_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let sep = path_sep_char();
-
-        #[cfg(windows)]
-        let (pathname, pathname_flavor) =
-            match path_string_with_flavor_from_bits(_py, pathname_bits) {
-                Ok((path, flavor)) => (path.replace('/', "\\"), flavor),
-                Err(bits) => return bits,
-            };
-        #[cfg(not(windows))]
-        let (pathname, pathname_flavor) =
-            match path_string_with_flavor_from_bits(_py, pathname_bits) {
-                Ok((path, flavor)) => (path, flavor),
-                Err(bits) => return bits,
-            };
-
-        let root_dir = if obj_from_bits(root_dir_bits).is_none() {
-            None
-        } else {
-            #[cfg(windows)]
-            {
-                match path_string_with_flavor_from_bits(_py, root_dir_bits) {
-                    Ok((path, flavor)) => Some((path.replace('/', "\\"), flavor)),
-                    Err(bits) => return bits,
-                }
-            }
-            #[cfg(not(windows))]
-            {
-                match path_string_with_flavor_from_bits(_py, root_dir_bits) {
-                    Ok((path, flavor)) => Some((path, flavor)),
-                    Err(bits) => return bits,
-                }
-            }
-        };
-
-        if let Some((_, root_dir_flavor)) = root_dir.as_ref()
-            && *root_dir_flavor != pathname_flavor
-        {
-            let msg = if path_isabs_text(&pathname, sep) {
-                "Can't mix strings and bytes in path components"
-            } else if pathname_flavor == PathFlavor::Bytes {
-                "cannot use a bytes pattern on a string-like object"
-            } else {
-                "cannot use a string pattern on a bytes-like object"
-            };
-            return raise_exception::<_>(_py, "TypeError", msg);
-        }
-
-        let dir_fd = match glob_dir_fd_arg_from_bits(_py, dir_fd_bits) {
-            Err(bits) => return bits,
-            Ok(value) => value,
-        };
-
-        let bytes_mode = pathname_flavor == PathFlavor::Bytes;
-        #[cfg(target_arch = "wasm32")]
-        {
-            let root_dir_is_absolute = root_dir
-                .as_ref()
-                .is_some_and(|(path, _)| path_isabs_text(path, sep));
-            if let GlobDirFdArg::Int(fd) = dir_fd
-                && glob_dir_fd_root_text(fd, bytes_mode).is_none()
-                && !path_isabs_text(&pathname, sep)
-                && !root_dir_is_absolute
-            {
-                return raise_exception::<_>(
-                    _py,
-                    "NotImplementedError",
-                    "glob(dir_fd=...) requires fd-backed path resolution on this wasm host",
-                );
-            }
-        }
-
-        let recursive = is_truthy(_py, obj_from_bits(recursive_bits));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let include_hidden = is_truthy(_py, obj_from_bits(include_hidden_bits));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-
-        let root_ref = if let Some((root, _)) = root_dir.as_ref() {
-            Some(root.as_str())
-        } else {
-            None
-        };
-
-        let out = match glob_matches_text(
+        let args = match glob_parse_args(
             _py,
-            &pathname,
-            root_ref,
-            &dir_fd,
-            recursive,
-            include_hidden,
-            bytes_mode,
-            sep,
+            pathname_bits,
+            root_dir_bits,
+            dir_fd_bits,
+            recursive_bits,
+            include_hidden_bits,
         ) {
-            Ok(values) => values,
+            Ok(a) => a,
             Err(bits) => return bits,
         };
-        alloc_path_list_bits(_py, &out, bytes_mode)
+        let mut state = match glob_iter_new_state(
+            _py,
+            &args.pathname,
+            args.root_dir.as_deref(),
+            args.dir_fd,
+            args.recursive,
+            args.include_hidden,
+            args.bytes_mode,
+            args.sep,
+        ) {
+            Ok(s) => s,
+            Err(bits) => return bits,
+        };
+        // Drain the lazy iterator: `glob(...) == list(iglob(...))`.
+        let mut out: Vec<String> = Vec::new();
+        loop {
+            match state.next_path_public(_py) {
+                Err(bits) => return bits,
+                Ok(None) => break,
+                Ok(Some(path)) => out.push(path),
+            }
+        }
+        alloc_path_list_bits(_py, &out, args.bytes_mode)
+    })
+}
+
+/// `glob.iglob(...)` — returns a lazy `TYPE_ID_GLOB_ITER` that streams matching
+/// paths one per `__next__` at bounded RSS (CPython-faithful generator chain
+/// reified as a native work-stack; see `GlobIterState`).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_glob_iter(
+    pathname_bits: u64,
+    root_dir_bits: u64,
+    dir_fd_bits: u64,
+    recursive_bits: u64,
+    include_hidden_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let args = match glob_parse_args(
+            _py,
+            pathname_bits,
+            root_dir_bits,
+            dir_fd_bits,
+            recursive_bits,
+            include_hidden_bits,
+        ) {
+            Ok(a) => a,
+            Err(bits) => return bits,
+        };
+        let state = match glob_iter_new_state(
+            _py,
+            &args.pathname,
+            args.root_dir.as_deref(),
+            args.dir_fd,
+            args.recursive,
+            args.include_hidden,
+            args.bytes_mode,
+            args.sep,
+        ) {
+            Ok(s) => s,
+            Err(bits) => return bits,
+        };
+        glob_iter_alloc_object(_py, state)
     })
 }
 

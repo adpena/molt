@@ -94,7 +94,8 @@ use crate::{
     TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_DATACLASS, TYPE_ID_DICT,
     TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_DICT_VALUES_VIEW, TYPE_ID_ENUMERATE,
     TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FILTER, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_ITER, TYPE_ID_LIST, TYPE_ID_LIST_BUILDER,
+    TYPE_ID_GENERATOR, TYPE_ID_GENERIC_ALIAS, TYPE_ID_GLOB_ITER, TYPE_ID_ITER, TYPE_ID_LIST,
+    TYPE_ID_LIST_BUILDER,
     TYPE_ID_MAP, TYPE_ID_MEMORYVIEW, TYPE_ID_MODULE, TYPE_ID_NATIVE_HANDLE, TYPE_ID_OBJECT,
     TYPE_ID_PROPERTY, TYPE_ID_REVERSED, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STATICMETHOD,
     TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_UNION, TYPE_ID_ZIP,
@@ -1533,6 +1534,14 @@ pub(crate) unsafe fn buffer2d_ptr(ptr: *mut u8) -> *mut Buffer2D {
     unsafe { *(ptr as *const *mut Buffer2D) }
 }
 
+/// Boxed `GlobIterState` pointer stored at payload offset 0 of a
+/// `TYPE_ID_GLOB_ITER` object (mirrors `buffer2d_ptr`).
+pub(crate) unsafe fn glob_iter_state_ptr(
+    ptr: *mut u8,
+) -> *mut crate::builtins::io_path_utils::GlobIterState {
+    unsafe { *(ptr as *const *mut crate::builtins::io_path_utils::GlobIterState) }
+}
+
 pub(crate) unsafe fn file_handle_ptr(ptr: *mut u8) -> *mut MoltFileHandle {
     unsafe { *(ptr as *const *mut MoltFileHandle) }
 }
@@ -2432,6 +2441,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let buffer_ptr = buffer2d_ptr(ptr);
                     if !buffer_ptr.is_null() {
                         drop(Box::from_raw(buffer_ptr));
+                    }
+                }
+                TYPE_ID_GLOB_ITER => {
+                    // State holds only Rust Strings (no MoltObject refs); a plain
+                    // box-drop frees the entire streaming work-stack.
+                    let state_ptr = glob_iter_state_ptr(ptr);
+                    if !state_ptr.is_null() {
+                        drop(Box::from_raw(state_ptr));
                     }
                 }
                 TYPE_ID_FILE_HANDLE => {
