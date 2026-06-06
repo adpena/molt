@@ -560,6 +560,21 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(func);
     let canon = |v: ValueId| -> ValueId { aliases.root(v) };
 
+    // Interior-borrow keepalive (design 20). A value produced by a borrowing read
+    // (`LoadAttr`/`Index`) may borrow into / index its SOURCE object's backing
+    // store; using such a result keeps the source object live. This is the SAME
+    // relation the liveness analysis consumes (so cross-block keepalive is already
+    // reflected in `live.is_live_out`), applied here ALSO to the within-block
+    // straight-line `last_use` scan: a source object's last in-block "touch" must
+    // extend through the last use of any borrow result derived from it, or the drop
+    // would land before the consumer reads the borrow. (The round-6 BLOCKER-1 UAF:
+    // `Counter._handle` is a raw-int registry handle whose owning wrapper's
+    // finalizer destroys the registry entry — dropping the wrapper after the
+    // `get_attr` but before `molt_counter_len(handle)` made `len(Counter(...))`
+    // return 0.) FAIL-CLOSED: for an owned-result load this only defers the drop a
+    // few ops (harmless); for the borrow/handle case it is required for soundness.
+    let borrows = crate::tir::passes::alias_analysis::build_borrow_provenance(func, &aliases);
+
     // Root-space params / stack sets.
     let param_roots: HashSet<ValueId> = param_ids.iter().map(|&v| canon(v)).collect();
     let stack_roots: HashSet<ValueId> = stack_values.iter().map(|&v| canon(v)).collect();
@@ -653,19 +668,28 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             .into_iter()
             .map(canon)
             .collect();
-        // Last op-use index per ROOT (max over all aliases).
+        // Last op-use index per ROOT (max over all aliases). A use of operand `v`
+        // at index `idx` is a last-use candidate for `canon(v)` AND for every
+        // source-object root `v` borrows from (interior-borrow keepalive): the
+        // source must stay live through the borrow result's last use.
         let mut last_use: HashMap<ValueId, usize> = HashMap::new();
+        let record_use = |root: ValueId, idx: usize, lu: &mut HashMap<ValueId, usize>| {
+            lu.entry(root)
+                .and_modify(|e| {
+                    if idx > *e {
+                        *e = idx;
+                    }
+                })
+                .or_insert(idx);
+        };
         for (idx, op) in block.ops.iter().enumerate() {
             for &operand in &op.operands {
-                let r = canon(operand);
-                last_use
-                    .entry(r)
-                    .and_modify(|e| {
-                        if idx > *e {
-                            *e = idx;
-                        }
-                    })
-                    .or_insert(idx);
+                record_use(canon(operand), idx, &mut last_use);
+                if !borrows.is_empty() {
+                    for src_root in borrows.keepalive_roots(operand, &canon) {
+                        record_use(src_root, idx, &mut last_use);
+                    }
+                }
             }
         }
         for (&v, &idx) in &last_use {
@@ -1728,6 +1752,119 @@ mod tests {
         );
         // The result is returned → not dropped here.
         assert!(!decrefs.contains(&result));
+    }
+
+    /// Interior-borrow keepalive (round-6 BLOCKER-1). A heap object's LAST DIRECT
+    /// operand use is a `LoadAttr` that extracts a value the object's backing store
+    /// owns (the `Counter._handle` raw-int registry-handle shape: the wrapper's
+    /// finalizer destroys the registry entry the handle indexes). The extracted
+    /// value `h` is then consumed by a later `Call`. The source object `obj` MUST be
+    /// dropped AFTER `h`'s last use (the Call), NEVER right after the `LoadAttr` —
+    /// dropping it earlier runs the finalizer and invalidates `h` (the observed UAF:
+    /// `len(Counter(...))` returned 0). Mirrors the de-sugared fast-path lowering
+    /// `h = get_attr(counts, "_handle"); molt_counter_len(h)`.
+    #[test]
+    fn loadattr_source_kept_alive_through_borrow_result_use() {
+        let mut func = TirFunction::new("borrow".into(), vec![], TirType::DynBox);
+        let obj = func.fresh_value(); // the wrapper (fresh owned)
+        let h = func.fresh_value(); // LoadAttr(obj) — borrows into obj's store
+        let len_fn = func.fresh_value(); // the `molt_counter_len` builtin
+        let res = func.fresh_value(); // Call(len_fn, h) result
+        for v in [obj, h, len_fn, res] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(obj)); // op 0: obj = fresh owned
+            b.ops.push(op(OpCode::LoadAttr, vec![obj], vec![h])); // op 1: h = obj._handle (last DIRECT use of obj)
+            b.ops.push(const_str(len_fn)); // op 2: the builtin
+            b.ops.push(op(OpCode::Call, vec![len_fn, h], vec![res])); // op 3: len(h) — needs obj alive
+            b.terminator = Terminator::Return { values: vec![res] };
+        }
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        let ops = &func.blocks[&entry].ops;
+        // Find the Call (the consumer of the borrow result) and the DecRef(obj).
+        let call_idx = ops
+            .iter()
+            .position(|o| o.opcode == OpCode::Call)
+            .expect("call present");
+        let decref_obj_idx = ops
+            .iter()
+            .position(|o| o.opcode == OpCode::DecRef && o.operands == vec![obj]);
+        assert!(
+            decref_obj_idx.is_some(),
+            "source object must still be dropped (no leak); ops={ops:?}"
+        );
+        assert!(
+            decref_obj_idx.unwrap() > call_idx,
+            "source object must be dropped AFTER the borrow result's consuming Call \
+             (interior-borrow keepalive), not at its last direct operand use; \
+             decref@{:?} call@{call_idx} ops={ops:?}",
+            decref_obj_idx.unwrap(),
+        );
+    }
+
+    /// Interior-borrow keepalive across a transparent `Copy` of the source (the
+    /// `load_var` shape): `obj` is loaded via a `Copy` (alias root = obj), the alias
+    /// feeds a `LoadAttr`, and the LoadAttr result is consumed later. The drop of
+    /// the underlying object (alias root) must still be deferred past the consumer.
+    #[test]
+    fn loadattr_keepalive_through_copy_aliased_source() {
+        let mut func = TirFunction::new("borrow_alias".into(), vec![], TirType::DynBox);
+        let obj = func.fresh_value();
+        let obj_alias = func.fresh_value(); // Copy(obj) — load_var alias
+        let h = func.fresh_value(); // LoadAttr(obj_alias)
+        let consumer = func.fresh_value(); // Call(h) result
+        for v in [obj, obj_alias, h, consumer] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(obj));
+            b.ops.push({
+                let mut o = op(OpCode::Copy, vec![obj], vec![obj_alias]);
+                o.attrs
+                    .insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+                o
+            });
+            b.ops.push(op(OpCode::LoadAttr, vec![obj_alias], vec![h]));
+            b.ops.push(op(OpCode::Call, vec![h], vec![consumer]));
+            b.terminator = Terminator::Return { values: vec![consumer] };
+        }
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        let ops = &func.blocks[&entry].ops;
+        let call_idx = ops
+            .iter()
+            .position(|o| o.opcode == OpCode::Call)
+            .expect("call present");
+        // The underlying object is released through some alias of its root, exactly
+        // once, AFTER the consumer. Find any DecRef whose operand aliases obj's root.
+        let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(&func);
+        let obj_root = aliases.root(obj);
+        let decref_positions: Vec<usize> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| {
+                o.opcode == OpCode::DecRef
+                    && o.operands.first().is_some_and(|&v| aliases.root(v) == obj_root)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            decref_positions.len(),
+            1,
+            "the source object's group must be released exactly once; ops={ops:?}"
+        );
+        assert!(
+            decref_positions[0] > call_idx,
+            "source object drop must follow the borrow result's consumer; \
+             decref@{} call@{call_idx} ops={ops:?}",
+            decref_positions[0],
+        );
     }
 
     /// Raw i64 values get ZERO drops (perf contract / design R3).
