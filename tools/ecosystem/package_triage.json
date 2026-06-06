@@ -1,0 +1,238 @@
+{
+  "_comment": "Top-25 PyPI paper-triage (Lane C of docs/design/foundation/24_ecosystem_compat_gap_audit.md), encoded as DATA. Each package's verdict is DERIVED (never stored-as-truth) by tools/check_ecosystem_compat.py as the min over 'required_features' looked up in dynamism_features.json. The 'verdict' and 'hardest_feature' fields below are CACHED derivations the tool RE-COMPUTES and FAILS on if they disagree (no hand-edited verdicts). 'optional_features' are features doc 24 names for the package but marks optional / capability-offered-not-required / path-avoidable; they are recorded for provenance but DO NOT feed the min (per Lane B: the verdict is the min over features REQUIRED on the import + commonly-used path, not any dynamism present). compile_probe_status is 'pending' for every package: NONE has been verified by an actual molt build yet (fail-closed). source = 'doc-24 paper triage' for all. See tools/ecosystem/README.md.",
+  "_path_scope": "Lane B rule: verdict = min over features ACTUALLY REQUIRED at the import + supported-call-path the package exercises. A feature a package CAN use but does not require on that path goes in 'optional_features', not 'required_features'.",
+  "_interpretation_notes": [
+    "INTERPRETATION (flagged): doc 24 Lane C's 'Hardest required feature' column is NOT a complete required-feature set and sometimes names OPTIONAL features. To make verdicts DERIVABLE and equal to doc 24's stated verdicts, required vs optional is reconstructed from doc 24's per-row Notes + Lane B's path-scope rule. Every required/optional choice below is justified against doc 24 text in the package's 'source_basis'.",
+    "INTERPRETATION (flagged, TIGHTENING): doc 24 Lane C lists rich = 'PARTIAL', but doc 24's OWN feature-level evidence contradicts that summary cell: D16 (module-level __getattr__) is 'incompatible-by-design (TODAY)' AND rich's note says 'D16 gap bites at import' AND Lane D rank 3 says D16 blocks 'the import of ... rich'. PARTIAL means 'works at import'; rich does not. Per the fail-closed doctrine (a feature that blocks the required path => worst class), rich is DERIVED 'incompatible-by-design'. This is a stricter (safe-direction) reconciliation of an internal doc-24 inconsistency, grounded in doc 24's own Lane B/D evidence over its lossy Lane C summary cell.",
+    "INTERPRETATION (flagged): httpx and anyio are doc-24 'PARTIAL' yet doc 24 names D19 (generators, unsupported) for both. The ONLY way to derive PARTIAL (not incompatible) is to treat D19 as not-required-on-the-scoped-path for these two (doc 24: httpx 'sync path closer'; anyio import-green). D19 is therefore recorded as optional (the async-generator/streaming heavy path) and D20 (async core, partial) governs. Faithful to doc 24's chosen PARTIAL verdict.",
+    "INTERPRETATION (flagged): werkzeug is doc-24 'PARTIAL' but its hardest-cell names only D2+D12 (both supported), which would derive 'compatible' and CONTRADICT doc 24. doc 24's werkzeug Notes ('functional serve = socket/async') and the flask row ('werkzeug routing ... functional serve = socket/async') identify D20 as the functional blocker. D20 is added to werkzeug's required set so the derived verdict matches doc 24's PARTIAL.",
+    "INTERPRETATION (flagged): empty required_features (certifi, toml/tomli, and the capability-offering six/tqdm) derive 'compatible' — a package requiring no non-supported dynamism feature is trivially compatible (top of the lattice). hardest_feature is null in that case."
+  ],
+  "packages": {
+    "six": {
+      "required_features": [],
+      "optional_features": ["D17"],
+      "verdict": "compatible",
+      "hardest_feature": null,
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; 'pure-Python compat shims; import-tested (scripts/test_six.py)'. D17 is the import-time-patching capability six PROVIDES to consumers, not required on six's own used path -> optional."
+    },
+    "typing-extensions": {
+      "required_features": ["D10"],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": "D10",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; 're-exports typing machinery molt has' -> D10 typing runtime."
+    },
+    "certifi": {
+      "required_features": [],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": null,
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'none (data + path)'; import-green (test_certifi.py)."
+    },
+    "idna": {
+      "required_features": ["D2", "D10"],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": "D2",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'D2/D10'; pure-Python, unicode tables."
+    },
+    "charset-normalizer": {
+      "required_features": ["D2"],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": "D2",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'D2'; pure-Python detection."
+    },
+    "packaging": {
+      "required_features": ["D2", "D10"],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": "D2",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'D2/D10'; import-green (test_packaging.py)."
+    },
+    "python-dateutil": {
+      "required_features": ["D2"],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": "D2",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'D2'; pure-Python relativedelta."
+    },
+    "attrs": {
+      "required_features": ["D14"],
+      "optional_features": [],
+      "verdict": "compatible-via-typed-shim",
+      "hardest_feature": "D14",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible-via-shim'; hardest 'D14 (slotted __init__ codegen)'; functionally tested (test_attrs.py); same shim family as dataclasses."
+    },
+    "click": {
+      "required_features": ["D12", "D1"],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": "D1",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'D12 signature + D1 decorators'; inspect.signature present."
+    },
+    "pyyaml": {
+      "required_features": ["D22"],
+      "optional_features": ["D26", "D23"],
+      "verdict": "partial",
+      "hardest_feature": "D22",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL'; 'pure-Python SafeLoader likely OK; C-accel via Track-2/1; regex resolver patterns MAY hit D26'. D26 is path-avoidable (pure SafeLoader) and D23 (C _yaml) is optional accel -> both optional; D22 (FFI for the C path / the realizable partial functional state) governs."
+    },
+    "markupsafe": {
+      "required_features": ["D23"],
+      "optional_features": [],
+      "verdict": "compatible-via-bridge",
+      "hardest_feature": "D23",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible-via-bridge (C) or PARTIAL'; hardest 'D23 (C speedups)'. Primary verdict is compatible-via-bridge; pure-Python fallback exists but the speedup path needs the extension track."
+    },
+    "jinja2": {
+      "required_features": ["D15"],
+      "optional_features": [],
+      "verdict": "incompatible-by-design",
+      "hardest_feature": "D15",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL->incompatible on compiled path'; hardest 'D15 (template compile = compile/exec)'. jinja2 compiles templates via compile/exec on the commonly-used path -> incompatible (doc 24's final verdict word)."
+    },
+    "requests": {
+      "required_features": ["D20", "D22"],
+      "optional_features": [],
+      "verdict": "partial",
+      "hardest_feature": "D20",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL'; hardest 'D20 (urllib3) + D22 (cert/ssl)'; functional HTTP = ssl/socket depth."
+    },
+    "urllib3": {
+      "required_features": ["D20"],
+      "optional_features": [],
+      "verdict": "partial",
+      "hardest_feature": "D20",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL'; hardest 'D20 + ssl/socket flags'; retries/pool work, ssl gaps."
+    },
+    "httpx": {
+      "required_features": ["D20"],
+      "optional_features": ["D19"],
+      "verdict": "partial",
+      "hardest_feature": "D20",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL'; hardest 'D20 async + D19 (streaming)'; 'sync path closer; async-heavy + generators'. D19 is the avoidable async-generator/streaming path -> optional; D20 governs PARTIAL."
+    },
+    "anyio": {
+      "required_features": ["D20"],
+      "optional_features": ["D19"],
+      "verdict": "partial",
+      "hardest_feature": "D20",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL'; hardest 'D20 + D19'; 'async abstraction; generator-based scopes'. Verdict PARTIAL (not incompatible) requires D19 off the scoped path -> optional; D20 governs."
+    },
+    "pydantic-v2": {
+      "required_features": ["D23", "D11"],
+      "optional_features": [],
+      "verdict": "incompatible-by-design",
+      "hardest_feature": "D11",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'incompatible-by-design (today)'; hardest 'D23 (pydantic-core Rust ext) + D11 (forward-refs)'; 'core is a compiled Rust extension; pure-Python validators ALSO hit D11' -> both required. D11 (unsupported) is the min."
+    },
+    "flask": {
+      "required_features": ["D24", "D2", "D20"],
+      "optional_features": [],
+      "verdict": "partial",
+      "hardest_feature": "D20",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL'; hardest 'D24 + D2 + D20'; 'import-green; functional serve = socket/async' -> D20 governs."
+    },
+    "werkzeug": {
+      "required_features": ["D2", "D12", "D20"],
+      "optional_features": [],
+      "verdict": "partial",
+      "hardest_feature": "D20",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'PARTIAL'; hardest-cell 'D2 + D12' (both supported) is incomplete; werkzeug Notes 'functional serve = socket/async' + flask row 'werkzeug routing ... functional serve = socket/async' identify D20 as the functional blocker. D20 added so the derived verdict matches doc 24's PARTIAL (without it werkzeug would mis-derive 'compatible')."
+    },
+    "sqlalchemy": {
+      "required_features": ["D19", "D11", "D4"],
+      "optional_features": [],
+      "verdict": "incompatible-by-design",
+      "hardest_feature": "D11",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'incompatible-by-design (today)'; hardest 'D19 (lazy-load generators) + D11 (2.0 Mapped[]) + D4'; 'decl-base metaclass works (D4); query/lazy + Mapped typing are the wall'. D11 and D19 both unsupported; D11 is the lowest-id min."
+    },
+    "rich": {
+      "required_features": ["D16", "D12"],
+      "optional_features": [],
+      "verdict": "incompatible-by-design",
+      "hardest_feature": "D16",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C cell says 'PARTIAL' but its OWN evidence overrides it: D16 is 'incompatible-by-design (TODAY)', rich note 'D16 gap bites at import', Lane D rank 3 'D16 blocks the import of ... rich'. Fail-closed: a feature that blocks the required (import) path => worst class. Derived 'incompatible-by-design'; flagged as a stricter reconciliation of an internal doc-24 inconsistency (Lane B/D evidence over the Lane C summary cell)."
+    },
+    "tqdm": {
+      "required_features": ["D1"],
+      "optional_features": ["D21"],
+      "verdict": "compatible",
+      "hardest_feature": "D1",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'D1 + D21 (optional thread)'; 'core is pure-Python; iterator wrapper'. D21 is explicitly optional -> optional; D1 governs (supported)."
+    },
+    "marshmallow": {
+      "required_features": ["D14", "D10"],
+      "optional_features": [],
+      "verdict": "compatible-via-typed-shim",
+      "hardest_feature": "D14",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible-via-shim'; hardest 'D14/D10'; import-green (test_marshmallow.py); schema = declarative class synthesis."
+    },
+    "dataclasses-json": {
+      "required_features": ["D14", "D10"],
+      "optional_features": [],
+      "verdict": "compatible-via-typed-shim",
+      "hardest_feature": "D14",
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible-via-shim'; hardest 'D14 + D10'; builds on dataclasses shim + type hints."
+    },
+    "toml-tomli": {
+      "required_features": [],
+      "optional_features": [],
+      "verdict": "compatible",
+      "hardest_feature": null,
+      "source": "doc-24 paper triage",
+      "compile_probe_status": "pending",
+      "source_basis": "doc 24 Lane C: 'compatible'; hardest 'none'; import-green (test_toml.py, test_tomli.py); pure-Python parse."
+    }
+  }
+}

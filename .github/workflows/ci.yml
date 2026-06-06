@@ -40,10 +40,13 @@ jobs:
       - name: Check docs architecture contract
         run: uv run python3 tools/check_docs_architecture.py
 
+      - name: Check ecosystem compatibility ratchet (derived verdicts, down-only)
+        run: uv run python3 tools/check_ecosystem_compat.py
+
       - name: Run docs architecture tests
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py
+            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py
 
       - name: Summarize guarded command hotspots
         if: always()

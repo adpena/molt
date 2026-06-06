@@ -619,6 +619,74 @@ run each as `molt build --target native` + run, compared to CPython.
 
 ---
 
+## ARC 1 — IMPLEMENTED (the ecosystem ratchet, this audit's Lane E/F-Arc-1 made real)
+
+Lane E's measurement substrate is now built and CI-gated. The verdicts in Lanes
+B/C are no longer prose: they are **derived from machine-readable manifests and
+ratcheted down-only**, exactly as Lane E specified (mirroring
+`tools/check_satellite_parity.py`).
+
+**Artifacts**
+
+- `tools/ecosystem/dynamism_features.json` — Lane B.1's 27-feature taxonomy as
+  data; the single source of truth for each feature's `status`
+  (`supported` / `typed-shim` / `bridge` / `partial` / `unsupported`), with the
+  file:line `evidence` carried over from this document.
+- `tools/ecosystem/package_triage.json` — Lane C's 25 packages, each with the
+  features it **requires** on its import + commonly-used path (`required_features`)
+  plus doc-named-but-optional features (`optional_features`, excluded from the
+  min). `compile_probe_status` is `pending` for all (fail-closed; no package is
+  molt-build-verified yet — the COMPILE-PROBE wave is still pending).
+- `tools/check_ecosystem_compat.py` — re-derives every verdict as the min over
+  required features and fails on a hand-edited verdict, a missing
+  `evidence`/`excluded_feature`/`tracking`, an unknown feature reference, an
+  evidence-SHA drift, or a distribution regression (`compatible_floor` down /
+  `incompatible_ceiling` up / `partial_ceiling` up).
+- `tools/ecosystem/ecosystem_compat_baseline.json` — the committed one-way
+  ratchet.
+- `docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md`
+  — generated from the manifests (Lane E.3's "generated, not hand-maintained"
+  rule), regenerated via `--update-matrix`.
+- CI: a `docs-gates` step in `.github/workflows/ci.yml`, a `lint` gate in
+  `pyproject.toml`, and tests in `tests/test_ecosystem_compat.py`.
+
+**Derived verdict distribution (today, 25 packages):** compatible 10,
+compatible-via-typed-shim 3, compatible-via-bridge 1, partial 7,
+incompatible-by-design 4.
+
+**Interpretations taken to make Lanes B/C machine-checkable** (each flagged
+in the manifests' `_interpretation_notes`):
+
+1. **A fifth verdict class `partial` was introduced.** The mission lists four
+   classes, but Lane C verdicts ~8 packages PARTIAL (import-green,
+   function-blocked on a named arc). Forcing those into one of the four would
+   either falsely assert support or falsely assert a permanent exclusion.
+   `partial` is ordered between `compatible-via-bridge` and
+   `incompatible-by-design`; the four mission classes remain the canonical set.
+2. **`rich` is derived `incompatible-by-design`, tightening its Lane C cell.**
+   Lane C's summary says `rich = PARTIAL`, but this document's own feature-level
+   evidence overrides it: D16 (module `__getattr__`) is incompatible-by-design
+   TODAY, rich's note says "D16 gap bites at import," and Lane D rank 3 says D16
+   blocks rich's import. PARTIAL means "imports"; rich does not. Fail-closed →
+   incompatible. (This is why the derived incompatible count is 4, not the
+   Lane-C-summary "~3"; the partial count is 7, not "~8".)
+3. **`required` vs `optional` was reconstructed from each row's Notes + Lane B's
+   path-scope rule**, because Lane C's "Hardest required feature" column is not a
+   complete required set and sometimes names optional features (e.g. six/D17,
+   tqdm/D21, httpx-anyio/D19, pyyaml/D26+D23). werkzeug gained D20 from its
+   "functional serve = socket/async" note so its derived verdict matches the
+   stated PARTIAL. D20 (async, dual-state) and D8/D9/D17/D21/D22/D25 (PARTIAL)
+   are encoded `partial`; the TODAY status governs all "→ shim-able/arc" rows
+   (fail-closed), with the conversion arc recorded in each feature's `tracking`.
+
+This closes Lane E and OQ3's machinery question: the ratchet joins the
+`check_satellite_parity` / `check_stdlib_intrinsics` guard family. **Still
+pending** (not part of Arc 1): the functional-suite tie (Lane E.4 / OQ5 — wiring
+`tests/runtime_compat/` per-package PASS/FAIL into the evidence SHA so
+`compile_probe_status` flips from `pending`), and Arcs 2–5.
+
+---
+
 ## APPENDIX: corrections to doc 17 (for the record)
 
 - ⚠️**CORRECTS-17 §4.3** ("metaclass generation likely unsupported, not
