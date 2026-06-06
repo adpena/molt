@@ -1356,207 +1356,622 @@ fn glob0_text(
     Ok(Vec::new())
 }
 
-fn glob_rlistdir_text(
-    _py: &PyToken<'_>,
-    dirname: &str,
-    dir_fd: &GlobDirFdArg,
-    dironly: bool,
+// ===========================================================================
+// Lazy streaming glob iterator (`glob.iglob`)
+//
+// CPython's `glob.iglob` is a generator chain (`_iglob` -> `_glob1`/`_glob2`/
+// `_glob0` + `_rlistdir`, driven by lazy `os.scandir`). The historical molt
+// hack made `iglob == glob` (full materialization), which OOMs on large trees —
+// the exact `os.walk` eager-listdir bug class.
+//
+// We cannot back this on Python generators: molt's generator protocol leaks on
+// *nested* generator delegation (`yield from` / `for y in subgen: yield ...`),
+// which is precisely the recursive `**` (`_rlistdir`) shape, so a pure-Python
+// port would re-introduce the OOM. (Flat generators are fine; this leak is an
+// open generator-runtime baton.) Instead we reify CPython's lazy generator
+// chain as an explicit stack of resumable frames in Rust (no leak: Rust frees
+// frames deterministically). Live memory is O(active-frame-depth x one
+// directory's listing) — bounded exactly like CPython (whose `_listdir`
+// materializes one directory at a time inside `_rlistdir`).
+//
+// Invariant that keeps this simple and provably correct: **every frame carries
+// its own complete relative prefix**, so each fragment a frame yields is
+// already a full root-relative result path. The driver never joins fragments
+// across frames; it returns whatever the top frame yields.
+//
+// The bounded helpers (`glob1_text`, `glob0_text`, `glob_lexists_text`,
+// `glob_is_dir_text`, `glob_listdir_text`, `glob_split_path_text`,
+// `glob_join_text`, `glob_has_magic_text`) are reused verbatim, so ordering,
+// hidden rules, byte mode, dir_fd TypeError parity, and include_hidden are
+// identical to the eager path by construction.
+// ===========================================================================
+
+/// Cursor over one directory's worth of precomputed names (bounded — the
+/// `_listdir`/`_glob1`/`_glob0` result).
+struct GlobNameCursor {
+    names: Vec<String>,
+    idx: usize,
+}
+
+impl GlobNameCursor {
+    #[inline]
+    fn next(&mut self) -> Option<String> {
+        let out = self.names.get(self.idx).cloned();
+        if out.is_some() {
+            self.idx += 1;
+        }
+        out
+    }
+}
+
+/// Which `glob_in_dir` a magic basename selects (mirrors CPython).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlobInDir {
+    /// `_glob1` — basename has magic, non-recursive.
+    Glob1,
+    /// `_glob2` — basename == "**", recursive.
+    Glob2,
+    /// `_glob0` — basename has no magic (literal existence check).
+    Glob0,
+}
+
+/// Source of parent directories for an `Iglob` frame: either a single literal
+/// dirname, or a nested streaming `iglob(dirname, dironly=True)` (magic dirname).
+enum GlobDirSource {
+    Literal(Option<String>),
+    Recursive(Box<GlobIterState>),
+}
+
+/// One resumable frame. Every yielded `String` is a complete root-relative path.
+enum GlobFrame {
+    /// `_iglob(pathname)` body: for each parent `dir` (literal or streamed),
+    /// glob `basename` in `join(root_dir, dir)` and yield `join(dir, name)`.
+    Iglob {
+        kind: GlobInDir,
+        basename: String,
+        dironly: bool,
+        dirs: GlobDirSource,
+        /// The parent dirname currently being globbed (its names are produced
+        /// either via `cur_names`, for glob0/glob1, or via a pushed Glob2
+        /// child frame whose prefix is this parent).
+        cur_dir: Option<String>,
+        cur_names: Option<GlobNameCursor>,
+    },
+    /// `_glob2(prefix @ dir, dironly)`: yield `prefix` once (if `dir` is a
+    /// dir), then stream `_rlistdir` rooted at `dir` with results prefixed by
+    /// `prefix`. `dironly` is the owning `_iglob` frame's value (False for the
+    /// user-facing walk → files+dirs; True for inner dir-expansion → dirs only).
+    Glob2 {
+        prefix: String,
+        dir: String,
+        dironly: bool,
+        emitted_empty: bool,
+        started: bool,
+    },
+    /// `_rlistdir(dir, dironly)` with results prefixed by `prefix`: for each
+    /// non-hidden `name`, yield `join(prefix, name)` and recurse into `dir/name`.
+    Rlistdir {
+        prefix: String,
+        dir: String,
+        dironly: bool,
+        names: GlobNameCursor,
+    },
+    /// A bounded, fully-precomputed result set (non-magic pathname, or a
+    /// literal-dirname basename glob). Streams its cursor.
+    Names(GlobNameCursor),
+}
+
+/// Immutable per-walk configuration shared by all frames.
+struct GlobIterConfig {
+    root_dir: Option<String>,
+    dir_fd: GlobDirFdArg,
+    recursive: bool,
     include_hidden: bool,
     bytes_mode: bool,
     sep: char,
-) -> Result<Vec<String>, u64> {
-    let mut out: Vec<String> = Vec::new();
-    let listed = glob_listdir_text(_py, dirname, dir_fd, dironly, bytes_mode, sep)?;
-    let names = listed.names;
-    for name in names {
-        if !include_hidden && glob_is_hidden_text(&name) {
-            continue;
+    /// Skip exactly one leading empty-string result (the `iglob` `next(it)`
+    /// skip for `**`/empty patterns — see `glob_matches_text`).
+    skip_leading_empty: bool,
+}
+
+/// The boxed state behind a `TYPE_ID_GLOB_ITER` object: a stack of frames
+/// (top = last) plus shared config. `next_path` drives it lazily.
+pub(crate) struct GlobIterState {
+    stack: Vec<GlobFrame>,
+    cfg: GlobIterConfig,
+    leading_skip_done: bool,
+}
+
+/// Outcome of advancing the top frame one step.
+enum GlobStep {
+    /// A complete relative path is ready.
+    Yield(String),
+    /// Push this child frame and keep driving.
+    Push(GlobFrame),
+    /// The top frame is exhausted; pop it.
+    Pop,
+}
+
+impl GlobIterState {
+    /// Build a fresh streaming iglob for `pathname`. `dironly=false` for the
+    /// user-facing walk. Mirrors `glob_iglob_text`'s entry.
+    fn new(
+        _py: &PyToken<'_>,
+        pathname: &str,
+        cfg: GlobIterConfig,
+        dironly: bool,
+    ) -> Result<Self, u64> {
+        let frame = glob_build_iglob_frame(_py, pathname, &cfg, dironly)?;
+        Ok(GlobIterState {
+            stack: vec![frame],
+            cfg,
+            leading_skip_done: false,
+        })
+    }
+
+    /// Public driver used by the eager `glob()` drain (`list(iglob(...))`).
+    pub(crate) fn next_path_public(
+        &mut self,
+        _py: &PyToken<'_>,
+    ) -> Result<Option<String>, u64> {
+        self.next_path(_py)
+    }
+
+    /// Produce the next matching path (root-relative), or `None` at exhaustion.
+    fn next_path(&mut self, _py: &PyToken<'_>) -> Result<Option<String>, u64> {
+        loop {
+            match self.drive(_py)? {
+                None => return Ok(None),
+                Some(path) => {
+                    if !self.leading_skip_done {
+                        self.leading_skip_done = true;
+                        if self.cfg.skip_leading_empty && path.is_empty() {
+                            continue;
+                        }
+                    }
+                    return Ok(Some(path));
+                }
+            }
         }
-        out.push(name.clone());
-        let path = if dirname.is_empty() {
+    }
+
+    /// Advance the frame stack until one path is produced or it empties.
+    fn drive(&mut self, _py: &PyToken<'_>) -> Result<Option<String>, u64> {
+        loop {
+            if self.stack.is_empty() {
+                return Ok(None);
+            }
+            let idx = self.stack.len() - 1;
+            match self.step_top(_py, idx)? {
+                GlobStep::Yield(path) => return Ok(Some(path)),
+                GlobStep::Push(child) => self.stack.push(child),
+                GlobStep::Pop => {
+                    self.stack.pop();
+                }
+            }
+        }
+    }
+
+    fn step_top(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<GlobStep, u64> {
+        match &self.stack[idx] {
+            GlobFrame::Names(_) => {
+                let GlobFrame::Names(cursor) = &mut self.stack[idx] else {
+                    unreachable!()
+                };
+                match cursor.next() {
+                    Some(name) => Ok(GlobStep::Yield(name)),
+                    None => Ok(GlobStep::Pop),
+                }
+            }
+            GlobFrame::Glob2 { .. } => self.step_glob2(_py, idx),
+            GlobFrame::Rlistdir { .. } => self.step_rlistdir(_py, idx),
+            GlobFrame::Iglob { .. } => self.step_iglob(_py, idx),
+        }
+    }
+
+    fn step_glob2(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<GlobStep, u64> {
+        let cfg = &self.cfg;
+        let GlobFrame::Glob2 {
+            prefix,
+            dir,
+            dironly,
+            emitted_empty,
+            started,
+        } = &mut self.stack[idx]
+        else {
+            unreachable!()
+        };
+        let dironly = *dironly;
+        if !*emitted_empty {
+            *emitted_empty = true;
+            let is_dir =
+                dir.is_empty() || glob_is_dir_text(_py, dir, &cfg.dir_fd, cfg.bytes_mode, cfg.sep)?;
+            if is_dir {
+                // `_glob2` yields the bare prefix (the "**" match for the dir itself).
+                return Ok(GlobStep::Yield(prefix.clone()));
+            }
+        }
+        if !*started {
+            *started = true;
+            let prefix = prefix.clone();
+            let dir = dir.clone();
+            let listed =
+                glob_listdir_text(_py, &dir, &cfg.dir_fd, dironly, cfg.bytes_mode, cfg.sep)?;
+            return Ok(GlobStep::Push(GlobFrame::Rlistdir {
+                prefix,
+                dir,
+                dironly,
+                names: GlobNameCursor {
+                    names: listed.names,
+                    idx: 0,
+                },
+            }));
+        }
+        Ok(GlobStep::Pop)
+    }
+
+    fn step_rlistdir(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<GlobStep, u64> {
+        let cfg = &self.cfg;
+        // Pull the next non-hidden name; yield join(prefix,name) and push the
+        // subtree (Rlistdir for dir/name with prefix join(prefix,name)).
+        let (name, prefix, dir, dironly) = {
+            let GlobFrame::Rlistdir {
+                prefix,
+                dir,
+                dironly,
+                names,
+            } = &mut self.stack[idx]
+            else {
+                unreachable!()
+            };
+            let dironly = *dironly;
+            loop {
+                match names.next() {
+                    None => return Ok(GlobStep::Pop),
+                    Some(name) => {
+                        if !cfg.include_hidden && glob_is_hidden_text(&name) {
+                            continue;
+                        }
+                        break (name, prefix.clone(), dir.clone(), dironly);
+                    }
+                }
+            }
+        };
+        let child_dir = if dir.is_empty() {
             name.clone()
         } else {
-            glob_join_text(dirname, &name, sep)
+            glob_join_text(&dir, &name, cfg.sep)
         };
-        for child in
-            glob_rlistdir_text(_py, &path, dir_fd, dironly, include_hidden, bytes_mode, sep)?
-        {
-            out.push(glob_join_text(&name, &child, sep));
-        }
-    }
-    Ok(out)
-}
-
-fn glob2_text(
-    _py: &PyToken<'_>,
-    dirname: &str,
-    dir_fd: &GlobDirFdArg,
-    dironly: bool,
-    include_hidden: bool,
-    bytes_mode: bool,
-    sep: char,
-) -> Result<Vec<String>, u64> {
-    let mut out: Vec<String> = Vec::new();
-    if dirname.is_empty() || glob_is_dir_text(_py, dirname, dir_fd, bytes_mode, sep)? {
-        out.push(String::new());
-    }
-    out.extend(glob_rlistdir_text(
-        _py,
-        dirname,
-        dir_fd,
-        dironly,
-        include_hidden,
-        bytes_mode,
-        sep,
-    )?);
-    Ok(out)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn glob_iglob_text(
-    _py: &PyToken<'_>,
-    pathname: &str,
-    root_dir: Option<&str>,
-    dir_fd: &GlobDirFdArg,
-    recursive: bool,
-    dironly: bool,
-    include_hidden: bool,
-    bytes_mode: bool,
-    sep: char,
-) -> Result<Vec<String>, u64> {
-    let (dirname, basename) = glob_split_path_text(pathname, sep);
-    if !glob_has_magic_text(pathname) {
-        if !basename.is_empty() {
-            let full = match root_dir {
-                Some(root) => glob_join_text(root, pathname, sep),
-                None => pathname.to_string(),
-            };
-            if glob_lexists_text(_py, &full, dir_fd, bytes_mode, sep)? {
-                return Ok(vec![pathname.to_string()]);
-            }
-        } else {
-            let full_dir = match root_dir {
-                Some(root) => glob_join_text(root, &dirname, sep),
-                None => dirname.clone(),
-            };
-            if glob_is_dir_text(_py, &full_dir, dir_fd, bytes_mode, sep)? {
-                return Ok(vec![pathname.to_string()]);
-            }
-        }
-        return Ok(Vec::new());
-    }
-
-    if dirname.is_empty() {
-        let in_dir = root_dir.unwrap_or("");
-        if recursive && basename == "**" {
-            return glob2_text(
-                _py,
-                in_dir,
-                dir_fd,
-                dironly,
-                include_hidden,
-                bytes_mode,
-                sep,
-            );
-        }
-        return glob1_text(
+        let child_prefix = glob_join_text(&prefix, &name, cfg.sep);
+        // CPython's `_rlistdir` recurses into every yielded name with the same
+        // `dironly`; recursing into a non-directory simply lists nothing.
+        let listed = glob_listdir_text(
             _py,
-            in_dir,
-            &basename,
-            dir_fd,
+            &child_dir,
+            &cfg.dir_fd,
             dironly,
-            include_hidden,
-            bytes_mode,
-            sep,
-        );
-    }
-
-    let mut dirs: Vec<String> = Vec::new();
-    if dirname != pathname && glob_has_magic_text(&dirname) {
-        dirs = glob_iglob_text(
-            _py,
-            &dirname,
-            root_dir,
-            dir_fd,
-            recursive,
-            true,
-            include_hidden,
-            bytes_mode,
-            sep,
+            cfg.bytes_mode,
+            cfg.sep,
         )?;
-    } else {
-        dirs.push(dirname.clone());
+        // Push the subtree ABOVE this frame so it streams next; this frame then
+        // resumes for the following sibling name. The child's results all carry
+        // `child_prefix`, so ordering matches CPython (`yield x` before its
+        // subtree, subtree before the next sibling).
+        self.stack.push(GlobFrame::Rlistdir {
+            prefix: child_prefix,
+            dir: child_dir,
+            dironly,
+            names: GlobNameCursor {
+                names: listed.names,
+                idx: 0,
+            },
+        });
+        Ok(GlobStep::Yield(glob_join_text(&prefix, &name, cfg.sep)))
     }
 
-    let basename_has_magic = glob_has_magic_text(&basename);
-    let basename_recursive = recursive && basename == "**";
-    let mut out: Vec<String> = Vec::new();
-    for parent in dirs {
-        let search_dir = match root_dir {
-            Some(root) => glob_join_text(root, &parent, sep),
-            None => parent.clone(),
-        };
-        let names = if basename_has_magic {
-            if basename_recursive {
-                glob2_text(
-                    _py,
-                    &search_dir,
-                    dir_fd,
+    fn step_iglob(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<GlobStep, u64> {
+        loop {
+            // 1) Drain the current parent's bounded in-dir cursor.
+            {
+                let GlobFrame::Iglob {
+                    cur_dir, cur_names, ..
+                } = &mut self.stack[idx]
+                else {
+                    unreachable!()
+                };
+                if let (Some(parent), Some(cursor)) = (cur_dir.clone(), cur_names.as_mut()) {
+                    if let Some(name) = cursor.next() {
+                        return Ok(GlobStep::Yield(glob_join_text(
+                            &parent,
+                            &name,
+                            self.cfg.sep,
+                        )));
+                    }
+                    *cur_names = None;
+                    *cur_dir = None;
+                }
+            }
+
+            // 2) Advance to the next parent directory.
+            let parent = match self.iglob_next_parent(_py, idx)? {
+                Some(p) => p,
+                None => return Ok(GlobStep::Pop),
+            };
+
+            // 3) glob_in_dir(parent, basename).
+            let (kind, basename, dironly) = {
+                let GlobFrame::Iglob {
+                    kind,
+                    basename,
                     dironly,
-                    include_hidden,
-                    bytes_mode,
-                    sep,
-                )?
-            } else {
-                glob1_text(
+                    ..
+                } = &self.stack[idx]
+                else {
+                    unreachable!()
+                };
+                (*kind, basename.clone(), *dironly)
+            };
+
+            if kind == GlobInDir::Glob2 {
+                // Recursive `**` basename: stream via a Glob2 child whose
+                // results are prefixed by `parent` (so they bubble up as
+                // complete `join(parent, fragment)` paths).
+                let search_dir = match self.cfg.root_dir.as_deref() {
+                    Some(root) => glob_join_text(root, &parent, self.cfg.sep),
+                    None => parent.clone(),
+                };
+                return Ok(GlobStep::Push(GlobFrame::Glob2 {
+                    prefix: parent,
+                    dir: search_dir,
+                    dironly,
+                    emitted_empty: false,
+                    started: false,
+                }));
+            }
+
+            // Bounded glob1/glob0 for this parent.
+            let search_dir = match self.cfg.root_dir.as_deref() {
+                Some(root) => glob_join_text(root, &parent, self.cfg.sep),
+                None => parent.clone(),
+            };
+            let names = match kind {
+                GlobInDir::Glob1 => glob1_text(
                     _py,
                     &search_dir,
                     &basename,
-                    dir_fd,
+                    &self.cfg.dir_fd,
                     dironly,
-                    include_hidden,
-                    bytes_mode,
-                    sep,
-                )?
-            }
-        } else {
-            glob0_text(_py, &search_dir, &basename, dir_fd, bytes_mode, sep)?
-        };
-        for name in names {
-            out.push(glob_join_text(&parent, &name, sep));
+                    self.cfg.include_hidden,
+                    self.cfg.bytes_mode,
+                    self.cfg.sep,
+                )?,
+                GlobInDir::Glob0 => glob0_text(
+                    _py,
+                    &search_dir,
+                    &basename,
+                    &self.cfg.dir_fd,
+                    self.cfg.bytes_mode,
+                    self.cfg.sep,
+                )?,
+                GlobInDir::Glob2 => unreachable!(),
+            };
+            let GlobFrame::Iglob {
+                cur_dir, cur_names, ..
+            } = &mut self.stack[idx]
+            else {
+                unreachable!()
+            };
+            *cur_dir = Some(parent);
+            *cur_names = Some(GlobNameCursor { names, idx: 0 });
+            // Loop to drain the cursor we just filled.
         }
     }
-    Ok(out)
+
+    /// Produce the next parent directory for an `Iglob` frame (literal or from
+    /// the nested recursive `iglob(dirname, dironly=True)`).
+    fn iglob_next_parent(
+        &mut self,
+        _py: &PyToken<'_>,
+        idx: usize,
+    ) -> Result<Option<String>, u64> {
+        // Literal source: take the single dirname once.
+        {
+            let GlobFrame::Iglob { dirs, .. } = &mut self.stack[idx] else {
+                unreachable!()
+            };
+            if let GlobDirSource::Literal(slot) = dirs {
+                return Ok(slot.take());
+            }
+        }
+        // Recursive source: drive the nested state one path. We temporarily
+        // move the boxed nested state out to satisfy the borrow checker, then
+        // put it back (it owns its own frame stack across calls).
+        let mut nested = {
+            let GlobFrame::Iglob { dirs, .. } = &mut self.stack[idx] else {
+                unreachable!()
+            };
+            match dirs {
+                GlobDirSource::Recursive(b) => std::mem::replace(
+                    b.as_mut(),
+                    GlobIterState {
+                        stack: Vec::new(),
+                        cfg: glob_cfg_clone(&self.cfg, false),
+                        leading_skip_done: true,
+                    },
+                ),
+                GlobDirSource::Literal(_) => unreachable!(),
+            }
+        };
+        let produced = nested.next_path(_py)?;
+        let GlobFrame::Iglob { dirs, .. } = &mut self.stack[idx] else {
+            unreachable!()
+        };
+        if let GlobDirSource::Recursive(b) = dirs {
+            *b.as_mut() = nested;
+        }
+        Ok(produced)
+    }
 }
 
+/// Clone the per-walk config (deep-clones the `dir_fd` arg). `skip` overrides
+/// `skip_leading_empty` for nested dir-expansion walks (which never skip).
+fn glob_cfg_clone(cfg: &GlobIterConfig, skip: bool) -> GlobIterConfig {
+    GlobIterConfig {
+        root_dir: cfg.root_dir.clone(),
+        dir_fd: cfg.dir_fd.clone(),
+        recursive: cfg.recursive,
+        include_hidden: cfg.include_hidden,
+        bytes_mode: cfg.bytes_mode,
+        sep: cfg.sep,
+        skip_leading_empty: skip,
+    }
+}
+
+/// Build the initial `Iglob`/`Names` frame for `pathname` (mirrors the head of
+/// `glob_iglob_text`, including the no-magic literal short-circuit).
+fn glob_build_iglob_frame(
+    _py: &PyToken<'_>,
+    pathname: &str,
+    cfg: &GlobIterConfig,
+    dironly: bool,
+) -> Result<GlobFrame, u64> {
+    let sep = cfg.sep;
+    let (dirname, basename) = glob_split_path_text(pathname, sep);
+
+    if !glob_has_magic_text(pathname) {
+        // Non-magic: bounded literal existence check.
+        let names: Vec<String> = if !basename.is_empty() {
+            let full = match cfg.root_dir.as_deref() {
+                Some(root) => glob_join_text(root, pathname, sep),
+                None => pathname.to_string(),
+            };
+            if glob_lexists_text(_py, &full, &cfg.dir_fd, cfg.bytes_mode, sep)? {
+                vec![pathname.to_string()]
+            } else {
+                Vec::new()
+            }
+        } else {
+            let full_dir = match cfg.root_dir.as_deref() {
+                Some(root) => glob_join_text(root, &dirname, sep),
+                None => dirname.clone(),
+            };
+            if glob_is_dir_text(_py, &full_dir, &cfg.dir_fd, cfg.bytes_mode, sep)? {
+                vec![pathname.to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        return Ok(GlobFrame::Names(GlobNameCursor { names, idx: 0 }));
+    }
+
+    let basename_recursive = cfg.recursive && basename == "**";
+    let kind = if glob_has_magic_text(&basename) {
+        if basename_recursive {
+            GlobInDir::Glob2
+        } else {
+            GlobInDir::Glob1
+        }
+    } else {
+        GlobInDir::Glob0
+    };
+
+    let dirs = if dirname.is_empty() {
+        // basename globbed directly in root_dir (represented by literal "").
+        GlobDirSource::Literal(Some(String::new()))
+    } else if dirname != pathname && glob_has_magic_text(&dirname) {
+        // Magic dirname: parents come from a nested streaming dir-expansion.
+        let inner = GlobIterState::new(_py, &dirname, glob_cfg_clone(cfg, false), true)?;
+        GlobDirSource::Recursive(Box::new(inner))
+    } else {
+        GlobDirSource::Literal(Some(dirname.clone()))
+    };
+
+    Ok(GlobFrame::Iglob {
+        kind,
+        basename,
+        dironly,
+        dirs,
+        cur_dir: None,
+        cur_names: None,
+    })
+}
+
+/// Build the boxed streaming state for `glob.iglob(...)`. Mirrors
+/// `glob_matches_text`'s configuration; `skip_leading_empty` reproduces the
+/// `iglob` leading-`next(it)` skip for `**`/empty patterns.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn glob_matches_text(
+pub(crate) fn glob_iter_new_state(
     _py: &PyToken<'_>,
     pathname: &str,
     root_dir: Option<&str>,
-    dir_fd: &GlobDirFdArg,
+    dir_fd: GlobDirFdArg,
     recursive: bool,
     include_hidden: bool,
     bytes_mode: bool,
     sep: char,
-) -> Result<Vec<String>, u64> {
-    let mut out = glob_iglob_text(
-        _py,
-        pathname,
-        root_dir,
+) -> Result<Box<GlobIterState>, u64> {
+    let skip_leading_empty =
+        pathname.is_empty() || (recursive && pathname.starts_with("**"));
+    let cfg = GlobIterConfig {
+        root_dir: root_dir.map(str::to_string),
         dir_fd,
         recursive,
-        false,
         include_hidden,
         bytes_mode,
         sep,
-    )?;
-    if (pathname.is_empty() || (recursive && pathname.starts_with("**")))
-        && out.first().is_some_and(String::is_empty)
-    {
-        out.remove(0);
+        skip_leading_empty,
+    };
+    let state = GlobIterState::new(_py, pathname, cfg, false)?;
+    Ok(Box::new(state))
+}
+
+/// Advance a `TYPE_ID_GLOB_ITER` object's state by one path and return the
+/// value bits (str or bytes per the walk's mode). Returns None-bits at
+/// end-of-stream; raises (sets exception) on capability/dir_fd errors.
+///
+/// # Safety
+/// `iter_ptr` must be a live `TYPE_ID_GLOB_ITER` object data pointer.
+pub(crate) unsafe fn glob_iter_next_value(_py: &PyToken<'_>, iter_ptr: *mut u8) -> u64 {
+    let state_ptr = unsafe { crate::object::glob_iter_state_ptr(iter_ptr) };
+    if state_ptr.is_null() {
+        return MoltObject::none().bits();
     }
-    Ok(out)
+    let state = unsafe { &mut *state_ptr };
+    let bytes_mode = state.cfg.bytes_mode;
+    match state.next_path(_py) {
+        Err(_bits) => MoltObject::none().bits(), // exception already pending
+        Ok(None) => MoltObject::none().bits(),
+        Ok(Some(path)) => {
+            let ptr = if bytes_mode {
+                match raw_from_bytes_text(&path) {
+                    Some(raw) => alloc_bytes(_py, raw.as_slice()),
+                    None => alloc_bytes(_py, path.as_bytes()),
+                }
+            } else {
+                alloc_string(_py, path.as_bytes())
+            };
+            if ptr.is_null() {
+                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
+    }
+}
+
+/// Allocate a `TYPE_ID_GLOB_ITER` object owning `state`. On allocation failure
+/// the state is dropped and None-bits returned.
+pub(crate) fn glob_iter_alloc_object(_py: &PyToken<'_>, state: Box<GlobIterState>) -> u64 {
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut GlobIterState>();
+    let ptr = alloc_object(_py, total, TYPE_ID_GLOB_ITER);
+    if ptr.is_null() {
+        // `state` drops here, freeing the work-stack.
+        return MoltObject::none().bits();
+    }
+    let state_ptr = Box::into_raw(state);
+    unsafe {
+        *(ptr as *mut *mut GlobIterState) = state_ptr;
+    }
+    MoltObject::from_ptr(ptr).bits()
 }
 
 pub(crate) fn glob_escape_text(pathname: &str, sep: char) -> String {
