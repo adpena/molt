@@ -1898,7 +1898,19 @@ fn preanalyze_function_ir(
         //
         // This is the Swift ARC pattern: retain at store, release at scope
         // exit (function return). The only cost is delayed cleanup.
-        if !loop_ranges.is_empty() {
+        //
+        // RC drop-insertion substrate (design 20 §4.1, Phase 5): this func-end
+        // lifetime extension exists SOLELY to keep `drain_cleanup_tracked_*` from
+        // emitting a premature dec_ref on a loop-carried value (the Swift-ARC
+        // release-at-scope-exit model). When the TIR drop pass owns this
+        // function's RC, the value-tracking drains are already neutralized (the
+        // registration skip above leaves the tracked lists empty), and the TIR
+        // `DecRef(old)` on the back-edge releases the previous iteration's value
+        // precisely. Extending every variable's lifetime to func_end would defeat
+        // that precision, so it is dropped for drop-inserted functions. (SSA
+        // block-param threading for loop-carried values is handled by the TIR phi
+        // / native join-slot machinery, not by this RC-only extension.)
+        if !loop_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
             for entry in last_use.values_mut() {
                 if *entry < func_end {
@@ -1939,7 +1951,13 @@ fn preanalyze_function_ir(
         // For back-edge loops: extend ALL variables to function end.
         // This is the only approach that prevents all premature dec_ref.
         // Memory leak is bounded by function scope (cleanup at ret).
-        if !back_edge_ranges.is_empty() {
+        //
+        // RC drop-insertion substrate (design 20 §4.1, Phase 5): same rationale
+        // as the structured-loop extension above — this is an RC-tracking-only
+        // lifetime extension. Drop it for drop-inserted functions, whose RC is
+        // owned by the TIR `DecRef`/`IncRef` ops (the back-edge `DecRef(old)`
+        // releases the carried value with per-iteration precision).
+        if !back_edge_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
             for entry in last_use.values_mut() {
                 if *entry < func_end {
@@ -2449,8 +2467,21 @@ impl SimpleBackend {
             direct_field_store_ops,
             drop_inserted,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries, &representation_plan);
-        let (rc_skip_inc, mut rc_skip_dec) =
-            crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
+        // RC drop-insertion substrate (design 20 §4.1, Phase 5): the SimpleIR-level
+        // inc/dec coalescer (`rc_coalescing`) elides matched inc_ref/dec_ref PAIRS
+        // it discovers in the op stream. For drop-inserted functions the TIR drop
+        // pass is the sole RC authority and its `refcount_elim_post` step already
+        // performed the sound (balance-preserving) elision at the TIR level; the
+        // ad-hoc SimpleIR coalescer operates on the SAME `dec_ref`/`inc_ref` ops
+        // and would wrongly null out a TIR-inserted loop-carried `DecRef(old)` it
+        // mis-pairs with the slot-store transport's inc — re-opening the O(n)
+        // accumulator leak. Retire it (empty skip sets) for those functions so the
+        // TIR drops lower verbatim; the legacy native-RC functions keep it.
+        let (rc_skip_inc, mut rc_skip_dec) = if drop_inserted {
+            (HashSet::new(), HashSet::new())
+        } else {
+            crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use)
+        };
         let returns_value = has_ret || stateful;
 
         if returns_value {
@@ -23730,6 +23761,23 @@ impl SimpleBackend {
                         )
                         .expect("store_var: src not found");
                         if let Some(&slot) = slot_backed_join_slots.get(name) {
+                            // RC drop-insertion substrate (design 20 §4.1, Phase 5):
+                            // this is the memory-phi arm of the native value-tracking
+                            // RC — a CPython-`STORE_FAST` retain-new / release-old on
+                            // the loop-carried slot. For drop-inserted functions the
+                            // TIR drops own this: the TIR `DecRef(old)` (inserted on
+                            // the back-edge, right before this store) already releases
+                            // the previous occupant, and the new value is produced
+                            // OWNED (rc=1) so its single reference transfers into the
+                            // slot with a bare store — no inc, no dec. Running the
+                            // legacy inc(new)/dec(old) here too would add one
+                            // unbalanced reference per iteration (inc not matched by
+                            // the TIR drop), re-opening the O(n) loop-accumulator leak
+                            // (the string-concat / bigint-accumulator headline case).
+                            if drop_inserted {
+                                builder.ins().stack_store(*val, slot, 0);
+                                continue;
+                            }
                             let old = builder.ins().stack_load(types::I64, slot, 0);
                             emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
                             builder.ins().stack_store(*val, slot, 0);
@@ -23891,7 +23939,24 @@ impl SimpleBackend {
                                 continue;
                             }
                             let val = builder.ins().stack_load(types::I64, slot, 0);
-                            emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
+                            // RC drop-insertion substrate (design 20 §4.1, Phase 5):
+                            // the load-side arm of the memory-phi value-tracking RC.
+                            // The legacy model inc_refs on every slot LOAD so the
+                            // loaded SSA value is OWNED, and balances it with a
+                            // release at the value's last use. For drop-inserted
+                            // functions the TIR drops own RC under the borrow model
+                            // (design §1.2): a slot load is a BORROW (no new
+                            // reference), and the TIR `DecRef` at the loaded value's
+                            // last use is the genuine release of the slot occupant's
+                            // single reference (the loop-carried back-edge drop).
+                            // Keeping the load-inc here would pair it with that TIR
+                            // `DecRef` (net zero) so the carried accumulator is never
+                            // freed — the headline O(n) loop-accumulator leak. Skip
+                            // it; the load yields a borrowed alias the TIR pass tracks
+                            // in alias-root space.
+                            if !drop_inserted {
+                                emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
+                            }
                             if let Some(ref out_name) = op.out {
                                 def_var_from_boxed_transport(
                                     &mut self.module,
@@ -24064,7 +24129,24 @@ impl SimpleBackend {
                                 continue;
                             }
                             let val = builder.ins().stack_load(types::I64, slot, 0);
-                            emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
+                            // RC drop-insertion substrate (design 20 §4.1, Phase 5):
+                            // the load-side arm of the memory-phi value-tracking RC.
+                            // The legacy model inc_refs on every slot LOAD so the
+                            // loaded SSA value is OWNED, and balances it with a
+                            // release at the value's last use. For drop-inserted
+                            // functions the TIR drops own RC under the borrow model
+                            // (design §1.2): a slot load is a BORROW (no new
+                            // reference), and the TIR `DecRef` at the loaded value's
+                            // last use is the genuine release of the slot occupant's
+                            // single reference (the loop-carried back-edge drop).
+                            // Keeping the load-inc here would pair it with that TIR
+                            // `DecRef` (net zero) so the carried accumulator is never
+                            // freed — the headline O(n) loop-accumulator leak. Skip
+                            // it; the load yields a borrowed alias the TIR pass tracks
+                            // in alias-root space.
+                            if !drop_inserted {
+                                emit_inc_ref_obj(&mut builder, val, local_inc_ref_obj, &nbc);
+                            }
                             if let Some(ref out_name) = op.out {
                                 def_var_from_boxed_transport(
                                     &mut self.module,
@@ -24326,6 +24408,18 @@ impl SimpleBackend {
 
             if let Some(name) = out_name.as_ref()
                 && name != "none"
+                // RC drop-insertion substrate (design 20 §4.1, Phase 5): when the
+                // TIR drop pass owns this function's RC, suppress heap-result
+                // registration into the native value-tracking system entirely.
+                // Registration is the SINGLE source that feeds every drain site
+                // (`tracked_*`/`block_tracked_*`/`entry_vars` are populated nowhere
+                // else), so skipping it here makes every `drain_cleanup_tracked_*`
+                // call and the final-return cleanup loops no-ops — the TIR
+                // `DecRef`/`IncRef` ops become the SOLE RC authority. Without this
+                // the tracking holds a second reference on loop-carried
+                // accumulators and the TIR `DecRef(old)` only takes rc 2→1, never
+                // freeing it (the O(n) residual leak the activation must close).
+                && !drop_inserted
                 && !slot_backed_join_slots.contains_key(name.as_str())
                 && let Some(block) = builder.current_block()
                 // RC coalescing: skip tracking for variables whose dec_ref
@@ -24436,14 +24530,27 @@ impl SimpleBackend {
             builder.ins().call(trace_exit_fn, &[]);
         }
 
-        for (name, slot) in slot_backed_join_slots.iter() {
-            // Raw-backed slots hold raw i64 scalars — never heap pointers,
-            // never refcounted, nothing to release.
-            if raw_backed_slot_names.contains(name) {
-                continue;
+        // RC drop-insertion substrate (design 20 §4.1, Phase 5): the join-slot
+        // exit-teardown is the memory-phi arm of the native value-tracking RC — it
+        // releases each non-raw loop-carried slot's FINAL value at function exit
+        // (Swift-ARC release-at-scope-exit). For drop-inserted functions the TIR
+        // drops own this: the back-edge `DecRef(old)` releases each prior
+        // iteration's value, and the loop-exit value is either dropped by the TIR
+        // pass (dead on exit) or transferred to the caller by the return ABI (a
+        // returned accumulator — design §1.2: "consumed by the return ABI; caller
+        // dec-refs"). Running this teardown too would double-free the returned
+        // accumulator (a use-after-free in the caller) — so it is suppressed and
+        // the TIR drops are the sole authority.
+        if !drop_inserted {
+            for (name, slot) in slot_backed_join_slots.iter() {
+                // Raw-backed slots hold raw i64 scalars — never heap pointers,
+                // never refcounted, nothing to release.
+                if raw_backed_slot_names.contains(name) {
+                    continue;
+                }
+                let val = builder.ins().stack_load(types::I64, *slot, 0);
+                builder.ins().call(local_dec_ref_obj, &[val]);
             }
-            let val = builder.ins().stack_load(types::I64, *slot, 0);
-            builder.ins().call(local_dec_ref_obj, &[val]);
         }
 
         // -----------------------------------------------------------------

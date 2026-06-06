@@ -164,6 +164,44 @@ impl TirFunction {
             })
         })
     }
+
+    /// True iff the function is a lowered coroutine `_poll` **state machine** —
+    /// it dispatches on a saved state via [`StateSwitch`](super::ops::OpCode::StateSwitch)
+    /// (and friends: `StateTransition`/`StateYield`/`ChanSendYield`/
+    /// `ChanRecvYield`/`AllocTask`). Such a function's CFG is NOT
+    /// dominator-structured: the state dispatch RE-ENTERS resume blocks, so a
+    /// value defined in one state region is reachable (via the dispatch back-edge)
+    /// in a resume block that a straight-line / dominator liveness walk does NOT
+    /// see as dominated. Any pass that places ops keyed on single-entry dominance
+    /// (drop insertion's per-block last-use / edge-dying placement) is UNSOUND
+    /// over this shape — it can emit a `DecRef` in a resume block referencing a
+    /// value defined only on the non-taken first-entry path (a use-before-def that
+    /// the LLVM verifier rejects and that double-frees at runtime on native).
+    ///
+    /// This is the post-lowering complement to [`has_exception_handlers`]: a
+    /// generator may be lowered to a `_poll` body carrying `StateSwitch` WITHOUT
+    /// the `StateBlockStart`/`StateBlockEnd` delimiters, so the handler predicate
+    /// alone does not catch it. Passes whose hazard is the re-entrant state CFG
+    /// (drop insertion — design 20 §2.9 handles the high-level suspension model
+    /// but NOT the lowered state machine) bail on this predicate too.
+    ///
+    /// [`has_exception_handlers`]: TirFunction::has_exception_handlers
+    pub fn has_state_machine(&self) -> bool {
+        use super::ops::OpCode;
+        self.blocks.values().any(|block| {
+            block.ops.iter().any(|op| {
+                matches!(
+                    op.opcode,
+                    OpCode::StateSwitch
+                        | OpCode::StateTransition
+                        | OpCode::StateYield
+                        | OpCode::ChanSendYield
+                        | OpCode::ChanRecvYield
+                        | OpCode::AllocTask
+                )
+            })
+        })
+    }
 }
 
 /// A module: a collection of TIR functions.
