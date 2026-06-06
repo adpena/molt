@@ -701,12 +701,19 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 && let Some(result) = op.result_values.first()
             {
                 let result_id = result.id;
+                let result_repr = result.repr;
+                // Shifts REQUIRE the raw-result proof: a raw `i64.shl` whose
+                // count is >= 64 masks mod 64 (wrong value) and a `<<` result can
+                // exceed i64. The value-range seed grants `LirRepr::I64` only when
+                // the count is range-proven `[0, 63]` and the result fits inline.
                 emit_lir_i64_binary_or_boxed(
                     ctx,
                     tir_op.operands[0],
                     tir_op.operands[1],
                     result_id,
+                    result_repr,
                     Instruction::I64Shl,
+                    true,
                 );
             }
         }
@@ -715,12 +722,15 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 && let Some(result) = op.result_values.first()
             {
                 let result_id = result.id;
+                let result_repr = result.repr;
                 emit_lir_i64_binary_or_boxed(
                     ctx,
                     tir_op.operands[0],
                     tir_op.operands[1],
                     result_id,
+                    result_repr,
                     Instruction::I64ShrS,
+                    true,
                 );
             }
         }
@@ -1175,12 +1185,18 @@ fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp) {
         BitwiseOp::Or => Instruction::I64Or,
         BitwiseOp::Xor => Instruction::I64Xor,
     };
+    // `&`/`|`/`^` never overflow and the raw machine op is always defined for
+    // any i64 operands, so the operand proof alone authorizes the raw lane
+    // (require_raw_result = false) — no perf regression on the proven-operand
+    // bitwise path.
     emit_lir_i64_binary_or_boxed(
         ctx,
         tir_op.operands[0],
         tir_op.operands[1],
         op.result_values[0].id,
+        op.result_values[0].repr,
         instr,
+        false,
     );
 }
 
@@ -1191,15 +1207,31 @@ fn emit_lir_bitwise(ctx: &mut LirLowerCtx, op: &LirOp, bw: BitwiseOp) {
 /// word is a miscompile). On the production fast path the runtime `Call(0)` bails
 /// to the IntFastLane-guarded slow path; on the generic path it is the resolved
 /// runtime dispatch.
+///
+/// `require_raw_result` additionally gates the raw lane on the **result** being a
+/// raw carrier (`LirRepr::I64`). `I64And`/`I64Or`/`I64Xor` never overflow and the
+/// machine op is always defined, so they pass `false` (operand proof suffices).
+/// `I64Shl`/`I64ShrS` MUST pass `true`: a `<<` result can exceed i64, and a raw
+/// shift whose count is `>= 64` is a silent wrong-value mask-mod-64 on wasm. The
+/// shared value-range seed grants a shift result `RawI64Safe` (→ `LirRepr::I64`)
+/// ONLY when its count is range-proven in `[0, 63]` and the result fits the inline
+/// window, so gating on the result repr here routes every other shift to the
+/// boxed `molt_lshift`/`molt_rshift` runtime (BigInt- and exception-correct),
+/// exactly as the LLVM `emit_bitwise` gate and the native backend do.
 #[cfg(feature = "wasm-backend")]
 fn emit_lir_i64_binary_or_boxed(
     ctx: &mut LirLowerCtx,
     lhs: ValueId,
     rhs: ValueId,
     dst: ValueId,
+    dst_repr: LirRepr,
     bare_i64_instr: Instruction<'static>,
+    require_raw_result: bool,
 ) {
-    if ctx.repr_of(lhs) == LirRepr::I64 && ctx.repr_of(rhs) == LirRepr::I64 {
+    let raw_lane_ok = ctx.repr_of(lhs) == LirRepr::I64
+        && ctx.repr_of(rhs) == LirRepr::I64
+        && (!require_raw_result || dst_repr == LirRepr::I64);
+    if raw_lane_ok {
         ctx.emit_get(lhs);
         ctx.emit_get(rhs);
         ctx.instructions.push(bare_i64_instr);

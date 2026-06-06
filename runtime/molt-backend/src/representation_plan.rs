@@ -589,6 +589,42 @@ fn raw_i64_safe_value_seed(
                 }
                 continue;
             }
+            // A `Shl`/`Shr` result is a sound raw-i64 carrier only when its
+            // machine shift-count operand is proven in `[0, 63]` — the valid
+            // range for a raw i64 machine shift — *in addition to* the generic
+            // inline-window proof below. The result-range proof alone is NOT
+            // sufficient: `0 << 70` has result range `[0, 0]` (fits inline) yet
+            // a machine shift count of 70, and `(x & 0xff) << 90` likewise. A
+            // count outside `[0, 63]` is poison on LLVM (`shl`/`ashr` undefined
+            // behaviour) and a silent wrong-value mask-mod-64 on WASM
+            // (`i64.shl`/`i64.shr_s`), and a negative count is a Python
+            // `ValueError` — all three MUST take the boxed runtime path
+            // (`molt_lshift`/`molt_rshift`), which is BigInt- and
+            // exception-correct (native already routes every shift there). So a
+            // shift whose count is not range-proven in `[0, 63]` is excluded
+            // from the raw seed here, at the single source of truth every
+            // backend consults (`is_raw_i64_safe`), rather than re-guarded in
+            // each backend's lowering. The proven-`[0, 63]` count case — a
+            // literal `<< 1` (the peel / hot-loop shape) or a bounded variable
+            // `<< (i & 63)` — keeps the raw lane and its perf.
+            if matches!(op.opcode, OpCode::Shl | OpCode::Shr) {
+                let count_in_range = op
+                    .operands
+                    .get(1)
+                    .map(|&count| {
+                        let r = vr.range_of(count);
+                        r.lo >= 0 && r.hi <= 63
+                    })
+                    .unwrap_or(false);
+                if count_in_range {
+                    for &result in &op.results {
+                        if vr.fits_inline_int47(result) {
+                            seed.insert(result);
+                        }
+                    }
+                }
+                continue;
+            }
             for &result in &op.results {
                 if vr.fits_inline_int47(result) {
                     seed.insert(result);
