@@ -5459,11 +5459,32 @@ class CallVisitorMixin(_MixinBase):
             if class_id is not None:
                 class_info = self.classes[class_id]
                 if self.current_func_name == "molt_main":
-                    class_value_name = class_info.get("class_value_name")
-                    if class_info.get("constructor_fold_safe") and isinstance(
-                        class_value_name, str
+                    # Resolve the class reference through the single audited
+                    # static-class resolver, which enforces the chunk-liveness
+                    # guard (`__init__.py` `_current_module_static_class_ref`,
+                    # lines 4678-4680: `self.globals[class_id].name ==
+                    # class_value_name`).  When `molt_main` is split into
+                    # multiple `molt_module_chunk_N` functions, a class defined
+                    # in chunk N and instantiated in chunk N+M has had its
+                    # `class_value_name` SSA value reset out of `self.globals`
+                    # at the chunk boundary (`_reset_module_chunk_state`); the
+                    # resolver then returns None and we fall back to a
+                    # chunk-safe MODULE_GET_ATTR re-fetch.  Trusting
+                    # `class_value_name` directly here would materialise a
+                    # dangling cross-chunk SSA ref that lowering degrades to a
+                    # CONST_STR of the variable name, feeding a string where a
+                    # type is expected (task #50).  The `constructor_fold_safe`
+                    # gate is preserved: the fast alloc + inlined `__init__`
+                    # fold still fires for the in-chunk case, because a live
+                    # `constructor_fold_safe` class always satisfies the
+                    # resolver's (superset) layout/decoration/mutation guards.
+                    static_class_ref = self._current_module_static_class_ref(
+                        class_id
+                    )
+                    if static_class_ref is not None and class_info.get(
+                        "constructor_fold_safe"
                     ):
-                        class_ref = MoltValue(class_value_name, type_hint="type")
+                        class_ref = static_class_ref
                     else:
                         class_ref = self._emit_module_attr_get(class_id)
                 else:
