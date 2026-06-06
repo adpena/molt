@@ -2345,8 +2345,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 {
                     return;
                 }
-
-                // TERMINAL FAIL-LOUD STATE (preserved-op passthrough class).
+                // TERMINAL FAIL-LOUD STATE (preserved-op passthrough class),
+                // tied to the `CopyLowering` single source of truth.
                 //
                 // Reaching here means this `OpCode::Copy` carries an
                 // `_original_kind` that `lower_preserved_simpleir_op` did NOT
@@ -2358,29 +2358,68 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // Passing operand 0 through — the historical behavior — silently
                 // miscompiles them: `abs(x)` returned `x`, `...`/`NotImplemented`
                 // became `None`, `raise … from …`'s `__cause__` link, `gen.throw`,
-                // special-attr loads, the `borrow`/`release` refcount ops, and the
-                // `guard_tag` type check were all DROPPED. There is NO preserved
-                // op whose operand-0 passthrough is provably correct: the pure SSA
-                // value copies (`copy`/`copy_var`/`load_var`/`store_var`) carry
+                // special-attr loads, the `borrow`/`release` refcount ops, the
+                // `guard_tag` type check, and every fresh-value conversion
+                // (`int(x)`, `s[-5:]`, `dict.keys()`, …) were all DROPPED or
+                // returned operand 0. There is NO preserved op whose operand-0
+                // passthrough is provably correct: the pure SSA value copies
+                // (`copy`/`copy_var`/`load_var`/`store_var`) carry
                 // `_original_kind == None` (ssa.rs deliberately omits it) and take
                 // the benign passthrough below; anything WITH an `_original_kind`
                 // has real semantics. So the exhaustive, sound terminal state is:
-                // fail the build loudly here, turning a silent wrong-result into a
-                // hard error that names the missing lowering. Closing a kind = add
-                // an arm to `lower_preserved_simpleir_op` (or, if `molt_<kind>` is
-                // a real boxed runtime intrinsic, the generic fallback already
-                // covers it).
+                // fail the build loudly here.
+                //
+                // SINGLE SOURCE OF TRUTH (the drift the `CopyLowering` classifier
+                // forbids). The drop-insertion pass releases exactly the `Copy`s
+                // whose `_original_kind` is a `CopyLowering::FreshValue`
+                // (`alias_analysis::copy_kind_mints_fresh_owned_ref`). If such a
+                // fresh-owned producer reached codegen as a silent operand-0
+                // passthrough, the result would (a) be the wrong value AND (b)
+                // alias operand 0 — which the drop pass then DOUBLE-FREES. The gate
+                // therefore consults that classifier on every fatal so the table
+                // and the backend cannot drift: a `FreshValue` reaching here is the
+                // forbidden drift (a fresh-value op missing its explicit LLVM arm),
+                // and the diagnostic names it as such; any other `_original_kind`
+                // gets the general terminal message with operand/result counts.
+                // Closing a kind = add an arm to `lower_preserved_simpleir_op` (or,
+                // if `molt_<kind>` is a real boxed runtime intrinsic, the generic
+                // fallback already covers it). See the `CopyLowering` docs and
+                // `tests::copy_lowering_classes_are_total_and_disjoint`.
                 if let Some(kind) = original_kind {
-                    self.record_fatal(format!(
-                        "unhandled preserved SimpleIR op `{kind}` (operands={}, \
-                         results={}) reached the LLVM `Copy` passthrough — lowering \
-                         it as a copy of operand 0 would silently miscompile or drop \
-                         its side effect; add a `lower_preserved_simpleir_op` arm \
-                         for it (or confirm `molt_{kind}` is a boxed runtime \
-                         intrinsic so the generic fallback claims it)",
-                        op.operands.len(),
-                        op.results.len(),
-                    ));
+                    if crate::tir::passes::alias_analysis::copy_kind_reaches_no_incref_passthrough(
+                        Some(kind),
+                    ) {
+                        // Not a `FreshValue` (a transparent-alias / inert-marker
+                        // kind whose `molt_<kind>` intrinsic is also absent): the
+                        // partner's general terminal state. Still fail loud — an
+                        // unhandled `_original_kind` is never a sound passthrough.
+                        self.record_fatal(format!(
+                            "unhandled preserved SimpleIR op `{kind}` (operands={}, \
+                             results={}) reached the LLVM `Copy` passthrough — \
+                             lowering it as a copy of operand 0 would silently \
+                             miscompile or drop its side effect; add a \
+                             `lower_preserved_simpleir_op` arm for it (or confirm \
+                             `molt_{kind}` is a boxed runtime intrinsic so the \
+                             generic fallback claims it)",
+                            op.operands.len(),
+                            op.results.len(),
+                        ));
+                    } else {
+                        // A `CopyLowering::FreshValue` reached the passthrough: the
+                        // exact classifier↔backend drift this gate exists to catch.
+                        self.record_fatal(format!(
+                            "fresh-value SimpleIR op `{kind}` (operands={}, \
+                             results={}) reached the LLVM `Copy` passthrough — \
+                             lowering it as a copy of operand 0 would silently \
+                             miscompile AND make the result alias operand 0 (a \
+                             drop-insertion double-free); it is in \
+                             `alias_analysis::copy_kind_mints_fresh_owned_ref` so it \
+                             MUST have a `lower_preserved_simpleir_op` arm (the \
+                             classifier and the LLVM lowering have drifted)",
+                            op.operands.len(),
+                            op.results.len(),
+                        ));
+                    }
                     return;
                 }
 
@@ -8692,6 +8731,282 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .backend
                     .builder
                     .build_call(str_fn, &[src_bits.into()], "str_from_obj")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── repr(x): a fresh owned string, NOT operand 0. ──
+            // Mirrors WASM/Luau/native `repr_from_obj` → `molt_repr_from_obj`.
+            // Without this arm the Copy fell through to the bit-passthrough,
+            // silently returning `x` (a wrong-result miscompile) and aliasing it
+            // (a drop-insertion double-free). One operand, owned result.
+            "repr_from_obj" => {
+                let Some(&src_id) = op.operands.first() else {
+                    return false;
+                };
+                let repr_fn = self.ensure_runtime_i64_fn("molt_repr_from_obj", 1);
+                let src_bits = self.materialize_dynbox_operand(src_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(repr_fn, &[src_bits.into()], "repr_from_obj")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── int(x[, base]): a fresh owned int object, NOT operand 0. ──
+            // `molt_int_from_obj(val, base, has_base)`. The frontend always emits
+            // the 3-operand form (base / has_base default to the no-base sentinel).
+            "int_from_obj" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let int_fn = self.ensure_runtime_i64_fn("molt_int_from_obj", 3);
+                let val = self.materialize_dynbox_operand(op.operands[0]);
+                let base = self.materialize_dynbox_operand(op.operands[1]);
+                let has_base = self.materialize_dynbox_operand(op.operands[2]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(int_fn, &[val.into(), base.into(), has_base.into()], "int_from_obj")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── float(x): a fresh owned float object, NOT operand 0. ──
+            "float_from_obj" => {
+                let Some(&src_id) = op.operands.first() else {
+                    return false;
+                };
+                let float_fn = self.ensure_runtime_i64_fn("molt_float_from_obj", 1);
+                let src_bits = self.materialize_dynbox_operand(src_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(float_fn, &[src_bits.into()], "float_from_obj")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── obj[start:end] (the slice subscript): a fresh owned object, NOT
+            //    operand 0. `molt_slice(obj, start, end)`. THIS is the exact
+            //    adversarial-review P0 #1 double-free vector — `s[-5:]` fell
+            //    through to the passthrough, returned `s`, and was double-freed. ──
+            "slice" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let slice_fn = self.ensure_runtime_i64_fn("molt_slice", 3);
+                let obj = self.materialize_dynbox_operand(op.operands[0]);
+                let start = self.materialize_dynbox_operand(op.operands[1]);
+                let end = self.materialize_dynbox_operand(op.operands[2]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(slice_fn, &[obj.into(), start.into(), end.into()], "slice")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── format(val, spec) (f-string field / format()): fresh owned str. ──
+            // `molt_format_builtin(val, spec)`.
+            "string_format" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let fmt_fn = self.ensure_runtime_i64_fn("molt_format_builtin", 2);
+                let val = self.materialize_dynbox_operand(op.operands[0]);
+                let spec = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(fmt_fn, &[val.into(), spec.into()], "string_format")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // NOTE: `contains` (the `x in y` membership test) is ALSO a fresh-value
+            // `Copy` kind (classified `FreshValue` in `alias_analysis`), but it is
+            // already lowered explicitly further down via `emit_containment`
+            // (`molt_contains` + `NotIn` negation). It therefore never reaches the
+            // `Copy` passthrough fatal gate, and adding a second `"contains" =>` arm
+            // here would be an unreachable duplicate. Left to its established arm.
+            // ── ascii(x): fresh owned str. ──
+            "ascii_from_obj" => {
+                let Some(&src_id) = op.operands.first() else {
+                    return false;
+                };
+                let ascii_fn = self.ensure_runtime_i64_fn("molt_ascii_from_obj", 1);
+                let src_bits = self.materialize_dynbox_operand(src_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(ascii_fn, &[src_bits.into()], "ascii_from_obj")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── slice(start, stop, step): a fresh owned slice object. ──
+            "slice_new" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let slice_new_fn = self.ensure_runtime_i64_fn("molt_slice_new", 3);
+                let start = self.materialize_dynbox_operand(op.operands[0]);
+                let stop = self.materialize_dynbox_operand(op.operands[1]);
+                let step = self.materialize_dynbox_operand(op.operands[2]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(slice_new_fn, &[start.into(), stop.into(), step.into()], "slice_new")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── dict.keys()/values()/items(): fresh owned view objects. ──
+            "dict_keys" | "dict_values" | "dict_items" => {
+                let Some(&dict_id) = op.operands.first() else {
+                    return false;
+                };
+                let symbol = match kind {
+                    "dict_keys" => "molt_dict_keys",
+                    "dict_values" => "molt_dict_values",
+                    _ => "molt_dict_items",
+                };
+                let view_fn = self.ensure_runtime_i64_fn(symbol, 1);
+                let dict_bits = self.materialize_dynbox_operand(dict_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(view_fn, &[dict_bits.into()], kind)
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── enumerate(iterable[, start]): a fresh owned enumerate object. ──
+            "enumerate" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let enum_fn = self.ensure_runtime_i64_fn("molt_enumerate", 3);
+                let iterable = self.materialize_dynbox_operand(op.operands[0]);
+                let start = self.materialize_dynbox_operand(op.operands[1]);
+                let has_start = self.materialize_dynbox_operand(op.operands[2]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        enum_fn,
+                        &[iterable.into(), start.into(), has_start.into()],
+                        "enumerate",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── dict(x): a fresh owned dict. ──
+            "dict_from_obj" => {
+                let Some(&obj_id) = op.operands.first() else {
+                    return false;
+                };
+                let dict_fn = self.ensure_runtime_i64_fn("molt_dict_from_obj", 1);
+                let obj_bits = self.materialize_dynbox_operand(obj_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(dict_fn, &[obj_bits.into()], "dict_from_obj")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── complex(real[, imag]): a fresh owned complex. ──
+            "complex_from_obj" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let complex_fn = self.ensure_runtime_i64_fn("molt_complex_from_obj", 3);
+                let val = self.materialize_dynbox_operand(op.operands[0]);
+                let imag = self.materialize_dynbox_operand(op.operands[1]);
+                let has_imag = self.materialize_dynbox_operand(op.operands[2]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        complex_fn,
+                        &[val.into(), imag.into(), has_imag.into()],
+                        "complex_from_obj",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // ── object(): a fresh owned bare object. No operands. ──
+            "object_new" => {
+                let object_new_fn = self.ensure_runtime_i64_fn("molt_object_new", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(object_new_fn, &[], "object_new")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();

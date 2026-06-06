@@ -268,20 +268,262 @@ impl AliasUnionFind {
     }
 }
 
-/// Returns whether an `OpCode::Copy` op is a transparent local alias (its result
-/// names the same heap object as its operand). The opaque `_original_kind`
-/// passthrough carriers (container constructors etc.) are NOT aliases — their
-/// result is a distinct value. Mirrors `dead_store_elim`'s former
-/// `copy_is_known_local_alias`.
-fn copy_is_known_local_alias(op: &TirOp) -> bool {
-    match op.attrs.get("_original_kind") {
-        None => true,
-        Some(AttrValue::Str(kind)) => matches!(
-            kind.as_str(),
-            "copy" | "copy_var" | "store_var" | "load_var" | "identity_alias"
-        ),
-        Some(_) => false,
+/// ── THE LOWERING-TRUTH ALIAS CONTRACT (the single source of truth) ──────────
+///
+/// `OpCode::Copy` is overloaded in the post-lowering TIR: most `Copy`s carry an
+/// `_original_kind` naming the SimpleIR op they were lifted from (the SSA
+/// converter folds every op WITHOUT a dedicated `OpCode` into `Copy`, stashing
+/// the name in `_original_kind` — see `ssa::kind_to_opcode`'s `_ => Copy` arm).
+/// Each such `Copy` falls into exactly one of three lowering classes, and the RC
+/// drop-insertion pass's *entire* over-release safety rests on classifying them
+/// conservatively:
+///
+/// * [`CopyLowering::FreshValue`] — a value-producing op (container constructor,
+///   `slice`, `str_from_obj`, `int_from_obj`, …) whose result is a NEW owned heap
+///   reference returned by a dedicated runtime call. The result is an INDEPENDENT
+///   alias root that the drop pass owns and releases on its own. This is the ONLY
+///   class for which the drop pass emits a `DecRef` of the `Copy`'s own result.
+///   It is an EXPLICIT allow-list: a kind is `FreshValue` only when it is *proven*
+///   to mint a fresh owned heap reference AND every drop-enabled backend lowers it
+///   explicitly (LLVM: `lower_preserved_simpleir_op`; WASM/Luau: their
+///   `_original_kind` dispatch). The LLVM `Copy` arm fails loud on any `FreshValue`
+///   kind it did not lower (it would otherwise return operand 0 — a wrong result —
+///   AND make the result silently alias operand 0, a drop-insertion double-free).
+/// * [`CopyLowering::TransparentAlias`] — the result is operand 0's heap object,
+///   bit-for-bit, with **no incref** (a pure SSA/var move, or a
+///   validate-and-pass-through guard like `guard_tag`). The alias union-find unions
+///   the result into operand 0's root: the two SSA handles share ONE owned
+///   reference, dropped once at the group's last use. Treating such a `Copy` as a
+///   fresh value would emit a second `DecRef` on the same object → **double-free**.
+/// * [`CopyLowering::InertMarker`] — a debug / source-location / control-flow
+///   marker (`line`, `trace_*`, `nop`, `missing`, the read-only `guard_*`s) that
+///   produces no surviving *heap* reference (it yields nothing, or a raw bool).
+///   The drop pass never drops it.
+///
+/// THE FAIL-CLOSED RULE (the keystone the adversarial review demanded). The
+/// `_ =>` arm maps every UNKNOWN kind to [`CopyLowering::TransparentAlias`], NOT
+/// `FreshValue`. This makes the set the drop pass treats as "produces a fresh
+/// owned reference to release" a *proven SUBSET* of the kinds that actually mint
+/// one — equivalently, the transparent-alias view is a *proven SUPERSET* of every
+/// no-incref bit-passthrough lowering. The consequence is the only acceptable
+/// failure direction:
+///
+/// > A kind we forgot to allow-list is treated as an alias of operand 0. If it is
+/// > actually a fresh value, its `+1` is never released → a **leak**. It can NEVER
+/// > be double-freed (a UAF), because the drop pass never emits an independent
+/// > `DecRef` for a non-`FreshValue` `Copy`.
+///
+/// Leak-not-UAF is exactly the rail the RC layer must hold (see the module-level
+/// soundness model). The allow-list and the LLVM backend's explicit-lowering set
+/// are tied by [`copy_kind_mints_fresh_owned_ref`]: the LLVM `Copy` arm fatals on
+/// a `FreshValue` it did not lower (so a `FreshValue` that reaches codegen is
+/// ALWAYS explicitly lowered to a fresh +1, never a silent passthrough), and
+/// `tests::copy_lowering_classes_are_total_and_disjoint` pins the bucket of every
+/// representative kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopyLowering {
+    /// A fresh owned heap value produced by a dedicated runtime call (an
+    /// independent alias root; the only class the drop pass releases on its own).
+    FreshValue,
+    /// Result is operand 0's heap object, no incref (a transparent alias).
+    TransparentAlias,
+    /// A debug / control-flow marker producing no surviving heap reference.
+    InertMarker,
+}
+
+/// The EXPLICIT allow-list of `_original_kind`s that mint a **fresh owned heap
+/// reference** (the result is a brand-new object the holder must release exactly
+/// once). A kind belongs here ONLY when both are true:
+///   1. its runtime semantics return a NEW owned heap object (not operand 0, not a
+///      raw scalar), and
+///   2. EVERY drop-enabled backend (LLVM / WASM / Luau) lowers it explicitly.
+///
+/// This is the single gate the drop pass uses to decide whether a `Copy`'s own
+/// result is an independent droppable reference. Anything NOT in this list is
+/// treated as a transparent alias (fail-closed: leak, never UAF — see
+/// [`CopyLowering`]).
+///
+/// CONSERVATIVE BY DESIGN. The list contains the value producers that are
+/// *proven* to return a fresh owned reference (allocating constructors/conversions
+/// plus the increfing iterators) AND are explicitly lowered by every drop-enabled
+/// backend. It deliberately does NOT try to be exhaustive over every owned-result
+/// op; two categories are intentionally left to the fail-closed alias path.
+/// First, generator/async machinery (`promise_*`, `cancel_token_*`, `gen_throw`,
+/// `is_native_awaitable`, `exception_*`) only ever appears in functions the drop
+/// pass BAILS on (state-machine / exception-handler gate), so its classification
+/// is moot for the drop pass. Second, getter-shaped ops whose ownership (owned vs
+/// borrowed) is not locally proven (`dict_get`, `gen_send`, …): conservatively
+/// aliasing them can at worst LEAK a reference (never a UAF), the sanctioned
+/// failure direction for this layer. Promoting such a kind to `FreshValue`
+/// requires *proving* its runtime returns a fresh +1 (and is leak-tested), so a
+/// wrong guess can never turn a leak into a double-free.
+pub(crate) fn copy_kind_mints_fresh_owned_ref(kind: &str) -> bool {
+    // Vectorized reduction family (`vec_*`) — each calls a dedicated `molt_vec_*`
+    // runtime reduction returning a fresh boxed result.
+    if kind.starts_with("vec_") {
+        return true;
     }
+    matches!(
+        kind,
+        // Scalar / string conversions and formatting — each allocates a fresh
+        // owned object (`molt_int_from_obj`, `molt_float_from_obj`,
+        // `molt_str_from_obj`, `molt_repr_from_obj`, `molt_format_builtin`).
+        "int_from_obj"
+            | "float_from_obj"
+            | "str_from_obj"
+            | "repr_from_obj"
+            | "ascii_from_obj"
+            | "string_format"
+            | "string_join"
+            | "int_from_str_of_obj"
+            // Subscript / slice — `molt_slice` / `molt_slice_new` build a fresh
+            // object (the review's P0 #1 double-free vector).
+            | "slice"
+            | "slice_new"
+            // Membership test — `molt_contains` returns a fresh bool object.
+            | "contains"
+            // Container constructors / views — each allocates a fresh container.
+            | "list_new"
+            | "list_fill_new"
+            | "list_from_range"
+            | "dict_new"
+            | "dict_from_obj"
+            | "dict_keys"
+            | "dict_values"
+            | "dict_items"
+            | "set_new"
+            | "tuple_new"
+            | "tuple_from_list"
+            | "enumerate"
+            | "range_new"
+            // Iterators — `molt_iter` / `molt_aiter` return an OWNED reference
+            // (for self-iterables like generators they return operand 0 *incref'd*,
+            // i.e. a genuine +1; for containers they allocate a fresh iterator).
+            // Either way the result is independently owned and must be dropped on
+            // its own — NOT a no-incref alias. (This is the review's Finding #2(a)
+            // generator-iterator case: `iter(gen)` increfs, so the AllocTask ref
+            // and the iter ref are TWO references, balanced by two DecRefs.)
+            | "iter"
+            | "aiter"
+            // Object / type / number construction.
+            | "object_new"
+            | "complex_from_obj"
+    )
+    // NOTE: the variadic builders `list_int_new` / `frozenset_new` are
+    // deliberately OMITTED. They are not simple single-call passthroughs (they
+    // take a count/size in `op.value` and may stream follow-up element ops), are
+    // rare, and are not yet lowered by the LLVM `Copy` arm. Omitting them is
+    // fail-closed-safe: the drop pass treats them as transparent aliases (their
+    // fresh +1 leaks rather than being released — never a UAF), and the backend
+    // gate leaves the (pre-existing) passthrough untouched. Promoting them is a
+    // follow-up that must land WITH their explicit LLVM lowering.
+}
+
+/// Classify a `Copy`'s `_original_kind` into its lowering class — THE single
+/// source of truth for "does this `Copy` mint a fresh owned reference, alias
+/// operand 0, or mark nothing?" See [`CopyLowering`]. FAIL-CLOSED to
+/// `TransparentAlias` for any unrecognized kind.
+pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
+    // A bare `Copy` (no `_original_kind`) is the SSA converter's pure value move:
+    // result := operand 0, same bits, no new reference.
+    let Some(k) = kind else {
+        return CopyLowering::TransparentAlias;
+    };
+    // Proven fresh-owned value producers (the explicit allow-list).
+    if copy_kind_mints_fresh_owned_ref(k) {
+        return CopyLowering::FreshValue;
+    }
+    match k {
+        // ── Inert markers: no surviving heap reference to own. ──
+        // `line` / `trace_*` / `missing` carry dedicated (RC-inert) backend
+        // lowerings; `nop` is an explicit no-op. The read-only representation
+        // guards (`guard_int`/`guard_float`/`guard_str`/`guard_bool`/`guard_none`)
+        // clobber nothing and yield no droppable reference. The layout guards
+        // (`guard_layout`/`guard_dict_shape`/`guard_layout_ptr`) produce a RAW
+        // BOOL (`molt_guard_layout_ptr` → `from_bool`), never a heap reference —
+        // drop-irrelevant — and clobber no heap memory.
+        "line" | "trace_enter_slot" | "trace_exit" | "missing" | "nop"
+        | "guard_layout" | "guard_dict_shape" | "guard_layout_ptr" | "guard_int"
+        | "guard_float" | "guard_str" | "guard_bool" | "guard_none" => {
+            CopyLowering::InertMarker
+        }
+        // ── Everything else (incl. the explicit pure moves `copy`/`copy_var`/
+        //    `store_var`/`load_var`/`identity_alias`, the pass-through guards
+        //    `guard_tag`/`guard_type`, AND any UNKNOWN kind) → transparent alias.
+        //    FAIL-CLOSED: an unrecognized fresh value mislabelled here leaks (its
+        //    +1 is never released) but can never be double-freed, because the drop
+        //    pass emits NO independent `DecRef` for a non-`FreshValue` `Copy`. ──
+        _ => CopyLowering::TransparentAlias,
+    }
+}
+
+/// Returns whether an `OpCode::Copy` op is an EXPLICIT transparent local alias:
+/// its result PROVABLY names operand 0's heap object (bit-for-bit, no incref). The
+/// alias union-find unions the result into operand 0's root, so this MUST be
+/// PRECISE — a false union would let MemGVN forward a store from one object to a
+/// load from a *different* object (a miscompile). Therefore it is the EXPLICIT
+/// no-incref pass-through set only (bare `Copy`, the named SSA/var moves, and the
+/// validate-and-pass-through guards `guard_tag`/`guard_type` whose runtime returns
+/// operand 0 unchanged); an UNKNOWN kind is NOT unioned (it gets its own root).
+///
+/// This is intentionally DISTINCT from the drop pass's fail-closed droppability
+/// rule: the union-find fails closed to "NOT an alias" (precise, MemGVN-safe),
+/// while the drop pass separately fails closed to "do NOT release" (leak-safe,
+/// see `drop_insertion`'s `copy_result_is_owned_ref`). The two axes fail closed
+/// in opposite directions, so they use different predicates — collapsing them
+/// re-creates either a MemGVN miscompile or a drop-pass double-free.
+fn copy_is_known_local_alias(op: &TirOp) -> bool {
+    copy_kind_is_explicit_no_heap_move(copy_original_kind(op))
+}
+
+/// Returns whether an `OpCode::Copy` op is an EXPLICIT no-heap-footprint pure
+/// move: a bare `Copy`, one of the named SSA/var moves, or a validate-and-pass-
+/// through guard (`guard_tag`/`guard_type`). These provably touch NO heap memory
+/// (the result is operand 0; no allocation, no store), so they are
+/// [`MemRegion::ScalarRegister`] for MemGVN/SROA, and their result aliases operand
+/// 0 for the union-find. An UNKNOWN kind is NOT a pure move — its memory effects
+/// are unknown (an unmapped op like `list_append` mutates the heap) and its result
+/// is not provably operand 0, so it stays `GenericHeap` / its own alias root.
+pub(crate) fn copy_kind_is_explicit_no_heap_move(kind: Option<&str>) -> bool {
+    match kind {
+        None => true,
+        Some(k) => matches!(
+            k,
+            "copy" | "copy_var" | "store_var" | "load_var" | "identity_alias"
+                | "guard_tag" | "guard_type"
+        ),
+    }
+}
+
+/// The `_original_kind` string of an op, if present.
+#[inline]
+fn copy_original_kind(op: &TirOp) -> Option<&str> {
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
+    }
+}
+
+/// True if a `Copy` with `_original_kind = kind` is SOUND to lower as a plain
+/// no-incref bit-passthrough of operand 0 (or as an inert marker) — i.e. it is
+/// NOT a [`CopyLowering::FreshValue`]. The LLVM backend's `Copy` arm gates its
+/// passthrough on this: a `FreshValue` that was not explicitly lowered would
+/// return operand 0 (a wrong-result miscompile) AND make the result silently
+/// alias operand 0 (a drop-insertion double-free), so it fails loud instead.
+///
+/// Because the drop pass treats exactly `!FreshValue` as aliasing/inert, gating
+/// the backend passthrough on the SAME predicate makes the no-incref-passthrough
+/// set and the drop pass's transparent-alias view identical by construction.
+///
+/// Gated to the `llvm` feature (plus `test`): the only non-test caller is the
+/// LLVM `Copy` arm's fatal gate (`llvm_backend::lowering`), so under a non-LLVM
+/// profile (e.g. `--features native-backend`) this predicate would otherwise be
+/// dead code and fail the `-D warnings` clippy gate. The drop pass and the
+/// always-compiled alias/memory-region axes consume `classify_copy_kind` /
+/// `copy_kind_is_explicit_no_heap_move` directly, not this LLVM-specific view.
+#[cfg(any(feature = "llvm", test))]
+pub(crate) fn copy_kind_reaches_no_incref_passthrough(kind: Option<&str>) -> bool {
+    !matches!(classify_copy_kind(kind), CopyLowering::FreshValue)
 }
 
 /// True if a `Copy`-carried `_original_kind` op writes/reads/clobbers NO heap
@@ -291,38 +533,21 @@ fn copy_is_known_local_alias(op: &TirOp) -> bool {
 /// memory version between adjacent field accesses (which would starve MemGVN
 /// store-to-load forwarding and SROA — see [`AliasAnalysisResult::region_of`]).
 ///
-/// FAIL-CLOSED: every kind listed here is *proven* heap-inert:
-/// * `line` / `trace_enter_slot` / `trace_exit` — source-line + call-trace
-///   debug markers (no operands that survive, no heap effect).
-/// * `missing` — materializes the unbound-cell sentinel; a const-like value
-///   producer, never a heap mutation.
-/// * `nop` — an explicit no-op.
-/// * `guard_layout` / `guard_dict_shape` / `guard_int` / `guard_float` /
-///   `guard_str` / `guard_bool` / `guard_none` — read-only class/representation
-///   guards: they read the object's class version and may raise on mismatch, but
-///   never write a field (the same memory-inert property `TypeGuard` already
-///   has — and `OpCode::TypeGuard` is already excluded by `opcode_touches_memory`).
+/// FAIL-CLOSED: every kind classified inert is *proven* heap-inert —
+/// `line`/`trace_*` (debug markers), `missing` (unbound-cell sentinel), `nop`,
+/// and the read-only representation/layout `guard_*`s (they read a class/layout
+/// version and may raise, but never write a field). Any other kind keeps the
+/// conservative `GenericHeap` classification.
 ///
-/// Any kind NOT in this set keeps the conservative `GenericHeap` classification.
+/// Delegates to the single-source-of-truth [`classify_copy_kind`]: a `Copy` is
+/// memory-inert iff its kind classifies as [`CopyLowering::InertMarker`]. (A bare
+/// `Copy` with no `_original_kind` is a `TransparentAlias`, NOT inert — its
+/// region is handled by the alias path in [`AliasAnalysisResult::region_of`].)
 fn copy_kind_is_memory_inert(op: &TirOp) -> bool {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => matches!(
-            kind.as_str(),
-            "line"
-                | "trace_enter_slot"
-                | "trace_exit"
-                | "missing"
-                | "nop"
-                | "guard_layout"
-                | "guard_dict_shape"
-                | "guard_int"
-                | "guard_float"
-                | "guard_str"
-                | "guard_bool"
-                | "guard_none"
-        ),
-        _ => false,
-    }
+    matches!(
+        classify_copy_kind(copy_original_kind(op)),
+        CopyLowering::InertMarker
+    )
 }
 
 /// The transparent-alias root an op contributes, if any. A no-op `TypeGuard` and
@@ -734,12 +959,20 @@ impl AliasAnalysisResult {
             // spurious-clobber bug already fixed for `CheckException` /
             // `ExceptionPending` (see `opcode_touches_memory`).
             //
-            // FAIL-CLOSED: a passthrough `Copy` whose carrier kind is NOT a proven
-            // memory-inert marker keeps the conservative `GenericHeap`. Every kind
-            // in `copy_kind_is_memory_inert` is provably heap-inert (a debug /
-            // source-location / control-flow marker or a read-only layout guard).
+            // FAIL-CLOSED (memory axis → `GenericHeap`): a `Copy` is heap-inert
+            // ONLY when it is an EXPLICIT no-heap-footprint pure move
+            // (`copy_kind_is_explicit_no_heap_move`) or an EXPLICIT inert marker
+            // (`copy_kind_is_memory_inert`). An unknown / unmapped passthrough
+            // carrier (e.g. `list_append`, or a fresh-value op) has unknown or
+            // heap-mutating effects and MUST stay `GenericHeap` — we do NOT use the
+            // fail-closed *alias* view here (`copy_is_known_local_alias` treats
+            // unknowns as aliases, which is correct for drops/leak-safety but would
+            // wrongly mark a heap-mutating op as scalar for MemGVN). The two axes
+            // fail closed in OPPOSITE directions.
             OpCode::Copy => {
-                if copy_is_known_local_alias(op) || copy_kind_is_memory_inert(op) {
+                if copy_kind_is_explicit_no_heap_move(copy_original_kind(op))
+                    || copy_kind_is_memory_inert(op)
+                {
                     MemRegion::ScalarRegister
                 } else {
                     MemRegion::GenericHeap
@@ -1267,6 +1500,141 @@ mod tests {
 
         let res = AliasAnalysisResult::compute(&func);
         assert_ne!(res.root(lst), obj, "container builder result is not an alias of its element");
+    }
+
+    // ── The lowering-truth Copy-class contract (over-release keystone) ──────
+
+    /// Every `_original_kind` classifies into exactly one [`CopyLowering`] bucket,
+    /// and the three derived predicates (alias / inert / passthrough-reachable)
+    /// are a partition consistent with the classifier. This is the single-source-
+    /// of-truth guard: the alias view and the no-incref-passthrough set cannot
+    /// drift because both read `classify_copy_kind`.
+    #[test]
+    fn copy_lowering_classes_are_total_and_disjoint() {
+        // A representative sample spanning all three buckets, plus the bare-Copy
+        // (None) case and the bug-repro fresh-value kinds the review flagged.
+        let alias = [
+            None,
+            Some("copy"),
+            Some("copy_var"),
+            Some("store_var"),
+            Some("load_var"),
+            Some("identity_alias"),
+            // validate-and-pass-through guards: result == operand 0, no incref.
+            Some("guard_tag"),
+            Some("guard_type"),
+        ];
+        let inert = [
+            Some("line"),
+            Some("trace_enter_slot"),
+            Some("trace_exit"),
+            Some("missing"),
+            Some("nop"),
+            Some("guard_layout"),
+            Some("guard_dict_shape"),
+            Some("guard_int"),
+            Some("guard_float"),
+            Some("guard_str"),
+            Some("guard_bool"),
+            Some("guard_none"),
+        ];
+        // The fresh-value kinds the drop pass releases independently. Each MUST
+        // classify FreshValue (incl. the review's double-free root `slice` and the
+        // generator-iterator `iter`) AND must NOT be allowed to reach the benign
+        // no-incref passthrough.
+        let fresh = [
+            Some("slice"),
+            Some("slice_new"),
+            Some("string_format"),
+            Some("repr_from_obj"),
+            Some("int_from_obj"),
+            Some("float_from_obj"),
+            Some("contains"),
+            Some("str_from_obj"),
+            Some("iter"),
+            Some("aiter"),
+            Some("enumerate"),
+            Some("dict_keys"),
+            Some("dict_values"),
+            Some("dict_items"),
+            Some("dict_from_obj"),
+            Some("object_new"),
+            Some("complex_from_obj"),
+            Some("list_new"),
+            Some("dict_new"),
+            Some("tuple_new"),
+            Some("string_join"),
+            Some("vec_sum_i64"),
+        ];
+        // FAIL-CLOSED: an unrecognized future kind classifies as TransparentAlias
+        // (leak-safe), NOT FreshValue — so the drop pass never double-frees it.
+        let unknown_fail_closed = [Some("some_brand_new_kind_v2"), Some("promise_new")];
+
+        for k in alias {
+            assert_eq!(
+                classify_copy_kind(k),
+                CopyLowering::TransparentAlias,
+                "{k:?} must be a transparent alias"
+            );
+            assert!(copy_kind_reaches_no_incref_passthrough(k), "{k:?} reaches passthrough");
+        }
+        for k in inert {
+            assert_eq!(classify_copy_kind(k), CopyLowering::InertMarker, "{k:?} is inert");
+            assert!(copy_kind_reaches_no_incref_passthrough(k), "{k:?} reaches passthrough");
+        }
+        for k in fresh {
+            assert_eq!(
+                classify_copy_kind(k),
+                CopyLowering::FreshValue,
+                "{k:?} mints a fresh owned value"
+            );
+            assert!(
+                !copy_kind_reaches_no_incref_passthrough(k),
+                "{k:?} must NOT reach the benign passthrough — a FreshValue that fell \
+                 through would alias operand 0 and be double-freed by drop insertion"
+            );
+        }
+        for k in unknown_fail_closed {
+            assert_eq!(
+                classify_copy_kind(k),
+                CopyLowering::TransparentAlias,
+                "{k:?} must FAIL CLOSED to TransparentAlias (leak-safe, never UAF)"
+            );
+            assert!(
+                copy_kind_reaches_no_incref_passthrough(k),
+                "{k:?} fail-closes to the leak-safe passthrough/alias path"
+            );
+        }
+    }
+
+    /// The exact double-free vector from the adversarial review: a `Copy` carrying
+    /// `_original_kind = "slice"` (the `s[-5:]` subscript) must NOT be unioned into
+    /// its source operand's alias root. If it were treated as a transparent alias,
+    /// the drop pass would drop the slice and its source as one group — but they
+    /// are two independent owned references on a correct (FreshValue) backend.
+    #[test]
+    fn slice_subscript_copy_is_a_fresh_value_not_an_alias() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::Str], TirType::Str);
+        let src = ValueId(0);
+        let start = func.fresh_value();
+        let stop = func.fresh_value();
+        let sliced = func.fresh_value();
+        func.value_types.insert(sliced, TirType::Str);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op_kind(
+            OpCode::Copy,
+            vec![src, start, stop],
+            vec![sliced],
+            "slice",
+        ));
+        entry.terminator = Terminator::Return { values: vec![sliced] };
+
+        let res = AliasAnalysisResult::compute(&func);
+        assert_ne!(
+            res.root(sliced),
+            res.root(src),
+            "slice result must be an independent alias root, not an alias of its source"
+        );
     }
 
     // ── Escape map plumbing + S1 caching ───────────────────────────────────
