@@ -654,7 +654,9 @@ class ClassDefVisitorMixin(_MixinBase):
         # (``current_func_name != "molt_main"``): non-static, routing its
         # methods' typed-field accesses through the instance-based generic path
         # rather than a non-existent module attribute.
-        is_static = self.current_func_name == "molt_main" and self._class_body_depth == 0
+        is_static = (
+            self.current_func_name == "molt_main" and self._class_body_depth == 0
+        )
 
         base_mros = [self._class_mro_names(name) for name in base_names]
         base_mros.append(list(base_names))
@@ -2485,9 +2487,7 @@ class ClassDefVisitorMixin(_MixinBase):
                     if dynamic_namespace is not None:
                         key_val = MoltValue(self.next_var(), type_hint="str")
                         self.emit(
-                            MoltOp(
-                                kind="CONST_STR", args=[item.name], result=key_val
-                            )
+                            MoltOp(kind="CONST_STR", args=[item.name], result=key_val)
                         )
                         self.emit(
                             MoltOp(

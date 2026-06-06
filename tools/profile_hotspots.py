@@ -201,7 +201,9 @@ def format_summary(summary: Mapping[str, Any]) -> str:
     status_counts = summary.get("status_counts", {})
     if status_counts:
         lines.append("")
-        lines.append("Statuses: " + ", ".join(f"{k}={v}" for k, v in status_counts.items()))
+        lines.append(
+            "Statuses: " + ", ".join(f"{k}={v}" for k, v in status_counts.items())
+        )
     return "\n".join(lines)
 
 

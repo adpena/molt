@@ -1,5 +1,6 @@
 from collections import Counter
 
+
 def main() -> None:
     words = ["a", "b", "a", "c", "b", "a"]
     total = 0
@@ -10,5 +11,6 @@ def main() -> None:
         total += len(counts)
         outer += 1
     print(total)
+
 
 main()

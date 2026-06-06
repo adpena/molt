@@ -524,12 +524,8 @@ def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
 def test_parser_accepts_group_and_tree_rss_aliases() -> None:
     module = _load_process_sentinel()
 
-    group_args = module._parser().parse_args(
-        ["--once", "--max-group-rss-gb", "2.5"]
-    )
-    tree_args = module._parser().parse_args(
-        ["--once", "--max-tree-rss-gb", "3.5"]
-    )
+    group_args = module._parser().parse_args(["--once", "--max-group-rss-gb", "2.5"])
+    tree_args = module._parser().parse_args(["--once", "--max-tree-rss-gb", "3.5"])
 
     assert group_args.max_total_rss_gb == 2.5
     assert tree_args.max_total_rss_gb == 3.5

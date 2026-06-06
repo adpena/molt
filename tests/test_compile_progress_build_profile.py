@@ -44,7 +44,9 @@ def test_compile_progress_build_command_uses_build_profile_flag() -> None:
     assert "--profile" not in cmd
 
 
-def test_compile_progress_run_case_uses_memory_guard(monkeypatch, tmp_path: Path) -> None:
+def test_compile_progress_run_case_uses_memory_guard(
+    monkeypatch, tmp_path: Path
+) -> None:
     module = _load_module()
     case = module.CaseSpec(
         name="dev_cold",
@@ -150,6 +152,6 @@ def test_compile_progress_timeout_uses_guard_cleanup(
         == module.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
     )
     assert cleanup_calls == [("target-marker", False), ("target-marker", True)]
-    assert "kill-guarded" in (
-        logs_root / "dev_cold.attempt1.stderr.log"
-    ).read_text(encoding="utf-8")
+    assert "kill-guarded" in (logs_root / "dev_cold.attempt1.stderr.log").read_text(
+        encoding="utf-8"
+    )

@@ -1453,7 +1453,9 @@ def utime(
     if dir_fd is None and ns is None and bool(follow_symlinks):
         if times is not None:
             if len(times) != 2:
-                raise TypeError("utime: 'times' must be either a tuple of two ints or None")
+                raise TypeError(
+                    "utime: 'times' must be either a tuple of two ints or None"
+                )
             _MOLT_OS_UTIME(str(path), float(times[0]), float(times[1]))
         else:
             _MOLT_OS_UTIME(str(path), None, None)

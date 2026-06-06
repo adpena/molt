@@ -193,7 +193,9 @@ def _compile_and_run_rust(
             pytest.fail(f"rustc compilation failed:\n{result2.stderr}")
 
         # Step 3: run binary
-        result3 = run_rust_test_process([bin_path], capture_output=True, text=True, timeout=30)
+        result3 = run_rust_test_process(
+            [bin_path], capture_output=True, text=True, timeout=30
+        )
         return result3.stdout.strip()
 
 

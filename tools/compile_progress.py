@@ -361,8 +361,7 @@ def _run_case(
             stderr = result.stderr or ""
             returncode = result.returncode
             timed_out = (
-                returncode
-                == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+                returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
             )
             elapsed_value = getattr(result, "elapsed_s", None)
             if elapsed_value is None:

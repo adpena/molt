@@ -639,16 +639,12 @@ def render_backend_overrides_rs() -> str:
     lines.append(
         "// resolver table. Mirrors `SYMBOL_OVERRIDES` in tools/gen_intrinsics.py,\n"
     )
-    lines.append(
-        "// the single source of truth for every name != symbol intrinsic.\n"
-    )
+    lines.append("// the single source of truth for every name != symbol intrinsic.\n")
     lines.append("//\n")
     lines.append(
         "// Sorted by name so a binary search is valid and the table is stable.\n"
     )
-    lines.append(
-        "pub(crate) static INTRINSIC_SYMBOL_OVERRIDES: &[(&str, &str)] = &[\n"
-    )
+    lines.append("pub(crate) static INTRINSIC_SYMBOL_OVERRIDES: &[(&str, &str)] = &[\n")
     for name in sorted(SYMBOL_OVERRIDES):
         symbol = SYMBOL_OVERRIDES[name]
         lines.append(f'    ("{name}", "{symbol}"),\n')

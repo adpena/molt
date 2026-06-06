@@ -1576,9 +1576,7 @@ def main():
     module_attr_reads = _module_attr_reads_named(func_ops, "Point")
     assert len(module_attr_reads) == 1
     assert module_attr_reads[0].get("effect_proof") == "static_module_class_binding"
-    cache_gets = [
-        op for op in func_ops if op.get("kind") == "module_cache_get"
-    ]
+    cache_gets = [op for op in func_ops if op.get("kind") == "module_cache_get"]
     assert any(
         op.get("effect_proof") == "static_module_class_binding" for op in cache_gets
     )

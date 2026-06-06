@@ -432,8 +432,7 @@ def _format_violation(
         f"pids={list(violation.pids)} {timestamp_label}={incident_at} "
         f"elapsed={_elapsed_text(elapsed_s)} grace={grace_sec:.2f}s "
         f"command={violation.command}",
-        "[PROCESS-SENTINEL] next action: "
-        f"{_next_action_for_violation(violation)}",
+        f"[PROCESS-SENTINEL] next action: {_next_action_for_violation(violation)}",
     ]
     return "\n".join(lines)
 
