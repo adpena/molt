@@ -789,9 +789,18 @@ canonical = "div"
 aliases = []
 mapper_opcode = "Div"
 
+# Canonical = the FRONTEND spelling `floordiv` (serialization.py emits it for
+# `//`). Before the spelling collapse (task #57 commit 2) the mapper recognized
+# only `floor_div` (lower_to_simple's round-trip output), so a frontend `floordiv`
+# fell to Copy{_original_kind} and always took the boxed molt_floordiv slow path,
+# while a round-tripped `floor_div` reached first-class OpCode::FloorDiv — a
+# perf+correctness asymmetry and the exact drift vector behind bug #5. Collapsing
+# to one canonical spelling routes `//` through OpCode::FloorDiv (the optimized
+# arith/overflow path). `floor_div` is kept as an explicit alias: it is still the
+# lower_to_simple/printer round-trip spelling some backends defensively consume.
 [[kind]]
-canonical = "floor_div"
-aliases = []
+canonical = "floordiv"
+aliases = ["floor_div"]
 mapper_opcode = "FloorDiv"
 
 [[kind]]

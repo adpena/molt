@@ -806,13 +806,25 @@ def self_validate(res: AuditResult) -> list[str]:
         if not cond:
             fails.append(msg)
 
-    # The proven drift: frontend emits floordiv; mapper has floor_div, not floordiv.
+    # The floordiv/floor_div spelling schism (the proven bug #5) is COLLAPSED
+    # (task #57 commit 2): the registry now maps BOTH the frontend spelling
+    # `floordiv` (canonical) and the round-trip spelling `floor_div` (alias) to
+    # OpCode::FloorDiv, so a frontend `//` reaches the first-class arith/overflow
+    # path instead of the boxed Copy{floordiv} slow path. Both must be mapped now;
+    # the frontend must still emit the canonical `floordiv`.
     check("floordiv" in res.frontend.all, "frontend must emit 'floordiv'")
-    check("floordiv" not in res.mapper_kinds, "mapper must NOT map 'floordiv'")
-    check("floor_div" in res.mapper_kinds, "mapper must map 'floor_div'")
+    check(
+        "floordiv" in res.mapper_kinds,
+        "mapper must map 'floordiv' (the collapse routes // to OpCode::FloorDiv)",
+    )
+    check(
+        "floor_div" in res.mapper_kinds,
+        "mapper must still map 'floor_div' (round-trip/legacy alias of floordiv)",
+    )
     check(
         "floor_div" not in res.frontend.all,
-        "frontend must NOT emit 'floor_div' (dead mapper vocab)",
+        "frontend must NOT emit 'floor_div' (it is the round-trip alias, not the "
+        "frontend spelling)",
     )
     # matmul: emitted, unmapped, but LLVM covers via molt_matmul symbol.
     check("matmul" in res.frontend.all, "frontend must emit 'matmul'")

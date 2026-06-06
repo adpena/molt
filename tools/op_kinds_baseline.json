@@ -140,7 +140,6 @@
       "file_open",
       "file_read",
       "file_write",
-      "floordiv",
       "fn_ptr_code_set",
       "frame_locals_set",
       "frozenset_add",

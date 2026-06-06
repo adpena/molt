@@ -1513,7 +1513,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::InplaceSub => Some(binary_op("inplace_sub", op, out_var)),
         OpCode::InplaceMul => Some(binary_op("inplace_mul", op, out_var)),
         OpCode::Div => Some(binary_op("div", op, out_var)),
-        OpCode::FloorDiv => Some(binary_op("floor_div", op, out_var)),
+        // Canonical wire spelling is `floordiv` (the frontend emission); see the
+        // op-kind registry (op_kinds.toml). Emitting the canonical here makes the
+        // SimpleIR↔TIR round-trip idempotent (`kind_to_opcode("floordiv")` ->
+        // OpCode::FloorDiv) and routes through the same `"floordiv"` dispatch arm
+        // every backend already has — closing the floordiv/floor_div schism.
+        OpCode::FloorDiv => Some(binary_op("floordiv", op, out_var)),
         OpCode::Mod => Some(binary_op("mod", op, out_var)),
         OpCode::Pow => Some(binary_op("pow", op, out_var)),
         OpCode::Neg => Some(unary_op("neg", op, out_var)),
