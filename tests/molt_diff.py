@@ -516,6 +516,42 @@ def _diff_root() -> Path:
     return root
 
 
+def _diff_results_jsonl_path() -> Path | None:
+    """Optional per-test RAW-status sink for the suite-honesty ratchet (#46).
+
+    When MOLT_DIFF_RESULTS_JSONL is set, every diff_test() call appends one JSON
+    line recording the test's repo-relative path and its RAW status (before the
+    xfail/xpass overlay), plus the resolved status and reason tag for audit. This
+    is the single authoritative record of what Molt actually did vs CPython;
+    tools/check_suite_honesty.py consumes it so a tracked-but-failing test, or a
+    silently-fixed one, can never read as green. Off by default (returns None).
+    Workers are separate processes, so each appends to the shared file — the same
+    cross-process JSONL idiom used by the memory guard above.
+    """
+    raw = os.environ.get("MOLT_DIFF_RESULTS_JSONL", "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser()
+
+
+def _record_diff_result(record: dict[str, object]) -> None:
+    path = _diff_results_jsonl_path()
+    if path is None:
+        return
+    # A raw_status of None means an exception escaped before any status was
+    # assigned; record it explicitly as "error" so the honesty ratchet treats an
+    # unexpected crash as a hard, visible outcome rather than a missing line.
+    if record.get("raw_status") is None:
+        record = {**record, "raw_status": "error", "resolved_status": "error"}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, sort_keys=True) + "\n"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError:
+        pass
+
+
 def _diff_tmp_root() -> Path:
     raw = os.environ.get("MOLT_DIFF_TMPDIR", "").strip()
     if raw:
@@ -3531,252 +3567,295 @@ def _print_rss_top(
 
 
 def diff_test(file_path, python_exe=sys.executable, build_profile: str = "dev"):
-    meta = _collect_meta(file_path)
-    manifest_expect_fail = _manifest_marks_expected_failure(file_path)
-    explicit_expect_fail = _meta_expect_molt_fail(meta)
-    expect_molt_fail = manifest_expect_fail or explicit_expect_fail
-    expect_fail_reason = _meta_expect_fail_reason(meta)
-    if not expect_fail_reason and manifest_expect_fail:
-        expect_fail_reason = "too_dynamic_policy"
-    python_version = _python_exe_version(python_exe)
-    host_tags = _host_platform_tags()
-    skip, reason = _should_skip(
-        meta,
-        python_version=python_version,
-        host_tags=host_tags,
-    )
-    if skip:
-        note = f" ({reason})" if reason else ""
-        print(f"[SKIP] {file_path}{note}")
-        return "skip"
+    """Run one differential test and return its RESOLVED status string.
 
-    normalize = {v.lower() for v in meta.get("normalize", [])}
-    stdout_mode = (meta.get("stdout", ["exact"])[0]).lower()
-    stderr_mode = (meta.get("stderr", ["ignore"])[0]).lower()
+    The resolved status applies the expected-failure (xfail/xpass) overlay so the
+    nightly suite stays green for by-design exclusions. The SUITE-HONESTY ratchet
+    (tools/check_suite_honesty.py, task #46) needs the RAW status — whether Molt
+    actually matched CPython, independent of any expectation overlay — so a
+    tracked-but-failing test can never read as green. To avoid a second runner
+    (which would drift from these exact comparison semantics), the raw outcome is
+    surfaced here, at the single chokepoint that computes it, and appended to the
+    optional results sink keyed by MOLT_DIFF_RESULTS_JSONL. The sink is off by
+    default and never alters the returned (resolved) status.
+    """
+    # Mutable record the inner finalizer fills in; emitted once on every exit
+    # path (skip / oom / pass / fail). raw_status is authoritative for honesty.
+    record: dict[str, object] = {
+        "file": _normalize_repo_relative(file_path),
+        "raw_status": None,
+        "resolved_status": None,
+        "reason_tag": None,
+        "expect_molt_fail": False,
+    }
 
-    print(f"Testing {file_path} against {python_exe}...")
-    cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
-
-    def _finalize_status(raw_status: str) -> str:
-        resolved_status, reason_tag = _resolve_expected_failure_status(
-            expect_molt_fail=expect_molt_fail,
-            raw_status=raw_status,
-            cpython_returncode=cp_ret,
+    def _impl() -> str:
+        meta = _collect_meta(file_path)
+        manifest_expect_fail = _manifest_marks_expected_failure(file_path)
+        explicit_expect_fail = _meta_expect_molt_fail(meta)
+        expect_molt_fail = manifest_expect_fail or explicit_expect_fail
+        record["expect_molt_fail"] = expect_molt_fail
+        expect_fail_reason = _meta_expect_fail_reason(meta)
+        if not expect_fail_reason and manifest_expect_fail:
+            expect_fail_reason = "too_dynamic_policy"
+        python_version = _python_exe_version(python_exe)
+        host_tags = _host_platform_tags()
+        skip, reason = _should_skip(
+            meta,
+            python_version=python_version,
+            host_tags=host_tags,
         )
-        if reason_tag == "xfail":
-            reason_text = expect_fail_reason or "expected dynamic-semantics gap"
-            print(f"[XFAIL] {file_path} ({reason_text})")
-        elif reason_tag == "xpass":
-            reason_text = expect_fail_reason or "expected dynamic-semantics gap"
-            print(f"[XPASS] {file_path} ({reason_text})")
-        return resolved_status
+        if skip:
+            note = f" ({reason})" if reason else ""
+            print(f"[SKIP] {file_path}{note}")
+            # skip/oom never reach _finalize_status; record raw==resolved so the
+            # honesty sink sees every test, not just the compared ones.
+            record["raw_status"] = "skip"
+            record["resolved_status"] = "skip"
+            return "skip"
 
-    if _should_retry_oom(cp_ret, cp_err):
-        print(f"[OOM] {file_path} (cpython)")
-        return "oom"
-    if cp_ret != 0 and (
-        "msgpack is required for parse_msgpack fallback" in cp_err
-        or "cbor2 is required for parse_cbor fallback" in cp_err
-    ):
-        print(f"[SKIP] {file_path} (missing msgpack/cbor2 in CPython env)")
-        return "skip"
-    molt_extra_env = _molt_sys_env_for_python_exe(python_exe)
-    molt_out, molt_err, molt_ret = run_molt(
-        file_path, build_profile, extra_env=molt_extra_env
-    )
-    saw_dyld_retry = False
-    if _diff_retry_dyld_default() and _is_dyld_unknown_imports(molt_err):
-        _mark_dyld_guard(file_path)
-        saw_dyld_retry = True
-        print(
-            "[RETRY] "
-            f"{file_path} encountered dyld unknown imports format; "
-            "retrying with backend daemon disabled (cache preserved)."
+        normalize = {v.lower() for v in meta.get("normalize", [])}
+        stdout_mode = (meta.get("stdout", ["exact"])[0]).lower()
+        stderr_mode = (meta.get("stderr", ["ignore"])[0]).lower()
+
+        print(f"Testing {file_path} against {python_exe}...")
+        cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
+
+        def _finalize_status(raw_status: str) -> str:
+            resolved_status, reason_tag = _resolve_expected_failure_status(
+                expect_molt_fail=expect_molt_fail,
+                raw_status=raw_status,
+                cpython_returncode=cp_ret,
+            )
+            record["raw_status"] = raw_status
+            record["resolved_status"] = resolved_status
+            record["reason_tag"] = reason_tag
+            if reason_tag == "xfail":
+                reason_text = expect_fail_reason or "expected dynamic-semantics gap"
+                print(f"[XFAIL] {file_path} ({reason_text})")
+            elif reason_tag == "xpass":
+                reason_text = expect_fail_reason or "expected dynamic-semantics gap"
+                print(f"[XPASS] {file_path} ({reason_text})")
+            return resolved_status
+
+        if _should_retry_oom(cp_ret, cp_err):
+            print(f"[OOM] {file_path} (cpython)")
+            record["raw_status"] = "oom"
+            record["resolved_status"] = "oom"
+            return "oom"
+        if cp_ret != 0 and (
+            "msgpack is required for parse_msgpack fallback" in cp_err
+            or "cbor2 is required for parse_cbor fallback" in cp_err
+        ):
+            print(f"[SKIP] {file_path} (missing msgpack/cbor2 in CPython env)")
+            record["raw_status"] = "skip"
+            record["resolved_status"] = "skip"
+            return "skip"
+        molt_extra_env = _molt_sys_env_for_python_exe(python_exe)
+        molt_out, molt_err, molt_ret = run_molt(
+            file_path, build_profile, extra_env=molt_extra_env
         )
-        retry_out, retry_err, retry_ret = run_molt(
-            file_path,
-            build_profile,
-            daemon_enabled=False,
-            no_cache=False,
-            extra_env=molt_extra_env,
-        )
-        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if _is_dyld_unknown_imports(molt_err):
+        saw_dyld_retry = False
+        if _diff_retry_dyld_default() and _is_dyld_unknown_imports(molt_err):
+            _mark_dyld_guard(file_path)
+            saw_dyld_retry = True
             print(
                 "[RETRY] "
-                f"{file_path} persistent dyld failure; retrying with "
-                "daemon disabled and --no-cache on shared target."
+                f"{file_path} encountered dyld unknown imports format; "
+                "retrying with backend daemon disabled (cache preserved)."
             )
             retry_out, retry_err, retry_ret = run_molt(
                 file_path,
                 build_profile,
                 daemon_enabled=False,
-                no_cache=True,
+                no_cache=False,
+                extra_env=molt_extra_env,
             )
             molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if _is_dyld_unknown_imports(molt_err) and _diff_force_rebuild_on_dyld():
-            print(
-                "[RETRY] "
-                f"{file_path} persistent dyld failure; retrying with "
-                "daemon disabled, --no-cache, and --rebuild."
-            )
-            retry_out, retry_err, retry_ret = run_molt(
-                file_path,
-                build_profile,
-                daemon_enabled=False,
-                no_cache=True,
-                rebuild=True,
-            )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if _is_dyld_unknown_imports(molt_err) and _diff_retry_isolated_default():
-            use_local_retry = _diff_dyld_local_fallback()
-            print(
-                "[RETRY] "
-                f"{file_path} persistent dyld failure; retrying with isolated "
-                f"{'local /tmp ' if use_local_retry else ''}"
-                "target/build-state, daemon off, and --rebuild."
-            )
-            with _isolated_retry_env(local_tmp=use_local_retry) as isolated_env:
+            if _is_dyld_unknown_imports(molt_err):
+                print(
+                    "[RETRY] "
+                    f"{file_path} persistent dyld failure; retrying with "
+                    "daemon disabled and --no-cache on shared target."
+                )
+                retry_out, retry_err, retry_ret = run_molt(
+                    file_path,
+                    build_profile,
+                    daemon_enabled=False,
+                    no_cache=True,
+                )
+                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+            if _is_dyld_unknown_imports(molt_err) and _diff_force_rebuild_on_dyld():
+                print(
+                    "[RETRY] "
+                    f"{file_path} persistent dyld failure; retrying with "
+                    "daemon disabled, --no-cache, and --rebuild."
+                )
                 retry_out, retry_err, retry_ret = run_molt(
                     file_path,
                     build_profile,
                     daemon_enabled=False,
                     no_cache=True,
                     rebuild=True,
-                    extra_env=isolated_env,
                 )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-    if saw_dyld_retry and _diff_disable_daemon_on_dyld():
-        os.environ["MOLT_BACKEND_DAEMON"] = "0"
-        os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
-        if _diff_force_rebuild_on_dyld():
-            os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
-        if _diff_quarantine_on_dyld():
-            use_local_quarantine = _diff_dyld_local_fallback()
-            target_dir, state_dir, activated = _activate_dyld_quarantine_target(
-                use_local=use_local_quarantine
-            )
-            if activated:
+                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+            if _is_dyld_unknown_imports(molt_err) and _diff_retry_isolated_default():
+                use_local_retry = _diff_dyld_local_fallback()
+                print(
+                    "[RETRY] "
+                    f"{file_path} persistent dyld failure; retrying with isolated "
+                    f"{'local /tmp ' if use_local_retry else ''}"
+                    "target/build-state, daemon off, and --rebuild."
+                )
+                with _isolated_retry_env(local_tmp=use_local_retry) as isolated_env:
+                    retry_out, retry_err, retry_ret = run_molt(
+                        file_path,
+                        build_profile,
+                        daemon_enabled=False,
+                        no_cache=True,
+                        rebuild=True,
+                        extra_env=isolated_env,
+                    )
+                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+        if saw_dyld_retry and _diff_disable_daemon_on_dyld():
+            os.environ["MOLT_BACKEND_DAEMON"] = "0"
+            os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
+            if _diff_force_rebuild_on_dyld():
+                os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
+            if _diff_quarantine_on_dyld():
+                use_local_quarantine = _diff_dyld_local_fallback()
+                target_dir, state_dir, activated = _activate_dyld_quarantine_target(
+                    use_local=use_local_quarantine
+                )
+                if activated:
+                    print(
+                        "[WARN] dyld unknown imports format detected; forcing "
+                        "MOLT_BACKEND_DAEMON=0 and quarantining remaining tests to "
+                        f"{'local ' if use_local_quarantine else ''}"
+                        f"target={target_dir} state={state_dir} (rebuild forced)."
+                    )
+            else:
                 print(
                     "[WARN] dyld unknown imports format detected; forcing "
-                    "MOLT_BACKEND_DAEMON=0 and quarantining remaining tests to "
-                    f"{'local ' if use_local_quarantine else ''}"
-                    f"target={target_dir} state={state_dir} (rebuild forced)."
+                    "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for "
+                    "remaining tests in this run (shared target retained)."
                 )
-        else:
-            print(
-                "[WARN] dyld unknown imports format detected; forcing "
-                "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for "
-                "remaining tests in this run (shared target retained)."
-            )
-    if molt_out is None and _is_backend_daemon_build_error(molt_err):
-        print(
-            "[RETRY] "
-            f"{file_path} backend daemon/cache build failure; retrying with "
-            "daemon disabled (cache preserved)."
-        )
-        retry_out, retry_err, retry_ret = run_molt(
-            file_path,
-            build_profile,
-            daemon_enabled=False,
-            no_cache=False,
-        )
-        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if (
-            molt_out is None
-            and _is_backend_daemon_build_error(molt_err)
-            and _diff_retry_isolated_default()
-        ):
-            print(
-                "[RETRY] "
-                f"{file_path} persistent backend daemon/cache failure; retrying with "
-                "isolated target/build-state and --no-cache."
-            )
-            with _isolated_retry_env() as isolated_env:
-                retry_out, retry_err, retry_ret = run_molt(
-                    file_path,
-                    build_profile,
-                    daemon_enabled=False,
-                    no_cache=True,
-                    extra_env=isolated_env,
-                )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if molt_out is None and _is_backend_daemon_build_error(molt_err):
-            os.environ["MOLT_BACKEND_DAEMON"] = "0"
-            print(
-                "[WARN] Persistent backend daemon/cache failure detected; "
-                "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
-            )
-    if _should_retry_oom(molt_ret, molt_err):
-        print(f"[OOM] {file_path}")
-        return "oom"
-
-    cp_out = _normalize_output(cp_out, normalize)
-    cp_err = _normalize_output(cp_err, normalize)
-    if molt_out is not None:
-        molt_out = _normalize_output(molt_out, normalize)
-    molt_err = _normalize_output(molt_err, normalize)
-
-    if molt_out is None:
-        if _is_timeout_error(molt_err) and _diff_retry_isolated_default():
             print(
                 "[RETRY] "
-                f"{file_path} build timeout; retrying with isolated target/build-state."
+                f"{file_path} backend daemon/cache build failure; retrying with "
+                "daemon disabled (cache preserved)."
             )
-            with _isolated_retry_env() as isolated_env:
-                retry_out, retry_err, retry_ret = run_molt(
-                    file_path,
-                    build_profile,
-                    daemon_enabled=False,
-                    no_cache=True,
-                    extra_env=isolated_env,
-                )
+            retry_out, retry_err, retry_ret = run_molt(
+                file_path,
+                build_profile,
+                daemon_enabled=False,
+                no_cache=False,
+            )
             molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-            if molt_out is not None:
-                cp_out = _normalize_output(cp_out, normalize)
-                cp_err = _normalize_output(cp_err, normalize)
-                molt_out = _normalize_output(molt_out, normalize)
-                molt_err = _normalize_output(molt_err, normalize)
-                stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
-                cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
-                molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
-                if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
-                    print(f"[PASS] {file_path}")
-                    return _finalize_status("pass")
-                print(f"[FAIL] {file_path} mismatch")
-                print(f"  CPython stdout: {cp_out!r}")
-                print(f"  Molt    stdout: {molt_out!r}")
-                print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
-                print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
-                return _finalize_status("fail")
+            if (
+                molt_out is None
+                and _is_backend_daemon_build_error(molt_err)
+                and _diff_retry_isolated_default()
+            ):
+                print(
+                    "[RETRY] "
+                    f"{file_path} persistent backend daemon/cache failure; retrying with "
+                    "isolated target/build-state and --no-cache."
+                )
+                with _isolated_retry_env() as isolated_env:
+                    retry_out, retry_err, retry_ret = run_molt(
+                        file_path,
+                        build_profile,
+                        daemon_enabled=False,
+                        no_cache=True,
+                        extra_env=isolated_env,
+                    )
+                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+            if molt_out is None and _is_backend_daemon_build_error(molt_err):
+                os.environ["MOLT_BACKEND_DAEMON"] = "0"
+                print(
+                    "[WARN] Persistent backend daemon/cache failure detected; "
+                    "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
+                )
+        if _should_retry_oom(molt_ret, molt_err):
+            print(f"[OOM] {file_path}")
+            record["raw_status"] = "oom"
+            record["resolved_status"] = "oom"
+            return "oom"
 
-        def is_compile_error(err: str) -> bool:
-            return any(
-                tag in err for tag in ("SyntaxError", "IndentationError", "TabError")
-            )
+        cp_out = _normalize_output(cp_out, normalize)
+        cp_err = _normalize_output(cp_err, normalize)
+        if molt_out is not None:
+            molt_out = _normalize_output(molt_out, normalize)
+        molt_err = _normalize_output(molt_err, normalize)
 
-        if cp_ret != 0 and is_compile_error(cp_err) and is_compile_error(molt_err):
+        if molt_out is None:
+            if _is_timeout_error(molt_err) and _diff_retry_isolated_default():
+                print(
+                    "[RETRY] "
+                    f"{file_path} build timeout; retrying with isolated target/build-state."
+                )
+                with _isolated_retry_env() as isolated_env:
+                    retry_out, retry_err, retry_ret = run_molt(
+                        file_path,
+                        build_profile,
+                        daemon_enabled=False,
+                        no_cache=True,
+                        extra_env=isolated_env,
+                    )
+                molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
+                if molt_out is not None:
+                    cp_out = _normalize_output(cp_out, normalize)
+                    cp_err = _normalize_output(cp_err, normalize)
+                    molt_out = _normalize_output(molt_out, normalize)
+                    molt_err = _normalize_output(molt_err, normalize)
+                    stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
+                    cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
+                    molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
+                    if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
+                        print(f"[PASS] {file_path}")
+                        return _finalize_status("pass")
+                    print(f"[FAIL] {file_path} mismatch")
+                    print(f"  CPython stdout: {cp_out!r}")
+                    print(f"  Molt    stdout: {molt_out!r}")
+                    print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
+                    print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
+                    return _finalize_status("fail")
+
+            def is_compile_error(err: str) -> bool:
+                return any(
+                    tag in err
+                    for tag in ("SyntaxError", "IndentationError", "TabError")
+                )
+
+            if cp_ret != 0 and is_compile_error(cp_err) and is_compile_error(molt_err):
+                print(f"[PASS] {file_path}")
+                return _finalize_status("pass")
+
+            print(f"[FAIL] Molt failed to build {file_path}")
+            print(molt_err)
+            return _finalize_status("fail")
+
+        stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
+        cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
+        molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
+
+        if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
             print(f"[PASS] {file_path}")
             return _finalize_status("pass")
+        else:
+            print(f"[FAIL] {file_path} mismatch")
+            print(f"  CPython stdout: {cp_out!r}")
+            print(f"  Molt    stdout: {molt_out!r}")
+            print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
+            print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
+            return _finalize_status("fail")
 
-        print(f"[FAIL] Molt failed to build {file_path}")
-        print(molt_err)
-        return _finalize_status("fail")
-
-    stderr_ok = _stderr_matches(cp_err, molt_err, stderr_mode)
-    cp_cmp = _canonicalize_stdout(cp_out, stdout_mode)
-    molt_cmp = _canonicalize_stdout(molt_out, stdout_mode)
-
-    if cp_cmp == molt_cmp and cp_ret == molt_ret and stderr_ok:
-        print(f"[PASS] {file_path}")
-        return _finalize_status("pass")
-    else:
-        print(f"[FAIL] {file_path} mismatch")
-        print(f"  CPython stdout: {cp_out!r}")
-        print(f"  Molt    stdout: {molt_out!r}")
-        print(f"  CPython return: {cp_ret} stderr: {cp_err!r}")
-        print(f"  Molt    return: {molt_ret} stderr: {molt_err!r}")
-        return _finalize_status("fail")
+    try:
+        return _impl()
+    finally:
+        _record_diff_result(record)
 
 
 def run_diff(
