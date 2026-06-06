@@ -831,7 +831,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_call_soon_order.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_cancel_sleep.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_cancel_try_finally.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_close_running_loop.py", "raw_status": "oom"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_close_running_loop.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ensure_future_loop_mismatch.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_sock_recv_cancel_deterministic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_sock_recv_into_sendall.py", "raw_status": "fail"}

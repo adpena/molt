@@ -231,6 +231,8 @@ tests/differential/stdlib/asyncio_queue_priority_lifo.py
 tests/differential/stdlib/asyncio_queue_task_done_join.py
 tests/differential/stdlib/asyncio_ready_queue_drain_order.py
 tests/differential/stdlib/asyncio_run_forever_prestopped.py
+tests/differential/stdlib/asyncio_run_forever_restart.py
+tests/differential/stdlib/asyncio_run_forever_stop_from_callback.py
 tests/differential/stdlib/asyncio_run_from_running_loop_error.py
 tests/differential/stdlib/asyncio_run_pending_task_cleanup.py
 tests/differential/stdlib/asyncio_run_runner_lifecycle.py
