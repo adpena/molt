@@ -295,7 +295,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_super_classcell.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/class_super_classcell_indirect.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/classcell_missing_error.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/classmethod_staticmethod.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/classmethod_staticmethod.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/closure_cell_sharing.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/closure_comprehension_branch_cell_regression.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/codec_parity.py", "raw_status": "skip"}
@@ -505,7 +505,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/generator_throw_stopiteration.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/generator_yield_from_stop_value.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/generic_alias_parameters.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/generic_class.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/generic_class.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/genexpr_enumerate_unpack.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/genexpr_inline_any_all_scope.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/getattr_calls.py", "raw_status": "fail"}
@@ -806,3 +806,4 @@
 {"expect_molt_fail": false, "file": "tests/differential/memory/string_concat.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/pyperformance/pyperformance_manifest_catalog.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/pyperformance/pyperformance_subset_smoke.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/generic_class_chunk_split_sigsegv.py", "raw_status": "pass"}

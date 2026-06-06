@@ -293,3 +293,78 @@ Key source coordinates:
 - runtime sentinel: `runtime/molt-runtime/src/builtins/types.rs:561-587`
 - direct-store deref (SIGSEGV site): `runtime/molt-backend/src/native_backend/function_compiler.rs:21542,21700-21718` (store) and `:21899-21903` (store_init)
 - header layout (−16 = flags): `runtime/molt-backend/src/native_backend_consts.rs:36-50`
+
+---
+
+## FIX LANDED (frontend, 2026-06-05) — task #50 RESOLVED
+
+The frontend fix in `src/molt/frontend/visitors/calls.py` (the `molt_main`
+constructor-fold branch) was applied exactly as designed: route through
+`_current_module_static_class_ref` (the single audited liveness-guarded resolver),
+falling back to `_emit_module_attr_get` (MODULE_GET_ATTR) when the class SSA value
+is not live in the current chunk. The blind `MoltValue(class_value_name)`
+construction is deleted — no second path remains.
+
+Verified (cmp -s, byte-identical to CPython 3.12/3.13/3.14):
+- `generic_class.py` @ default threshold: SIGSEGV(-11) → PASS.
+- `generic_class_chunk_split_sigsegv.py` @ default AND @ `MOLT_MODULE_CHUNK_OPS=50`: TypeError → PASS.
+- `classmethod_staticmethod.py` (`#50-adjacent`): TypeError `object.__new__ expects type` → PASS. **SAME ROOT** — IR `const_str _v110 s_value=v242` feeding `object_new_bound` at the cross-chunk `Counter()` (line 44); honesty-manifest entries for both removed, native ceiling 116→114.
+- `class_across_module_chunks.py` (NEW regression: plain + generic + dataclass, splits into 10 chunks at default): PASS at default and at lever.
+- In-chunk fold preserved (no perf regression): `object_new_bound args=[<live SSA>]` still emitted for single-chunk programs.
+- Frontend IR clean on native/WASM/LLVM targets (zero const-str class-ref) — the fix is pre-backend and target-agnostic; Luau consumes the same IR.
+
+Sibling pre-check `calls.py:5436-5443` audited and left UNCHANGED: it is inert
+post-chunk-reset because `target_info` is sourced from `self.locals`/`self.globals`
+(both cleared by `_reset_module_chunk_state`) and `module_intrinsic_globals` never
+holds a user class → `target_info is None` → the `if class_id is not None and
+target_info is not None:` guard skips the whole pre-check. Even in the hypothetical
+where it fired, setting `class_id = None` only routes the callee through the generic
+(chunk-safe) Name-resolution path. It cannot keep a dangling class-ref alive.
+
+## ADJACENT FINDING (pre-existing, INDEPENDENT of this fix) — WASM generic-class codegen bug
+
+While verifying cross-target, a **separate pre-existing WASM-backend bug** was
+found: `molt build --target wasm` on ANY program containing a PEP 695 generic
+class definition fails structural validation BEFORE linking with
+`type mismatch: expected i64 but nothing on stack`. Characterization:
+- `class A[T]: ...` (definition alone, no instantiation) → FAILS (`func NNNN failed to validate`).
+- Plain non-generic classes and `print()` hello-world → BUILD FINE.
+- Reproduced at HEAD `ac84b6d52` WITHOUT the #50 frontend fix (byte-identical error func/offset), so it is NOT caused by and NOT fixed by this change.
+This is a Rust WASM-codegen defect (generic-class lowering pushes/expects an i64
+that is missing on the value stack), distinct from #50. It blocks end-to-end WASM
+verification of generic-class programs. Needs its own task + cargo-capable agent.
+Repro: `MOLT_SKIP_RUNTIME_REBUILD=1 PYTHONPATH=src python3 -m molt build --target wasm --output /tmp/o <file-with-generic-class>.py`.
+
+## RUST HARDENING BATON (defense-in-depth, SECONDARY — NOT the #50 fix; do NOT bundle)
+
+**Class of bug:** the inlined-constructor direct-field-store fast path dereferences
+the Python object header with NO guard that the preceding `object_new_bound`
+allocation succeeded. When the alloc returns the None/exception sentinel
+(`0x7ffb...` = QNAN|TAG_NONE; see `runtime/molt-runtime/src/builtins/types.rs:561-587`),
+`unbox_ptr_value(None)` yields NULL and the header load at `[obj_ptr - 16]`
+(flags) faults → SIGSEGV instead of the clean `TypeError: object.__new__ expects
+type` the slow path raises. The #50 frontend fix removes the trigger; this baton
+hardens the class so *any* future alloc-failure feeding the fast path degrades to
+the same clean TypeError rather than a segfault.
+
+**Sites to harden (both the store and store_init direct-field-store fast paths):**
+- `runtime/molt-backend/src/native_backend/function_compiler.rs:21542` (store fast-path entry),
+  `:21700-21718` / `:21719-21729` (the `flags = load [obj_ptr-16]; (flags & HEADER_FLAG_HAS_PTRS) | (tag==TAG_PTR)` go-slow computation that performs the unguarded header deref),
+- `:21899-21903` (the `store_init` sibling — same pattern).
+- Sentinel/None tag constants and header layout: `runtime/molt-backend/src/native_backend_consts.rs:36-50`
+  (`HEADER_SIZE_BYTES=24`, `HEADER_FLAGS_OFFSET=-16`; the fast path uses a local
+  `MOLT_HEADER_FLAGS_OFFSET_FROM_PAYLOAD = -16` / `HEADER_FLAG_HAS_PTRS = 1`).
+
+**Designed fix (structural, not a per-call guard):** before the inlined first
+field store dereferences the object header, emit the SAME exception/None check the
+slow path performs — i.e. branch on the object box being the None/exception
+sentinel (or `unbox_ptr_value(obj) == 0`) and route to the existing
+`check_exception` / TypeError-raise edge BEFORE the header load, not after (today
+the `check_exception` for the constructor only appears at the op AFTER the store).
+Equivalent: hoist the post-alloc `check_exception` to immediately follow
+`object_new_bound` and precede the inlined stores. This makes the fast path total
+over alloc outcomes. Add a native differential regression that drives an
+alloc-failure into the inlined-store path and asserts the clean TypeError (e.g. a
+forced bad cls_bits), verified byte-identical to CPython. Keep the fast path fast
+for the success case (single predictable-taken branch). This is a separate,
+lower-priority task from the #50 correctness fix.

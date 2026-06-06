@@ -1,29 +1,26 @@
-"""KNOWN-FAIL regression for task #50 (cross-chunk dangling class-reference).
+"""Regression for task #50 (cross-chunk dangling class-reference).
 
-CPython runs this cleanly (prints b0..b7 then OK). molt currently SIGSEGVs on
-native (and raises a spurious `TypeError: object.__new__ expects type` on
-chunk-split paths that take a non-direct store) because the module body
-(`molt_main`) is split into multiple `molt_module_chunk_N` functions once it
-exceeds the native chunk-op threshold (default 1400, src/molt/cli.py). A class
-defined in one chunk and instantiated in a later chunk has its `class_value_name`
-SSA reference dangle across the chunk boundary; the constructor-fold fast path in
-src/molt/frontend/visitors/calls.py:5461-5468 reuses that stale SSA name without a
-liveness check, and lowering degrades it to a `CONST_STR` of the variable name
-(e.g. literal "v312"). The runtime then sees a string where a type was expected.
+CPython runs this cleanly (prints b0..b7 then OK). molt used to SIGSEGV on native
+(and raise a spurious `TypeError: object.__new__ expects type` on chunk-split paths
+that take a non-direct store) because the module body (`molt_main`) is split into
+multiple `molt_module_chunk_N` functions once it exceeds the native chunk-op
+threshold (default 1400, src/molt/cli.py). A class defined in one chunk and
+instantiated in a later chunk had its `class_value_name` SSA reference dangle across
+the chunk boundary; the constructor-fold fast path in
+src/molt/frontend/visitors/calls.py reused that stale SSA name without a liveness
+check, and lowering degraded it to a `CONST_STR` of the variable name (e.g. literal
+"v312"). The runtime then saw a string where a type was expected.
 
-Eight small generic classes are enough to force a 2-chunk split at the default
-threshold, with the class definitions in chunk_1 and the instantiations in chunk_2.
+Eight small generic classes are enough to force a >=2-chunk split at the default
+threshold, with the class definitions in an earlier chunk than the instantiations.
 This is NOT specific to PEP 695 generics — plain classes hit the same bug across a
 chunk boundary; generics merely cross the op-cost threshold sooner.
 
-Full diagnosis + fix design: tmp/baton_task50_generic_class_sigsegv.md
-Fix: route the molt_main constructor-fold branch through
-`_current_module_static_class_ref` (which performs the missing
-`self.globals` liveness guard, lines 4678-4680) and fall back to MODULE_GET_ATTR
-when the class SSA value is not live in the current chunk.
-
-When the fix lands, remove this header note; the file should pass byte-identical
-to CPython 3.12/3.13/3.14.
+Fixed: route the molt_main constructor-fold branch through
+`_current_module_static_class_ref` (which performs the `self.globals` liveness
+guard) and fall back to MODULE_GET_ATTR when the class SSA value is not live in the
+current chunk. Full diagnosis + fix notes: tmp/baton_task50_generic_class_sigsegv.md.
+Passes byte-identical to CPython 3.12/3.13/3.14.
 """
 
 
