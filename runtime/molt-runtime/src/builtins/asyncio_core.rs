@@ -255,7 +255,7 @@ pub extern "C" fn molt_asyncio_future_result(handle_bits: u64) -> u64 {
         };
 
         if !state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Result is not ready");
+            return raise_exception::<u64>(_py, "InvalidStateError", "Result is not set.");
         }
 
         if state.cancelled {
@@ -296,7 +296,7 @@ pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
         };
 
         if !state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Result is not ready");
+            return raise_exception::<u64>(_py, "InvalidStateError", "Exception is not set.");
         }
 
         if state.cancelled {
@@ -325,7 +325,7 @@ pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_b
         };
 
         if state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Result is already set");
+            return raise_exception::<u64>(_py, "InvalidStateError", "invalid state");
         }
 
         // Store the result, inc_ref for heap objects.
@@ -352,7 +352,7 @@ pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_b
         };
 
         if state.done {
-            return raise_exception::<u64>(_py, "InvalidStateError", "Result is already set");
+            return raise_exception::<u64>(_py, "InvalidStateError", "invalid state");
         }
 
         // Store the exception, inc_ref for heap objects.
