@@ -12,6 +12,9 @@ unsafe extern "C" {
     fn molt_rt_object_type_id(ptr: *mut u8) -> u32;
     fn molt_rt_seq_vec_ref(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
     fn molt_rt_dict_order(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
+    // int(x, base) — used by the typed Tcl result bridge for the rare bignum
+    // (i64-overflowing) integer result, parsed from its decimal string.
+    fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +168,71 @@ type TclMergeFn = unsafe extern "C" fn(c_int, *const *const c_char) -> *mut c_ch
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 type TclFreeFn = unsafe extern "C" fn(*mut c_char);
 
+// --- Typed Tcl_Obj bridge (wantobjects=1 parity, CPython _tkinter.c AsObj/FromObj) ---
+//
+// `Tcl_WideInt` is `long long` (i64) on every supported platform.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclWideInt = i64;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclNewWideIntObjFn = unsafe extern "C" fn(TclWideInt) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclNewDoubleObjFn = unsafe extern "C" fn(f64) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclNewBooleanObjFn = unsafe extern "C" fn(c_int) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclNewByteArrayObjFn = unsafe extern "C" fn(*const u8, c_int) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclGetWideIntFromObjFn =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut TclWideInt) -> c_int;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclGetDoubleFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut f64) -> c_int;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclGetBooleanFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_int) -> c_int;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclGetStringFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_int) -> *const c_char;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclGetByteArrayFromObjFn = unsafe extern "C" fn(*mut c_void, *mut c_int) -> *const u8;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclListObjGetElementsFn =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_int, *mut *mut *mut c_void) -> c_int;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclGetObjResultFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+type TclGetObjTypeFn = unsafe extern "C" fn(*const c_char) -> *const c_void;
+
+/// Prefix of the public `Tcl_Obj` struct, used solely to read `typePtr` — the
+/// field CPython's `FromObj` dispatches on. We never touch `internalRep`; all
+/// value extraction goes through the `Tcl_Get*FromObj` accessors.
+///
+/// `typePtr` sits at byte offset 24 on 64-bit for BOTH Tcl 8.x and 9.0, despite
+/// the field-width change (verified against tcl.h):
+///   8.6: refCount(int@0,4) +pad bytes(ptr@8) length(int@16,4) +pad typePtr@24
+///   9.0: refCount(Tcl_Size@0,8) bytes(ptr@8) length(Tcl_Size@16,8) typePtr@24
+/// The natural 8-byte pointer alignment makes 8.x's `int+pad` occupy the same
+/// 8 bytes as 9.0's `Tcl_Size`, so this `#[repr(C)]` shape — whose
+/// `usize`-width head fields force `type_ptr` to offset 24 — is correct on both.
+/// A static assertion below pins the offset so an ABI change fails the build.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[repr(C)]
+struct TclObjHeader {
+    // Width-agnostic head: three pointer-sized words cover {refCount, bytes,
+    // length} on 9.0 and {refCount+pad, bytes, length+pad} on 8.x alike. These
+    // exist purely to position `type_ptr`; they are never read directly.
+    #[allow(dead_code)]
+    _head0: usize,
+    #[allow(dead_code)]
+    _head1: usize,
+    #[allow(dead_code)]
+    _head2: usize,
+    type_ptr: *const c_void,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+const _: () = {
+    // typePtr must land at offset 24 on every supported 64-bit Tcl ABI.
+    assert!(std::mem::offset_of!(TclObjHeader, type_ptr) == 24);
+};
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 #[derive(Clone, Copy)]
 struct TclApi {
@@ -186,6 +254,111 @@ struct TclApi {
     split_list: TclSplitListFn,
     merge: TclMergeFn,
     free: TclFreeFn,
+    // Typed Tcl_Obj bridge (wantobjects=1 parity).
+    new_wide_int_obj: TclNewWideIntObjFn,
+    new_double_obj: TclNewDoubleObjFn,
+    new_boolean_obj: TclNewBooleanObjFn,
+    new_byte_array_obj: TclNewByteArrayObjFn,
+    get_wide_int_from_obj: TclGetWideIntFromObjFn,
+    get_double_from_obj: TclGetDoubleFromObjFn,
+    get_boolean_from_obj: TclGetBooleanFromObjFn,
+    get_string_from_obj: TclGetStringFromObjFn,
+    get_byte_array_from_obj: TclGetByteArrayFromObjFn,
+    list_obj_get_elements: TclListObjGetElementsFn,
+    get_obj_result: TclGetObjResultFn,
+    get_obj_type: TclGetObjTypeFn,
+}
+
+/// Cached `Tcl_ObjType*` pointers used by the typed result bridge, captured once
+/// per interpreter (per CPython `Tkapp_New`). A null entry means "type not
+/// registered in this Tcl build"; the dispatch then simply never matches it.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+#[derive(Clone, Copy, Default)]
+struct TclTypePtrs {
+    int_t: *const c_void,
+    wide_int_t: *const c_void,
+    double_t: *const c_void,
+    boolean_t: *const c_void,
+    bytearray_t: *const c_void,
+    list_t: *const c_void,
+    string_t: *const c_void,
+    utf32_string_t: *const c_void,
+    bignum_t: *const c_void,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+unsafe impl Send for TclTypePtrs {}
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+unsafe impl Sync for TclTypePtrs {}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+impl TclTypePtrs {
+    /// Capture the interpreter's internal type pointers. Mirrors CPython
+    /// `Tkapp_New`: probe by name via `Tcl_GetObjType`, falling back to reading
+    /// a freshly-constructed object's `typePtr` where the named type is no
+    /// longer registered (Tcl 9.0 dropped "int" and "bytearray").
+    unsafe fn capture(api: &TclApi) -> Self {
+        unsafe fn type_by_name(api: &TclApi, name: &[u8]) -> *const c_void {
+            unsafe { (api.get_obj_type)(name.as_ptr().cast::<c_char>()) }
+        }
+        unsafe fn type_of(obj: *mut c_void) -> *const c_void {
+            if obj.is_null() {
+                return ptr::null();
+            }
+            unsafe { (*obj.cast::<TclObjHeader>()).type_ptr }
+        }
+        unsafe fn free_probe(api: &TclApi, obj: *mut c_void) {
+            if obj.is_null() {
+                return;
+            }
+            // Probe objects start at refCount 0; incr+decr frees them safely.
+            unsafe {
+                api.incr_ref_count_obj(obj);
+                api.decr_ref_count_obj(obj);
+            }
+        }
+        unsafe {
+            let mut t = TclTypePtrs::default();
+            t.double_t = type_by_name(api, b"double\0");
+            t.wide_int_t = type_by_name(api, b"wideInt\0");
+            t.bignum_t = type_by_name(api, b"bignum\0");
+            t.list_t = type_by_name(api, b"list\0");
+            t.string_t = type_by_name(api, b"string\0");
+            t.utf32_string_t = type_by_name(api, b"utf32string\0");
+
+            // "wideInt" is the canonical integer type. If the build does not
+            // register it by name, read it from a fresh wide-int object.
+            if t.wide_int_t.is_null() {
+                let probe = (api.new_wide_int_obj)(0);
+                t.wide_int_t = type_of(probe);
+                free_probe(api, probe);
+            }
+            // "int": registered in Tcl 8.x; dropped in 9.0 where integers carry
+            // the wideInt type. Fall back to the wideInt pointer so 9.0 integer
+            // results still dispatch to the int branch.
+            t.int_t = type_by_name(api, b"int\0");
+            if t.int_t.is_null() {
+                t.int_t = t.wide_int_t;
+            }
+            // "boolean": force a string->boolean conversion, then read typePtr.
+            {
+                let probe = (api.new_string_obj)(b"true\0".as_ptr().cast::<c_char>(), 4);
+                if !probe.is_null() {
+                    let mut b: c_int = 0;
+                    let _ = (api.get_boolean_from_obj)(ptr::null_mut(), probe, &mut b);
+                    t.boolean_t = type_of(probe);
+                    free_probe(api, probe);
+                }
+            }
+            // "bytearray": probe an empty byte array obj.
+            {
+                let probe = (api.new_byte_array_obj)(ptr::null(), 0);
+                t.bytearray_t = type_of(probe);
+                free_probe(api, probe);
+            }
+            t
+        }
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
@@ -456,6 +629,43 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                     )?),
                     merge: std::mem::transmute::<*const (), TclMergeFn>(load(b"Tcl_Merge\0")?),
                     free: std::mem::transmute::<*const (), TclFreeFn>(load(b"Tcl_Free\0")?),
+                    new_wide_int_obj: std::mem::transmute::<*const (), TclNewWideIntObjFn>(load(
+                        b"Tcl_NewWideIntObj\0",
+                    )?),
+                    new_double_obj: std::mem::transmute::<*const (), TclNewDoubleObjFn>(load(
+                        b"Tcl_NewDoubleObj\0",
+                    )?),
+                    new_boolean_obj: std::mem::transmute::<*const (), TclNewBooleanObjFn>(load(
+                        b"Tcl_NewBooleanObj\0",
+                    )?),
+                    new_byte_array_obj: std::mem::transmute::<*const (), TclNewByteArrayObjFn>(
+                        load(b"Tcl_NewByteArrayObj\0")?,
+                    ),
+                    get_wide_int_from_obj: std::mem::transmute::<*const (), TclGetWideIntFromObjFn>(
+                        load(b"Tcl_GetWideIntFromObj\0")?,
+                    ),
+                    get_double_from_obj: std::mem::transmute::<*const (), TclGetDoubleFromObjFn>(
+                        load(b"Tcl_GetDoubleFromObj\0")?,
+                    ),
+                    get_boolean_from_obj: std::mem::transmute::<*const (), TclGetBooleanFromObjFn>(
+                        load(b"Tcl_GetBooleanFromObj\0")?,
+                    ),
+                    get_string_from_obj: std::mem::transmute::<*const (), TclGetStringFromObjFn>(
+                        load(b"Tcl_GetStringFromObj\0")?,
+                    ),
+                    get_byte_array_from_obj: std::mem::transmute::<
+                        *const (),
+                        TclGetByteArrayFromObjFn,
+                    >(load(b"Tcl_GetByteArrayFromObj\0")?),
+                    list_obj_get_elements: std::mem::transmute::<*const (), TclListObjGetElementsFn>(
+                        load(b"Tcl_ListObjGetElements\0")?,
+                    ),
+                    get_obj_result: std::mem::transmute::<*const (), TclGetObjResultFn>(load(
+                        b"Tcl_GetObjResult\0",
+                    )?),
+                    get_obj_type: std::mem::transmute::<*const (), TclGetObjTypeFn>(load(
+                        b"Tcl_GetObjType\0",
+                    )?),
                 };
                 return Ok(api);
             }
@@ -700,6 +910,7 @@ struct TclInterpreter {
     interp_addr: usize,
     owner_thread: ThreadId,
     api: &'static TclApi,
+    types: TclTypePtrs,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
@@ -727,10 +938,14 @@ impl TclInterpreter {
                 err
             });
         }
+        // Capture the interpreter's internal type pointers now that Tcl_Init has
+        // registered the core types (needed by the typed result bridge).
+        let types = unsafe { TclTypePtrs::capture(api) };
         Ok(Self {
             interp_addr: interp_ptr as usize,
             owner_thread: thread::current().id(),
             api,
+            types,
         })
     }
 
@@ -3168,13 +3383,282 @@ fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
     TclObj::from(format_obj_str(py, obj))
 }
 
+// ---------------------------------------------------------------------------
+// Typed Tcl_Obj value bridge — wantobjects=1 parity (CPython _tkinter.c)
+//
+// AsObj (molt -> Tcl_Obj): build TYPED objects (wideInt/double/boolean/byteArray/
+// list) instead of stringifying, so Tcl never re-parses "42" back into an int.
+// FromObj (Tcl_Obj -> molt): dispatch on the result's typePtr and produce a
+// native molt int/float/bool/bytes/tuple/str with no string round-trip.
+//
+// The returned Tcl_Obj from AsObj has refCount 0 (freshly allocated); the caller
+// owns it via Tcl_IncrRefCount before handing it to Tcl_EvalObjv.
+// ---------------------------------------------------------------------------
+
+/// AsObj: allocate a typed `Tcl_Obj*` for a molt value. Runs with the GIL held
+/// (touches the molt runtime). Returns a refCount-0 object, or `Err` on
+/// allocation failure (caller cleans up already-allocated argv entries).
+///
+/// Observable arg semantics preserved from the prior string bridge: `None` maps
+/// to an empty string object (Tk treats it as ""), and unknown objects fall back
+/// to their `str()` (e.g. widget paths), never `repr()`.
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
-fn tcl_result_to_bits(py: &PyToken, value: TclObj) -> u64 {
-    let text = value.to_string();
-    match alloc_string_bits(py, &text) {
-        Ok(bits) => bits,
-        Err(bits) => bits,
+fn tcl_obj_alloc_typed_from_bits(
+    py: &PyToken,
+    api: &'static TclApi,
+    interp: *mut c_void,
+    bits: u64,
+) -> Result<*mut c_void, String> {
+    let obj = obj_from_bits(bits);
+    // None -> empty string (matches the prior bridge; CPython would reject None
+    // in call args, but molt has long mapped it to "").
+    if obj.is_none() {
+        return alloc_string_obj(api, "");
     }
+    // bool BEFORE int: bool is an int subclass, and CPython's AsObj checks it
+    // first so True/False become boolean objects, not 1/0 ints.
+    if obj.is_bool() {
+        let b = obj.as_bool().unwrap_or(false);
+        let o = unsafe { (api.new_boolean_obj)(b as c_int) };
+        return non_null_obj(o, "Tcl_NewBooleanObj returned null");
+    }
+    if let Some(i) = obj.as_int() {
+        let o = unsafe { (api.new_wide_int_obj)(i) };
+        return non_null_obj(o, "Tcl_NewWideIntObj returned null");
+    }
+    if let Some(f) = obj.as_float() {
+        let o = unsafe { (api.new_double_obj)(f) };
+        return non_null_obj(o, "Tcl_NewDoubleObj returned null");
+    }
+    // Heap objects: dispatch on the concrete type id. We must NOT probe via
+    // `string_obj_to_owned` here — its `molt_string_as_ptr` raises a TypeError on
+    // non-strings, which would pollute the interpreter's exception state for
+    // tuple/list/widget arguments.
+    if let Some(ptr) = obj.as_ptr() {
+        let type_id = object_type_id(ptr);
+        // str -> Tcl string object.
+        if type_id == TYPE_ID_STRING {
+            if let Some(s) = string_obj_to_owned(obj) {
+                return alloc_string_obj(api, &s);
+            }
+            return alloc_string_obj(api, "");
+        }
+        // bytes / bytearray -> Tcl byte array object.
+        if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+            if let Some(slice) = rt_bytes_as_slice(bits) {
+                let len = slice.len() as c_int;
+                let o = unsafe { (api.new_byte_array_obj)(slice.as_ptr(), len) };
+                return non_null_obj(o, "Tcl_NewByteArrayObj returned null");
+            }
+        }
+    }
+    // tuple / list -> Tcl list of typed elements (font tuples, coordinate lists).
+    if let Some(elements) = decode_value_list(obj) {
+        let list_obj = unsafe { (api.new_list_obj)(0, ptr::null()) };
+        if list_obj.is_null() {
+            return Err("Tcl_NewListObj returned null".to_string());
+        }
+        for &elem_bits in &elements {
+            let elem = match tcl_obj_alloc_typed_from_bits(py, api, interp, elem_bits) {
+                Ok(e) => e,
+                Err(err) => {
+                    // Free the partially-built list (refCount 0 -> incr/decr).
+                    unsafe {
+                        api.incr_ref_count_obj(list_obj);
+                        api.decr_ref_count_obj(list_obj);
+                    }
+                    return Err(err);
+                }
+            };
+            let rc = unsafe { (api.list_obj_append_element)(interp, list_obj, elem) };
+            if rc != TCL_OK {
+                unsafe {
+                    api.incr_ref_count_obj(elem);
+                    api.decr_ref_count_obj(elem);
+                    api.incr_ref_count_obj(list_obj);
+                    api.decr_ref_count_obj(list_obj);
+                }
+                let err = tcl_result_string(api, interp);
+                return Err(if err.is_empty() {
+                    "Tcl_ListObjAppendElement failed".to_string()
+                } else {
+                    err
+                });
+            }
+        }
+        return Ok(list_obj);
+    }
+    // Fallback: str() of the object (widget paths, custom __str__). Clear any
+    // pending exception first so rt_str does not bail.
+    if exception_pending(py) {
+        clear_exception(py);
+    }
+    let str_bits = rt_str(bits);
+    let text = if !obj_from_bits(str_bits).is_none() {
+        string_obj_to_owned(obj_from_bits(str_bits))
+    } else {
+        None
+    };
+    dec_ref_bits(py, str_bits);
+    match text {
+        Some(s) => alloc_string_obj(api, &s),
+        None => alloc_string_obj(api, &format_obj_str(py, obj)),
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn alloc_string_obj(api: &'static TclApi, text: &str) -> Result<*mut c_void, String> {
+    let bytes = CString::new(text.as_bytes())
+        .map_err(|_| "Tcl string contained interior NUL byte".to_string())?;
+    let o = unsafe { (api.new_string_obj)(bytes.as_ptr(), text.len() as c_int) };
+    non_null_obj(o, "Tcl_NewStringObj returned null")
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn non_null_obj(o: *mut c_void, msg: &'static str) -> Result<*mut c_void, String> {
+    if o.is_null() {
+        Err(msg.to_string())
+    } else {
+        Ok(o)
+    }
+}
+
+/// FromObj: convert a Tcl result `Tcl_Obj*` to a molt value, dispatching on its
+/// `typePtr` exactly like CPython `_tkinter.c`. Runs with the GIL held (allocates
+/// molt objects). `obj` is borrowed (the interpreter owns the result); we never
+/// free it here.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn tcl_obj_result_to_bits(
+    py: &PyToken,
+    api: &'static TclApi,
+    types: &TclTypePtrs,
+    interp: *mut c_void,
+    obj: *mut c_void,
+) -> u64 {
+    if obj.is_null() {
+        return rt_none();
+    }
+    let tp = unsafe { (*obj.cast::<TclObjHeader>()).type_ptr };
+
+    // typePtr == NULL  -> pure string (no internal rep).
+    if tp.is_null() {
+        return tcl_obj_string_to_bits(api, obj);
+    }
+    // boolean (checked before int: a boolean obj must not be read as wideInt).
+    if tp == types.boolean_t && !types.boolean_t.is_null() {
+        let mut b: c_int = 0;
+        if unsafe { (api.get_boolean_from_obj)(interp, obj, &mut b) } == TCL_OK {
+            return MoltObject::from_bool(b != 0).bits();
+        }
+        return tcl_obj_string_to_bits(api, obj);
+    }
+    // bytearray -> bytes.
+    if tp == types.bytearray_t && !types.bytearray_t.is_null() {
+        let mut len: c_int = 0;
+        let data = unsafe { (api.get_byte_array_from_obj)(obj, &mut len) };
+        if !data.is_null() && len >= 0 {
+            let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
+            return rt_bytes_from(slice);
+        }
+        return tcl_obj_string_to_bits(api, obj);
+    }
+    // double -> float.
+    if tp == types.double_t && !types.double_t.is_null() {
+        let mut d: f64 = 0.0;
+        if unsafe { (api.get_double_from_obj)(interp, obj, &mut d) } == TCL_OK {
+            return MoltObject::from_float(d).bits();
+        }
+        return tcl_obj_string_to_bits(api, obj);
+    }
+    // int / wideInt -> int. (bignum handled via the string fallback below, which
+    // molt's int parser promotes to a bigint — value-identical.)
+    if (tp == types.int_t && !types.int_t.is_null())
+        || (tp == types.wide_int_t && !types.wide_int_t.is_null())
+    {
+        let mut w: TclWideInt = 0;
+        if unsafe { (api.get_wide_int_from_obj)(interp, obj, &mut w) } == TCL_OK {
+            return rt_int(w);
+        }
+        // Overflowed i64 (true bignum): fall back to the decimal string, which
+        // molt parses into an arbitrary-precision int.
+        return tcl_obj_int_string_to_bits(py, api, obj);
+    }
+    // bignum -> int (via decimal string -> molt bigint).
+    if tp == types.bignum_t && !types.bignum_t.is_null() {
+        return tcl_obj_int_string_to_bits(py, api, obj);
+    }
+    // list -> tuple (recurse on each element).
+    if tp == types.list_t && !types.list_t.is_null() {
+        let mut count: c_int = 0;
+        let mut elems: *mut *mut c_void = ptr::null_mut();
+        if unsafe { (api.list_obj_get_elements)(interp, obj, &mut count, &mut elems) } == TCL_OK
+            && (count == 0 || !elems.is_null())
+        {
+            let n = count.max(0) as usize;
+            let mut bits_vec: Vec<u64> = Vec::with_capacity(n);
+            for i in 0..n {
+                let elem = unsafe { *elems.add(i) };
+                bits_vec.push(tcl_obj_result_to_bits(py, api, types, interp, elem));
+            }
+            // Build the tuple directly. We use `rt_tuple` rather than
+            // `alloc_tuple_bits` because the latter also fails on any *already*
+            // pending exception, and FromObj runs after a verified-OK Tcl eval —
+            // a stale pending flag must not be misattributed to tuple allocation.
+            let tuple_bits = rt_tuple(&bits_vec);
+            if tuple_bits != 0 {
+                return tuple_bits;
+            }
+            // Genuine allocation failure.
+            return raise_exception_u64(py, "MemoryError", "failed to allocate tkinter result tuple");
+        }
+        return tcl_obj_string_to_bits(api, obj);
+    }
+    // string / utf32string -> str.
+    if (tp == types.string_t && !types.string_t.is_null())
+        || (tp == types.utf32_string_t && !types.utf32_string_t.is_null())
+    {
+        return tcl_obj_string_to_bits(api, obj);
+    }
+    // Unknown internal type: match CPython, which wraps it in `_tkinter.Tcl_Obj`.
+    // molt's `_tkinter.Tcl_Obj` is a `str` subclass, so the string value is the
+    // faithful, comparison-correct representation.
+    tcl_obj_string_to_bits(api, obj)
+}
+
+/// Read a `Tcl_Obj`'s UTF-8 string rep into a molt `str`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn tcl_obj_string_to_bits(api: &'static TclApi, obj: *mut c_void) -> u64 {
+    let mut len: c_int = 0;
+    let ptr = unsafe { (api.get_string_from_obj)(obj, &mut len) };
+    if ptr.is_null() || len < 0 {
+        return rt_string_from("");
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len as usize) };
+    // Tcl strings are Modified-UTF-8; for the common ASCII/UTF-8 case this is a
+    // direct decode. Lossy only on genuinely invalid sequences (rare; CPython
+    // uses surrogateescape — a follow-up can mirror that precisely).
+    rt_string_from_bytes(slice)
+}
+
+/// Read a Tcl integer-typed `Tcl_Obj` whose value overflows i64 (a true bignum)
+/// as its decimal string, then parse it into a molt arbitrary-precision int —
+/// value-identical to CPython's `fromBignumObj`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn tcl_obj_int_string_to_bits(py: &PyToken, api: &'static TclApi, obj: *mut c_void) -> u64 {
+    let mut len: c_int = 0;
+    let ptr = unsafe { (api.get_string_from_obj)(obj, &mut len) };
+    if ptr.is_null() || len < 0 {
+        return rt_int(0);
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len as usize) };
+    let text = String::from_utf8_lossy(slice);
+    // Parse the decimal string into a molt int via the runtime's int() path,
+    // which promotes to arbitrary precision on overflow (CPython fromBignumObj
+    // parity).
+    let s_bits = rt_string_from(&text);
+    let parsed = unsafe { molt_int_from_obj(s_bits, rt_int(10), MoltObject::from_bool(true).bits()) };
+    dec_ref_bits(py, s_bits);
+    parsed
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
@@ -3366,20 +3850,10 @@ fn eval_tcl_without_gil(
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
-    // Phase 1: Convert Molt objects to TclObj (needs GIL for Molt runtime).
-    let mut command = Vec::with_capacity(args.len());
-    for &bits in args {
-        command.push(tcl_obj_from_bits(py, bits));
-    }
-
-    // Trace Tcl commands for debugging layout issues
-    if std::env::var("MOLT_TRACE_TCL").is_ok() {
-        let script = TclObj::new_list(command.clone());
-        eprintln!("[tcl] {}", script);
-    }
-
-    // Phase 2: Extract interpreter context, then drop registry lock.
-    let (api, interp_addr) = {
+    // Phase 2 (first): extract interpreter context + cached type pointers, then
+    // drop the registry lock. We need `api`/`interp`/`types` before building the
+    // typed argument objects.
+    let (api, interp_addr, types) = {
         let mut registry = tk_registry().lock().unwrap();
         let app = app_mut_from_registry(py, &mut registry, handle)?;
         let Some(interp) = app.interpreter.as_ref() else {
@@ -3392,40 +3866,76 @@ fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> 
         if let Err(err) = interp.ensure_owner_thread() {
             return Err(app_tcl_error_locked(py, app, err));
         }
-        (interp.api, interp.interp_addr)
+        (interp.api, interp.interp_addr, interp.types)
         // registry lock dropped here
     };
+    let interp = interp_addr as *mut c_void;
 
-    // Phase 3: Evaluate without GIL (Tcl FFI only, no Molt runtime).
-    let tcl_result = eval_tcl_without_gil(api, interp_addr, &command);
+    // Optional Tcl tracing (string-renders the typed args for human reading).
+    if std::env::var("MOLT_TRACE_TCL").is_ok() {
+        let rendered: Vec<TclObj> = args.iter().map(|&b| tcl_obj_from_bits(py, b)).collect();
+        eprintln!("[tcl] {}", TclObj::new_list(rendered));
+    }
 
-    // Phase 4: Handle result with a single registry lock acquisition for
-    // error/success bookkeeping (avoids separate clear_last_error /
-    // raise_tcl_for_handle calls that each re-acquire the lock).
-    match tcl_result {
-        Ok(result) => {
-            {
-                let mut registry = tk_registry().lock().unwrap();
-                if let Some(app) = registry.apps.get_mut(&handle) {
-                    app.last_error = None;
-                }
+    // Phase 1 (GIL held): build TYPED Tcl_Obj argv directly from molt values.
+    let mut objv: Vec<*mut c_void> = Vec::with_capacity(args.len());
+    for &bits in args {
+        match tcl_obj_alloc_typed_from_bits(py, api, interp, bits) {
+            Ok(obj) => {
+                unsafe { api.incr_ref_count_obj(obj) };
+                objv.push(obj);
             }
-            Ok(tcl_result_to_bits(
-                py,
-                TclObj::scalar_from_interp(result, interp_addr),
-            ))
-        }
-        Err(err) => {
-            let message = format!("tk command failed: {err}");
-            {
-                let mut registry = tk_registry().lock().unwrap();
-                if let Some(app) = registry.apps.get_mut(&handle) {
-                    app.last_error = Some(message.clone());
+            Err(err) => {
+                for &allocated in &objv {
+                    unsafe { api.decr_ref_count_obj(allocated) };
                 }
+                let message = format!("tk command failed: {err}");
+                set_last_error(handle, message.clone());
+                return Err(raise_tcl_error(py, &message));
             }
-            Err(raise_tcl_error(py, &message))
         }
     }
+
+    // Phase 3 (GIL released): evaluate. No molt runtime calls in this window.
+    let rc = {
+        let _gil_release = GilReleaseGuard::new();
+        unsafe { (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0) }
+    };
+
+    // Phase 4 (GIL held): convert the typed result, or raise the error string.
+    if rc != TCL_OK {
+        let err = tcl_result_string(api, interp);
+        for &obj in &objv {
+            unsafe { api.decr_ref_count_obj(obj) };
+        }
+        let message = format!(
+            "tk command failed: {}",
+            if err.is_empty() {
+                "Tcl_EvalObjv failed".to_string()
+            } else {
+                err
+            }
+        );
+        set_last_error(handle, message.clone());
+        return Err(raise_tcl_error(py, &message));
+    }
+
+    // Read the result object BEFORE dropping the argv refs (the result may alias
+    // an argument, e.g. `set x` returns the value object).
+    let result_obj = unsafe { (api.get_obj_result)(interp) };
+    // Own the result across the argv teardown so a shared object is not freed.
+    if !result_obj.is_null() {
+        unsafe { api.incr_ref_count_obj(result_obj) };
+    }
+    for &obj in &objv {
+        unsafe { api.decr_ref_count_obj(obj) };
+    }
+    let bits = tcl_obj_result_to_bits(py, api, &types, interp, result_obj);
+    if !result_obj.is_null() {
+        unsafe { api.decr_ref_count_obj(result_obj) };
+    }
+    clear_last_error(handle);
+    Ok(bits)
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
