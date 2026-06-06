@@ -1,0 +1,62 @@
+"""Frontend Bind/Sema phase (doc 44 §F2b).
+
+The semantic-analysis package: free functions over the immutable ``ast.Module``
+that compute :class:`SemaResult` — the immutable annotation tables Lower will
+read instead of recomputing inline.  This follows the in-package existence proof
+``cfg_analysis.py`` (free functions over frozen dataclasses, zero ``self``, zero
+god-object state) named by doc 44 §0.
+
+F2b is the **additive-shim** phase: ``analyze_module`` is computed once at
+generator construction time, and the existing ``SimpleTIRGenerator`` state dicts
+are populated *from* its result (see ``_populate_sema_state`` in
+``frontend/__init__.py``), leaving the lowering walk byte-identical.  F2c rewires
+the walk to read these tables directly at the use sites; this phase only relocates
+the analysis and introduces the contract.
+"""
+
+from __future__ import annotations
+
+import ast
+
+from molt.frontend.sema.classgraph import build_class_graph
+from molt.frontend.sema.constenv import collect_module_const_dicts
+from molt.frontend.sema.funcmeta import (
+    collect_module_class_names,
+    collect_module_func_defaults,
+    collect_module_func_kinds,
+)
+from molt.frontend.sema.result import (
+    ClassGraph,
+    FunctionMeta,
+    SemaResult,
+)
+
+__all__ = [
+    "ClassGraph",
+    "FunctionMeta",
+    "SemaResult",
+    "analyze_module",
+    "build_class_graph",
+    "collect_module_class_names",
+    "collect_module_const_dicts",
+    "collect_module_func_defaults",
+    "collect_module_func_kinds",
+]
+
+
+def analyze_module(node: ast.Module) -> SemaResult:
+    """Compute the full :class:`SemaResult` for a module, pre-walk.
+
+    Every field is a pure function of *node*; the result is immutable.  An
+    externally-supplied ``known_func_defaults`` override (a runtime input, not an
+    AST fact) is applied downstream by the populate-shim, not here.
+    """
+    return SemaResult(
+        class_graph=build_class_graph(node),
+        const_dicts=collect_module_const_dicts(node),
+        function_meta=FunctionMeta(
+            declared_funcs=collect_module_func_kinds(node),
+            declared_classes=collect_module_class_names(node),
+            defaults=collect_module_func_defaults(node),
+        ),
+    )
