@@ -197,7 +197,10 @@ purity = "pure_may_throw"
 
 [[opcode]]
 name = "Pow"
-may_throw = false
+# `0 ** -1` / `0.0 ** -1.0` raise ZeroDivisionError; a negative base with a
+# non-integer exponent returns complex (NOT a float) — both are observable and
+# must never be const-folded away or hoisted above a guard. `pure_may_throw`.
+may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 
@@ -299,15 +302,21 @@ purity = "pure"
 
 [[opcode]]
 name = "Shl"
-may_throw = false
+# `1 << -1` raises ValueError("negative shift count"); the exception is
+# observable even when the result is dead, so DCE must keep it and SCCP must not
+# fold it inside a try region. CSE-safe under dominance but NOT hoistable above a
+# guard ⇒ `pure_may_throw` (was mis-classified `pure`, which let DCE silently
+# drop a dead negative-count shift — a no-raise miscompile).
+may_throw = true
 side_effecting = false
-purity = "pure"
+purity = "pure_may_throw"
 
 [[opcode]]
 name = "Shr"
-may_throw = false
+# `1 >> -1` raises ValueError("negative shift count") — same contract as `Shl`.
+may_throw = true
 side_effecting = false
-purity = "pure"
+purity = "pure_may_throw"
 
 [[opcode]]
 name = "And"

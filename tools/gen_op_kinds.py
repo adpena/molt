@@ -109,6 +109,25 @@ def load_table() -> dict:
                 f"opcode {name}: 'purity' must be one of {sorted(_PURITY_VALUES)}, "
                 f"got {purity!r}"
             )
+        # Cross-axis invariant: the `purity` class and `may_throw` bit are two
+        # views of the same throw property and MUST agree. `OpEffects::PURE` has
+        # `nothrow = true`, so a `pure` opcode cannot also be `may_throw`; a
+        # `pure_may_throw` opcode is precisely the throwing-but-deterministic
+        # class (`Div`/`FloorDiv`/`Mod`/`Pow`/`Shl`/`Shr`), so it MUST be
+        # `may_throw`. `impure` is unconstrained (a call both throws and mutates).
+        # This is the structural kill for the drift that classified `Pow` as
+        # `pure_may_throw` yet `may_throw = false` (and `Shl`/`Shr` as fully
+        # `pure`), which let DCE silently drop a dead `1 << -1` / `0 ** -1`.
+        if purity == "pure" and row["may_throw"]:
+            raise OpKindTableError(
+                f"opcode {name}: purity 'pure' requires may_throw = false "
+                "(a pure op is nothrow); use purity 'pure_may_throw' if it raises"
+            )
+        if purity == "pure_may_throw" and not row["may_throw"]:
+            raise OpKindTableError(
+                f"opcode {name}: purity 'pure_may_throw' requires may_throw = true "
+                "(it raises for some inputs); use purity 'pure' if it never raises"
+            )
 
     prefixes = data.get("classifier_fresh_value_prefixes", [])
     if not isinstance(prefixes, list) or not all(isinstance(p, str) for p in prefixes):

@@ -198,6 +198,38 @@ fn lower_op(
     if lowers_to_checked_i64_arithmetic(op, type_map, repr, inline_proof) {
         return lower_checked_i64_arithmetic(op, type_map, allocator, repr);
     }
+    // Divisor-zero safety for the raw-i64 division family. The WASM I64 lane
+    // emits a bare `i64.div_s`/`i64.rem_s`, which TRAPS on a zero divisor
+    // (CPython raises `ZeroDivisionError`). A zero divisor is only safe in the
+    // raw lane when value-range analysis PROVES the divisor non-zero; otherwise
+    // force the boxed runtime dispatch (`molt_floordiv`/`molt_mod`/`molt_div`),
+    // which raises correctly. This is the WASM analogue of the native inline
+    // zero-guard and the LLVM `emit_i64_divrem_zero_guarded` fast/slow split —
+    // decided HERE, where the value-range proof lives, not in the emitter.
+    if matches!(
+        op.opcode,
+        OpCode::Div | OpCode::FloorDiv | OpCode::Mod
+    ) && op.operands.len() >= 2
+    {
+        let divisor = op.operands[1];
+        let divisor_nonzero = inline_proof
+            .is_some_and(|vr| vr.range_of(divisor).proves_nonzero());
+        if !divisor_nonzero {
+            let mut tir_op = op.clone();
+            tir_op
+                .attrs
+                .insert("lir.boxed_dispatch".to_string(), AttrValue::Bool(true));
+            let result_values = tir_op
+                .results
+                .iter()
+                .map(|result_id| lir_value_from_type_map(*result_id, type_map, repr))
+                .collect();
+            return LirOp {
+                tir_op,
+                result_values,
+            };
+        }
+    }
     // Arithmetic on raw-i64 carriers WITHOUT the inline-window proof: a bare
     // machine op could silently wrap at 2^63 (`RawI64Safe` is a FULL-RANGE
     // carrier contract — CheckedAdd sums / overflow_peel accumulators are
