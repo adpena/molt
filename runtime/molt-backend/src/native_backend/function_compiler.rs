@@ -24913,7 +24913,8 @@ impl SimpleBackend {
             }
             // Remove blocks not reachable from entry
             let all_blocks: Vec<_> = builder.func.layout.blocks().collect();
-            for block in all_blocks {
+            for block in &all_blocks {
+                let block = *block;
                 if !visited.contains(&block) {
                     // Only insert traps into truly empty orphaned blocks —
                     // blocks that have no instructions AND are not known
@@ -24929,6 +24930,43 @@ impl SimpleBackend {
                             .ins()
                             .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
                     }
+                }
+            }
+            // ── Block-finalization invariant (fail-loud) ───────────────────────
+            // Every block reached by the entry DFS above MUST carry a terminator
+            // before `seal_all_blocks`/`finalize`. A DFS-reachable block left
+            // empty is a structured-codegen bug: a predecessor's terminator
+            // branches INTO it (that is how the DFS reached it), but the block
+            // itself was never filled. Cranelift's downstream `unreachable_code`
+            // pass does `last_inst(block).unwrap()` for every domtree-reachable
+            // block, so such a block produces an opaque `unreachable_code.rs`
+            // `Option::unwrap() on None` panic deep inside the backend. Surface it
+            // here as an actionable molt-level diagnostic at the single
+            // block-finalization authority, naming the function and block, so any
+            // future regression of this class (e.g. a structured loop's
+            // `after_block` orphaned when its `loop_end` is never emitted —
+            // round-10's `while True: …; if c: break`) fails loud at the right
+            // layer instead of crashing inside Cranelift. This is a verification
+            // guard, not a workaround: the orphan must be fixed in codegen/lowering
+            // (terminate the block), never papered over by trapping a reachable
+            // block — that would change program semantics. Scoped to `visited`
+            // (entry-reachable) blocks: those are exactly the ones Cranelift's
+            // domtree pass dereferences; the trap loop above already handled the
+            // unreachable-orphan case.
+            for block in &all_blocks {
+                let block = *block;
+                if !visited.contains(&block) {
+                    continue;
+                }
+                if builder.func.layout.block_insts(block).next().is_none() {
+                    panic!(
+                        "native codegen left REACHABLE block {block:?} empty (no terminator) \
+                         in '{}': a predecessor branches to it but it was never filled. \
+                         This is a structured control-flow lowering/codegen bug (e.g. a loop \
+                         after_block or a break-cleanup block left unterminated); fix the \
+                         block's terminator emission, do not trap it.",
+                        func_ir.name,
+                    );
                 }
             }
         }

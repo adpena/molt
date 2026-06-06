@@ -570,24 +570,73 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         else {
             continue;
         };
-        let break_kind = func
-            .loop_break_kinds
-            .get(bid)
-            .copied()
-            .unwrap_or(LoopBreakKind::BreakIfFalse);
-        let (body_entry, exit_block, body_args, exit_args) = match break_kind {
-            LoopBreakKind::BreakIfFalse => (
+        // ── Body/exit polarity from the CFG, not the stale break-kind hint ──
+        // The native structured loop emits `loop_break_if_false`/`_true` whose
+        // polarity decides which cond successor is the loop BODY (continue) vs
+        // the EXIT (after_block). The pre-TIR `loop_break_kinds` map records the
+        // polarity of the ORIGINAL `loop_break_if_*` op, but molt double-roundtrips
+        // through TIR (per-function pipeline → SimpleIR → relift for the drop
+        // module phase → SimpleIR), and the SSA terminator builder + drop-phase
+        // critical-edge reshaping can change which side of `cond_block`'s
+        // `CondBranch` is the back-edge body vs the loop exit. Trusting the stale
+        // map then swaps body_entry/exit_block: the EXIT (a Return block) becomes
+        // `body_entry`, and the back-edge CONTINUE becomes `exit_block`. Native
+        // codegen's `loop_start` materializes an `after_block`, the swapped
+        // `loop_break_if_*` marks it reachable + jumps to it from the cleanup
+        // edge, but the matching `loop_end` (which would switch-to/fill it) is
+        // never emitted for the degenerate shape — leaving a reachable-but-empty
+        // block that Cranelift's `unreachable_code` pass rejects
+        // (`while True: …; if c: break` → `rc_sites_loop_break.py`; round-10).
+        //
+        // The ground truth is reducibility: the loop BODY is the cond successor
+        // from which the loop HEADER (`*bid`, the back-edge target) is reachable
+        // through in-loop blocks; the EXIT is the successor that leaves the loop.
+        // Derive that here and emit a polarity consistent with it, so the
+        // reconstruction is correct regardless of `break_kind` staleness.
+        let then_reaches_header =
+            successor_reaches_header(func, *then_block, *bid, cond_bid);
+        let else_reaches_header =
+            successor_reaches_header(func, *else_block, *bid, cond_bid);
+        // Fall back to the recorded hint only when the CFG is ambiguous (both or
+        // neither successor reaches the header — e.g. an infinite loop with no
+        // exit, or an exit that re-enters). A reducible loop with a normal exit
+        // has exactly one body successor.
+        let body_is_then = match (then_reaches_header, else_reaches_header) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => {
+                let break_kind = func
+                    .loop_break_kinds
+                    .get(bid)
+                    .copied()
+                    .unwrap_or(LoopBreakKind::BreakIfFalse);
+                // BreakIfFalse: cond TRUE → body (then). BreakIfTrue: cond TRUE
+                // → break, so body is the else side.
+                matches!(break_kind, LoopBreakKind::BreakIfFalse)
+            }
+        };
+        // Native polarity that matches the chosen body side:
+        //   body == then  →  `loop_break_if_false` (cond TRUE continues to body)
+        //   body == else  →  `loop_break_if_true`  (cond TRUE breaks to exit)
+        let break_kind = if body_is_then {
+            LoopBreakKind::BreakIfFalse
+        } else {
+            LoopBreakKind::BreakIfTrue
+        };
+        let (body_entry, exit_block, body_args, exit_args) = if body_is_then {
+            (
                 *then_block,
                 *else_block,
                 then_args.clone(),
                 else_args.clone(),
-            ),
-            LoopBreakKind::BreakIfTrue => (
+            )
+        } else {
+            (
                 *else_block,
                 *then_block,
                 else_args.clone(),
                 then_args.clone(),
-            ),
+            )
         };
         if debug_loop_if_return {
             eprintln!(
@@ -3141,6 +3190,49 @@ fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
     }
 
     postorder
+}
+
+/// Reducibility probe for structured-loop body/exit polarity.
+///
+/// Returns `true` when the loop `header` is reachable from `start` through the
+/// forward CFG WITHOUT re-entering the loop-controlling `cond_block`. For a
+/// reducible natural loop the BODY successor of `cond_block` reaches the header
+/// (it contains the back-edge), while the EXIT successor leaves the loop and
+/// does not — so this distinguishes which cond successor is the loop body
+/// independent of any (possibly stale, post-roundtrip) `break_kind` hint.
+///
+/// `cond_block` is excluded from traversal so the body→cond→{body,exit} cycle
+/// cannot make the exit side appear to reach the header through the cond block.
+/// `start == header` reaches trivially (a zero-body `while`-true backbone).
+fn successor_reaches_header(
+    func: &TirFunction,
+    start: BlockId,
+    header: BlockId,
+    cond_block: BlockId,
+) -> bool {
+    if start == header {
+        return true;
+    }
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut stack = vec![start];
+    while let Some(b) = stack.pop() {
+        if b == header {
+            return true;
+        }
+        // Do not traverse back through the loop-controlling cond block: the
+        // back-edge body reaches the header BEFORE returning to the cond, so a
+        // genuine body successor is found without this edge; allowing it would
+        // let the exit side reach the header via cond→body→header.
+        if b == cond_block || !visited.insert(b) {
+            continue;
+        }
+        if let Some(blk) = func.blocks.get(&b) {
+            for succ in successors_of(blk) {
+                stack.push(succ);
+            }
+        }
+    }
+    false
 }
 
 fn successors_of(block: &TirBlock) -> Vec<BlockId> {
