@@ -114,7 +114,7 @@ def _has_process_spawn_capability():
 _TK_AVAILABLE = _tk_runtime_export("_MOLT_TK_AVAILABLE")
 _HAS_GUI_CAPABILITY = _has_gui_capability
 _HAS_PROCESS_SPAWN_CAPABILITY = _has_process_spawn_capability
-_TK_CREATE = _tk_runtime_export("create")
+_TK_CREATE = _require_tk_callable("create")
 # ``create`` returns a ``TkappType`` wrapper; ``_unwrap_app`` yields the bare
 # interpreter handle that the ``molt_tk_*`` intrinsics consume. It accepts a raw
 # handle unchanged, so it is the canonical, wrapper-agnostic unwrap.
@@ -123,35 +123,36 @@ _TK_UNWRAP_APP = _require_tk_callable("_unwrap_app")
 # ``_MOLT_TK_*`` intrinsics) so they accept either a ``TkappType`` or a raw
 # handle as their first argument — every wrapper unwraps via ``_unwrap_app``.
 # ``_tk_app`` is a ``TkappType``, so binding to the wrappers keeps every call
-# site handle-agnostic. (``_TK_CALL``/``_TK_CREATE`` also bind to wrappers.)
-_TK_MAINLOOP = _tk_runtime_export("mainloop")
-_TK_DO_ONE_EVENT = _tk_runtime_export("dooneevent")
-_TK_QUIT = _tk_runtime_export("quit")
-_TK_AFTER = _tk_runtime_export("after")
-# Bind the hot `call` path directly to the `_tkinter.call` function object rather
-# than through a `_tk_runtime_export` closure: the closure's getattr + *args/
-# **kwargs repack is per-call overhead on the busiest tkinter entry point.
+# site handle-agnostic. We bind to the bare wrapper FUNCTION (via
+# ``_require_tk_callable``) rather than wrapping it in a ``_tk_runtime_export``
+# ``_call(*args, **kwargs)`` closure: that closure's ``*args``/``**kwargs``
+# repack both adds per-call overhead and mis-forwards function-typed positional
+# arguments (e.g. a bind callback), making them appear non-callable downstream.
+_TK_MAINLOOP = _require_tk_callable("mainloop")
+_TK_DO_ONE_EVENT = _require_tk_callable("dooneevent")
+_TK_QUIT = _require_tk_callable("quit")
+_TK_AFTER = _require_tk_callable("after")
 _TK_CALL = _require_tk_callable("call")
 # The raw `molt_tk_call` intrinsic. `Misc.call` invokes it directly with the bare
 # interpreter handle, collapsing the Misc.call -> _TK_CALL -> _tkinter.call ->
 # _unwrap_app -> intrinsic chain (4 Python calls) down to a single intrinsic call
 # — the per-call function-invocation overhead is the dominant tkinter tax.
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call")
-_TK_BIND_REGISTER = _tk_runtime_export("bind_register")
-_TK_BIND_UNREGISTER = _tk_runtime_export("bind_unregister")
-_TK_WIDGET_BIND_REGISTER = _tk_runtime_export("widget_bind_register")
-_TK_WIDGET_BIND_UNREGISTER = _tk_runtime_export("widget_bind_unregister")
-_TK_TEXT_TAG_BIND_REGISTER = _tk_runtime_export("text_tag_bind_register")
-_TK_TEXT_TAG_BIND_UNREGISTER = _tk_runtime_export("text_tag_bind_unregister")
-_TK_DESTROY_WIDGET = _tk_runtime_export("destroy_widget")
-_TK_LAST_ERROR = _tk_runtime_export("last_error")
-_TK_TRACE_ADD = _tk_runtime_export("trace_add")
-_TK_TRACE_REMOVE = _tk_runtime_export("trace_remove")
-_TK_TRACE_CLEAR = _tk_runtime_export("trace_clear")
-_TK_TRACE_INFO = _tk_runtime_export("trace_info")
-_TK_WAIT_VARIABLE = _tk_runtime_export("wait_variable")
-_TK_WAIT_WINDOW = _tk_runtime_export("wait_window")
-_TK_WAIT_VISIBILITY = _tk_runtime_export("wait_visibility")
+_TK_BIND_REGISTER = _require_tk_callable("bind_register")
+_TK_BIND_UNREGISTER = _require_tk_callable("bind_unregister")
+_TK_WIDGET_BIND_REGISTER = _require_tk_callable("widget_bind_register")
+_TK_WIDGET_BIND_UNREGISTER = _require_tk_callable("widget_bind_unregister")
+_TK_TEXT_TAG_BIND_REGISTER = _require_tk_callable("text_tag_bind_register")
+_TK_TEXT_TAG_BIND_UNREGISTER = _require_tk_callable("text_tag_bind_unregister")
+_TK_DESTROY_WIDGET = _require_tk_callable("destroy_widget")
+_TK_LAST_ERROR = _require_tk_callable("last_error")
+_TK_TRACE_ADD = _require_tk_callable("trace_add")
+_TK_TRACE_REMOVE = _require_tk_callable("trace_remove")
+_TK_TRACE_CLEAR = _require_tk_callable("trace_clear")
+_TK_TRACE_INFO = _require_tk_callable("trace_info")
+_TK_WAIT_VARIABLE = _require_tk_callable("wait_variable")
+_TK_WAIT_WINDOW = _require_tk_callable("wait_window")
+_TK_WAIT_VISIBILITY = _require_tk_callable("wait_visibility")
 
 wantobjects = 1
 TkVersion = 8.6
