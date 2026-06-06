@@ -1183,6 +1183,13 @@ class SimpleTIRGenerator(
             "INPLACE_ADD",
             "INPLACE_SUB",
             "INPLACE_MUL",
+            "INPLACE_DIV",
+            "INPLACE_FLOORDIV",
+            "INPLACE_MOD",
+            "INPLACE_POW",
+            "INPLACE_LSHIFT",
+            "INPLACE_RSHIFT",
+            "INPLACE_MATMUL",
             "EQ",
             "NE",
             "LT",
@@ -13915,6 +13922,14 @@ class SimpleTIRGenerator(
         return
 
     def _augassign_op_kind(self, op: ast.operator) -> str:
+        # Every augmented assignment lowers to a dedicated INPLACE_* kind so the
+        # runtime tries the in-place dunder (__iadd__/__ifloordiv__/__ipow__/...)
+        # BEFORE the binary fallback, matching CPython. The boxed runtime symbol
+        # for each (molt_inplace_floordiv etc.) first calls call_inplace_dunder
+        # and only falls through to the binary protocol on NotImplemented. The
+        # static int/float fast lanes remain identical to the binary op because
+        # builtin int/float define no in-place dunders (so += on an int is byte-
+        # identical whether it routes through molt_add or molt_inplace_add).
         if isinstance(op, ast.Add):
             return "INPLACE_ADD"
         if isinstance(op, ast.Sub):
@@ -13922,13 +13937,13 @@ class SimpleTIRGenerator(
         if isinstance(op, ast.Mult):
             return "INPLACE_MUL"
         if isinstance(op, ast.Div):
-            return "DIV"
+            return "INPLACE_DIV"
         if isinstance(op, ast.FloorDiv):
-            return "FLOORDIV"
+            return "INPLACE_FLOORDIV"
         if isinstance(op, ast.Mod):
-            return "MOD"
+            return "INPLACE_MOD"
         if isinstance(op, ast.Pow):
-            return "POW"
+            return "INPLACE_POW"
         if isinstance(op, ast.BitOr):
             return "INPLACE_BIT_OR"
         if isinstance(op, ast.BitAnd):
@@ -13936,11 +13951,11 @@ class SimpleTIRGenerator(
         if isinstance(op, ast.BitXor):
             return "INPLACE_BIT_XOR"
         if isinstance(op, ast.LShift):
-            return "LSHIFT"
+            return "INPLACE_LSHIFT"
         if isinstance(op, ast.RShift):
-            return "RSHIFT"
+            return "INPLACE_RSHIFT"
         if isinstance(op, ast.MatMult):
-            return "MATMUL"
+            return "INPLACE_MATMUL"
         raise NotImplementedError("Unsupported augmented assignment operator")
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:

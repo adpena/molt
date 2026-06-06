@@ -617,9 +617,13 @@ class SerializationMixin(_MixinBase):
                 elif self._should_fast_float(op):
                     entry["fast_float"] = True
                 json_ops.append(entry)
-            elif op.kind == "DIV":
+            elif op.kind in ("DIV", "INPLACE_DIV"):
+                # `/` and `/=`. The inplace variant carries the same fast
+                # int/float lanes (builtin numerics have no __itruediv__) but its
+                # boxed runtime symbol is molt_inplace_div, which tries
+                # __itruediv__ before the binary __truediv__/__rtruediv__ chain.
                 div_entry: dict[str, Any] = {
-                    "kind": "div",
+                    "kind": "div" if op.kind == "DIV" else "inplace_div",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
@@ -628,9 +632,9 @@ class SerializationMixin(_MixinBase):
                 elif self._should_fast_float(op):
                     div_entry["fast_float"] = True
                 json_ops.append(div_entry)
-            elif op.kind == "FLOORDIV":
+            elif op.kind in ("FLOORDIV", "INPLACE_FLOORDIV"):
                 floordiv_entry: dict[str, Any] = {
-                    "kind": "floordiv",
+                    "kind": "floordiv" if op.kind == "FLOORDIV" else "inplace_floordiv",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
@@ -639,9 +643,9 @@ class SerializationMixin(_MixinBase):
                 elif self._should_fast_float(op):
                     floordiv_entry["fast_float"] = True
                 json_ops.append(floordiv_entry)
-            elif op.kind == "MOD":
+            elif op.kind in ("MOD", "INPLACE_MOD"):
                 mod_entry: dict[str, Any] = {
-                    "kind": "mod",
+                    "kind": "mod" if op.kind == "MOD" else "inplace_mod",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
@@ -650,10 +654,10 @@ class SerializationMixin(_MixinBase):
                 elif self._should_fast_float(op):
                     mod_entry["fast_float"] = True
                 json_ops.append(mod_entry)
-            elif op.kind == "POW":
+            elif op.kind in ("POW", "INPLACE_POW"):
                 json_ops.append(
                     {
-                        "kind": "pow",
+                        "kind": "pow" if op.kind == "POW" else "inplace_pow",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }
@@ -712,28 +716,28 @@ class SerializationMixin(_MixinBase):
                 if self._should_fast_int(op):
                     bit_xor_entry["fast_int"] = True
                 json_ops.append(bit_xor_entry)
-            elif op.kind == "LSHIFT":
+            elif op.kind in ("LSHIFT", "INPLACE_LSHIFT"):
                 lshift_entry: dict[str, Any] = {
-                    "kind": "lshift",
+                    "kind": "lshift" if op.kind == "LSHIFT" else "inplace_lshift",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
                 if self._should_fast_int(op):
                     lshift_entry["fast_int"] = True
                 json_ops.append(lshift_entry)
-            elif op.kind == "RSHIFT":
+            elif op.kind in ("RSHIFT", "INPLACE_RSHIFT"):
                 rshift_entry: dict[str, Any] = {
-                    "kind": "rshift",
+                    "kind": "rshift" if op.kind == "RSHIFT" else "inplace_rshift",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
                 if self._should_fast_int(op):
                     rshift_entry["fast_int"] = True
                 json_ops.append(rshift_entry)
-            elif op.kind == "MATMUL":
+            elif op.kind in ("MATMUL", "INPLACE_MATMUL"):
                 json_ops.append(
                     {
-                        "kind": "matmul",
+                        "kind": "matmul" if op.kind == "MATMUL" else "inplace_matmul",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
                     }

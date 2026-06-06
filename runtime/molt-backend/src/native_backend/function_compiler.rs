@@ -6573,7 +6573,16 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "lshift" | "shl" => {
+                "lshift" | "shl" | "inplace_lshift" => {
+                    // `<<` and `<<=`.  The inplace variant differs ONLY in the
+                    // boxed runtime symbol (molt_inplace_lshift tries __ilshift__
+                    // before the binary __lshift__/__rlshift__ chain); builtin int
+                    // has no in-place dunder so there is no fast-lane divergence.
+                    let boxed_sym = if op.kind == "inplace_lshift" {
+                        "molt_inplace_lshift"
+                    } else {
+                        "molt_lshift"
+                    };
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get_boxed_overflow_safe(
                         &mut self.module,
@@ -6606,7 +6615,7 @@ impl SimpleBackend {
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_lshift",
+                        boxed_sym,
                         &[types::I64, types::I64],
                         &[types::I64],
                     );
@@ -6617,7 +6626,14 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "rshift" | "shr" => {
+                "rshift" | "shr" | "inplace_rshift" => {
+                    // `>>` and `>>=`.  Inplace variant: molt_inplace_rshift tries
+                    // __irshift__ before the binary chain.
+                    let boxed_sym = if op.kind == "inplace_rshift" {
+                        "molt_inplace_rshift"
+                    } else {
+                        "molt_rshift"
+                    };
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get_boxed_overflow_safe(
                         &mut self.module,
@@ -6650,7 +6666,7 @@ impl SimpleBackend {
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_rshift",
+                        boxed_sym,
                         &[types::I64, types::I64],
                         &[types::I64],
                     );
@@ -6661,7 +6677,14 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "matmul" => {
+                "matmul" | "inplace_matmul" => {
+                    // `@` and `@=`.  Inplace variant: molt_inplace_matmul tries
+                    // __imatmul__ before the binary __matmul__/__rmatmul__ chain.
+                    let boxed_sym = if op.kind == "inplace_matmul" {
+                        "molt_inplace_matmul"
+                    } else {
+                        "molt_matmul"
+                    };
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get_boxed_overflow_safe(
                         &mut self.module,
@@ -6694,7 +6717,7 @@ impl SimpleBackend {
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_matmul",
+                        boxed_sym,
                         &[types::I64, types::I64],
                         &[types::I64],
                     );
@@ -6705,7 +6728,16 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "div" => {
+                "div" | "inplace_div" => {
+                    // `/` and `/=`.  Int/float fast lanes are identical (builtin
+                    // numerics have no __itruediv__); only the boxed fallback
+                    // symbol changes — molt_inplace_div tries __itruediv__ before
+                    // the binary __truediv__/__rtruediv__ chain.
+                    let boxed_sym = if op.kind == "inplace_div" {
+                        "molt_inplace_div"
+                    } else {
+                        "molt_div"
+                    };
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     // Defer var_get per-branch: float path defers into cold
                     // paths so Cranelift DCE can eliminate NaN-boxing.
@@ -6800,7 +6832,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_div",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -6864,7 +6896,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_div",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -6956,7 +6988,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_div",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -7044,7 +7076,17 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "floordiv" => {
+                "floordiv" | "inplace_floordiv" => {
+                    // `//` and `//=`.  The raw-i64 / float fast lanes are byte-
+                    // identical (builtin int/float have no __ifloordiv__); only
+                    // the boxed fallback symbol changes — molt_inplace_floordiv
+                    // tries __ifloordiv__ before the binary __floordiv__/
+                    // __rfloordiv__ chain.
+                    let boxed_sym = if op.kind == "inplace_floordiv" {
+                        "molt_inplace_floordiv"
+                    } else {
+                        "molt_floordiv"
+                    };
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if op_prefers_int_lane(&op) {
                         // Both-shadow raw-primary path: compute floordiv on raw
@@ -7063,7 +7105,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_floordiv",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -7259,7 +7301,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_floordiv",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -7334,7 +7376,16 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "mod" => {
+                "mod" | "inplace_mod" => {
+                    // `%` and `%=`.  Int/float fast lanes byte-identical (builtin
+                    // numerics have no __imod__); boxed fallback symbol changes —
+                    // molt_inplace_mod tries __imod__ before the binary
+                    // __mod__/__rmod__ chain.
+                    let boxed_sym = if op.kind == "inplace_mod" {
+                        "molt_inplace_mod"
+                    } else {
+                        "molt_mod"
+                    };
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if op_prefers_int_lane(&op) {
                         // Both-shadow raw-primary path.
@@ -7352,7 +7403,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_mod",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -7542,7 +7593,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_mod",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -7725,7 +7776,16 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "pow" => {
+                "pow" | "inplace_pow" => {
+                    // `**` and `**=`.  Int/float fast lanes byte-identical
+                    // (builtin numerics have no __ipow__); boxed fallback symbol
+                    // changes — molt_inplace_pow tries __ipow__ before the binary
+                    // __pow__/__rpow__ chain.
+                    let boxed_sym = if op.kind == "inplace_pow" {
+                        "molt_inplace_pow"
+                    } else {
+                        "molt_pow"
+                    };
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let res = if op_prefers_int_lane(&op) {
                         let lhs_name = &args[0];
@@ -7738,7 +7798,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_pow",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -7866,7 +7926,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_pow",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -7993,7 +8053,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_pow",
+                            boxed_sym,
                             &[types::I64, types::I64],
                             &[types::I64],
                         );

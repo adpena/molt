@@ -142,6 +142,16 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
         "dict_values" |
         "enumerate" |
         "float_from_obj" |
+        "inplace_bit_and" |
+        "inplace_bit_or" |
+        "inplace_bit_xor" |
+        "inplace_div" |
+        "inplace_floordiv" |
+        "inplace_lshift" |
+        "inplace_matmul" |
+        "inplace_mod" |
+        "inplace_pow" |
+        "inplace_rshift" |
         "int_from_obj" |
         "int_from_str_of_obj" |
         "iter" |

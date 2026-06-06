@@ -44,6 +44,24 @@ classifier_fresh_value = [
     "dict_values",
     "enumerate",
     "float_from_obj",
+    # The augassign in-place family. Every molt_inplace_* runtime symbol
+    # returns an OWNED +1 reference regardless of object identity (a mutating
+    # __iadd__-style fast path inc_refs and returns operand 0; the dunder /
+    # binary-fallback paths return a fresh owned result) — so the result must
+    # be classified as minting ownership, never as a transparent alias of
+    # operand 0 (which would leak the +1 under drop insertion). The +=/-=/*=
+    # trio rides first-class opcodes (InplaceAdd/Sub/Mul, [[kind]] below);
+    # these ten ride the preserved-Copy lane.
+    "inplace_bit_and",
+    "inplace_bit_or",
+    "inplace_bit_xor",
+    "inplace_div",
+    "inplace_floordiv",
+    "inplace_lshift",
+    "inplace_matmul",
+    "inplace_mod",
+    "inplace_pow",
+    "inplace_rshift",
     "int_from_obj",
     "int_from_str_of_obj",
     "iter",

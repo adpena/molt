@@ -4874,16 +4874,48 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 (v.into(), TirType::F64)
             }
 
-            // Everything else: call runtime (DynBox dispatch)
+            // Everything else: call runtime (DynBox dispatch).
+            //
+            // The boxed slow path must honour the in-place dunder protocol for
+            // augmented assignment. An augassign op reaches here either as a
+            // first-class InplaceAdd/InplaceSub/InplaceMul opcode OR as a
+            // Copy-carried `inplace_floordiv`/`inplace_mod`/`inplace_pow`/... with
+            // its `_original_kind` preserved (the lower_preserved arms route those
+            // here via emit_binary_arith with the binary `name`). In both cases
+            // CPython requires `molt_inplace_<op>` — which tries `__i<op>__`
+            // BEFORE the binary `__op__`/`__rop__` chain — not the binary
+            // `molt_<op>`. Selecting `molt_<op>` here was a silent miscompile:
+            // a class defining only `__iadd__`/`__ifloordiv__`/… had its `+=`/
+            // `//=` routed to the binary fallback dunder. The fast int/float lanes
+            // above stay on the binary instruction because builtin numerics have
+            // no in-place dunder (so the result is byte-identical there).
             _ => {
-                let rt_name = match name {
-                    "add" => "molt_add",
-                    "sub" => "molt_sub",
-                    "mul" => "molt_mul",
-                    "div" => "molt_div",
-                    "floordiv" => "molt_floordiv",
-                    "mod" => "molt_mod",
-                    "pow" => "molt_pow",
+                let is_inplace = matches!(
+                    op.opcode,
+                    OpCode::InplaceAdd | OpCode::InplaceSub | OpCode::InplaceMul
+                ) || op
+                    .attrs
+                    .get("_original_kind")
+                    .and_then(|v| match v {
+                        AttrValue::Str(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .is_some_and(|k| k.starts_with("inplace_"));
+                let rt_name = match (name, is_inplace) {
+                    ("add", false) => "molt_add",
+                    ("add", true) => "molt_inplace_add",
+                    ("sub", false) => "molt_sub",
+                    ("sub", true) => "molt_inplace_sub",
+                    ("mul", false) => "molt_mul",
+                    ("mul", true) => "molt_inplace_mul",
+                    ("div", false) => "molt_div",
+                    ("div", true) => "molt_inplace_div",
+                    ("floordiv", false) => "molt_floordiv",
+                    ("floordiv", true) => "molt_inplace_floordiv",
+                    ("mod", false) => "molt_mod",
+                    ("mod", true) => "molt_inplace_mod",
+                    ("pow", false) => "molt_pow",
+                    ("pow", true) => "molt_inplace_pow",
                     _ => unreachable!("unknown arith op: {}", name),
                 };
                 let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
@@ -5096,9 +5128,36 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 (v.into(), TirType::I64)
             }
             _ => {
-                let rt_name = format!("molt_{}", name);
-                let lhs_i64 = self.ensure_i64(lhs);
-                let rhs_i64 = self.ensure_i64(rhs);
+                // Honour the in-place dunder for `<<=`/`>>=` (and the inplace
+                // bitwise family). A Copy-carried `inplace_lshift`/`inplace_rshift`
+                // /`inplace_bit_*` reaches the bitwise emitter with the BINARY
+                // `name` ("lshift"/"bit_or"/…) but must dispatch the boxed slow
+                // path to `molt_inplace_<op>` so `__ilshift__`/`__ior__`/… is
+                // tried before the binary `__op__`/`__rop__` chain. The fast int
+                // lane above is unchanged (builtin int has no in-place dunder).
+                let is_inplace = op
+                    .attrs
+                    .get("_original_kind")
+                    .and_then(|v| match v {
+                        AttrValue::Str(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .is_some_and(|k| k.starts_with("inplace_"));
+                let rt_name = if is_inplace {
+                    format!("molt_inplace_{}", name)
+                } else {
+                    format!("molt_{}", name)
+                };
+                // The runtime bitwise entries take NaN-BOXED operands. A raw
+                // `TirType::I64` operand (e.g. the `4` in `x <<= 4`) must be boxed
+                // via `materialize_dynbox_bits`, NOT passed through `ensure_i64`
+                // (which forwards the raw i64 bit pattern — the runtime then
+                // mis-reads `4` as the subnormal float 2e-323). This mirrors
+                // `emit_binary_arith`'s boxed fallback; using `ensure_i64` here
+                // was a latent miscompile of `<<`/`>>`/bitwise on a raw-int
+                // operand, now exposed by the `<<=`/`>>=` in-place dunder path.
+                let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
+                let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
                 let v = self.call_runtime_2(&rt_name, lhs_i64.into(), rhs_i64.into());
                 (v, TirType::DynBox)
             }
@@ -9868,6 +9927,41 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_bitwise(op, "bit_xor");
                 true
             }
+            // In-place augmented arithmetic for `//=`, `%=`, `**=`, `<<=`, `>>=`.
+            // These ride `Copy{_original_kind}` (no first-class opcode, mirroring
+            // `floordiv`/`inplace_bit_*`). We lower them with the SAME fast int/
+            // float lane emitter as their binary opcode (the static int/float path
+            // is byte-identical — builtin numerics have no in-place dunder), and
+            // `emit_binary_arith`/`emit_bitwise` detect the `inplace_` prefix on
+            // `_original_kind` to route the BOXED slow path to
+            // `molt_inplace_<op>` (which tries `__i<op>__` first). `@=`/
+            // `inplace_matmul` has no arith-specialized path and falls through to
+            // the generic runtime-call fallback below, which emits
+            // `molt_inplace_matmul`.
+            "inplace_div" => {
+                self.emit_binary_arith(op, "div");
+                true
+            }
+            "inplace_floordiv" => {
+                self.emit_binary_arith(op, "floordiv");
+                true
+            }
+            "inplace_mod" => {
+                self.emit_binary_arith(op, "mod");
+                true
+            }
+            "inplace_pow" => {
+                self.emit_binary_arith(op, "pow");
+                true
+            }
+            "inplace_lshift" => {
+                self.emit_bitwise(op, "lshift");
+                true
+            }
+            "inplace_rshift" => {
+                self.emit_bitwise(op, "rshift");
+                true
+            }
 
             // Generic preserved-op runtime-call fallback. Every other operator /
             // conversion kind the frontend emits that has no dedicated TIR opcode
@@ -10242,17 +10336,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     /// Call a 2-argument runtime function that returns i64.
+    ///
+    /// The callee is declared on demand via `ensure_runtime_i64_fn` (get-or-add)
+    /// rather than asserted pre-declared: every `molt_<op>` runtime entry has the
+    /// uniform `(i64, i64) -> i64` ABI, so a missing declaration is always a
+    /// benign add (resolved against the runtime staticlib at link time), never a
+    /// miscompile. This removes a sharp edge where a newly routed runtime symbol
+    /// (e.g. the in-place augmented-assignment entries `molt_inplace_floordiv`,
+    /// `molt_inplace_bit_or`, …) would panic the whole LLVM lowering if it was
+    /// not also added to the static declaration list.
     fn call_runtime_2(
         &self,
         name: &str,
         lhs: BasicValueEnum<'ctx>,
         rhs: BasicValueEnum<'ctx>,
     ) -> BasicValueEnum<'ctx> {
-        let func = self
-            .backend
-            .module
-            .get_function(name)
-            .unwrap_or_else(|| panic!("Runtime function '{}' not declared", name));
+        let func = self.ensure_runtime_i64_fn(name, 2);
         let lhs_i64 = self.ensure_i64(lhs);
         let rhs_i64 = self.ensure_i64(rhs);
         self.backend

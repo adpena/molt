@@ -949,6 +949,17 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
                 }
             }
         }
+        // Try `__imul__` before the binary fallback (CPython parity). This was
+        // missing — `x *= y` skipped the in-place dunder for user objects and
+        // went straight to `__mul__`/`__rmul__` (the same bug class fixed for
+        // //=/**=/etc.; `molt_inplace_add`/`molt_inplace_sub` already do this).
+        unsafe {
+            let imul_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.imul_name, b"__imul__");
+            if let Some(res_bits) = call_inplace_dunder(_py, a, b, imul_name_bits) {
+                return res_bits;
+            }
+        }
         molt_mul(a, b)
     })
 }
@@ -1122,7 +1133,16 @@ fn bigint_true_divide(num: &BigInt, den: &BigInt) -> Option<f64> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(_py, { div_impl(_py, a, b, "/") })
+}
+
+/// True-division core. `err_op` is the operator symbol used for the terminal
+/// "unsupported operand type(s)" TypeError — `/` for `molt_div`, `/=` for the
+/// in-place path (`molt_inplace_div`), matching CPython's `op_name` threading
+/// (`binary_op1`/`binary_iop1`). Every other (numeric / ZeroDivision / dunder)
+/// outcome is symbol-independent and identical for both spellings.
+fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
+    {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Python true division: int / int always returns float
@@ -1206,8 +1226,8 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        binary_type_error(_py, lhs, rhs, "/")
-    })
+        binary_type_error(_py, lhs, rhs, err_op)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1223,13 +1243,21 @@ pub extern "C" fn molt_inplace_div(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        molt_div(a, b)
+        // Binary fallback with the AUGMENTED symbol so a final TypeError reads
+        // `unsupported operand type(s) for /=:` (CPython parity), not `for /:`.
+        div_impl(_py, a, b, "/=")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(_py, { floordiv_impl(_py, a, b, "//") })
+}
+
+/// Floor-division core. `err_op` selects the terminal TypeError symbol (`//`
+/// vs `//=`); all other outcomes are spelling-independent.
+fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
+    {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let either_float = lhs.is_float() || rhs.is_float();
@@ -1293,8 +1321,8 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        binary_type_error(_py, lhs, rhs, "//")
-    })
+        binary_type_error(_py, lhs, rhs, err_op)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1310,7 +1338,7 @@ pub extern "C" fn molt_inplace_floordiv(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        molt_floordiv(a, b)
+        floordiv_impl(_py, a, b, "//=")
     })
 }
 
@@ -2284,7 +2312,14 @@ fn string_percent_format_impl(_py: &PyToken<'_>, text: &str, rhs_bits: u64) -> O
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(_py, { mod_impl(_py, a, b, "%") })
+}
+
+/// Modulo / `%`-format core. `err_op` selects the terminal TypeError symbol
+/// (`%` vs `%=`); the `%`-string-format path and numeric paths are
+/// spelling-independent.
+fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
+    {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Int fast path first — much more common than string % formatting.
@@ -2353,8 +2388,8 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        binary_type_error(_py, lhs, rhs, "%")
-    })
+        binary_type_error(_py, lhs, rhs, err_op)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -2367,7 +2402,7 @@ pub extern "C" fn molt_inplace_mod(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        molt_mod(a, b)
+        mod_impl(_py, a, b, "%=")
     })
 }
 
@@ -2497,7 +2532,13 @@ fn mod_inverse_bigint(value: BigInt, modulus: &BigInt) -> Option<BigInt> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(_py, { pow_impl(_py, a, b, "**") })
+}
+
+/// Power / `**` core. `err_op` selects the terminal TypeError symbol (`**` vs
+/// `**=`); complex / numeric / dunder outcomes are spelling-independent.
+fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
+    {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
@@ -2612,8 +2653,8 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        binary_type_error(_py, lhs, rhs, "**")
-    })
+        binary_type_error(_py, lhs, rhs, err_op)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -2626,7 +2667,7 @@ pub extern "C" fn molt_inplace_pow(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        molt_pow(a, b)
+        pow_impl(_py, a, b, "**=")
     })
 }
 
@@ -3924,15 +3965,42 @@ fn right_shift_saturation_result(_py: &PyToken<'_>, value: &StrictInteger) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(_py, { lshift_impl(_py, a, b, "<<") })
+}
+
+/// Left-shift core. `err_op` selects the terminal TypeError symbol (`<<` vs
+/// `<<=`); numeric / overflow outcomes are spelling-independent.
+fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
+    {
         let trace_shift = trace_bigint_shift_enabled();
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        let Some(value) = strict_integer_from_obj(a) else {
-            return binary_type_error(_py, lhs, rhs, "<<");
-        };
-        let Some(count) = strict_integer_from_obj(b) else {
-            return binary_type_error(_py, lhs, rhs, "<<");
+        // CPython tries `a.__lshift__(b)` then `b.__rlshift__(a)` for any operand
+        // the integer fast path can't consume (e.g. a user class defining
+        // `__lshift__`). Only fall to TypeError once that chain is exhausted —
+        // raising on the first non-integer operand skipped the dunder protocol
+        // entirely (so `x << y` on a custom class wrongly raised).
+        let (Some(value), Some(count)) =
+            (strict_integer_from_obj(a), strict_integer_from_obj(b))
+        else {
+            unsafe {
+                let lshift_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.lshift_name,
+                    b"__lshift__",
+                );
+                let rlshift_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.rlshift_name,
+                    b"__rlshift__",
+                );
+                if let Some(res_bits) =
+                    call_binary_dunder(_py, a, b, lshift_name_bits, rlshift_name_bits)
+                {
+                    return res_bits;
+                }
+            }
+            return binary_type_error(_py, lhs, rhs, err_op);
         };
         let Some(shift) = shift_count_from_integer(_py, count) else {
             return MoltObject::none().bits();
@@ -3983,7 +4051,7 @@ pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
             );
         }
         bits
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -3999,20 +4067,44 @@ pub extern "C" fn molt_inplace_lshift(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        molt_lshift(a, b)
+        lshift_impl(_py, a, b, "<<=")
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(_py, { rshift_impl(_py, a, b, ">>") })
+}
+
+/// Right-shift core. `err_op` selects the terminal TypeError symbol (`>>` vs
+/// `>>=`); numeric / saturation outcomes are spelling-independent.
+fn rshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
+    {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        let Some(value) = strict_integer_from_obj(a) else {
-            return binary_type_error(_py, lhs, rhs, ">>");
-        };
-        let Some(count) = strict_integer_from_obj(b) else {
-            return binary_type_error(_py, lhs, rhs, ">>");
+        // Try `a.__rshift__(b)` then `b.__rrshift__(a)` for any operand the
+        // integer fast path can't consume (mirrors `lshift_impl`).
+        let (Some(value), Some(count)) =
+            (strict_integer_from_obj(a), strict_integer_from_obj(b))
+        else {
+            unsafe {
+                let rshift_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.rshift_name,
+                    b"__rshift__",
+                );
+                let rrshift_name_bits = intern_static_name(
+                    _py,
+                    &runtime_state(_py).interned.rrshift_name,
+                    b"__rrshift__",
+                );
+                if let Some(res_bits) =
+                    call_binary_dunder(_py, a, b, rshift_name_bits, rrshift_name_bits)
+                {
+                    return res_bits;
+                }
+            }
+            return binary_type_error(_py, lhs, rhs, err_op);
         };
         let Some(shift) = shift_count_from_integer(_py, count) else {
             return MoltObject::none().bits();
@@ -4035,7 +4127,7 @@ pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
             return MoltObject::from_int(i).bits();
         }
         bigint_bits(_py, res)
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -4051,7 +4143,7 @@ pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        molt_rshift(a, b)
+        rshift_impl(_py, a, b, ">>=")
     })
 }
 
@@ -4267,7 +4359,14 @@ mod tests {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_matmul(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(_py, { matmul_impl(_py, a, b, "@") })
+}
+
+/// Matrix-multiply core. `err_op` selects the terminal TypeError symbol (`@`
+/// vs `@=`); the buffer2d fast path and dunder outcomes are spelling-
+/// independent.
+fn matmul_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
+    {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
@@ -4292,8 +4391,8 @@ pub extern "C" fn molt_matmul(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        binary_type_error(_py, lhs, rhs, "@")
-    })
+        binary_type_error(_py, lhs, rhs, err_op)
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -4309,6 +4408,6 @@ pub extern "C" fn molt_inplace_matmul(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        molt_matmul(a, b)
+        matmul_impl(_py, a, b, "@=")
     })
 }
