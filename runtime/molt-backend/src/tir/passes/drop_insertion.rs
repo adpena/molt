@@ -686,6 +686,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if terminator_uses_root(&block.terminator, v, &canon) {
                 continue;
             }
+            // Consumed AS AN OPERAND by its last-use op (design §1.2
+            // takes-ownership): a CallArgs builder handed to `call_bind` /
+            // `call_indirect` is freed inside the call (PtrDropGuard). Ownership
+            // transferred to the op exactly like a Return value — no trailing
+            // DecRef, or we double-free the `TYPE_ID_CALLARGS` object.
+            if op_consumed_operand_root(&block.ops[idx], &canon) == Some(v) {
+                continue;
+            }
             // The owned object dies after op `idx` in this block: drop the root
             // after it.
             plan.after_op.entry(idx).or_default().push(v);
@@ -1344,6 +1352,59 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     stats
 }
 
+/// The alias roots of the operands an op TAKES OWNERSHIP OF (consumes), in
+/// alias-root space (design §1.2 "Operands: takes-ownership").
+///
+/// Most molt ops borrow their operands (the callee never decrefs its args), so
+/// the holder drops at last use. A handful of ops are the exception: they
+/// **consume** an operand — the runtime entry frees it internally — so the
+/// holder MUST NOT also drop it (that double-frees). The drop pass treats a
+/// value whose last use is a consumed-operand position exactly like a value
+/// consumed by a `Return` terminator: ownership transfers to the op, no
+/// trailing `DecRef`.
+///
+/// The only such ops in molt's lowering are the two CallArgs-builder dispatch
+/// forms. The un-fused `obj.method(args)` / indirect-call idiom lowers (in
+/// `lower_to_simple`) to:
+///
+/// ```text
+/// b   = callargs_new                         # allocates a CallArgs builder (rc=1)
+/// ... = callargs_push_pos(b, a_i) ...
+/// r   = call_bind(callee, b)    # molt_call_bind_ic FREES b internally (PtrDropGuard)
+/// ```
+///
+/// `molt_call_bind_ic` / `molt_call_indirect_ic` (`call/bind.rs`) wrap the
+/// builder in a `PtrDropGuard`, so the builder is dropped exactly once by the
+/// call regardless of whether the call returns or raises. The TIR drop pass
+/// would otherwise insert `DecRef(b)` after the call (the builder's last use is
+/// the call) → a second free of a `TYPE_ID_CALLARGS` object → `invalid object
+/// header before dec_ref`. The builder is operand index 1 (the LAST operand) of
+/// `call_bind`/`call_indirect`: SimpleIR `call_bind args=[callee, builder]`,
+/// matching the `molt_call_bind_ic(site, callee, builder)` ABI.
+///
+/// NOTE: `call_func`/`call_guarded`/`call`/`call_internal` do NOT take a
+/// pre-built CallArgs operand — they marshal direct positional args and build
+/// (and consume) their own builder internally — so they consume none of their
+/// TIR operands. Only `call_bind`/`call_indirect` carry the builder as an
+/// operand.
+fn op_consumed_operand_root(
+    op: &TirOp,
+    canon: &dyn Fn(ValueId) -> ValueId,
+) -> Option<ValueId> {
+    if op.opcode != OpCode::Call {
+        return None;
+    }
+    let consumes_callargs = matches!(
+        op.attrs.get("_original_kind"),
+        Some(AttrValue::Str(k)) if k == "call_bind" || k == "call_indirect"
+    );
+    if !consumes_callargs {
+        return None;
+    }
+    // The CallArgs builder is the last operand (operand index 1: [callee, builder]).
+    op.operands.last().copied().map(&canon)
+}
+
 /// True if the alias root `v` is consumed directly by the terminator (a Return
 /// value, a CondBranch/Switch condition), comparing in alias-root space. Branch
 /// ARGS are handled separately (they transfer ownership to the successor's block
@@ -1600,6 +1661,73 @@ mod tests {
         assert!(decrefs.contains(&v1), "v1 must be dropped at last use");
         assert!(!decrefs.contains(&v2), "returned value must not be dropped");
         assert!(func.attrs.contains_key(DROP_INSERTED_ATTR));
+    }
+
+    /// A CallArgs builder consumed by `call_bind` / `call_indirect` must NOT get
+    /// a trailing DecRef: the runtime entry (`molt_call_bind_ic`, via
+    /// `PtrDropGuard`) frees the builder internally, so an inserted DecRef would
+    /// double-free the `TYPE_ID_CALLARGS` object (design-20 finding #3C: the
+    /// method-call `'invalid object header before dec_ref'` abort). The callee
+    /// (operand 0) and the call RESULT are still dropped normally.
+    #[test]
+    fn call_bind_callargs_operand_not_dropped() {
+        let mut func = TirFunction::new("cb".into(), vec![], TirType::DynBox);
+        let callee = func.fresh_value(); // the bound method (a fresh owned ref)
+        let builder = func.fresh_value(); // the CallArgs builder
+        let result = func.fresh_value(); // the call result
+        for v in [callee, builder, result] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            // callee = <fresh owned value> (model as a Call so it is owned).
+            b.ops.push(op(OpCode::Call, vec![], vec![callee]));
+            // builder = callargs_new (opaque Copy carrying _original_kind).
+            let mut ca = AttrDict::new();
+            ca.insert(
+                "_original_kind".into(),
+                AttrValue::Str("callargs_new".into()),
+            );
+            b.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![],
+                results: vec![builder],
+                attrs: ca,
+                source_span: None,
+            });
+            // result = call_bind(callee, builder) — Call carrying _original_kind.
+            let mut cb = AttrDict::new();
+            cb.insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+            b.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![callee, builder],
+                results: vec![result],
+                attrs: cb,
+                source_span: None,
+            });
+            b.terminator = Terminator::Return { values: vec![result] };
+        }
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        let decrefs: Vec<ValueId> = func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|o| o.opcode == OpCode::DecRef)
+            .map(|o| o.operands[0])
+            .collect();
+        assert!(
+            !decrefs.contains(&builder),
+            "the CallArgs builder is consumed by call_bind; it must NOT be DecRef'd (double-free)"
+        );
+        assert!(
+            decrefs.contains(&callee),
+            "the callee (borrowed-then-dead) must be dropped at its last use (the call)"
+        );
+        // The result is returned → not dropped here.
+        assert!(!decrefs.contains(&result));
     }
 
     /// Raw i64 values get ZERO drops (perf contract / design R3).
