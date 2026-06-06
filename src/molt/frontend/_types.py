@@ -1208,6 +1208,12 @@ class MethodInfo(TypedDict):
     has_closure: bool
     property_field: str | None
     property_update: Literal["setter", "deleter"] | None
+    # True when ``has_closure`` is purely the implicit ``__class__`` super cell
+    # (no real enclosing-local capture).  Set only by ``compile_method`` (the
+    # non-generator path that computes inline metadata); the generator/async
+    # method builders never populate it, so it is ``NotRequired`` and every
+    # reader accesses it via ``.get("inline_closure_ok")``.
+    inline_closure_ok: NotRequired[bool]
     inline_return: NotRequired[ast.expr | None]
     inline_params: NotRequired[list[str] | None]
     inline_owner_class: NotRequired[str | None]

@@ -310,12 +310,10 @@ class SerializationMixin(_MixinBase):
                     if isinstance(arg, str):
                         use_counts[arg] = use_counts.get(arg, 0) + 1
             if op.get("kind") == "string_split_field" and isinstance(out, str):
-                if (
-                    isinstance(args, list)
-                    and len(args) == 3
-                    and all(isinstance(arg, str) for arg in args)
-                ):
-                    split_fields_by_out[out] = (op_index, list(args))
+                if isinstance(args, list) and len(args) == 3:
+                    str_args = [arg for arg in args if isinstance(arg, str)]
+                    if len(str_args) == 3:
+                        split_fields_by_out[out] = (op_index, str_args)
 
         remove_indexes: set[int] = set()
         replace_ops: dict[int, dict[str, Any]] = {}
@@ -863,7 +861,7 @@ class SerializationMixin(_MixinBase):
                     }
                 )
             elif op.kind == "NEG":
-                entry = {
+                entry: dict[str, Any] = {
                     "kind": "neg",
                     "args": [op.args[0].name],
                     "out": op.result.name,
@@ -874,7 +872,7 @@ class SerializationMixin(_MixinBase):
                     entry["fast_float"] = True
                 json_ops.append(entry)
             elif op.kind == "POS":
-                entry = {
+                entry: dict[str, Any] = {
                     "kind": "pos",
                     "args": [op.args[0].name],
                     "out": op.result.name,
@@ -1689,7 +1687,7 @@ class SerializationMixin(_MixinBase):
                     payload["value"] = control_value(op)
                 json_ops.append(payload)
             elif op.kind == "TRY_END":
-                payload = {"kind": "try_end"}
+                payload: dict[str, Any] = {"kind": "try_end"}
                 if op.args:
                     payload["value"] = control_value(op)
                 json_ops.append(payload)
