@@ -119,17 +119,21 @@ def test_distribution_is_deterministic(guard):
     assert d1 == d2
     dist = guard.verdict_distribution(d1)
     assert sum(dist.values()) == 25
-    assert dist["compatible"] == 10
-    assert dist["incompatible-by-design"] == 4
+    # Live distribution after D16 (module-level __getattr__, PEP 562) graduated
+    # unsupported -> supported: rich flipped incompatible -> compatible.
+    assert dist["compatible"] == 11
+    assert dist["incompatible-by-design"] == 3
     assert dist["partial"] == 7
 
 
 def test_min_is_worst_class(guard):
     # A package mixing supported + unsupported must derive incompatible (min).
+    # Uses D19 (generators, still unsupported) as the worst feature — D16
+    # graduated to supported, so it no longer drives an incompatible verdict.
     features = guard.load_features()
-    verdict, hardest = guard.derive_verdict(["D2", "D16", "D12"], features)
+    verdict, hardest = guard.derive_verdict(["D2", "D19", "D12"], features)
     assert verdict == "incompatible-by-design"
-    assert hardest == "D16"
+    assert hardest == "D19"
     # Empty required set is the top of the lattice.
     assert guard.derive_verdict([], features) == ("compatible", None)
     # Numeric (not lexicographic) tie-break: D2 wins over D10, not "D10".
@@ -158,7 +162,8 @@ def test_fail_hand_edited_verdict(sandbox, guard):
 def test_fail_hand_edited_hardest_feature(sandbox, guard):
     sandbox.make_baseline()
     t = sandbox.load(sandbox.TRIAGE_PATH)
-    t["packages"]["rich"]["hardest_feature"] = "D12"  # derived is D16
+    # jinja2 derives hardest D15 (its sole required feature); hand-assert a lie.
+    t["packages"]["jinja2"]["hardest_feature"] = "D2"  # derived is D15
     sandbox.save(sandbox.TRIAGE_PATH, t)
     assert guard.cmd_check(False) == 1
 
@@ -190,7 +195,8 @@ def test_fail_unsupported_missing_excluded_feature(sandbox, guard):
 def test_fail_unsupported_missing_tracking(sandbox, guard):
     sandbox.make_baseline()
     f = sandbox.load(sandbox.FEATURES_PATH)
-    f["features"]["D16"]["tracking"] = ""  # anti-parking-lot
+    # D19 (generators) is still unsupported; its tracking must be present.
+    f["features"]["D19"]["tracking"] = ""  # anti-parking-lot
     sandbox.save(sandbox.FEATURES_PATH, f)
     assert guard.cmd_check(False) == 1
 
@@ -315,18 +321,22 @@ def test_update_baseline_refuses_raising_incompatible_ceiling(sandbox, guard):
 def test_update_baseline_allows_improvement(sandbox, guard):
     sandbox.make_baseline()
     prev = sandbox.load(sandbox.BASELINE_PATH)
-    # Graduate D16 (unsupported -> supported): rich flips to compatible, floor
-    # rises 10 -> 11, incompatible_ceiling falls 4 -> 3. The improving
-    # direction must be ALLOWED, and stored verdicts must be re-derived.
+    # HYPOTHETICAL graduation in the isolated sandbox (jinja2 requires only D15,
+    # its sole deciding feature) to exercise the one-way ratchet MATH: a feature
+    # status flip unsupported -> supported flips that package incompatible ->
+    # compatible, raising compatible_floor by 1 and lowering incompatible_ceiling
+    # by 1. The improving direction must be ALLOWED, and stored verdicts must be
+    # re-derived. (D15 is a permanent real-world exclusion; this only tests the
+    # guard's improvement-acceptance logic, never the committed manifests.)
     f = sandbox.load(sandbox.FEATURES_PATH)
-    f["features"]["D16"]["status"] = "supported"
-    f["features"]["D16"].pop("excluded_feature", None)
-    f["features"]["D16"].pop("tracking", None)
+    f["features"]["D15"]["status"] = "supported"
+    f["features"]["D15"].pop("excluded_feature", None)
+    f["features"]["D15"].pop("tracking", None)
     sandbox.save(sandbox.FEATURES_PATH, f)
     t = sandbox.load(sandbox.TRIAGE_PATH)
-    # rich's cached verdict must be re-derived too (else hand-edit check fires).
-    t["packages"]["rich"]["verdict"] = "compatible"
-    t["packages"]["rich"]["hardest_feature"] = "D12"
+    # jinja2's cached verdict must be re-derived too (else hand-edit check fires).
+    t["packages"]["jinja2"]["verdict"] = "compatible"
+    t["packages"]["jinja2"]["hardest_feature"] = "D15"
     sandbox.save(sandbox.TRIAGE_PATH, t)
     assert guard.cmd_update_baseline() == 0
     new = sandbox.load(sandbox.BASELINE_PATH)

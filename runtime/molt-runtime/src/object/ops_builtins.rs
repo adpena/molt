@@ -3268,7 +3268,19 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 let dir_name_bits = intern_static_name(_py, &DIR_NAME, b"__dir__");
                 let mut override_bits: u64 = 0;
 
-                let dict_bits = instance_dict_bits(obj_ptr);
+                // PEP 562: a module's own `__dir__` (defined in the module's
+                // namespace) overrides dir(module). CPython's module type
+                // (`Objects/moduleobject.c::module___dir___impl`) consults the
+                // module's `__dict__` for a `__dir__` entry and, if present,
+                // calls it with no args. A module reserves no trailing
+                // `__dict__` slot, so `instance_dict_bits` (object-only) would
+                // return 0 and silently skip the override — select the module
+                // dict by type-id, mirroring `dir_collect_from_instance`.
+                let dict_bits = if object_type_id(obj_ptr) == TYPE_ID_MODULE {
+                    module_dict_bits(obj_ptr)
+                } else {
+                    instance_dict_bits(obj_ptr)
+                };
                 if dict_bits != 0
                     && !obj_from_bits(dict_bits).is_none()
                     && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
@@ -3310,7 +3322,30 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
-                    return res_bits;
+                    // CPython's dir() does NOT return a user `__dir__` result
+                    // verbatim: `PyObject_Dir` runs `PySequence_List(result)`
+                    // then `PyList_Sort` on it (Objects/object.c). So the result
+                    // is materialized into a fresh list (any iterable accepted;
+                    // a non-iterable raises `TypeError: '<type>' object is not
+                    // iterable`) and stable-sorted — duplicates are preserved,
+                    // only the order changes. Returning `res_bits` raw skipped
+                    // both steps, so an unsorted `__dir__` diverged from CPython
+                    // (caught for module/instance/class __dir__ alike).
+                    let Some(list_bits) = list_from_iter_bits(_py, res_bits) else {
+                        // list_from_iter_bits left a TypeError pending for a
+                        // non-iterable __dir__ return (CPython parity).
+                        dec_ref_bits(_py, res_bits);
+                        return MoltObject::none().bits();
+                    };
+                    dec_ref_bits(_py, res_bits);
+                    let none_bits = MoltObject::none().bits();
+                    let reverse_bits = MoltObject::from_int(0).bits();
+                    let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, list_bits);
+                        return MoltObject::none().bits();
+                    }
+                    return list_bits;
                 }
                 let type_id = object_type_id(obj_ptr);
                 if type_id == TYPE_ID_TYPE {
