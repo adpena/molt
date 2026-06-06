@@ -70,7 +70,11 @@ globs = [
 ]
 gates = [
   "cargo test --profile release-fast -p molt-runtime --lib",
-  "cargo clippy --all-targets --features native-backend -- -D warnings",
+  # Mirror CI (ci.yml:159): lib-scoped clippy. --all-targets pulls in the
+  # documented pre-existing TEST-target debt (38+9 errors) — adding it is the
+  # clippy-test-debt ratchet arc, not this manifest's job.
+  "cargo clippy -p molt-backend --features native-backend -- -D warnings",
+  "cargo clippy -p molt-runtime --lib -- -D warnings",
 ]
 
 # --- Frontend / stdlib Python (bootstrap-critical) -----------------------
