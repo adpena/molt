@@ -155,6 +155,17 @@ fn terminator_uses_root(terminator: &Terminator, root: ValueId, aliases: &AliasU
                     .any(|(_, _, args)| args.iter().any(&mut uses_root))
                 || default_args.iter().any(&mut uses_root)
         }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
+            cases
+                .iter()
+                .any(|(_, _, args)| args.iter().any(&mut uses_root))
+                || default_args.iter().any(&mut uses_root)
+        }
         Terminator::Return { values } => values.iter().any(&mut uses_root),
         Terminator::Unreachable => false,
     }
@@ -355,6 +366,21 @@ fn compute_escaping_roots(func: &TirFunction, alias: &AliasAnalysisResult) -> Ha
                 ..
             } => {
                 note_use(alias.root(*value), bid, &mut escaping);
+                for (_, _, args) in cases {
+                    for a in args {
+                        note_use(alias.root(*a), bid, &mut escaping);
+                    }
+                }
+                for a in default_args {
+                    note_use(alias.root(*a), bid, &mut escaping);
+                }
+            }
+            // `StateDispatch` has no condition value; only its per-edge args.
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
                 for (_, _, args) in cases {
                     for a in args {
                         note_use(alias.root(*a), bid, &mut escaping);

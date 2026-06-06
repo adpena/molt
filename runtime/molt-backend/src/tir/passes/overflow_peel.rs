@@ -234,7 +234,8 @@ fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
                 work.push(*then_block);
                 work.push(*else_block);
             }
-            Terminator::Switch { cases, default, .. } => {
+            Terminator::Switch { cases, default, .. }
+            | Terminator::StateDispatch { cases, default, .. } => {
                 work.extend(cases.iter().map(|(_, b, _)| *b));
                 work.push(*default);
             }
@@ -554,6 +555,21 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
                 ..
             } => {
                 check_use(*value)?;
+                for (_, _, args) in cases {
+                    for &v in args {
+                        check_use(v)?;
+                    }
+                }
+                for &v in default_args {
+                    check_use(v)?;
+                }
+            }
+            // `StateDispatch` has no condition value; only its per-edge args.
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
                 for (_, _, args) in cases {
                     for &v in args {
                         check_use(v)?;
@@ -994,6 +1010,17 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
                 ..
             } => {
                 rw(value);
+                for (_, _, args) in cases {
+                    args.iter_mut().for_each(rw);
+                }
+                default_args.iter_mut().for_each(rw);
+            }
+            // `StateDispatch` has no condition value; only its per-edge args.
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
                 for (_, _, args) in cases {
                     args.iter_mut().for_each(rw);
                 }

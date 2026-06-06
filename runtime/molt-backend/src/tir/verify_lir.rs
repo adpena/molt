@@ -486,7 +486,8 @@ fn terminator_successors(terminator: &LirTerminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        LirTerminator::Switch { cases, default, .. } => {
+        LirTerminator::Switch { cases, default, .. }
+        | LirTerminator::StateDispatch { cases, default, .. } => {
             let mut targets = cases.iter().map(|(_, block, _)| *block).collect::<Vec<_>>();
             targets.push(*default);
             targets
@@ -888,6 +889,29 @@ fn verify_terminators(
                     errors,
                     "switch value",
                 );
+                for (_, target, args) in cases {
+                    verify_branch_args(
+                        *bid, use_index, *target, args, func, values, dominators, errors,
+                    );
+                }
+                verify_branch_args(
+                    *bid,
+                    use_index,
+                    *default,
+                    default_args,
+                    func,
+                    values,
+                    dominators,
+                    errors,
+                );
+            }
+            LirTerminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => {
+                // No condition value to dominance-check (the saved state is read
+                // from the frame header at codegen time); only the per-edge args.
                 for (_, target, args) in cases {
                     verify_branch_args(
                         *bid, use_index, *target, args, func, values, dominators, errors,

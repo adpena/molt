@@ -306,7 +306,8 @@ fn entry_block_has_predecessor(callee: &TirFunction) -> bool {
             else_block,
             ..
         } => *then_block == entry || *else_block == entry,
-        Terminator::Switch { cases, default, .. } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             *default == entry || cases.iter().any(|(_, t, _)| *t == entry)
         }
         Terminator::Return { .. } | Terminator::Unreachable => false,
@@ -654,6 +655,18 @@ fn clone_terminator(
             cases: cases
                 .iter()
                 .map(|(c, blk, args)| (*c, rb(*blk), args.iter().map(|v| rv(*v)).collect()))
+                .collect(),
+            default: rb(*default),
+            default_args: default_args.iter().map(|v| rv(*v)).collect(),
+        },
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => Terminator::StateDispatch {
+            cases: cases
+                .iter()
+                .map(|(s, blk, args)| (*s, rb(*blk), args.iter().map(|v| rv(*v)).collect()))
                 .collect(),
             default: rb(*default),
             default_args: default_args.iter().map(|v| rv(*v)).collect(),

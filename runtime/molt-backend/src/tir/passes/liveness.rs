@@ -121,6 +121,9 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
         } => vec![*then_block, *else_block],
         Terminator::Switch {
             cases, default, ..
+        }
+        | Terminator::StateDispatch {
+            cases, default, ..
         } => {
             let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
             out.push(*default);
@@ -138,6 +141,9 @@ fn terminator_direct_uses(term: &Terminator) -> Vec<ValueId> {
         Terminator::Branch { .. } => vec![],
         Terminator::CondBranch { cond, .. } => vec![*cond],
         Terminator::Switch { value, .. } => vec![*value],
+        // `StateDispatch` reads the saved state from the frame header at codegen
+        // time, not an SSA value — it has no direct value use.
+        Terminator::StateDispatch { .. } => vec![],
         Terminator::Return { values } => values.clone(),
         Terminator::Unreachable => vec![],
     }
@@ -166,6 +172,12 @@ fn edge_args_to(term: &Terminator, succ: BlockId) -> Vec<ValueId> {
             out
         }
         Terminator::Switch {
+            cases,
+            default,
+            default_args,
+            ..
+        }
+        | Terminator::StateDispatch {
             cases,
             default,
             default_args,

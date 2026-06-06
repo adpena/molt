@@ -213,6 +213,11 @@ fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
             cases,
             default_args,
             ..
+        }
+        | Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
         } => {
             for (_, _, args) in cases {
                 out.extend(args.iter().copied());
@@ -234,6 +239,9 @@ fn terminator_successor_blocks(term: &Terminator) -> Vec<BlockId> {
             ..
         } => vec![*then_block, *else_block],
         Terminator::Switch {
+            cases, default, ..
+        }
+        | Terminator::StateDispatch {
             cases, default, ..
         } => {
             let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
@@ -328,6 +336,32 @@ fn terminator_arcs(term: &Terminator) -> Vec<Arc> {
             });
             out
         }
+        // `StateDispatch` mirrors `Switch`'s arc shape (cases + default).  Reuse
+        // the `SwitchCase`/`SwitchDefault` descriptors: `drop_insertion` bails on
+        // state-machine functions (the `has_state_machine` guard in `run`), so
+        // this arm is unreachable in practice, but keeps the arc model total and
+        // correct should that guard ever be lifted for `_poll` bodies.
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => {
+            let mut out: Vec<Arc> = cases
+                .iter()
+                .enumerate()
+                .map(|(i, (_, b, args))| Arc {
+                    descriptor: ArcDescriptor::SwitchCase(i),
+                    target: *b,
+                    args: args.clone(),
+                })
+                .collect();
+            out.push(Arc {
+                descriptor: ArcDescriptor::SwitchDefault,
+                target: *default,
+                args: default_args.clone(),
+            });
+            out
+        }
         Terminator::Return { .. } | Terminator::Unreachable => vec![],
     }
 }
@@ -371,6 +405,26 @@ fn retarget_arc(term: &mut Terminator, desc: &ArcDescriptor, new_target: BlockId
         }
         (
             Terminator::Switch {
+                default,
+                default_args,
+                ..
+            },
+            ArcDescriptor::SwitchDefault,
+        ) => {
+            *default = new_target;
+            default_args.clear();
+        }
+        // `StateDispatch` shares the `SwitchCase`/`SwitchDefault` arc descriptors
+        // (see `terminator_arcs`).  Unreachable while `drop_insertion` bails on
+        // state machines, but kept total for correctness if that guard is lifted.
+        (Terminator::StateDispatch { cases, .. }, ArcDescriptor::SwitchCase(i)) => {
+            if let Some((_, b, args)) = cases.get_mut(*i) {
+                *b = new_target;
+                args.clear();
+            }
+        }
+        (
+            Terminator::StateDispatch {
                 default,
                 default_args,
                 ..
@@ -1438,7 +1492,11 @@ fn terminator_uses_root(term: &Terminator, v: ValueId, canon: &dyn Fn(ValueId) -
         Terminator::Return { values } => values.iter().any(|&x| canon(x) == v),
         Terminator::CondBranch { cond, .. } => canon(*cond) == v,
         Terminator::Switch { value, .. } => canon(*value) == v,
-        Terminator::Branch { .. } | Terminator::Unreachable => false,
+        // `StateDispatch` reads the saved state from the frame header, not an
+        // SSA value — it consumes no condition root.
+        Terminator::StateDispatch { .. }
+        | Terminator::Branch { .. }
+        | Terminator::Unreachable => false,
     }
 }
 

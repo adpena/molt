@@ -354,7 +354,8 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             let mut v: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
             v.push(*default);
             v
@@ -759,6 +760,17 @@ fn terminator_uses(term: &Terminator, set: &HashSet<ValueId>) -> bool {
         } => {
             set.contains(value)
                 || default_args.iter().any(|v| set.contains(v))
+                || cases
+                    .iter()
+                    .any(|(_, _, args)| args.iter().any(|v| set.contains(v)))
+        }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
+            default_args.iter().any(|v| set.contains(v))
                 || cases
                     .iter()
                     .any(|(_, _, args)| args.iter().any(|v| set.contains(v)))
@@ -1173,6 +1185,21 @@ fn rewrite_terminator_values(term: &mut Terminator, f: &dyn Fn(ValueId) -> Value
             ..
         } => {
             *value = f(*value);
+            for (_, _, args) in cases.iter_mut() {
+                for v in args {
+                    *v = f(*v);
+                }
+            }
+            for v in default_args {
+                *v = f(*v);
+            }
+        }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
             for (_, _, args) in cases.iter_mut() {
                 for v in args {
                     *v = f(*v);
