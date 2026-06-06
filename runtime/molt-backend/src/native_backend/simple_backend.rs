@@ -1706,6 +1706,95 @@ fn merge_function_has_ret(
     merged
 }
 
+/// Union the whole-program `closure_functions` set (carried in the module
+/// context across batches) with the CURRENT batch's local scan.
+///
+/// SOUNDNESS — why this must be a union, not a replace (the bug class fixed in
+/// design-20 finding #3C activation): `closure_functions` decides whether a
+/// `call_guarded`/`call`/`call_internal` site extracts the closure env from the
+/// callee function object and prepends it as arg 0 (`function_compiler.rs`
+/// "extract env from function object"). It is keyed by the names that appear in
+/// `func_new_closure(name)` ops. The module context is built ONCE per
+/// compilation unit — for the stdlib cache it is built from the stdlib
+/// functions ONLY (`main.rs` `stdlib_module_context`), so it does NOT contain a
+/// user program's closures. When a batch that DEFINES a user closure is
+/// compiled with that (stdlib) module context set, REPLACING the local scan
+/// dropped the user closure from the set → the call site skipped env extraction
+/// → the callee received a garbage/zero closure → `'object' object is not
+/// subscriptable` when it indexed its cell tuple. The local scan ALWAYS knows
+/// the closures defined in this batch; the module context adds cross-batch
+/// knowledge. Both are required, exactly like `merge_function_arities` /
+/// `merge_function_has_ret` already do for their maps. (This asymmetry was
+/// latent until RC drop insertion shifted function sizes enough to change which
+/// batch the user code landed in; the bug is the replace semantics, not the
+/// drops.)
+#[cfg(feature = "native-backend")]
+fn merge_closure_functions(
+    module_context: Option<&NativeBackendModuleContext>,
+    local_closure_functions: BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut merged = module_context
+        .map(|context| context.closure_functions.clone())
+        .unwrap_or_default();
+    merged.extend(local_closure_functions);
+    merged
+}
+
+/// Union the whole-program task-kind map (trampoline kind per generator/
+/// coroutine/async-gen function) with the current batch's local scan. Same
+/// union rationale as [`merge_closure_functions`]: the module context's map is
+/// not guaranteed to contain a name defined only in this batch, and the
+/// trampoline-kind decision at a `func_new`/call site must see this batch's own
+/// task functions. Local entries take precedence on the (rare) key overlap.
+#[cfg(feature = "native-backend")]
+fn merge_task_kinds(
+    module_context: Option<&NativeBackendModuleContext>,
+    local_task_kinds: BTreeMap<String, TrampolineKind>,
+) -> BTreeMap<String, TrampolineKind> {
+    let mut merged = module_context
+        .map(|context| context.task_kinds.clone())
+        .unwrap_or_default();
+    merged.extend(local_task_kinds);
+    merged
+}
+
+/// Union the whole-program task-closure-size map with the current batch's local
+/// scan (same union rationale as [`merge_closure_functions`]).
+#[cfg(feature = "native-backend")]
+fn merge_task_closure_sizes(
+    module_context: Option<&NativeBackendModuleContext>,
+    local_task_closure_sizes: BTreeMap<String, i64>,
+) -> BTreeMap<String, i64> {
+    let mut merged = module_context
+        .map(|context| context.task_closure_sizes.clone())
+        .unwrap_or_default();
+    merged.extend(local_task_closure_sizes);
+    merged
+}
+
+/// Union the whole-program leaf-function set (functions with no user-level
+/// calls, eligible to skip the recursion guard on direct calls) with the
+/// current batch's local scan.
+///
+/// Leaf-ness is an intrinsic per-function property (does the body contain a
+/// call?), so the two sets agree on any shared name; the union simply ensures a
+/// function defined only in THIS batch is not lost when a module context built
+/// from a different function set (e.g. the stdlib cache) is active. Missing a
+/// genuine leaf from the set is only a perf regression (an unnecessary recursion
+/// guard), never a miscompile — but the union keeps the fast path firing for the
+/// current batch's own leaves, matching the other merged metadata.
+#[cfg(feature = "native-backend")]
+fn merge_leaf_functions(
+    module_context: Option<&NativeBackendModuleContext>,
+    local_leaf_functions: BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut merged = module_context
+        .map(|context| context.leaf_functions.clone())
+        .unwrap_or_default();
+    merged.extend(local_leaf_functions);
+    merged
+}
+
 #[cfg(feature = "native-backend")]
 fn backend_setting_requests_llvm(setting: Option<&str>) -> bool {
     setting == Some("llvm")
@@ -3167,26 +3256,38 @@ impl SimpleBackend {
         let module_context = self.module_context.clone();
         let effective_function_arities =
             merge_function_arities(module_context.as_ref(), local_function_arities);
-        let effective_closure_functions = module_context
-            .as_ref()
-            .map(|context| context.closure_functions.clone())
-            .unwrap_or_else(|| ir_analysis.closure_functions.clone());
-        let effective_task_kinds = module_context
-            .as_ref()
-            .map(|context| context.task_kinds.clone())
-            .unwrap_or_else(|| ir_analysis.task_kinds.clone());
-        let effective_task_closure_sizes = module_context
-            .as_ref()
-            .map(|context| context.task_closure_sizes.clone())
-            .unwrap_or_else(|| ir_analysis.task_closure_sizes.clone());
-        let effective_leaf_functions = module_context
-            .as_ref()
-            .map(|context| context.leaf_functions.clone())
-            .unwrap_or_else(|| ir_analysis.leaf_functions.clone());
-        let effective_return_alias_summaries = module_context
-            .as_ref()
-            .map(|context| context.return_alias_summaries.clone())
-            .unwrap_or(local_return_alias_summaries);
+        // UNION the module context's whole-program metadata with this batch's
+        // LOCAL scan (design-20 finding #3C activation): a `module_context` that
+        // was built from a DIFFERENT function set (the stdlib cache) does not
+        // contain a closure/task/leaf defined only in this batch. Replacing the
+        // local scan dropped those, so a `call_guarded` to a user closure
+        // skipped env extraction → garbage closure → subscript TypeError. Mirror
+        // the union that `merge_function_arities`/`merge_function_has_ret`
+        // already do; the local scan is authoritative for this batch's own
+        // definitions, the module context adds cross-batch knowledge.
+        let effective_closure_functions =
+            merge_closure_functions(module_context.as_ref(), ir_analysis.closure_functions.clone());
+        let effective_task_kinds =
+            merge_task_kinds(module_context.as_ref(), ir_analysis.task_kinds.clone());
+        let effective_task_closure_sizes = merge_task_closure_sizes(
+            module_context.as_ref(),
+            ir_analysis.task_closure_sizes.clone(),
+        );
+        let effective_leaf_functions =
+            merge_leaf_functions(module_context.as_ref(), ir_analysis.leaf_functions.clone());
+        // UNION (same rationale as merge_closure_functions): a module context
+        // built from a different function set does not carry THIS batch's own
+        // return-alias summaries; the local computation must not be dropped, or a
+        // caller in this batch loses the callee's RC-return contract. Local wins
+        // on overlap (it is recomputed over the post-optimization bodies).
+        let effective_return_alias_summaries = {
+            let mut merged = module_context
+                .as_ref()
+                .map(|context| context.return_alias_summaries.clone())
+                .unwrap_or_default();
+            merged.extend(local_return_alias_summaries);
+            merged
+        };
         let local_function_has_ret = compute_function_has_ret(&ir.functions);
         let effective_function_has_ret =
             merge_function_has_ret(module_context.as_ref(), local_function_has_ret);
@@ -4067,8 +4168,8 @@ impl SimpleBackend {
 mod tests {
     use super::{
         NativeBackendModuleContext, SimpleBackend, TrampolineKey, analyze_native_backend_ir,
-        compute_function_has_ret, drain_cleanup_entry_tracked, merge_function_arities,
-        merge_function_has_ret,
+        compute_function_has_ret, drain_cleanup_entry_tracked, merge_closure_functions,
+        merge_function_arities, merge_function_has_ret, merge_leaf_functions, merge_task_kinds,
     };
     use crate::ir::{FunctionIR, OpIR, SimpleIR};
     use crate::ir_rewrites::{elide_useless_try_blocks, elide_useless_try_blocks_for_function};
@@ -4739,6 +4840,67 @@ mod tests {
             Some(&TrampolineKind::Coroutine)
         );
         assert_eq!(analysis.task_closure_sizes.get("worker_poll"), Some(&3));
+    }
+
+    /// The effective whole-program metadata for a batch is the UNION of the
+    /// module context (cross-batch) and the batch's LOCAL scan — never a replace
+    /// (design-20 finding #3C activation). A module context built from a
+    /// different function set (e.g. the stdlib cache) does NOT carry a
+    /// closure/task/leaf defined only in this batch; replacing the local scan
+    /// dropped it, so a `call_guarded` to that closure skipped env extraction and
+    /// the callee received a garbage closure (`'object' is not subscriptable`).
+    #[test]
+    fn effective_metadata_unions_module_context_with_local_scan() {
+        // A module context that knows ONLY a stdlib closure / task / leaf.
+        let stdlib_funcs = vec![FunctionIR {
+            name: "contextlib___inner".to_string(),
+            params: vec!["__molt_closure__".to_string()],
+            ops: vec![OpIR {
+                kind: "func_new_closure".to_string(),
+                s_value: Some("contextlib___inner".to_string()),
+                out: Some("v0".to_string()),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }];
+        let ctx = SimpleBackend::build_module_context(&stdlib_funcs);
+        assert!(ctx.closure_functions.contains("contextlib___inner"));
+
+        // The current batch defines its OWN closure that the context never saw.
+        let mut local_closures = BTreeSet::new();
+        local_closures.insert("app__inner".to_string());
+        let merged = merge_closure_functions(Some(&ctx), local_closures);
+        assert!(
+            merged.contains("app__inner"),
+            "the batch's own closure must survive the merge (no replace)"
+        );
+        assert!(
+            merged.contains("contextlib___inner"),
+            "the module context's cross-batch closures must also be present"
+        );
+
+        // None context → pure local (user-only / non-batched build).
+        let mut only_local = BTreeSet::new();
+        only_local.insert("app__inner".to_string());
+        let merged_none = merge_closure_functions(None, only_local);
+        assert!(merged_none.contains("app__inner"));
+        assert_eq!(merged_none.len(), 1);
+
+        // Same union contract for task kinds and leaf functions.
+        let mut local_tasks = BTreeMap::new();
+        local_tasks.insert("app_poll".to_string(), TrampolineKind::Coroutine);
+        let merged_tasks = merge_task_kinds(Some(&ctx), local_tasks);
+        assert_eq!(
+            merged_tasks.get("app_poll"),
+            Some(&TrampolineKind::Coroutine)
+        );
+        let mut local_leaves = BTreeSet::new();
+        local_leaves.insert("app_leaf".to_string());
+        let merged_leaves = merge_leaf_functions(Some(&ctx), local_leaves);
+        assert!(merged_leaves.contains("app_leaf"));
+        assert!(merged_leaves.contains("contextlib___inner"));
     }
 
     #[test]
