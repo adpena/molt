@@ -470,19 +470,6 @@ static VEC_REDUCTION_RUNTIME_SYMBOLS: std::sync::LazyLock<Vec<(&'static str, &'s
             .collect()
     });
 
-/// Whether `kind` names a SimpleIR op that carries dedicated value-producing
-/// runtime semantics which the LLVM backend MUST lower explicitly. Such ops
-/// reach the `OpCode::Copy` arm via the SSA `_ => OpCode::Copy` fallback
-/// (ssa.rs) with `_original_kind` set; if `lower_preserved_simpleir_op` does not
-/// handle them, passing operand 0 through is a wrong-result miscompile (the
-/// sequence/range object is returned instead of the computed value). These are
-/// the families guaranteed to surface the bug — the benign span/line/copy
-/// passthroughs do not match and continue to the ordinary copy. Used to convert
-/// a silent miscompile into a hard `record_fatal` lowering error.
-fn is_dedicated_semantics_kind(kind: &str) -> bool {
-    kind.starts_with("vec_") || kind == "range_new" || kind == "list_from_range"
-}
-
 /// Lower a TIR function to LLVM IR.
 ///
 /// Returns the LLVM function value. The function is added to `backend.module`.
@@ -2358,25 +2345,48 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 {
                     return;
                 }
-                // Fail loud rather than silently passing the first operand
-                // through for ops whose `_original_kind` names dedicated runtime
-                // semantics the LLVM backend is expected to lower. A passthrough
-                // here is a wrong-result miscompile (it returns the sequence
-                // object instead of the reduction result, the range object
-                // instead of the constructed range, etc.). The plain
-                // span/passthrough copies (line markers, value-carrying Copies)
-                // do NOT match these prefixes and continue to the benign
-                // passthrough below.
-                if let Some(kind) = original_kind
-                    && is_dedicated_semantics_kind(kind)
-                {
+
+                // TERMINAL FAIL-LOUD STATE (preserved-op passthrough class).
+                //
+                // Reaching here means this `OpCode::Copy` carries an
+                // `_original_kind` that `lower_preserved_simpleir_op` did NOT
+                // handle — neither a dedicated arm nor the generic
+                // `try_lower_preserved_runtime_call` (`molt_<kind>`) fallback
+                // claimed it. EVERY such op is a SimpleIR op the native/WASM/Luau
+                // lanes lower with dedicated semantics (a value-producing runtime
+                // call, an RC adjustment, a type guard, a generator throw, …).
+                // Passing operand 0 through — the historical behavior — silently
+                // miscompiles them: `abs(x)` returned `x`, `...`/`NotImplemented`
+                // became `None`, `raise … from …`'s `__cause__` link, `gen.throw`,
+                // special-attr loads, the `borrow`/`release` refcount ops, and the
+                // `guard_tag` type check were all DROPPED. There is NO preserved
+                // op whose operand-0 passthrough is provably correct: the pure SSA
+                // value copies (`copy`/`copy_var`/`load_var`/`store_var`) carry
+                // `_original_kind == None` (ssa.rs deliberately omits it) and take
+                // the benign passthrough below; anything WITH an `_original_kind`
+                // has real semantics. So the exhaustive, sound terminal state is:
+                // fail the build loudly here, turning a silent wrong-result into a
+                // hard error that names the missing lowering. Closing a kind = add
+                // an arm to `lower_preserved_simpleir_op` (or, if `molt_<kind>` is
+                // a real boxed runtime intrinsic, the generic fallback already
+                // covers it).
+                if let Some(kind) = original_kind {
                     self.record_fatal(format!(
-                        "unhandled dedicated SimpleIR op `{kind}` reached the LLVM Copy \
-                         passthrough — lowering it as a copy of operand 0 would silently \
-                         miscompile; add a `lower_preserved_simpleir_op` arm for it"
+                        "unhandled preserved SimpleIR op `{kind}` (operands={}, \
+                         results={}) reached the LLVM `Copy` passthrough — lowering \
+                         it as a copy of operand 0 would silently miscompile or drop \
+                         its side effect; add a `lower_preserved_simpleir_op` arm \
+                         for it (or confirm `molt_{kind}` is a boxed runtime \
+                         intrinsic so the generic fallback claims it)",
+                        op.operands.len(),
+                        op.results.len(),
                     ));
                     return;
                 }
+
+                // `_original_kind == None`: a genuine SSA value copy
+                // (`copy`/`copy_var`/`load_var`/`store_var`). Operand-0
+                // passthrough is the correct lowering.
                 if op.results.is_empty() {
                     // No results — nothing to bind; skip.
                 } else if op.operands.is_empty() {
@@ -8991,6 +9001,446 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
 
+            // ── Preserved value-producing / side-effecting ops whose runtime
+            //    symbol name DIFFERS from `molt_<kind>` (so the generic
+            //    `try_lower_preserved_runtime_call` fallback declines them), or
+            //    which are RESULT-LESS side effects the runtime-call fallback
+            //    refuses on principle. Each is the byte-for-byte LLVM analogue
+            //    of the native (`function_compiler{,/fc/*}.rs`) handler, with the
+            //    SAME runtime symbol and operand convention. Before these arms
+            //    landed, every one of these kinds fell to the `Copy`
+            //    passthrough: 0-operand singletons (`...`, `NotImplemented`)
+            //    became `None`; `abs(x)` returned `x`; generator `throw`/`close`,
+            //    the `__cause__` chain link, special-attr loads, the RC alias
+            //    ops, and the type/layout guards were all silently DROPPED. ──
+
+            // `abs(x)` — boxed builtin (the native int-lane branchless fast path
+            // does not apply on the TIR/LLVM lane, which has no raw-int primary
+            // vars; the boxed path is correct and overflow-safe for BigInt).
+            // Symbol is `molt_abs_builtin`, NOT `molt_abs`.
+            "abs" => {
+                let Some(&x_id) = op.operands.first() else {
+                    return false;
+                };
+                let abs_fn = self.ensure_runtime_i64_fn("molt_abs_builtin", 1);
+                let x_bits = self.materialize_dynbox_operand(x_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(abs_fn, &[x_bits.into()], "abs")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // `...` literal → the Ellipsis singleton. Symbol `molt_ellipsis`,
+            // NOT `molt_const_ellipsis`. 0 operands.
+            "const_ellipsis" => {
+                let ell_fn = self.ensure_runtime_i64_fn("molt_ellipsis", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(ell_fn, &[], "const_ellipsis")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // `NotImplemented` singleton (e.g. a `__eq__` returning it). Symbol
+            // `molt_not_implemented`, NOT `molt_const_not_implemented`.
+            "const_not_implemented" => {
+                let ni_fn = self.ensure_runtime_i64_fn("molt_not_implemented", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(ni_fn, &[], "const_not_implemented")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // `gen.throw(exc)` → `molt_generator_throw(gen, val)` (operands
+            // [gen, val]). Symbol differs from `molt_gen_throw`.
+            "gen_throw" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let throw_fn = self.ensure_runtime_i64_fn("molt_generator_throw", 2);
+                let gen_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let val_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(throw_fn, &[gen_bits.into(), val_bits.into()], "gen_throw")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // `gen.close()` → `molt_generator_close(gen)` (operand [gen]).
+            // Symbol differs from `molt_gen_close`.
+            "gen_close" => {
+                let Some(&gen_id) = op.operands.first() else {
+                    return false;
+                };
+                let close_fn = self.ensure_runtime_i64_fn("molt_generator_close", 1);
+                let gen_bits = self.materialize_dynbox_operand(gen_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(close_fn, &[gen_bits.into()], "gen_close")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // `raise X from Y` cause link → `molt_exception_set_cause(exc,
+            // cause)`. Symbol matches `molt_<kind>`, but the op is frequently
+            // RESULT-LESS (a pure side effect) so the runtime-call fallback
+            // declines it (its `op.results.first()` early-return). Emit the call
+            // unconditionally; bind the result only when present. Mirrors the
+            // existing `exception_set_last` arm.
+            "exception_set_cause" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let set_fn = self.ensure_runtime_i64_fn("molt_exception_set_cause", 2);
+                let exc_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let cause_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        set_fn,
+                        &[exc_bits.into(), cause_bits.into()],
+                        "exception_set_cause",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // Special-attribute load (`__class__`, `__name__`, …) →
+            // `molt_get_attr_special(obj, name_ptr, name_len)`. The attribute
+            // name is a compile-time string carried in `s_value`, materialized as
+            // a private constant (the label-carrying convention, identical to the
+            // native handler and the `call_method_ic` arm above).
+            //
+            // OWNERSHIP: `molt_get_attr_special` returns a BORROWED reference
+            // (the value comes from `class_attr_lookup` / a descriptor / a slot
+            // — not a fresh allocation). The native handler
+            // (`fc/attrs.rs::get_attr_special_obj`) therefore inc_refs the result
+            // via `emit_maybe_ref_adjust_v2(res, molt_inc_ref_obj)` to take owned
+            // ownership; the existing LLVM `get_attr_generic_obj` arm
+            // (`molt_get_attr_object_ic`) does the same. We MUST mirror that here:
+            // binding the borrowed result without the inc_ref under-counts it and
+            // risks a premature free / use-after-free of the attribute object.
+            "get_attr_special_obj" => {
+                let Some(&obj_id) = op.operands.first() else {
+                    return false;
+                };
+                let Some(attr_name) = op.attrs.get("s_value").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let obj_bits = self.materialize_dynbox_operand(obj_id);
+                let (name_ptr_bits, name_len_bits) = self.raw_string_const_ptr_len(&attr_name);
+                let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_special", 3);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        get_fn,
+                        &[
+                            obj_bits.into(),
+                            name_ptr_bits.into(),
+                            name_len_bits.into(),
+                        ],
+                        "get_attr_special_obj",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                // Take owned ownership of the borrowed attribute result (mirrors
+                // the native get-attr ref-adjust). `molt_inc_ref_obj` is a no-op
+                // for NaN-boxed immediates, so this is safe for any tag.
+                let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                self.backend
+                    .builder
+                    .build_call(
+                        inc_fn,
+                        &[self.ensure_i64(result).into()],
+                        "get_attr_special_inc_ref",
+                    )
+                    .unwrap();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // RC-alias ops: `borrow`/`identity_alias` == `inc_ref` then ALIAS the
+            // value through (result == source operand). The native handlers
+            // (`function_compiler.rs` `inc_ref|borrow` / `identity_alias`) emit
+            // `molt_inc_ref_obj(src)` and `def_var(out, src)` — a plain Copy
+            // passthrough would skip the inc_ref (a refcount LEAK). `release` is
+            // the dual and is handled in its OWN arm below because its result
+            // convention differs (it does NOT alias the source — see there).
+            "borrow" | "identity_alias" => {
+                let Some(&src_id) = op.operands.first() else {
+                    return false;
+                };
+                let src_val = self.resolve(src_id);
+                let src_bits = self.ensure_i64(src_val);
+                let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                self.backend
+                    .builder
+                    .build_call(inc_fn, &[src_bits.into()], "")
+                    .unwrap();
+                if let Some(&result_id) = op.results.first() {
+                    let ty = self
+                        .value_types
+                        .get(&src_id)
+                        .cloned()
+                        .unwrap_or(TirType::DynBox);
+                    self.values.insert(result_id, src_val);
+                    self.value_types.insert(result_id, ty);
+                }
+                true
+            }
+            // `release` == `dec_ref` the source. CRITICAL: unlike `borrow`, the
+            // result must NOT alias the source — after `molt_dec_ref_obj` the
+            // source may be freed, so aliasing+using it is a use-after-free. The
+            // native handler (`function_compiler.rs` `dec_ref|release`) dec_refs
+            // the source and, when the op carries an out var, binds it to NONE
+            // (`def_var_named(out, box_none())`), never to the released source.
+            // We mirror that: emit the dec_ref, then bind any result to None.
+            "release" => {
+                let Some(&src_id) = op.operands.first() else {
+                    return false;
+                };
+                let src_val = self.resolve(src_id);
+                let src_bits = self.ensure_i64(src_val);
+                let dec_fn = self.ensure_runtime_i64_fn("molt_dec_ref_obj", 1);
+                self.backend
+                    .builder
+                    .build_call(dec_fn, &[src_bits.into()], "")
+                    .unwrap();
+                if let Some(&result_id) = op.results.first() {
+                    let none_val: BasicValueEnum<'ctx> = i64_ty
+                        .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                        .into();
+                    self.values.insert(result_id, none_val);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            // Generator-frame locals registration (introspection support for
+            // `gi_frame.f_locals` / `frame_locals_set`). Result-less side effect:
+            // `molt_gen_locals_register(func_addr, names_tuple, offsets_tuple)`
+            // where `func_addr` is the ADDRESS of the generator function named in
+            // `s_value` (cast to i64, exactly like `func_new`), and the two
+            // operands are the boxed names/offsets tuples. Dropping it (the old
+            // `Copy` passthrough) silently diverges generator-frame introspection
+            // from CPython. Mirrors the native handler
+            // (function_compiler.rs `gen_locals_register`).
+            "gen_locals_register" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let arity = op
+                    .attrs
+                    .get("value")
+                    .and_then(|v| match v {
+                        AttrValue::Int(v) => usize::try_from(*v).ok(),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let func = self.ensure_function_symbol(&func_name, arity, false);
+                let func_addr = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(
+                        func.as_global_value().as_pointer_value(),
+                        i64_ty,
+                        "gen_locals_func_ptr",
+                    )
+                    .unwrap();
+                let names_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let offsets_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let reg_fn = self.ensure_runtime_i64_fn("molt_gen_locals_register", 3);
+                self.backend
+                    .builder
+                    .build_call(
+                        reg_fn,
+                        &[func_addr.into(), names_bits.into(), offsets_bits.into()],
+                        "gen_locals_register",
+                    )
+                    .unwrap();
+                if let Some(&result_id) = op.results.first() {
+                    let none_val: BasicValueEnum<'ctx> = i64_ty
+                        .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                        .into();
+                    self.values.insert(result_id, none_val);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+
+            // Type/tag guard: a runtime CHECK that raises `TypeError` on
+            // mismatch; the return value is discarded (the op is result-less on
+            // native). `molt_guard_type(val, expected)`. A passthrough here would
+            // SILENTLY ELIDE the guard — the program would not raise where
+            // CPython does. (`guard_type` is the canonical kind and IS mapped to
+            // a dedicated TIR `OpCode::TypeGuard`; only the `guard_tag` alias
+            // reaches here as a preserved `Copy`, but we keep `guard_type` in the
+            // arm for completeness/idempotence.)
+            "guard_type" | "guard_tag" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let guard_fn = self.ensure_runtime_i64_fn("molt_guard_type", 2);
+                let val_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let expected_bits = self.materialize_dynbox_operand(op.operands[1]);
+                self.backend
+                    .builder
+                    .build_call(
+                        guard_fn,
+                        &[val_bits.into(), expected_bits.into()],
+                        "guard_type",
+                    )
+                    .unwrap();
+                if let Some(&result_id) = op.results.first() {
+                    // Guard return is the conventional sentinel; rebind only if a
+                    // result was requested (native discards it).
+                    let none_val: BasicValueEnum<'ctx> = self
+                        .backend
+                        .context
+                        .i64_type()
+                        .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                        .into();
+                    self.values.insert(result_id, none_val);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+
+            // Layout / dict-shape guard (polymorphic-inline-cache fast path):
+            // `molt_guard_layout_ptr(obj_ptr, class, expected_version)`. Both
+            // `guard_layout` and `guard_dict_shape` share this single runtime
+            // entry (the native handler groups them identically). Three points
+            // make the generic `molt_<kind>` fallback INCAPABLE of lowering these
+            // correctly — hence the dedicated arm:
+            //   1. The runtime symbol is `molt_guard_layout_ptr`, not
+            //      `molt_guard_layout` / `molt_guard_dict_shape`.
+            //   2. The first argument is the RAW UNBOXED heap pointer of the
+            //      object (`unbox_ptr_bits`), not the NaN-boxed value — mirroring
+            //      the native `unbox_ptr_value(*obj)` before the call.
+            //   3. The op carries a result on the IC fast path, but the guard
+            //      VALUE is conventionally discarded (it raises on mismatch).
+            // A `Copy` passthrough here would silently ELIDE the shape check, so
+            // a stale-layout object would skip the deopt/guard and the program
+            // would not raise / would read the wrong slot where CPython is
+            // type-safe. operands = [obj, class, expected_version].
+            "guard_layout" | "guard_dict_shape" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let obj_ptr = self.unbox_ptr_bits(obj_bits);
+                let class_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let version_bits = self.materialize_dynbox_operand(op.operands[2]);
+                let guard_fn = self.ensure_runtime_i64_fn("molt_guard_layout_ptr", 3);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        guard_fn,
+                        &[obj_ptr.into(), class_bits.into(), version_bits.into()],
+                        "guard_layout",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+
+            // Structured-data scalar parse (`json.loads`/`msgpack`/`cbor` on a
+            // single scalar): `molt_<fmt>_parse_scalar_obj(value)`. The native
+            // handler (`fc::parse_ops::handle_parse_op`) has a raw-pointer FAST
+            // path (it reads `{arg}_ptr`/`{arg}_len` companion vars into a stack
+            // out-param via `molt_<fmt>_parse_scalar`) AND this boxed SLOW path
+            // for the general case. The fast path is a pure perf optimization
+            // keyed on a native-only raw-string-pointer var convention the
+            // TIR/LLVM lane does not carry; the slow `*_scalar_obj(value)` call is
+            // the SEMANTICALLY COMPLETE lowering native falls back to whenever the
+            // companion vars are absent (its `else` branch), so the LLVM lane uses
+            // it unconditionally — same result, no fast-path reboxing avoidance.
+            // The generic `molt_<kind>` fallback cannot claim these: the symbol is
+            // `molt_<fmt>_parse_scalar_obj`, not `molt_<fmt>_parse`. operands =
+            // [value]. A `Copy` passthrough would return the unparsed input.
+            "json_parse" | "msgpack_parse" | "cbor_parse" => {
+                let Some(&val_id) = op.operands.first() else {
+                    return false;
+                };
+                let symbol = match kind {
+                    "json_parse" => "molt_json_parse_scalar_obj",
+                    "msgpack_parse" => "molt_msgpack_parse_scalar_obj",
+                    "cbor_parse" => "molt_cbor_parse_scalar_obj",
+                    _ => unreachable!("outer match restricts kind to the three parse ops"),
+                };
+                let val_bits = self.materialize_dynbox_operand(val_id);
+                let parse_fn = self.ensure_runtime_i64_fn(symbol, 1);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(parse_fn, &[val_bits.into()], "parse_scalar")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+
             // ── Arithmetic / comparison / bitwise carried as preserved `Copy`
             //    ops ──
             //
@@ -9063,14 +9513,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// the op then hits the `Copy` fail-loud guard, which refuses to emit wrong
     /// code. The operand→arg mapping is positional (each operand a NaN-boxed
     /// i64), matching the runtime ABI for these `extern "C"` conversion/operator
-    /// functions; the result is the boxed return value.
+    /// functions; the boxed return value is bound to the result when present.
+    ///
+    /// Covers BOTH value-producing and RESULT-LESS preserved ops. Result-less
+    /// side effects (`print_newline`, `set_update`/`set_discard`/…,
+    /// `dict_str_int_inc`/`dict_update`/…, `list_extend`/…) are emitted purely
+    /// for their effect: the native handlers call `molt_<kind>` and bind the
+    /// return only when the op carries an `out` var, exactly as we do here.
+    /// Without the result-less path these ops fell to the `Copy` "1+ operands,
+    /// 0 results → no-op" branch and were SILENTLY DROPPED (a missing newline, a
+    /// set/dict mutation that never happened) — the same passthrough bug class as
+    /// the value-producing ops, just manifesting as a dropped side effect rather
+    /// than a wrong result. Ops needing a non-positional / non-boxed operand
+    /// convention (unboxed pointer, compile-time string, function address) are
+    /// claimed by their dedicated `match` arms BEFORE this generic fallback, so
+    /// only the positional-boxed kinds reach here.
     fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: &str) -> bool {
-        // Only value-producing ops route here — a result-less preserved op is an
-        // annotation/side-effect form handled by the result-less arm of the
-        // `Copy` lowering, not a runtime-call value producer.
-        let Some(&result_id) = op.results.first() else {
-            return false;
-        };
         let symbol = format!("molt_{kind}");
         if !self.backend.runtime_intrinsic_symbols.contains(&symbol) {
             return false;
@@ -9088,8 +9546,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
-        self.values.insert(result_id, result);
-        self.value_types.insert(result_id, TirType::DynBox);
+        // Bind the boxed return only when the op produces a value; a result-less
+        // op was emitted purely for its side effect.
+        if let Some(&result_id) = op.results.first() {
+            self.values.insert(result_id, result);
+            self.value_types.insert(result_id, TirType::DynBox);
+        }
         true
     }
 
@@ -10146,6 +10608,201 @@ mod tests {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
         assert!(ir.contains("molt_dict_update"), "{ir}");
+    }
+
+    /// Build a single-block function whose only op is a preserved `Copy`
+    /// carrying `_original_kind = kind` with `n_operands` ConstNone operands and
+    /// (optionally) a result, then lower it and return the printed IR. Shared by
+    /// the preserved-op passthrough-class regressions below.
+    #[cfg(feature = "llvm")]
+    fn lower_preserved_kind_ir(
+        backend: &LlvmBackend<'_>,
+        kind: &str,
+        n_operands: usize,
+        with_result: bool,
+        s_value: Option<&str>,
+    ) -> Result<String, LlvmLoweringError> {
+        let mut func = TirFunction::new(format!("preserved_{kind}"), vec![], TirType::DynBox);
+        let operands: Vec<ValueId> = (0..n_operands).map(|_| func.fresh_value()).collect();
+        let result = with_result.then(|| func.fresh_value());
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        for &o in &operands {
+            entry.ops.push(const_none_def(o));
+        }
+        let mut attrs = AttrDict::new();
+        attrs.insert("_original_kind".into(), AttrValue::Str(kind.to_string()));
+        if let Some(s) = s_value {
+            attrs.insert("s_value".into(), AttrValue::Str(s.to_string()));
+        }
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands,
+            results: result.into_iter().collect(),
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: result.into_iter().collect(),
+        };
+        try_lower_tir_to_llvm(&func, backend).map(|f| f.print_to_string().to_string())
+    }
+
+    /// The preserved-op passthrough-class closure: each kind that previously
+    /// fell to the `Copy` operand-0 passthrough (a silent miscompile / dropped
+    /// side effect) must now lower to its dedicated runtime call. This pins the
+    /// specific dedicated arms whose runtime symbol DIFFERS from `molt_<kind>`
+    /// (so the generic fallback would have declined) or which are result-less.
+    #[test]
+    fn lower_preserved_passthrough_class_routes_to_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        // (kind, n_operands, with_result, s_value, expected runtime symbol)
+        let cases: &[(&str, usize, bool, Option<&str>, &str)] = &[
+            ("abs", 1, true, None, "molt_abs_builtin"),
+            ("const_ellipsis", 0, true, None, "molt_ellipsis"),
+            ("const_not_implemented", 0, true, None, "molt_not_implemented"),
+            ("gen_throw", 2, true, None, "molt_generator_throw"),
+            ("gen_close", 1, true, None, "molt_generator_close"),
+            ("exception_set_cause", 2, false, None, "molt_exception_set_cause"),
+            (
+                "get_attr_special_obj",
+                1,
+                true,
+                Some("__class__"),
+                "molt_get_attr_special",
+            ),
+            ("borrow", 1, true, None, "molt_inc_ref_obj"),
+            ("identity_alias", 1, true, None, "molt_inc_ref_obj"),
+            ("release", 1, true, None, "molt_dec_ref_obj"),
+            ("guard_tag", 2, false, None, "molt_guard_type"),
+            ("guard_layout", 3, true, None, "molt_guard_layout_ptr"),
+            ("guard_dict_shape", 3, true, None, "molt_guard_layout_ptr"),
+            ("json_parse", 1, true, None, "molt_json_parse_scalar_obj"),
+            ("msgpack_parse", 1, true, None, "molt_msgpack_parse_scalar_obj"),
+            ("cbor_parse", 1, true, None, "molt_cbor_parse_scalar_obj"),
+            (
+                "gen_locals_register",
+                2,
+                false,
+                Some("gen_fn"),
+                "molt_gen_locals_register",
+            ),
+        ];
+        for &(kind, nops, with_result, s_value, sym) in cases {
+            let ir = lower_preserved_kind_ir(&backend, kind, nops, with_result, s_value)
+                .unwrap_or_else(|e| {
+                    panic!("preserved `{kind}` must lower, got error: {:?}", e.diagnostics())
+                });
+            assert!(
+                ir.contains(sym),
+                "preserved `{kind}` must lower to `{sym}` (not an operand-0 \
+                 passthrough); IR:\n{ir}"
+            );
+        }
+    }
+
+    /// Terminal fail-loud state: a preserved `Copy` carrying an `_original_kind`
+    /// that NO arm and NO `molt_<kind>` runtime intrinsic claims must be a hard
+    /// `record_fatal` lowering error — never a silent operand-0 passthrough.
+    /// `__ppaudit_unmapped__` is a synthetic kind that cannot resolve to any
+    /// `molt_*` symbol, so it must reach the terminal guard.
+    #[test]
+    fn lower_preserved_unmapped_kind_fails_loud() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let err = lower_preserved_kind_ir(&backend, "__ppaudit_unmapped__", 1, true, None)
+            .expect_err(
+                "an unhandled preserved op must fail the lowering, not silently \
+                 pass operand 0 through",
+            );
+        assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
+        assert_lowering_error_contains(&err, "__ppaudit_unmapped__");
+    }
+
+    /// RESULT-LESS preserved side-effect ops (`print_newline`, `set_update`,
+    /// `dict_str_int_inc`, …) whose `molt_<kind>` symbol IS in the linked
+    /// intrinsic surface must lower to that runtime call via the generic
+    /// fallback — NOT be dropped as a `Copy` "0 results → no-op". The
+    /// passthrough enumeration found these reaching the no-op branch (a missing
+    /// newline / a set or dict mutation that never happened). This pins the
+    /// result-less generic-fallback path; the symbols are injected because the
+    /// unit-test backend has an empty intrinsic surface by default.
+    #[test]
+    fn lower_preserved_resultless_side_effect_routes_to_runtime() {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        // (kind, n_operands, expected runtime symbol). All result-less (res=0).
+        let cases: &[(&str, usize, &str)] = &[
+            ("print_newline", 0, "molt_print_newline"),
+            ("set_update", 2, "molt_set_update"),
+            ("dict_str_int_inc", 3, "molt_dict_str_int_inc"),
+        ];
+        for &(_, _, sym) in cases {
+            backend.runtime_intrinsic_symbols.insert(sym.to_string());
+        }
+        for &(kind, nops, sym) in cases {
+            let ir = lower_preserved_kind_ir(&backend, kind, nops, false, None)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "result-less preserved `{kind}` must lower, got error: {:?}",
+                        e.diagnostics()
+                    )
+                });
+            assert!(
+                ir.contains(sym),
+                "result-less preserved `{kind}` must lower to `{sym}` (not a \
+                 dropped no-op); IR:\n{ir}"
+            );
+        }
+    }
+
+    /// The dual safety check: a result-less preserved op whose `molt_<kind>`
+    /// symbol is ABSENT from the intrinsic surface must STILL fail loud (never a
+    /// silent dropped side effect). Without the symbol the generic fallback
+    /// declines and the terminal guard must fire.
+    #[test]
+    fn lower_preserved_resultless_unmapped_fails_loud() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let err = lower_preserved_kind_ir(&backend, "__ppaudit_resultless__", 2, false, None)
+            .expect_err("an unhandled result-less preserved op must fail the lowering");
+        assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
+        assert_lowering_error_contains(&err, "__ppaudit_resultless__");
+    }
+
+    /// A bare `Copy` (no `_original_kind` — a genuine SSA value copy such as
+    /// `copy`/`load_var`/`store_var`) must STILL take the benign operand-0
+    /// passthrough. The terminal fail-loud guard keys on `_original_kind`, so it
+    /// must not fire here.
+    #[test]
+    fn lower_bare_copy_without_original_kind_passes_through() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("bare_copy".into(), vec![], TirType::DynBox);
+        let src = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(src));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![src],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        // Must lower cleanly (no fatal); the result aliases the source.
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .map(|f| f.print_to_string().to_string())
+            .expect("a bare Copy without _original_kind must lower as a passthrough");
+        assert!(
+            !ir.contains("unhandled preserved"),
+            "bare Copy must not trigger the preserved-op fail-loud: {ir}"
+        );
     }
 
     #[test]
