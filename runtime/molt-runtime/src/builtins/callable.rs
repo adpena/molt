@@ -84,15 +84,36 @@ pub extern "C" fn molt_function_is_coroutine(func_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let is_callable = maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| unsafe {
-            match object_type_id(ptr) {
+/// Single source of truth for Python callability.
+///
+/// Returns a Rust `bool` so that no caller has to decode a NaN-boxed result.
+/// Both the C-ABI [`molt_is_callable`] (Python `callable()` / `bool`-object
+/// result) and the C-ABI [`molt_is_callable_bool`] (cross-crate `i32` result)
+/// delegate here, guaranteeing every callable-oracle consumer observes the
+/// identical predicate. A `&PyToken` is required because the `__call__`
+/// dunder lookup walks the MRO under the GIL.
+pub(crate) fn is_callable_impl(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool {
+    maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| unsafe {
+        is_callable_for_ptr(_py, ptr)
+    })
+}
+
+#[inline]
+unsafe fn is_callable_for_ptr(_py: &crate::PyToken<'_>, ptr: *mut u8) -> bool {
+    unsafe {
+        match object_type_id(ptr) {
                 TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE | TYPE_ID_GENERIC_ALIAS => {
                     true
                 }
                 TYPE_ID_OBJECT => {
+                    // NOTE (parity baton): this consults the instance `__dict__`
+                    // for `__call__`, which diverges from CPython (`tp_call` is
+                    // type-only). It is intentionally PRESERVED here so this
+                    // oracle stays consistent with molt's instance-call dispatch
+                    // (`call::lookup_call_attr`), which also honors instance-dict
+                    // `__call__`. Fixing the divergence requires a coordinated
+                    // type-only `__call__` resolver shared by BOTH this oracle
+                    // and every `lookup_call_attr` call site (see batoned bug).
                     let call_bits = intern_static_name(
                         _py,
                         &runtime_state(_py).interned.call_name,
@@ -122,6 +143,8 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                     false
                 }
                 TYPE_ID_DATACLASS => {
+                    // See TYPE_ID_OBJECT note: instance-dict `__call__` honored
+                    // for consistency with the call dispatch (batoned divergence).
                     let call_bits = intern_static_name(
                         _py,
                         &runtime_state(_py).interned.call_name,
@@ -156,9 +179,33 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
                     false
                 }
                 _ => false,
-            }
-        });
-        MoltObject::from_bool(is_callable).bits()
+        }
+    }
+}
+
+/// Python `callable()` ABI: returns a NaN-boxed `bool` MoltObject.
+///
+/// Callers inside `molt-runtime` decode the result via `is_truthy`/`as_bool`.
+/// Cross-crate consumers should prefer [`molt_is_callable_bool`] to avoid
+/// re-implementing the bool decode (the bug class that made tkinter `bind`
+/// reject genuine callables: `as_int()` rejects a `TAG_BOOL` value).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        MoltObject::from_bool(is_callable_impl(_py, obj_bits)).bits()
+    })
+}
+
+/// Cross-crate callability oracle returning a C-ABI bool (`1`/`0`).
+///
+/// This is the single decode-free authority for runtime extension crates
+/// (e.g. `molt-runtime-tk`) so they never have to interpret the NaN-boxed
+/// `bool` object themselves. Backed by the same [`is_callable_impl`] that
+/// powers Python `callable()`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_callable_bool(obj_bits: u64) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        i32::from(is_callable_impl(_py, obj_bits))
     })
 }
 
