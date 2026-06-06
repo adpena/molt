@@ -1,29 +1,37 @@
-# MOLT_META: xfail=molt xfail_reason=task60_init_full_binding_exc_swallow
 """Purpose: an exception raised inside a constructor `__init__` that requires
 FULL ARGUMENT BINDING (a variadic `*args`/`**kwargs` parameter, or a
 keyword-only parameter) must propagate out of the `ClassName(...)` construct
 expression — exactly as CPython does.
 
 Regression for task #60 (P0 silent control-flow elision / silent exception
-swallow, native). Root cause (runtime): `call_type_with_builder`'s
-`InitArgPolicy::ForwardArgs` arm (runtime/molt-runtime/src/call/bind.rs:1454)
-invokes a full-binding `__init__` via `molt_call_bind` but — UNLIKE every other
-`molt_call_bind` call site in that file (lines 100-104, 792-795, 835-837,
-1383-1385, 2822-2826, ...) — does NOT check `exception_pending` afterward. It
-unconditionally returns the (partially-constructed) `inst_bits`. Because the
-returned value is a real instance (not `none`), the IC dispatch propagation
-guards (`if res.is_none() && exception_pending` at bind.rs 2091/2131/2205) do
-not fire, the construct-site `check_exception` is satisfied by the live
-instance, and the raise is silently dropped: the `try` sees no exception, or a
-plain construct continues to the next statement.
+swallow, native). Root cause (runtime), two parts in
+runtime/molt-runtime/src/call/bind.rs:
 
-The fast path for SIMPLE (non-full-binding) `__init__` (bind.rs 2689-2826) and
-plain methods / `__new__` already check the pending flag, so this is specific to
+  1. `call_bind_ic_dispatch` (the entry point the compiled `call_bind` op
+     lowers to) ran `call_bind_ic_entry_for_call` AFTER the call returned, to
+     populate the per-site inline cache. For a constructor that path performs
+     `__new__`/`__init__` MRO attribute probes which reset the exception-pending
+     baseline. When a full-binding `__init__` raised, the exception was correctly
+     pending at that point, but the IC-entry probe CLEARED the pending flag
+     before the caller's `check_exception` (which reads that flag byte) could
+     observe it — so the `try` saw no exception. Fix: skip IC-cache population
+     when the call left a pending exception (a raised call is not cacheable).
+
+  2. `call_type_with_builder`'s `InitArgPolicy::ForwardArgs` arm (the
+     full-binding constructor lane) returned the partially-constructed instance
+     unconditionally after invoking `__init__`, instead of returning the `none`
+     sentinel on a pending exception like every other constructor return path
+     (the IC fast path, `call_class_init_with_args`). All post-`__init__`
+     constructor returns now route through one shared helper
+     (`resolve_construct_after_init`) so the lanes cannot re-diverge.
+
+The SIMPLE (non-full-binding) `__init__` IC fast path and plain methods /
+`__new__` already propagated correctly, so the swallow was specific to
 full-binding `__init__`:
 
-  * `def __init__(self, ea, **kw)`     -> SKIPPED  (this file's `K`/`R`/`S` cells)
-  * `def __init__(self, *args)`        -> SKIPPED  (`A`)
-  * `def __init__(self, *, ea)`        -> SKIPPED  (`O` keyword-only)
+  * `def __init__(self, ea, **kw)`     -> was SKIPPED  (this file's `K`/`R`/`S`)
+  * `def __init__(self, *args)`        -> was SKIPPED  (`A`)
+  * `def __init__(self, *, ea)`        -> was SKIPPED  (`O` keyword-only)
   * `def __init__(self, ea)`           -> fires  (simple, fast path)
   * `def __init__(self, a,b,c,d,e,f)`  -> fires  (6 positional, no full binding)
   * regular method with `**kw`         -> fires  (method-call path checks)
