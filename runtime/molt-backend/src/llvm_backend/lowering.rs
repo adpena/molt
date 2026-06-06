@@ -5135,8 +5135,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .cloned()
             .unwrap_or(TirType::DynBox);
 
+        // Overflow / shift-validity gate for the raw I64 lane. `bit_and`/
+        // `bit_or`/`bit_xor` are unconditionally sound on raw i64 (the result
+        // bits are a subset of the operand bits — no overflow, no UB), so they
+        // always take the machine lane. `lshift`/`rshift` are NOT: a raw
+        // `shl`/`ashr` whose count is `>= 64` is LLVM poison, and a `<<` result
+        // that exceeds i64 wraps then truncates at box time — the silent
+        // integer miscompile. The shift raw lane is therefore admitted only when
+        // the plan proves the *result* is an overflow-safe exact-i64 carrier
+        // (`RawI64Safe`), which the value-range seed grants for a shift ONLY when
+        // its count is range-proven in `[0, 63]` AND the result fits the inline
+        // window (single source of truth, shared with native/WASM). An unproven
+        // shift falls through to the boxed `molt_lshift`/`molt_rshift` runtime —
+        // BigInt-correct, negative-count `ValueError`-correct, huge-count
+        // `OverflowError`-correct — exactly mirroring `emit_binary_arith`'s
+        // `int_overflow_safe` gate and the native backend (which boxes every
+        // shift).
+        let shift_overflow_safe = self.repr_facts.is_overflow_safe_int(result_id);
+        let raw_i64_lane_ok = match name {
+            "bit_and" | "bit_or" | "bit_xor" => true,
+            "lshift" | "rshift" => shift_overflow_safe,
+            _ => unreachable!("emit_bitwise got non-bitwise name: {name}"),
+        };
         let (val, out_ty) = match (&lhs_ty, &rhs_ty) {
-            (TirType::I64, TirType::I64) => {
+            (TirType::I64, TirType::I64) if raw_i64_lane_ok => {
                 let v = match name {
                     "bit_and" => self
                         .backend
