@@ -156,40 +156,62 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     .ops
                     .iter()
                     .map(|op| {
-                        let return_type = if matches!(
-                            op.opcode,
-                            OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
-                        ) {
-                            // Only explicit `return_type` is structural
-                            // return-type evidence. Legacy `_type_hint` is
-                            // semantic transport metadata and must not refine
-                            // representation.
-                            op.attrs.get("return_type").and_then(|v| match v {
-                                AttrValue::Str(s) => parse_return_type_str(s.as_str()),
-                                _ => None,
-                            })
-                        } else if op.opcode == OpCode::Copy
-                            && let Some(AttrValue::Str(kind)) = op.attrs.get("_original_kind")
-                            && crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(
-                                kind,
-                            ) {
-                            // Fresh-value op spelled as a `Copy` fallback (see the
-                            // `OpCode::Copy` arm of `infer_single_result_type_with_attrs`):
-                            // it mints a NEW object whose type is fixed by the op, NOT
-                            // by operand[0]. Pin that intrinsic type here so this
-                            // attr-less convergence loop does not type-propagate
-                            // operand[0] (e.g. `complex_from_obj`'s f64 real part) into
-                            // the fresh value. The mapping is operand-independent, so it
-                            // is safe to precompute.
-                            Some(fresh_value_kind_result_type(kind))
-                        } else {
-                            None
+                        // The attr-derived AUTHORITATIVE result-type override: a
+                        // type the OP ITSELF determines, which must win over
+                        // operand-based inference. Producers (attr-keyed, so
+                        // pre-extracted HERE — the fixpoint snapshot drops attrs):
+                        //
+                        //  1. Call/CallMethod/CallBuiltin `return_type` — the
+                        //     frontend's structural return type. (Legacy
+                        //     `_type_hint` is semantic transport metadata and must
+                        //     NOT refine representation, so it is ignored.)
+                        //  2. A `Copy`-spelled fresh value (the SSA converter's
+                        //     fallback for ops without a dedicated OpCode). Two
+                        //     classifier-backed cases, in priority order:
+                        //     (a) RAW-CARRIER scalar conversions
+                        //         (`copy_kind_raw_carrier_type`: int/float/bool
+                        //         conversions) mint a NEW raw-register value typed
+                        //         by the CONVERSION — operand-0 propagation here is
+                        //         the round-8 repr miscompile (`int(t)`, t: float,
+                        //         typed F64 → def_var repr mismatch).
+                        //     (b) other fresh-value-minting kinds
+                        //         (`copy_kind_mints_fresh_owned_ref`) pin their
+                        //         intrinsic type (`fresh_value_kind_result_type`) —
+                        //         the #45 fix (`complex_from_obj` typed F64 from its
+                        //         real-part operand routed float+complex down the
+                        //         unboxed fadd path).
+                        //     Everything else (transparent aliases) propagates
+                        //     operand 0's type.
+                        let result_type_override = match op.opcode {
+                            OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin => {
+                                op.attrs.get("return_type").and_then(|v| match v {
+                                    AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                                    _ => None,
+                                })
+                            }
+                            OpCode::Copy => {
+                                let original_kind = match op.attrs.get("_original_kind") {
+                                    Some(AttrValue::Str(k)) => Some(k.as_str()),
+                                    _ => None,
+                                };
+                                crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(
+                                    original_kind,
+                                )
+                                .or_else(|| {
+                                    original_kind
+                                        .filter(|k| {
+                                            crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
+                                        })
+                                        .map(fresh_value_kind_result_type)
+                                })
+                            }
+                            _ => None,
                         };
                         (
                             op.opcode,
                             op.operands.clone(),
                             op.results.clone(),
-                            return_type,
+                            result_type_override,
                         )
                     })
                     .collect();
@@ -1231,42 +1253,40 @@ fn infer_single_result_type_with_attrs(
         },
         OpCode::OrdAt => Some(TirType::I64),
 
-        // Copy propagates type — but ONLY for genuine type-transparent aliases.
-        //
-        // Unrecognized SimpleIR op kinds fall back to `OpCode::Copy` carrying
-        // their spelling in `_original_kind` (ssa.rs `kind_to_opcode`). Some of
-        // those fallbacks MINT A FRESH HEAP OBJECT whose runtime type is wholly
-        // independent of their first operand — e.g. `complex_from_obj` builds a
-        // `complex` from two `f64` parts; `ascii_from_obj`/`dict_from_obj`/etc.
-        // likewise. Propagating operand[0]'s type for these is a TYPE CONFUSION:
-        // a `complex` would be typed `F64` (its real-part operand), then the
-        // scalar lane classifier routes `float + complex` down the unboxed-float
-        // `fadd` path and the runtime coerces the complex via `molt_float_as_f64`
-        // → "float-compatible object expected" / wrong-typed result. A fresh
-        // value the TIR does not model has unknown type: `DynBox`.
-        //
-        // The fresh-value-minting classifier (`copy_kind_mints_fresh_owned_ref`,
-        // the op-kind registry single source of truth, also used by alias
-        // analysis + drop insertion) is exactly the discriminator: members mint a
-        // new owned object whose type is fixed by the op (NOT operand[0]),
-        // everything else is a transparent alias whose result type IS operand[0]'s
-        // type (int-carrier propagation through passthrough ops depends on this
-        // and must be preserved).
+        // `OpCode::Copy` is overloaded: the SSA converter folds every SimpleIR op
+        // WITHOUT a dedicated opcode into `Copy`, stashing the name in
+        // `_original_kind`. A TRANSPARENT-ALIAS copy genuinely names operand 0's
+        // value, so its type IS operand 0's (int-carrier propagation through
+        // passthrough ops depends on this). Two classifier-backed overrides, in
+        // priority order:
+        //  (a) RAW-CARRIER scalar conversions (`copy_kind_raw_carrier_type`):
+        //      `int_from_obj`/`int_from_str_of_obj`/`float_from_obj`/`contains`
+        //      mint a NEW raw-register value typed by the conversion — operand-0
+        //      propagation is the round-8 native `def_var` repr mismatch (`int(t)`
+        //      with `t: float` typed F64, flooding the integer accumulator/phi
+        //      chain). NOTE the carrier-soundness rule still holds downstream:
+        //      TirType is the SEMANTIC axis; the repr planner floors `int` to
+        //      MaybeBigInt unless proven (Phase 0), so I64 here does not license
+        //      a trusted-unbox by itself. Verified on the bigint corner shapes.
+        //  (b) other fresh-value-minting kinds (`copy_kind_mints_fresh_owned_ref`)
+        //      pin their intrinsic type via `fresh_value_kind_result_type` — the
+        //      #45 fix: `complex_from_obj` typed F64 (its real-part operand) routed
+        //      `float + complex` down the unboxed `fadd` path → runtime coercion
+        //      error. Heap fresh values the TIR does not model are `DynBox`.
         OpCode::Copy => {
-            if let Some(attrs) = attrs
-                && let Some(AttrValue::Str(kind)) = attrs.get("_original_kind")
-                && crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(kind)
-            {
-                // Fresh value: type is determined by the producing op, never by
-                // operand[0]. A few mint a known scalar/str result; the rest mint
-                // heap objects the TIR does not model further → DynBox. (`int()`
-                // is deliberately DynBox, not I64: it may return a heap BigInt, so
-                // typing it I64 would license a trusted-unbox on a BigInt pointer
-                // — the carrier-soundness rule the `ConstBigInt` arm encodes.)
-                Some(fresh_value_kind_result_type(kind))
-            } else {
-                operand_types.first().cloned()
-            }
+            let original_kind = attrs.and_then(|a| match a.get("_original_kind") {
+                Some(AttrValue::Str(k)) => Some(k.as_str()),
+                _ => None,
+            });
+            crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(original_kind)
+                .or_else(|| {
+                    original_kind
+                        .filter(|k| {
+                            crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
+                        })
+                        .map(fresh_value_kind_result_type)
+                })
+                .or_else(|| operand_types.first().cloned())
         }
 
         // Module lookup operations return arbitrary runtime values. Their
@@ -2182,6 +2202,111 @@ mod tests {
             Some(&TirType::I64),
             "InplaceMul of (I64, I64) must produce I64"
         );
+    }
+
+    /// Round-8 regression: a FRESH-VALUE scalar-conversion `Copy`
+    /// (`int_from_obj`/`float_from_obj`) is NOT a transparent type alias of its
+    /// operand — it mints a NEW raw-register value whose type the conversion
+    /// determines. `int(t)` with `t: float` lowers to `Copy[int_from_obj](t)`; the
+    /// old `Copy => operand_types.first()` rule type-aliased it to `t`'s `F64`,
+    /// flooding the downstream integer accumulator (`total += int(t)`) with a
+    /// spurious float carrier → native `def_var` repr mismatch / LIR-verifier
+    /// branch-repr divergence (`os._seconds_float_to_sec_nsec`). A TRANSPARENT
+    /// alias (`copy_var`/bare `Copy`) MUST still propagate the operand type.
+    #[test]
+    fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
+        let int_from_obj_attr = {
+            let mut a = AttrDict::new();
+            a.insert(
+                "_original_kind".into(),
+                AttrValue::Str("int_from_obj".into()),
+            );
+            a
+        };
+        let copy_var_attr = {
+            let mut a = AttrDict::new();
+            a.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+            a
+        };
+        let ops = vec![
+            // t = <float> (a const float stands in for the float parameter).
+            make_op(OpCode::ConstFloat, vec![], vec![ValueId(0)], AttrDict::new()),
+            // sec = int(t)  →  Copy[int_from_obj](t). MUST type to I64, not F64.
+            make_op(
+                OpCode::Copy,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                int_from_obj_attr,
+            ),
+            // total = 0; total += sec  →  the integer accumulator that mis-typed.
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(2)], int_attr(0)),
+            make_op(
+                OpCode::InplaceAdd,
+                vec![ValueId(2), ValueId(1)],
+                vec![ValueId(3)],
+                AttrDict::new(),
+            ),
+            // A TRANSPARENT alias of the float MUST keep the operand's F64 type.
+            make_op(
+                OpCode::Copy,
+                vec![ValueId(0)],
+                vec![ValueId(4)],
+                copy_var_attr,
+            ),
+        ];
+        let mut func = single_block_func(ops, 5);
+        refine_types(&mut func);
+        let env = extract_type_map(&func);
+        assert_eq!(
+            env.get(&ValueId(1)),
+            Some(&TirType::I64),
+            "Copy[int_from_obj](F64) must produce I64 (a fresh int), NOT alias the float operand"
+        );
+        assert_eq!(
+            env.get(&ValueId(3)),
+            Some(&TirType::I64),
+            "InplaceAdd(I64 accumulator, int(t)) must stay I64 — the accumulator must not float-contaminate"
+        );
+        assert_eq!(
+            env.get(&ValueId(4)),
+            Some(&TirType::F64),
+            "a TRANSPARENT-alias Copy (copy_var) must still propagate operand 0's F64 type"
+        );
+    }
+
+    /// The `copy_kind_raw_carrier_type` source of truth: raw-carrier scalar
+    /// conversions map to their precise scalar; every other `Copy` kind (including
+    /// heap-producing fresh values and transparent aliases) returns `None` so the
+    /// caller keeps operand-0 propagation. Pins the narrow scope that keeps the
+    /// heap-value type lattice byte-identical to the pre-fix behavior.
+    #[test]
+    fn raw_carrier_type_is_scoped_to_scalar_conversions() {
+        use crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type;
+        assert_eq!(
+            copy_kind_raw_carrier_type(Some("int_from_obj")),
+            Some(TirType::I64)
+        );
+        assert_eq!(
+            copy_kind_raw_carrier_type(Some("int_from_str_of_obj")),
+            Some(TirType::I64)
+        );
+        assert_eq!(
+            copy_kind_raw_carrier_type(Some("float_from_obj")),
+            Some(TirType::F64)
+        );
+        assert_eq!(
+            copy_kind_raw_carrier_type(Some("contains")),
+            Some(TirType::Bool)
+        );
+        // Heap-producing fresh values → None (operand-0 propagation / DynBox floor).
+        assert_eq!(copy_kind_raw_carrier_type(Some("str_from_obj")), None);
+        assert_eq!(copy_kind_raw_carrier_type(Some("list_new")), None);
+        assert_eq!(copy_kind_raw_carrier_type(Some("tuple_new")), None);
+        assert_eq!(copy_kind_raw_carrier_type(Some("enumerate")), None);
+        // Transparent aliases / bare Copy / unknown → None.
+        assert_eq!(copy_kind_raw_carrier_type(Some("copy_var")), None);
+        assert_eq!(copy_kind_raw_carrier_type(Some("guard_tag")), None);
+        assert_eq!(copy_kind_raw_carrier_type(None), None);
     }
 
     // ---- Guard propagation tests ----

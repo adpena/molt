@@ -544,6 +544,57 @@ pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
     CopyLowering::TransparentAlias
 }
 
+/// The RAW-CARRIER scalar type an overloaded `OpCode::Copy` produces, when (and
+/// only when) the `Copy` is a value-CONVERSION whose result is carried in a raw
+/// machine register (`I64`/`F64`/`Bool`) rather than the boxed NaN-box word.
+///
+/// `OpCode::Copy` is the SSA converter's fallback opcode for every SimpleIR op
+/// without a dedicated [`OpCode`] (the name is stashed in `_original_kind`), so a
+/// `Copy`'s result type is NOT, in general, operand 0's type. A full typed
+/// counterpart of [`classify_copy_kind`] would map every `FreshValue` kind to its
+/// produced type; but the ONLY observable miscompile is the RAW-CARRIER scalar
+/// conversions, where a wrong type is a representation error (a raw register
+/// stored into a differently-typed variable/phi slot). The keystone is `int(t)`
+/// with `t: float`, which lowers to `Copy[int_from_obj](t)`: `type_refine`'s plain
+/// `Copy => operand_types.first()` rule aliased its type to `t`'s `F64`, flooding
+/// the integer accumulator chain (and its loop-carried/join phis) with a spurious
+/// `float` carrier — observed as a native Cranelift `def_var` repr mismatch (an
+/// `i64` value stored into an `F64`-declared join slot, `_seconds_float_to_sec_nsec`)
+/// and the matching LIR-verifier branch-repr divergence.
+///
+/// Returns `Some(I64/F64/Bool)` for exactly those scalar conversions, `None` for
+/// every other `Copy`. The caller keeps its existing operand-0 propagation for the
+/// `None` case — INCLUDING the heap-producing `FreshValue` copies (containers,
+/// `str`, iterators, views, `range`, `slice`, `object_new`, `complex`): those
+/// carry a boxed `DynBox` word, so propagating operand 0's (also-boxed) type is
+/// already representationally correct, and NARROWING the fix to raw carriers keeps
+/// the type lattice for heap values byte-identical to the pre-fix behavior. A
+/// broader change (retyping a heap-producing copy away from operand 0) perturbs
+/// CFG/optimization passes that key on heap-value types — observed as a
+/// jump-label numbering regression in `_typing_strip_wrapping_parens` when
+/// `enumerate`'s result was retyped — so it is deliberately out of scope: those
+/// copies have no raw carrier and so cannot trigger the repr-mismatch class this
+/// closes. Membership of [`copy_kind_mints_fresh_owned_ref`] is required so a
+/// NON-fresh `Copy` whose `_original_kind` happens to collide with a conversion
+/// name (there are none today) can never be misclassified.
+pub(crate) fn copy_kind_raw_carrier_type(kind: Option<&str>) -> Option<crate::tir::types::TirType> {
+    use crate::tir::types::TirType;
+    let k = kind?;
+    if !copy_kind_mints_fresh_owned_ref(k) {
+        return None;
+    }
+    match k {
+        // `int(x)` is a semantic `int` → `I64` (the repr lattice independently
+        // boxes a BigInt result; the semantic-type axis is `I64`, exactly like
+        // `ConstInt`). `float(x)` → `F64`. The `in` / `not in` membership test
+        // (`x in c`, lowered to `contains`) → `bool` → `Bool`.
+        "int_from_obj" | "int_from_str_of_obj" => Some(TirType::I64),
+        "float_from_obj" => Some(TirType::F64),
+        "contains" => Some(TirType::Bool),
+        _ => None,
+    }
+}
+
 /// Returns whether an `OpCode::Copy` op is an EXPLICIT transparent local alias:
 /// its result PROVABLY names operand 0's heap object (bit-for-bit, no incref). The
 /// alias union-find unions the result into operand 0's root, so this MUST be
