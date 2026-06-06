@@ -88,6 +88,22 @@ fn count_terminator_uses(term: &Terminator, uses: &mut HashMap<ValueId, usize>) 
                 *uses.entry(*v).or_insert(0) += 1;
             }
         }
+        // `StateDispatch` has no condition value (the saved state is read from
+        // the frame header at codegen time); only its per-edge args are uses.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
+            for (_, _, args) in cases {
+                for v in args {
+                    *uses.entry(*v).or_insert(0) += 1;
+                }
+            }
+            for v in default_args {
+                *uses.entry(*v).or_insert(0) += 1;
+            }
+        }
         Terminator::Return { values } => {
             for v in values {
                 *uses.entry(*v).or_insert(0) += 1;

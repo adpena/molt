@@ -154,6 +154,17 @@ fn terminator_value_refs(term: &Terminator) -> Vec<ValueId> {
             }
             refs.extend(default_args.iter().copied());
         }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
+            for (_, _, args) in cases {
+                refs.extend(args.iter().copied());
+            }
+            refs.extend(default_args.iter().copied());
+        }
         Terminator::Return { values } => refs.extend(values.iter().copied()),
         Terminator::Unreachable => {}
     }
@@ -542,6 +553,21 @@ fn substitute_terminator_values(term: &mut Terminator, subst: &HashMap<ValueId, 
             ..
         } => {
             remap(value, subst);
+            for (_, _, args) in cases.iter_mut() {
+                for v in args {
+                    remap(v, subst);
+                }
+            }
+            for v in default_args {
+                remap(v, subst);
+            }
+        }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
             for (_, _, args) in cases.iter_mut() {
                 for v in args {
                     remap(v, subst);

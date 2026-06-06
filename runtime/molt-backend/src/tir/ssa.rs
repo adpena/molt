@@ -174,6 +174,11 @@ impl<'a> SsaContext<'a> {
         // rejoin merges phi-less and produce values that are defined on the
         // normal path but undefined on the handler path.
         self.insert_exception_handler_arguments();
+        // State-machine resume continuations are reached via the implicit
+        // `state_switch` dispatch edge; seed their block arguments before the
+        // IDF runs, for the same reason handler-block arguments are seeded above
+        // (each becomes a fresh SSA def whose rejoin frontier needs a phi).
+        self.insert_state_resume_block_arguments();
         self.insert_block_arguments();
         self.rename_and_emit();
     }
@@ -366,6 +371,21 @@ impl<'a> SsaContext<'a> {
                 aug_preds[handler_bid].push(from_bid);
             }
         }
+        // Fold state-machine resume (dispatch) edges in: a suspend op `ret`s, so
+        // its resume continuation has no *regular* predecessor — exactly like an
+        // exception handler block.  The `state_switch` block dispatches to every
+        // resume continuation on re-entry; without these edges the SSA pass
+        // computes dominance/phi placement on a CFG missing the dispatch, and a
+        // resume-reachable block ends up using a value (block arg / phi) defined
+        // only on the linear first-entry path, which the dispatch bypasses.
+        for &(switch_bid, resume_bid, _state_id) in &self.cfg.state_resume_edges {
+            if switch_bid >= n || resume_bid >= n {
+                continue;
+            }
+            if !aug_preds[resume_bid].contains(&switch_bid) {
+                aug_preds[resume_bid].push(switch_bid);
+            }
+        }
         // Sort for determinism.
         for preds in &mut aug_preds {
             preds.sort_unstable();
@@ -525,6 +545,42 @@ impl<'a> SsaContext<'a> {
         }
     }
 
+    /// State-machine resume continuations are reached via the implicit
+    /// `state_switch` dispatch edge, not an ordinary block terminator — exactly
+    /// like exception handler blocks.  Seed each resume block with its true
+    /// live-in variables as block arguments so the dispatch edge can supply them
+    /// (mirror `insert_exception_handler_arguments`).  This both (a) makes the
+    /// resume block a fresh SSA definition site for each live-across-suspend
+    /// variable, seeding the IDF so every rejoin past the resume gets a phi, and
+    /// (b) gives the `StateDispatch` terminator a concrete block-arg list to fill
+    /// from the var stacks live at the dispatch point.
+    ///
+    /// Variables that the frontend spilled to the frame (the common
+    /// live-across-yield case) are reloaded via fresh `closure_load` defs inside
+    /// the resume block and are NOT live-in there, so they are not seeded — only
+    /// the values genuinely threaded across the suspend (the frame `self`
+    /// pointer, exception-stack bookkeeping values) are.
+    fn insert_state_resume_block_arguments(&mut self) {
+        let mut resume_blocks: HashSet<usize> = HashSet::new();
+        for &(_, resume_bid, _) in &self.cfg.state_resume_edges {
+            resume_blocks.insert(resume_bid);
+        }
+        if resume_blocks.is_empty() {
+            return;
+        }
+
+        let live_in = self.compute_live_in_vars(true);
+        for bid in resume_blocks {
+            let mut vars: Vec<String> = live_in[bid].iter().cloned().collect();
+            vars.sort();
+            for var in &vars {
+                if !self.block_arg_vars[bid].contains(var) {
+                    self.block_arg_vars[bid].push(var.clone());
+                }
+            }
+        }
+    }
+
     fn compute_live_in_vars(&self, include_exception_edges: bool) -> Vec<HashSet<String>> {
         let n = self.cfg.blocks.len();
         let mut succs = self.cfg.successors.clone();
@@ -535,6 +591,20 @@ impl<'a> SsaContext<'a> {
                 }
                 if !succs[from_bid].contains(&handler_bid) {
                     succs[from_bid].push(handler_bid);
+                }
+            }
+            // The `state_switch` dispatch supplies each resume continuation's
+            // live-in on re-entry (the live-across-suspend values that were
+            // spilled to the frame and reloaded after the dispatch).  Model the
+            // dispatch as a liveness successor of the `state_switch` block so
+            // those values are seen as live across the suspend — mirror the
+            // exception-handler edge.
+            for &(switch_bid, resume_bid, _state_id) in &self.cfg.state_resume_edges {
+                if switch_bid >= n || resume_bid >= n {
+                    continue;
+                }
+                if !succs[switch_bid].contains(&resume_bid) {
+                    succs[switch_bid].push(resume_bid);
                 }
             }
         }
@@ -1581,6 +1651,42 @@ impl<'a> SsaContext<'a> {
                     }
                 } else {
                     Terminator::Unreachable
+                }
+            }
+
+            "state_switch" => {
+                // The `_poll` state-machine dispatch.  State 0 (initial entry)
+                // falls through to the next block (the function's first-entry
+                // continuation = `default`); every saved resume state dispatches
+                // to the matching suspend op's resume continuation.  The dispatch
+                // value is implicit (read from the frame header at lowering time),
+                // so this terminator carries no SSA condition value — only the
+                // per-edge block-argument incomings, supplied here from the var
+                // stacks live at the dispatch point so phi finalization fills the
+                // resume-block phis on the dispatch edge (mirror `check_exception`
+                // arg supply, but fanning out to every resume block).
+                let default_bid = succs.first().copied();
+                let Some(default_bid) = default_bid else {
+                    // A `state_switch` with no fall-through successor is malformed
+                    // (the initial-entry path must exist); be conservative.
+                    return Terminator::Unreachable;
+                };
+                let default_args = self.collect_branch_args(default_bid, var_stacks);
+                let mut cases: Vec<(i64, BlockId, Vec<ValueId>)> = Vec::new();
+                for &(switch_bid, resume_bid, state_id) in &self.cfg.state_resume_edges {
+                    if switch_bid != bid {
+                        continue;
+                    }
+                    let args = self.collect_branch_args(resume_bid, var_stacks);
+                    cases.push((state_id, BlockId(resume_bid as u32), args));
+                }
+                // Deterministic case order (by state id), matching the backends'
+                // switch construction.
+                cases.sort_by_key(|(state, _, _)| *state);
+                Terminator::StateDispatch {
+                    cases,
+                    default: BlockId(default_bid as u32),
+                    default_args,
                 }
             }
 

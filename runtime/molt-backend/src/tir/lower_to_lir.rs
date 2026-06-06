@@ -497,6 +497,32 @@ fn lower_terminator(
                 repr,
             ),
         },
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => LirTerminator::StateDispatch {
+            cases: cases
+                .iter()
+                .map(|(state, target, args)| {
+                    (
+                        *state,
+                        *target,
+                        lower_branch_args(*target, args, func, type_map, allocator, ops, repr),
+                    )
+                })
+                .collect(),
+            default: *default,
+            default_args: lower_branch_args(
+                *default,
+                default_args,
+                func,
+                type_map,
+                allocator,
+                ops,
+                repr,
+            ),
+        },
         Terminator::Return { values } => LirTerminator::Return {
             values: lower_return_values(values, func, type_map, allocator, ops, repr),
         },

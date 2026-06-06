@@ -584,7 +584,8 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
                 else_block,
                 ..
             } => *then_block == entry_id || *else_block == entry_id,
-            Terminator::Switch { cases, default, .. } => {
+            Terminator::Switch { cases, default, .. }
+            | Terminator::StateDispatch { cases, default, .. } => {
                 *default == entry_id || cases.iter().any(|(_, t, _)| *t == entry_id)
             }
             _ => false,
@@ -743,7 +744,8 @@ pub fn append_terminator_successors(term: &Terminator, out: &mut Vec<BlockId>) {
             out.push(*then_block);
             out.push(*else_block);
         }
-        Terminator::Switch { cases, default, .. } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             for (_, bid, _) in cases {
                 out.push(*bid);
             }
@@ -3212,45 +3214,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::DynBox);
             }
             OpCode::StateSwitch => {
-                let i64_ty = self.backend.context.i64_type();
-                let self_bits = self.generator_self_bits();
-                let get_state_fn = self.ensure_runtime_i64_fn("molt_obj_get_state", 1);
-                let state_val = self
-                    .backend
-                    .builder
-                    .build_call(get_state_fn, &[self_bits.into()], "state_switch_state")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
-                let fallback_bb = self.backend.context.append_basic_block(
-                    self.llvm_fn,
-                    &format!("state_switch_cont{}", self.synthetic_block_counter),
+                // `state_switch` is now lowered as the first-class `StateDispatch`
+                // terminator (see `lower_terminator`), never as a body op: the
+                // SimpleIR `state_switch` op is structural (excluded from TIR
+                // block ops by `gather_defs_uses`) and the SSA terminator builder
+                // emits `Terminator::StateDispatch` for the dispatch block.
+                // Reaching it here as a body op means the structural-op invariant
+                // broke upstream — fail loud rather than emit a second (synthetic)
+                // dispatch that double-switches the saved state.
+                panic!(
+                    "OpCode::StateSwitch reached the LLVM op-lowering body in '{}'; \
+                     state_switch must lower as the StateDispatch terminator",
+                    self.func.name
                 );
-                self.synthetic_block_counter += 1;
-                self.all_llvm_blocks.push(fallback_bb);
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("state_switch must be inside a block");
-                self.record_llvm_edge(current_bb, fallback_bb);
-                let resume_cases: Vec<_> = self
-                    .state_resume_blocks
-                    .iter()
-                    .map(|(&state_id, &target_bb)| (state_id, target_bb))
-                    .collect();
-                let mut switch_cases: Vec<_> = Vec::with_capacity(resume_cases.len());
-                for (state_id, target_bb) in resume_cases {
-                    self.record_llvm_edge(current_bb, target_bb);
-                    switch_cases.push((i64_ty.const_int(state_id as u64, state_id < 0), target_bb));
-                }
-                switch_cases.sort_by_key(|(state, _)| state.get_zero_extended_constant());
-                self.backend
-                    .builder
-                    .build_switch(state_val, fallback_bb, &switch_cases)
-                    .unwrap();
-                self.backend.builder.position_at_end(fallback_bb);
             }
             OpCode::ClosureLoad => {
                 let result_id = op.results[0];
@@ -3355,12 +3331,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_call(inc_fn, &[pair_bits.into()], "state_yield_inc_ref")
                     .unwrap();
+                // The suspend `ret`s the yielded pair.  This `build_return`
+                // terminates the suspend block; the main lowering loop detects
+                // the terminator and moves on to the NEXT TIR block (the real
+                // post-yield resume continuation, which the `StateDispatch`
+                // terminator dispatches to).  We do NOT `position_at_end` into a
+                // synthetic resume block — the continuation is a first-class TIR
+                // block reached via the dispatch, and its phis were placed by the
+                // SSA pass on the real `state_resume_edges`.
                 self.backend.builder.build_return(Some(&pair_bits)).unwrap();
-                let resume_bb = *self
-                    .state_resume_blocks
-                    .get(&next_state_id)
-                    .unwrap_or_else(|| panic!("missing resume block for state {}", next_state_id));
-                self.backend.builder.position_at_end(resume_bb);
+                let _ = next_state_id;
             }
             OpCode::StateTransition => {
                 let (slot_id, pending_state_operand) = match op.operands.as_slice() {
@@ -5673,6 +5653,70 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend
                     .builder
                     .build_switch(switch_int, default_bb, &switch_cases)
+                    .unwrap();
+            }
+            Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => {
+                // Generator/coroutine `_poll` dispatch.  The saved resume state
+                // is restored by the runtime across the suspend boundary, so the
+                // dispatch value is read from the frame header here (not an SSA
+                // value): `molt_obj_get_state(self)`.  State 0 (initial entry)
+                // takes the `default` edge; every saved resume state dispatches
+                // to the matching suspend op's REAL resume continuation block.
+                //
+                // This is the first-class replacement for the old synthetic
+                // `state_resume_*` block machinery: the switch targets are the
+                // real TIR blocks the main lowering loop emits (so their phis are
+                // the phis the SSA pass placed), and `record_branch_args` supplies
+                // each dispatch edge's incomings, which `finalize_phis` fills.
+                let i64_ty = self.backend.context.i64_type();
+                let self_bits = self.generator_self_bits();
+                let get_state_fn = self.ensure_runtime_i64_fn("molt_obj_get_state", 1);
+                let state_val = self
+                    .backend
+                    .builder
+                    .build_call(get_state_fn, &[self_bits.into()], "state_dispatch_state")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value();
+
+                let default_bb = self.block_map[default];
+                let current_bb = self
+                    .backend
+                    .builder
+                    .get_insert_block()
+                    .expect("must be inside a block");
+                self.record_branch_args(
+                    source_block,
+                    current_bb,
+                    *default,
+                    "state-dispatch-default",
+                    default_args,
+                );
+                self.record_llvm_edge(current_bb, default_bb);
+
+                let mut switch_cases: Vec<_> = Vec::with_capacity(cases.len());
+                for (state_id, target, args) in cases {
+                    let case_const = i64_ty.const_int(*state_id as u64, *state_id < 0);
+                    let target_bb = self.block_map[target];
+                    self.record_branch_args(
+                        source_block,
+                        current_bb,
+                        *target,
+                        "state-dispatch-case",
+                        args,
+                    );
+                    self.record_llvm_edge(current_bb, target_bb);
+                    switch_cases.push((case_const, target_bb));
+                }
+
+                self.backend
+                    .builder
+                    .build_switch(state_val, default_bb, &switch_cases)
                     .unwrap();
             }
             Terminator::Return { values } => {
@@ -10066,72 +10110,38 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.ensure_i64(value)
     }
 
+    /// Map each `_poll` resume state id to the REAL TIR resume-continuation
+    /// block (an entry in `block_map`), NOT a synthetic block.
+    ///
+    /// The single source of truth for the state → resume-block mapping is the
+    /// entry block's `StateDispatch` terminator, which the SSA pass built from
+    /// `cfg.state_resume_edges`: each `(state_id, resume_bid, args)` case names
+    /// the real TIR block that the dispatch resumes into.  Lowering the dispatch
+    /// to those real blocks (whose phis the SSA pass placed) is what makes the
+    /// `_poll` state machine dominance-correct on LLVM — the old design created
+    /// fresh synthetic `state_resume_*` blocks and `position_at_end`-ed the
+    /// continuation into them, so the real TIR continuation block's phis were
+    /// missing the dispatch incoming (the "Instruction does not dominate all
+    /// uses!" class).
+    ///
+    /// The re-poll suspend ops (`state_transition` / `chan_*_yield`) carry a
+    /// *pending* state id whose resume target is the suspend op's OWN block (it
+    /// re-polls from its own position); those are also dispatch cases, so they
+    /// are covered by the same `StateDispatch` case list.
     fn initialize_state_resume_blocks(&mut self) {
-        let mut const_ints = std::collections::HashMap::new();
-        for block in self.func.blocks.values() {
-            for op in &block.ops {
-                if op.opcode == OpCode::ConstInt
-                    && let Some(result) = op.results.first()
-                    && let Some(AttrValue::Int(v)) = op.attrs.get("value")
-                {
-                    const_ints.insert(*result, *v);
-                }
-            }
-        }
-        let mut resume_ids = std::collections::BTreeSet::new();
-        for block in self.func.blocks.values() {
-            for op in &block.ops {
-                match op.opcode {
-                    OpCode::StateYield => {
-                        if let Some(AttrValue::Int(state_id)) = op.attrs.get("value") {
-                            resume_ids.insert(*state_id);
-                        }
-                    }
-                    OpCode::StateTransition => {
-                        if let Some(AttrValue::Int(state_id)) = op.attrs.get("value") {
-                            resume_ids.insert(*state_id);
-                        }
-                        let pending_idx = if op.operands.len() == 2 { 1 } else { 2 };
-                        if let Some(state_id) = op
-                            .operands
-                            .get(pending_idx)
-                            .and_then(|id| const_ints.get(id))
-                        {
-                            resume_ids.insert(*state_id);
-                        }
-                    }
-                    OpCode::ChanSendYield => {
-                        if let Some(AttrValue::Int(state_id)) = op.attrs.get("value") {
-                            resume_ids.insert(*state_id);
-                        }
-                        if let Some(state_id) = op.operands.get(2).and_then(|id| const_ints.get(id))
-                        {
-                            resume_ids.insert(*state_id);
-                        }
-                    }
-                    OpCode::ChanRecvYield => {
-                        if let Some(AttrValue::Int(state_id)) = op.attrs.get("value") {
-                            resume_ids.insert(*state_id);
-                        }
-                        if let Some(state_id) = op.operands.get(1).and_then(|id| const_ints.get(id))
-                        {
-                            resume_ids.insert(*state_id);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if resume_ids.is_empty() {
+        let Some(entry) = self.func.blocks.get(&self.func.entry_block) else {
             return;
-        }
-        for state_id in resume_ids {
-            let bb = self
-                .backend
-                .context
-                .append_basic_block(self.llvm_fn, &format!("state_resume_{}", state_id));
-            self.all_llvm_blocks.push(bb);
-            self.state_resume_blocks.insert(state_id, bb);
+        };
+        if let Terminator::StateDispatch { cases, .. } = &entry.terminator {
+            // Clone the (state_id, block_id) pairs first to avoid borrowing
+            // `self.func` while mutating `self.state_resume_blocks`.
+            let pairs: Vec<(i64, BlockId)> =
+                cases.iter().map(|(state, bid, _)| (*state, *bid)).collect();
+            for (state_id, resume_bid) in pairs {
+                if let Some(&bb) = self.block_map.get(&resume_bid) {
+                    self.state_resume_blocks.insert(state_id, bb);
+                }
+            }
         }
     }
 
