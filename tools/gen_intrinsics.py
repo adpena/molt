@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import importlib.util
 from pathlib import Path
 import re
 import sys
@@ -41,106 +42,34 @@ SYMBOL_OVERRIDES = {
     "molt_async_sleep": "molt_async_sleep_new",
 }
 
-# Map symbol prefixes to Cargo feature flags. When a feature is disabled the
-# resolve_symbol entry is excluded so the linker can drop the corresponding
-# code.  Ordering matters: longest prefix wins.
-_SYMBOL_FEATURE_GATES: list[tuple[str, str]] = [
-    # crypto: hashlib, hmac, secrets, pbkdf2, scrypt, compare_digest
-    ("molt_hash_", "stdlib_crypto"),
-    ("molt_hmac_", "stdlib_crypto"),
-    ("molt_compare_digest", "stdlib_crypto"),
-    ("molt_pbkdf2_hmac", "stdlib_crypto"),
-    ("molt_scrypt", "stdlib_crypto"),
-    ("molt_secrets_", "stdlib_crypto"),
-    # compression: bz2, lzma, deflate, inflate, gzip, tarfile, zlib
-    ("molt_bz2_", "stdlib_compression"),
-    ("molt_lzma_", "stdlib_compression"),
-    ("molt_deflate_", "stdlib_compression"),
-    ("molt_inflate_", "stdlib_compression"),
-    ("molt_gzip_", "stdlib_compression"),
-    ("molt_tarfile_", "stdlib_compression"),
-    ("molt_zlib_", "stdlib_compression"),
-    ("molt_compression_streams_", "stdlib_compression"),
-    # serialization: cbor, msgpack
-    ("molt_cbor_", "stdlib_serialization"),
-    ("molt_msgpack_", "stdlib_serialization"),
-    # ast
-    ("molt_ast_", "stdlib_ast"),
-    # collections + argparse live in the extracted collections crate.
-    ("molt_argparse_", "stdlib_collections"),
-    ("molt_namedtuple_", "stdlib_collections"),
-    ("molt_ordereddict_", "stdlib_collections"),
-    ("molt_defaultdict_", "stdlib_collections"),
-    ("molt_deque_", "stdlib_collections"),
-    ("molt_counter_", "stdlib_collections"),
-    ("molt_chainmap_", "stdlib_collections"),
-    # fs_extra: glob, tempfile
-    ("molt_glob_glob", "stdlib_fs_extra"),
-    ("molt_glob_iglob", "stdlib_fs_extra"),
-    ("molt_glob_pattern", "stdlib_fs_extra"),
-    ("molt_tempfile_", "stdlib_fs_extra"),
-    # archive: zipfile
-    ("molt_zipfile_", "stdlib_archive"),
-    # tk: tkinter GUI bindings
-    ("molt_tk_", "stdlib_tk"),
-    # networking: http, urllib. SSL keeps an always-linkable ABI because
-    # asyncio imports ssl eagerly even in micro profiles; runtime operations
-    # without net support raise from the Rust intrinsic implementation.
-    ("molt_http_", "stdlib_net"),
-    ("molt_urllib_", "stdlib_net"),
-    ("molt_ipaddress_", "stdlib_net"),
-    # asyncio: event loop, futures, tasks, queues, streams, transports
-    ("molt_asyncio_", "stdlib_asyncio"),
-    ("molt_event_loop_", "stdlib_asyncio"),
-    ("molt_pipe_transport_", "stdlib_asyncio"),
-    # email
-    ("molt_email_", "stdlib_email"),
-    # decimal
-    ("molt_decimal_", "stdlib_decimal"),
-    # logging core lives behind stdlib_logging; stateful LogRecord/Logger/etc.
-    # registries live in the extracted stdlib_logging_ext crate.
-    ("molt_logging_record_", "stdlib_logging_ext"),
-    ("molt_logging_formatter_", "stdlib_logging_ext"),
-    ("molt_logging_handler_", "stdlib_logging_ext"),
-    ("molt_logging_stream_handler_", "stdlib_logging_ext"),
-    ("molt_logging_logger_", "stdlib_logging_ext"),
-    ("molt_logging_manager_", "stdlib_logging_ext"),
-    ("molt_logging_root_logger", "stdlib_logging_ext"),
-    ("molt_logging_basic_config", "stdlib_logging_ext"),
-    ("molt_logging_shutdown", "stdlib_logging_ext"),
-    ("molt_logging_get_level_name", "stdlib_logging_ext"),
-    ("molt_logging_add_level_name", "stdlib_logging_ext"),
-    ("molt_logging_level_to_int", "stdlib_logging_ext"),
-    ("molt_logging_", "stdlib_logging"),
-    # concurrent
-    ("molt_concurrent_", "stdlib_concurrent"),
-    # dbm
-    ("molt_dbm_", "stdlib_dbm"),
-    # importlib.resources and importlib.metadata
-    ("molt_importlib_resources_", "stdlib_importlib_extra"),
-    ("molt_importlib_metadata_", "stdlib_importlib_extra"),
-    # csv
-    ("molt_csv_", "stdlib_csv"),
-    # signal
-    ("molt_signal_", "stdlib_signal"),
-    # select
-    ("molt_select_", "stdlib_select"),
-    # low-level tinygrad GPU primitive bridge
-    ("molt_gpu_prim_", "molt_gpu_primitives"),
-    # sqlite3 driver: pulls in rusqlite + bundled SQLite via molt-db.
-    ("molt_sqlite3_", "sqlite"),
-]
+
+# The symbol-prefix -> Cargo-feature gate mapping is the single source of truth
+# shared with the frontend's compile-time profile-availability refusal. It lives
+# in the shipped `molt` package (`src/molt/_runtime_feature_gates.py`) so the
+# build-time gate generation here depends on the shipped data — not the reverse.
+# Load it by file path to avoid importing the `molt` package (and its
+# `__init__` side effects) from this standalone dev tool.
+def _load_runtime_feature_gates():
+    gates_path = ROOT / "src/molt/_runtime_feature_gates.py"
+    spec = importlib.util.spec_from_file_location(
+        "molt_gen_intrinsics_feature_gates", gates_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load feature-gate table: {gates_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def _feature_gate_for_symbol(symbol: str) -> str | None:
-    """Return the Cargo feature gate for *symbol*, or None if ungated."""
-    best: tuple[int, str] | None = None
-    for prefix, feature in _SYMBOL_FEATURE_GATES:
-        if symbol.startswith(prefix):
-            prefix_len = len(prefix)
-            if best is None or prefix_len > best[0]:
-                best = (prefix_len, feature)
-    return best[1] if best is not None else None
+_FEATURE_GATES_MODULE = _load_runtime_feature_gates()
+
+# Re-exported under the historical names so callers/tests in this module keep
+# working. Ordering matters: longest prefix wins (resolved by
+# `feature_gate_for_symbol`).
+_SYMBOL_FEATURE_GATES: list[tuple[str, str]] = list(
+    _FEATURE_GATES_MODULE.RUNTIME_FEATURE_GATES
+)
+_feature_gate_for_symbol = _FEATURE_GATES_MODULE.feature_gate_for_symbol
 
 
 _DEF_RE = re.compile(
