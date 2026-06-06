@@ -87,6 +87,30 @@ pub fn run_pipeline(
     super::pass_manager::build_default_pipeline(tti.clone()).run(func)
 }
 
+/// Run the RC drop-insertion phase (design 20) on a single function: the
+/// `drop_insertion` + `refcount_elim_post` passes, run as a SEPARATE terminal
+/// phase AFTER all per-function optimization and all module-level transforms.
+///
+/// This is the round-7 structural separation: drop insertion is NOT part of
+/// [`run_pipeline`] (which the inliner's per-caller re-opt and module-slot
+/// promotion's re-opt both run mid-transform). Seeding `DecRef`/`IncRef` into a
+/// loop before [`module_slot_promotion`](super::module_slot_promotion) runs makes
+/// promotion refuse the slot (a refcount barrier in the loop is unsound to
+/// promote across), leaving the accumulator in the module dict — ~5× slower. By
+/// running drops only here, after the module phase has settled the IR, promotion
+/// sees the clean loop and drops land on the final shape. See
+/// [`build_drop_pipeline`](super::pass_manager::build_drop_pipeline).
+///
+/// The pass is idempotent (bails on the `drop_inserted` marker), so calling this
+/// on an already-drop-processed function is a safe no-op; backends nonetheless
+/// run it exactly once per function (the module phase finalizer).
+pub fn run_drop_phase(
+    func: &mut super::function::TirFunction,
+    tti: &super::target_info::TargetInfo,
+) -> Vec<PassStats> {
+    super::pass_manager::build_drop_pipeline(tti.clone()).run(func)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -165,8 +189,6 @@ mod tests {
                 "overflow_peel",
                 "copy_prop",
                 "dce",
-                "drop_insertion",
-                "refcount_elim_post",
             ],
         );
     }

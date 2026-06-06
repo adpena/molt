@@ -6,6 +6,7 @@ pub mod call_graph;
 pub mod cfg;
 pub mod deopt;
 pub mod dominators;
+pub mod drop_phase;
 pub mod function;
 pub mod pass_manager;
 pub mod lir;
