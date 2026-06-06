@@ -279,6 +279,23 @@ pub(super) fn opcode_is_cse_safe(opcode: OpCode) -> bool {
     e.consistent && e.effect_free
 }
 
+/// True if `opcode` is a deterministic, side-effect-free computation that may
+/// raise — i.e. `PURE_MAY_THROW` exactly: CSE-safe but NOT unconditionally
+/// hoistable. This is the family `{Div, FloorDiv, Mod, Pow, Shl, Shr}` (divide
+/// by zero / `0 ** -1` / out-of-range or negative shift count).
+///
+/// It is precisely `opcode_is_cse_safe && !opcode_is_pure_movable` (CSE-safe but
+/// not nothrow), exposed as a named predicate so LICM can identify the ops whose
+/// hoistability becomes conditional on their throw-condition being *disproven*
+/// at the hoist site (e.g. a value-range proof that a shift count is in `[0, 63]`
+/// or a divisor is non-zero). The opcode-level classification alone never makes
+/// such an op hoistable — the caller MUST supply the per-instance throw-disproof.
+#[inline]
+pub(super) fn opcode_is_pure_may_throw(opcode: OpCode) -> bool {
+    let e = opcode_effects(opcode);
+    e.consistent && e.effect_free && !e.nothrow
+}
+
 /// True if `opcode` belongs to the GVN *type-gated* numberable family: a
 /// CSE-safe arithmetic/comparison/bitwise/boolean computation whose purity is
 /// conditional on its operands being primitive types. GVN enforces that operand
@@ -874,6 +891,21 @@ mod tests {
             extra, expected,
             "CSE-extra-over-movable must be exactly the pure_may_throw family \
              {{Div, FloorDiv, Mod, Pow, Shl, Shr}}"
+        );
+
+        // The named `opcode_is_pure_may_throw` predicate (consumed by LICM's
+        // throw-disproven hoist gate, #49) must pin to exactly that same family —
+        // it is `cse_safe && !pure_movable` by definition, asserted here so a
+        // future op-kind reclassification cannot silently widen the set LICM
+        // would attempt to conditionally hoist.
+        let mut named: Vec<OpCode> = all_opcodes()
+            .into_iter()
+            .filter(|&op| opcode_is_pure_may_throw(op))
+            .collect();
+        named.sort_by_key(|op| format!("{op:?}"));
+        assert_eq!(
+            named, expected,
+            "opcode_is_pure_may_throw must be exactly {{Div, FloorDiv, Mod, Pow, Shl, Shr}}"
         );
     }
 }

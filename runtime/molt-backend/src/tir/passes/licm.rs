@@ -40,11 +40,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::value_range::{ValueRange, ValueRangeResult};
 use super::PassStats;
 use crate::tir::analysis::{AnalysisManager, DefMap, LoopForest};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::TirOp;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 /// Returns `true` if the op is pure and safe to hoist out of a loop.
@@ -57,9 +58,64 @@ use crate::tir::values::ValueId;
 ///
 /// Hoisting requires the FULL pure-movable property (including `nothrow`):
 /// moving an op above the loop guard changes whether/when it would raise, so a
-/// may-throw op (e.g. `Div`) must not be hoisted even though it is CSE-safe.
-fn is_hoistable(op: &TirOp) -> bool {
-    super::effects::opcode_is_pure_movable(op.opcode) || op.is_plain_value_copy()
+/// may-throw op (e.g. `Div`) must not be hoisted even though it is CSE-safe —
+/// UNLESS its specific throw condition is *disproven* at the hoist site, which
+/// [`throw_condition_disproven`] decides per-instance from the value-range proof
+/// (a shift whose count is in `[0, 63]`, a divide whose divisor is non-zero).
+fn is_hoistable(op: &TirOp, vr: &ValueRangeResult) -> bool {
+    super::effects::opcode_is_pure_movable(op.opcode)
+        || op.is_plain_value_copy()
+        || (super::effects::opcode_is_pure_may_throw(op.opcode) && throw_condition_disproven(op, vr))
+}
+
+/// True when a `pure_may_throw` op (`{Div, FloorDiv, Mod, Pow, Shl, Shr}`) is
+/// PROVEN not to raise on its operands — so hoisting it above the loop guard
+/// cannot move an observable raise earlier (it would never have raised). This is
+/// the honest generalization of the hoist gate: "throw-condition disproven",
+/// parameterized per opcode, each arm reusing the SINGLE value-range proof the
+/// raw-i64 lane already uses (no duplicated proof logic).
+///
+///   * **`Shl` / `Shr`**: a negative shift count raises `ValueError`, and a
+///     count `>= 64` is a wrong-value machine shift on the raw lane. The op is
+///     nothrow-and-well-defined iff the count operand is range-proven in
+///     `[0, 63]` — the exact gate the raw-i64 shift seed
+///     (`representation_plan::raw_i64_safe_value_seed`) applies. We DO NOT
+///     additionally require the result to fit the inline window: hoisting is a
+///     *position* change, not a representation change — a hoisted `x << k` whose
+///     result is a heap BigInt is still computed (boxed) in the preheader,
+///     correctly, exactly once. The only property hoisting needs is that the
+///     shift does not *raise* where the loop guard used to protect it, i.e. a
+///     non-negative, in-machine-range count.
+///   * **`Div` / `FloorDiv` / `Mod`**: a zero divisor raises
+///     `ZeroDivisionError`. The op is nothrow iff the divisor operand
+///     `proves_nonzero()` — the same predicate the WASM raw `sdiv`/`srem` lane
+///     uses (#42). (Integer `i64::MIN / -1` overflow is a separate concern that
+///     does not raise in Python — it produces a bigint — and is handled by the
+///     boxed lowering, not a raise, so it does not block the hoist.)
+///   * **`Pow`**: REFUSED. `x ** y` raises `ZeroDivisionError` for `0 ** -1` and
+///     returns a float for a negative integer exponent, so the nothrow
+///     condition couples base AND exponent ranges (and the int/float result
+///     repr); it is not trivially range-provable. We never hoist `Pow` here —
+///     documenting the refusal rather than shipping an unsound or fragile gate.
+///     CSE of `Pow` (under dominance) is unaffected; only the hoist is withheld.
+fn throw_condition_disproven(op: &TirOp, vr: &ValueRangeResult) -> bool {
+    match op.opcode {
+        OpCode::Shl | OpCode::Shr => {
+            // Count operand proven in the valid machine-shift range [0, 63].
+            op.operands.get(1).is_some_and(|&count| {
+                let r = vr.range_of(count);
+                r.lo >= 0 && r.hi <= 63
+            })
+        }
+        OpCode::Div | OpCode::FloorDiv | OpCode::Mod => {
+            // Divisor proven to exclude zero.
+            op.operands
+                .get(1)
+                .is_some_and(|&divisor| vr.range_of(divisor).proves_nonzero())
+        }
+        // Pow's throw condition is not a single-operand range fact — refuse.
+        _ => false,
+    }
 }
 
 /// Find the preheader block for a loop header.
@@ -127,6 +183,17 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     if forest.headers.is_empty() {
         return stats;
     }
+
+    // Value-range proof, shared with BCE/SROA via the analysis manager. Used to
+    // DISPROVE the throw condition of a `pure_may_throw` op (a shift whose count
+    // is in `[0, 63]`, a divide whose divisor is non-zero), which makes that op
+    // provably nothrow at the hoist site and therefore LICM-hoistable. Cloned
+    // because we take `&mut func.blocks` below; the analysis is a pure function
+    // of the function and LICM only moves invariant ops (never changes any value
+    // range), so the snapshot stays valid across the hoists. (A hoisted op keeps
+    // its operands and result `ValueId`s, so the value-keyed ranges still line
+    // up after the move.)
+    let vr = am.get::<ValueRange>(func).clone();
 
     // Process all loops, innermost first, so ops hoisted from an inner
     // loop's body into the inner preheader become visible to the
@@ -226,7 +293,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 let mut to_hoist: Vec<usize> = Vec::new();
 
                 for (i, op) in block.ops.iter().enumerate() {
-                    if !is_hoistable(op) {
+                    if !is_hoistable(op, &vr) {
                         continue;
                     }
                     if op.results.is_empty() {
@@ -1067,6 +1134,223 @@ mod tests {
         assert!(
             body_ops.iter().any(|op| op.opcode == OpCode::Add),
             "Add should remain in the loop body (not invariant)"
+        );
+    }
+
+    // ── #49: proven-safe `pure_may_throw` hoist gate ────────────────────────
+
+    /// Direct unit coverage of the throw-disproof predicate against a
+    /// hand-built `ValueRangeResult`, exercising every per-opcode arm and the
+    /// `Pow` refusal — independent of the full pipeline.
+    #[test]
+    fn throw_condition_disproven_per_opcode() {
+        let mut vr = ValueRangeResult::default();
+        let x = ValueId(1);
+        let count_ok = ValueId(2); // [0, 63]
+        let count_neg = ValueId(3); // [-4, 10] (straddles negative)
+        let count_big = ValueId(4); // [0, 200] (exceeds 63)
+        let count_unknown = ValueId(5); // FULL
+        let divisor_nz = ValueId(6); // [1, 9] (non-zero)
+        let divisor_zero = ValueId(7); // [-2, 5] (straddles zero)
+        let _ = x;
+        vr.set_global_range_for_test(count_ok, 0, 63);
+        vr.set_global_range_for_test(count_neg, -4, 10);
+        vr.set_global_range_for_test(count_big, 0, 200);
+        vr.set_global_range_for_test(divisor_nz, 1, 9);
+        vr.set_global_range_for_test(divisor_zero, -2, 5);
+        // count_unknown deliberately left absent (FULL).
+
+        // Shl / Shr: disproven iff count in [0, 63].
+        assert!(throw_condition_disproven(
+            &make_binop(OpCode::Shl, x, count_ok, ValueId(20)),
+            &vr
+        ));
+        assert!(throw_condition_disproven(
+            &make_binop(OpCode::Shr, x, count_ok, ValueId(21)),
+            &vr
+        ));
+        assert!(
+            !throw_condition_disproven(
+                &make_binop(OpCode::Shl, x, count_neg, ValueId(22)),
+                &vr
+            ),
+            "a possibly-negative count can raise ValueError — must NOT be disproven"
+        );
+        assert!(
+            !throw_condition_disproven(
+                &make_binop(OpCode::Shl, x, count_big, ValueId(23)),
+                &vr
+            ),
+            "a count > 63 is a wrong-value machine shift — must NOT be disproven"
+        );
+        assert!(
+            !throw_condition_disproven(
+                &make_binop(OpCode::Shl, x, count_unknown, ValueId(24)),
+                &vr
+            ),
+            "an unknown count must NOT be disproven (fail-closed)"
+        );
+
+        // Div / FloorDiv / Mod: disproven iff divisor proven non-zero.
+        for opcode in [OpCode::Div, OpCode::FloorDiv, OpCode::Mod] {
+            assert!(
+                throw_condition_disproven(
+                    &make_binop(opcode, x, divisor_nz, ValueId(30)),
+                    &vr
+                ),
+                "{opcode:?} with a non-zero divisor must be disproven"
+            );
+            assert!(
+                !throw_condition_disproven(
+                    &make_binop(opcode, x, divisor_zero, ValueId(31)),
+                    &vr
+                ),
+                "{opcode:?} with a possibly-zero divisor must NOT be disproven"
+            );
+        }
+
+        // Pow: REFUSED unconditionally (gnarly base/exponent coupling).
+        assert!(
+            !throw_condition_disproven(
+                &make_binop(OpCode::Pow, x, divisor_nz, ValueId(40)),
+                &vr
+            ),
+            "Pow's throw condition is not a single-operand range fact — always refused"
+        );
+    }
+
+    /// Build a loop whose body contains a loop-invariant `y = x << k` (both `x`
+    /// and `k` defined in the preheader), with `k` a `ConstInt` whose value
+    /// determines whether the shift's `ValueError` throw is range-disproven.
+    /// Returns the function plus the loop-body block id and the shift result id.
+    fn invariant_shift_loop(shift_count: i64) -> (TirFunction, BlockId, ValueId) {
+        let mut func = TirFunction::new("sh".into(), vec![TirType::I64], TirType::I64);
+        let x = ValueId(0); // param — loop-invariant
+        let preheader = func.fresh_block();
+        let loop_header = func.fresh_block();
+        let loop_body = func.fresh_block();
+        let exit = func.fresh_block();
+
+        let k = func.fresh_value(); // ConstInt shift count (preheader → invariant)
+        let loop_var = func.fresh_value();
+        let y = func.fresh_value(); // x << k — the hoist candidate
+        let use_val = func.fresh_value();
+        let cond = func.fresh_value();
+        let result = func.fresh_value();
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.terminator = Terminator::Branch {
+                target: preheader,
+                args: vec![],
+            };
+        }
+        // Preheader defines the invariant shift count `k`.
+        func.blocks.insert(
+            preheader,
+            TirBlock {
+                id: preheader,
+                args: vec![],
+                ops: vec![make_const_int(shift_count, k)],
+                terminator: Terminator::Branch {
+                    target: loop_header,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            loop_header,
+            TirBlock {
+                id: loop_header,
+                args: vec![TirValue { id: loop_var, ty: TirType::I64 }],
+                ops: vec![make_const_int(1, cond)],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: loop_body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        // Body: y = x << k (invariant!), then use it locally and loop back.
+        func.blocks.insert(
+            loop_body,
+            TirBlock {
+                id: loop_body,
+                args: vec![],
+                ops: vec![
+                    make_binop(OpCode::Shl, x, k, y),
+                    make_binop(OpCode::Add, y, loop_var, use_val),
+                ],
+                terminator: Terminator::Branch {
+                    target: loop_header,
+                    args: vec![use_val],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![TirValue { id: result, ty: TirType::I64 }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![result] },
+            },
+        );
+        func.loop_roles.insert(loop_header, LoopRole::LoopHeader);
+        (func, loop_body, y)
+    }
+
+    #[test]
+    fn invariant_shift_with_proven_count_is_hoisted() {
+        // y = x << 12: count 12 is range-proven in [0, 63] -> ValueError throw
+        // disproven -> the shift is provably nothrow at the hoist site -> hoisted.
+        let (mut func, loop_body, _y) = invariant_shift_loop(12);
+        run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+        let body_has_shl = func.blocks[&loop_body]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Shl);
+        assert!(
+            !body_has_shl,
+            "loop-invariant `x << 12` (count proven [0,63]) must be hoisted out of the loop"
+        );
+    }
+
+    #[test]
+    fn invariant_shift_with_unprovable_count_is_not_hoisted() {
+        // y = x << 80: count 80 is OUTSIDE [0, 63] -> the raw machine shift is a
+        // wrong value (and CPython produces a bigint, but the point is the throw/
+        // well-definedness is NOT disproven) -> must NOT be hoisted above the
+        // guard. It stays in the loop on the boxed lane (BigInt-correct).
+        let (mut func, loop_body, _y) = invariant_shift_loop(80);
+        run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+        let body_has_shl = func.blocks[&loop_body]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Shl);
+        assert!(
+            body_has_shl,
+            "`x << 80` (count outside [0,63]) must NOT be hoisted — throw/well-definedness not disproven"
+        );
+    }
+
+    #[test]
+    fn invariant_negative_shift_count_is_not_hoisted() {
+        // y = x << -1: a negative count raises ValueError every iteration the
+        // loop runs. Hoisting it would move that raise to the preheader, where it
+        // fires even if the loop body would never execute (zero-trip). The throw
+        // is NOT disproven (count range [-1,-1] has lo < 0) -> must NOT hoist.
+        let (mut func, loop_body, _y) = invariant_shift_loop(-1);
+        run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+        let body_has_shl = func.blocks[&loop_body]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::Shl);
+        assert!(
+            body_has_shl,
+            "`x << -1` raises ValueError — hoisting would move the raise above the guard"
         );
     }
 }
