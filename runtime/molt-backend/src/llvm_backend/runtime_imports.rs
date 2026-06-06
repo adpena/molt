@@ -954,6 +954,13 @@ mod tests {
         assert!(module.get_function("molt_get_attr_name").is_some());
         assert!(module.get_function("molt_raise").is_some());
         assert!(module.get_function("molt_is_truthy").is_some());
+        // The augmented-assignment entries the boxed `emit_binary_arith` path
+        // calls through `call_runtime_2` (which requires pre-declaration). A
+        // TIR→LLVM-lowered function carrying `+=`/`-=`/`*=` (an inlined or
+        // generator-fused caller) panics without these.
+        assert!(module.get_function("molt_inplace_add").is_some());
+        assert!(module.get_function("molt_inplace_sub").is_some());
+        assert!(module.get_function("molt_inplace_mul").is_some());
     }
 
     #[test]
