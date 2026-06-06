@@ -116,6 +116,18 @@ from molt.frontend._types import (
     normalize_type_hint,
 )
 
+# Frontend op.kind tables generated from runtime/molt-backend/src/tir/op_kinds.toml
+# (the cross-component single source of truth; tools/gen_op_kinds.py renders this,
+# tests/test_gen_op_kinds.py pins it in sync). These REPLACE the formerly hand-kept
+# _RAISING_OP_KINDS / CHECK_EXCEPTION skip set / _augassign_op_kind tables (task #44
+# F2a), killing the frontend⇄backend dual raising-oracle drift.
+from molt.frontend.lowering.op_kinds_generated import (
+    AUGASSIGN_OP_KIND,
+    BINOP_OP_KIND,
+    CHECK_EXCEPTION_SKIP_KINDS,
+    RAISING_KIND_NAMES,
+)
+
 # Visitor / lowering mixins composed into SimpleTIRGenerator (F1 decomposition).
 from molt.frontend.lowering.serialization import SerializationMixin
 from molt.frontend.visitors.pattern_match import PatternMatchMixin
@@ -1164,75 +1176,14 @@ class SimpleTIRGenerator(
                             )
                         )
 
-    # Op kinds that can raise exceptions at runtime and should carry
-    # expression-level col_offset for traceback caret annotations.
-    _RAISING_OP_KINDS = frozenset(
-        {
-            "ADD",
-            "SUB",
-            "MUL",
-            "DIV",
-            "FLOORDIV",
-            "MOD",
-            "POW",
-            "LSHIFT",
-            "RSHIFT",
-            "BIT_AND",
-            "BIT_OR",
-            "BIT_XOR",
-            "INPLACE_ADD",
-            "INPLACE_SUB",
-            "INPLACE_MUL",
-            "INPLACE_DIV",
-            "INPLACE_FLOORDIV",
-            "INPLACE_MOD",
-            "INPLACE_POW",
-            "INPLACE_LSHIFT",
-            "INPLACE_RSHIFT",
-            "INPLACE_MATMUL",
-            "EQ",
-            "NE",
-            "LT",
-            "LE",
-            "GT",
-            "GE",
-            "GET_ATTR",
-            "SET_ATTR",
-            "DEL_ATTR",
-            "GETATTR_GENERIC_OBJ",
-            "GETATTR_GENERIC_PTR",
-            "GETATTR_NAME",
-            "GETATTR_NAME_DEFAULT",
-            "GETATTR_SPECIAL_OBJ",
-            "GUARDED_GETATTR",
-            "MODULE_GET_ATTR",
-            "MODULE_IMPORT_FROM",
-            "MODULE_GET_GLOBAL",
-            "SETATTR_GENERIC_OBJ",
-            "SETATTR_GENERIC_PTR",
-            "INDEX",
-            "STORE_INDEX",
-            "DEL_INDEX",
-            "CALL",
-            "CALL_FUNC",
-            "CALL_METHOD",
-            "CALL_BUILTIN",
-            "CALL_INDIRECT",
-            "CALL_GUARDED",
-            "CALL_BIND",
-            "GET_ITER",
-            "ITER_NEXT",
-            "FOR_ITER",
-            "IMPORT",
-            "IMPORT_FROM",
-        }
-    )
-
     def emit(self, op: MoltOp) -> None:
-        # Auto-attach expression column offsets to raising ops.
+        # Auto-attach expression column offsets to raising ops. RAISING_KIND_NAMES
+        # is generated from runtime/molt-backend/src/tir/op_kinds.toml (the
+        # [[frontend_raising_kind]] table cross-checked against the [[opcode]]
+        # may_throw oracle) — see the module-level import.
         if (
             op.col_offset is None
-            and op.kind in self._RAISING_OP_KINDS
+            and op.kind in RAISING_KIND_NAMES
             and getattr(self, "_expr_col", None) is not None
         ):
             op.col_offset, op.end_col_offset = self._expr_col
@@ -1255,87 +1206,12 @@ class SimpleTIRGenerator(
             if self.function_exception_label is None:
                 return
             handler_label = self.function_exception_label
-        if op.kind in {
-            "CHECK_EXCEPTION",
-            "TRY_START",
-            "TRY_END",
-            "LABEL",
-            "STATE_LABEL",
-            "JUMP",
-            "BR_IF",
-            "IF",
-            "ELSE",
-            "END_IF",
-            "LOOP_START",
-            "LOOP_END",
-            "LOOP_CONTINUE",
-            "LOOP_BREAK",
-            "LOOP_BREAK_IF_TRUE",
-            "LOOP_BREAK_IF_FALSE",
-            "LOOP_BREAK_IF_EXCEPTION",
-            "LOOP_INDEX_START",
-            "LOOP_INDEX_NEXT",
-            "STATE_TRANSITION",
-            "STATE_YIELD",
-            "PHI",
-            "RAISE",
-            "RAISE_CAUSE",
-            "RERAISE",
-            "EXCEPTION_PUSH",
-            "EXCEPTION_POP",
-            "EXCEPTION_STACK_CLEAR",
-            "EXCEPTION_STACK_ENTER",
-            "EXCEPTION_STACK_EXIT",
-            "EXCEPTION_STACK_DEPTH",
-            "EXCEPTION_STACK_SET_DEPTH",
-            "EXCEPTION_CLEAR",
-            "EXCEPTION_LAST",
-            "EXCEPTION_LAST_PENDING",
-            "EXCEPTION_SET_CAUSE",
-            "EXCEPTION_SET_LAST",
-            "EXCEPTION_CONTEXT_SET",
-            "EXCEPTION_MATCH_BUILTIN",
-            "CONTEXT_UNWIND_TO",
-            "LINE",
-            "TRACE_ENTER_SLOT",
-            "TRACE_EXIT",
-            "CONST",
-            "CONST_NONE",
-            "CONST_BOOL",
-            "CONST_STR",
-            "CONST_FLOAT",
-            "CONST_BYTES",
-            "CONST_NOT_IMPLEMENTED",
-            "CONST_ELLIPSIS",
-            "CALLARGS_NEW",
-            "CALLARGS_PUSH_POS",
-            "CALLARGS_PUSH_KW",
-            "CALLARGS_EXPAND_STAR",
-            "CALLARGS_EXPAND_KWSTAR",
-            "IS",
-            "IS_NOT",
-            "NOT",
-            "COPY",
-            "INC_REF",
-            "DEC_REF",
-            "BORROW",
-            "RELEASE",
-            "EXCEPTION_NEW_BUILTIN_EMPTY",
-            "EXCEPTION_NEW_BUILTIN_ONE",
-            "EXCEPTION_NEW_BUILTIN",
-            "MISSING",
-            "TUPLE_NEW",
-            "LIST_NEW",
-            "DICT_NEW",
-            "SET_NEW",
-            "CODE_NEW",
-            "FUNC_NEW",
-            "CODE_SLOT_SET",
-            "CLASSMETHOD_NEW",
-            "STATICMETHOD_NEW",
-            "PROPERTY_NEW",
-            "ret",
-        }:
+        # CHECK_EXCEPTION_SKIP_KINDS is generated from op_kinds.toml's
+        # [[frontend_check_exception_skip]] table (control-flow / structural
+        # kinds, plus RAISE / STATE_TRANSITION whose exceptional edge is handled
+        # structurally). Opcode-backed members are cross-checked against the
+        # may_throw oracle at generation. See the module-level import.
+        if op.kind in CHECK_EXCEPTION_SKIP_KINDS:
             return
         self.current_ops.append(
             MoltOp(
@@ -10622,8 +10498,12 @@ class SimpleTIRGenerator(
         res_type = "Unknown"
         hint_src: MoltValue | None = None
         complex_in = "complex" in {left.type_hint, right.type_hint}
+        # The op.kind is registry data (BINOP_OP_KIND, generated from op_kinds.toml's
+        # [[binary_op]] table — EXHAUSTIVE over ast.operator). The isinstance chain
+        # below now selects ONLY the static result-type hint; a node.op outside the
+        # 13 ast.operator subclasses keeps the "UNKNOWN" kind / "Unknown" hint.
+        op_kind = BINOP_OP_KIND.get(type(node.op).__name__, "UNKNOWN")
         if isinstance(node.op, ast.Add):
-            op_kind = "ADD"
             if left.type_hint == right.type_hint and left.type_hint in {
                 "int",
                 "float",
@@ -10640,7 +10520,6 @@ class SimpleTIRGenerator(
             elif complex_in:
                 res_type = "complex"
         elif isinstance(node.op, ast.Sub):
-            op_kind = "SUB"
             if left.type_hint == right.type_hint == "int":
                 res_type = "int"
             elif "float" in {left.type_hint, right.type_hint}:
@@ -10653,7 +10532,6 @@ class SimpleTIRGenerator(
             }:
                 res_type = left.type_hint
         elif isinstance(node.op, ast.Mult):
-            op_kind = "MUL"
             if left.type_hint == right.type_hint == "int":
                 res_type = "int"
             elif "float" in {left.type_hint, right.type_hint}:
@@ -10667,28 +10545,23 @@ class SimpleTIRGenerator(
                 res_type = right.type_hint
                 hint_src = right
         elif isinstance(node.op, ast.Div):
-            op_kind = "DIV"
             res_type = "complex" if complex_in else "float"
         elif isinstance(node.op, ast.FloorDiv):
-            op_kind = "FLOORDIV"
             if left.type_hint == right.type_hint == "int":
                 res_type = "int"
             elif "float" in {left.type_hint, right.type_hint}:
                 res_type = "float"
         elif isinstance(node.op, ast.Mod):
-            op_kind = "MOD"
             if left.type_hint == right.type_hint == "int":
                 res_type = "int"
             elif "float" in {left.type_hint, right.type_hint}:
                 res_type = "float"
         elif isinstance(node.op, ast.Pow):
-            op_kind = "POW"
             if complex_in:
                 res_type = "complex"
             elif "float" in {left.type_hint, right.type_hint}:
                 res_type = "float"
         elif isinstance(node.op, ast.BitOr):
-            op_kind = "BIT_OR"
             if left.type_hint == right.type_hint == "bool":
                 res_type = "bool"
             elif {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
@@ -10699,7 +10572,6 @@ class SimpleTIRGenerator(
             }:
                 res_type = left.type_hint
         elif isinstance(node.op, ast.BitAnd):
-            op_kind = "BIT_AND"
             if left.type_hint == right.type_hint == "bool":
                 res_type = "bool"
             elif {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
@@ -10710,7 +10582,6 @@ class SimpleTIRGenerator(
             }:
                 res_type = left.type_hint
         elif isinstance(node.op, ast.BitXor):
-            op_kind = "BIT_XOR"
             if left.type_hint == right.type_hint == "bool":
                 res_type = "bool"
             elif {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
@@ -10721,19 +10592,14 @@ class SimpleTIRGenerator(
             }:
                 res_type = left.type_hint
         elif isinstance(node.op, ast.LShift):
-            op_kind = "LSHIFT"
             if {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
                 res_type = "int"
         elif isinstance(node.op, ast.RShift):
-            op_kind = "RSHIFT"
             if {left.type_hint, right.type_hint}.issubset({"int", "bool"}):
                 res_type = "int"
         elif isinstance(node.op, ast.MatMult):
-            op_kind = "MATMUL"
             if left.type_hint == right.type_hint == "buffer2d":
                 res_type = "buffer2d"
-        else:
-            op_kind = "UNKNOWN"
         res = MoltValue(self.next_var(), type_hint=res_type)
         self.emit(MoltOp(kind=op_kind, args=[left, right], result=res))
         if hint_src is not None:
@@ -13930,33 +13796,18 @@ class SimpleTIRGenerator(
         # static int/float fast lanes remain identical to the binary op because
         # builtin int/float define no in-place dunders (so += on an int is byte-
         # identical whether it routes through molt_add or molt_inplace_add).
-        if isinstance(op, ast.Add):
-            return "INPLACE_ADD"
-        if isinstance(op, ast.Sub):
-            return "INPLACE_SUB"
-        if isinstance(op, ast.Mult):
-            return "INPLACE_MUL"
-        if isinstance(op, ast.Div):
-            return "INPLACE_DIV"
-        if isinstance(op, ast.FloorDiv):
-            return "INPLACE_FLOORDIV"
-        if isinstance(op, ast.Mod):
-            return "INPLACE_MOD"
-        if isinstance(op, ast.Pow):
-            return "INPLACE_POW"
-        if isinstance(op, ast.BitOr):
-            return "INPLACE_BIT_OR"
-        if isinstance(op, ast.BitAnd):
-            return "INPLACE_BIT_AND"
-        if isinstance(op, ast.BitXor):
-            return "INPLACE_BIT_XOR"
-        if isinstance(op, ast.LShift):
-            return "INPLACE_LSHIFT"
-        if isinstance(op, ast.RShift):
-            return "INPLACE_RSHIFT"
-        if isinstance(op, ast.MatMult):
-            return "INPLACE_MATMUL"
-        raise NotImplementedError("Unsupported augmented assignment operator")
+        #
+        # AUGASSIGN_OP_KIND is generated from op_kinds.toml's [[binary_op]] table,
+        # which is EXHAUSTIVE over ast.operator (a missing operator is a
+        # generation-time failure — the task-#27 lesson). A KeyError here would
+        # mean a NEW ast.operator subclass CPython added that the registry has
+        # not yet been regenerated for.
+        try:
+            return AUGASSIGN_OP_KIND[type(op).__name__]
+        except KeyError:
+            raise NotImplementedError(
+                f"Unsupported augmented assignment operator: {type(op).__name__}"
+            ) from None
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         op_kind = self._augassign_op_kind(node.op)

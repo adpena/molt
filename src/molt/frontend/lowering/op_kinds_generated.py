@@ -9,6 +9,17 @@
 # `CANONICAL_KIND` maps every alias spelling to its canonical wire kind; the
 # emitter routes its spelling through it so a `floordiv`/`floor_div`-style schism
 # can never re-open. `tests/test_gen_op_kinds.py` pins this file in sync.
+#
+# This file ALSO carries the frontend's four pre-serialization `op.kind` tables
+# (molt task #44, F2a), absorbed from the hand-kept structures that previously
+# lived in src/molt/frontend/__init__.py:
+#   RAISING_KIND_NAMES         — op.kinds that can raise (emit() attaches the
+#                                caret col_offset), from [[frontend_raising_kind]].
+#   CHECK_EXCEPTION_SKIP_KINDS — op.kinds after which emit() skips the auto
+#                                CHECK_EXCEPTION, from [[frontend_check_exception_skip]].
+#   BINOP_OP_KIND / AUGASSIGN_OP_KIND — ast.operator subclass __name__ -> the
+#                                binary / augmented-assignment op.kind, from
+#                                [[binary_op]] (EXHAUSTIVE over ast.operator).
 
 from __future__ import annotations
 
@@ -267,6 +278,197 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "warn_stderr",
     }
 )
+
+# Frontend `op.kind`s that can raise at runtime — emit() attaches the
+# expression-level col_offset for traceback caret annotations. Each row
+# is either an opcode-mapped may_throw kind (cross-checked against the
+# [[opcode]] oracle at generation) or a documented frontend-specific kind.
+RAISING_KIND_NAMES: frozenset[str] = frozenset(
+    {
+        "DIV",
+        "FLOORDIV",
+        "MOD",
+        "POW",
+        "LSHIFT",
+        "RSHIFT",
+        "GET_ATTR",
+        "SET_ATTR",
+        "DEL_ATTR",
+        "MODULE_GET_ATTR",
+        "MODULE_IMPORT_FROM",
+        "MODULE_GET_GLOBAL",
+        "INDEX",
+        "STORE_INDEX",
+        "DEL_INDEX",
+        "CALL",
+        "CALL_FUNC",
+        "CALL_METHOD",
+        "CALL_BUILTIN",
+        "CALL_INDIRECT",
+        "CALL_GUARDED",
+        "CALL_BIND",
+        "GET_ITER",
+        "ITER_NEXT",
+        "FOR_ITER",
+        "IMPORT",
+        "IMPORT_FROM",
+        "ADD",
+        "SUB",
+        "MUL",
+        "BIT_AND",
+        "BIT_OR",
+        "BIT_XOR",
+        "INPLACE_ADD",
+        "INPLACE_SUB",
+        "INPLACE_MUL",
+        "EQ",
+        "NE",
+        "LT",
+        "LE",
+        "GT",
+        "GE",
+        "INPLACE_DIV",
+        "INPLACE_FLOORDIV",
+        "INPLACE_MOD",
+        "INPLACE_POW",
+        "INPLACE_LSHIFT",
+        "INPLACE_RSHIFT",
+        "INPLACE_MATMUL",
+        "GETATTR_GENERIC_OBJ",
+        "GETATTR_GENERIC_PTR",
+        "GETATTR_NAME",
+        "GETATTR_NAME_DEFAULT",
+        "GETATTR_SPECIAL_OBJ",
+        "GUARDED_GETATTR",
+        "SETATTR_GENERIC_OBJ",
+        "SETATTR_GENERIC_PTR",
+    }
+)
+
+# Frontend `op.kind`s after which emit() does NOT auto-insert a
+# CHECK_EXCEPTION (control-flow / structural kinds, plus the two may_throw
+# kinds whose exceptional edge is handled structurally — RAISE,
+# STATE_TRANSITION). NOT the complement of may_throw; see op_kinds.toml.
+CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
+    {
+        "CHECK_EXCEPTION",
+        "TRY_START",
+        "TRY_END",
+        "STATE_YIELD",
+        "CONST",
+        "CONST_NONE",
+        "CONST_BOOL",
+        "CONST_STR",
+        "CONST_FLOAT",
+        "CONST_BYTES",
+        "IS",
+        "IS_NOT",
+        "NOT",
+        "COPY",
+        "INC_REF",
+        "DEC_REF",
+        "RAISE",
+        "STATE_TRANSITION",
+        "LABEL",
+        "STATE_LABEL",
+        "JUMP",
+        "BR_IF",
+        "IF",
+        "ELSE",
+        "END_IF",
+        "LOOP_START",
+        "LOOP_END",
+        "LOOP_CONTINUE",
+        "LOOP_BREAK",
+        "LOOP_BREAK_IF_TRUE",
+        "LOOP_BREAK_IF_FALSE",
+        "LOOP_BREAK_IF_EXCEPTION",
+        "LOOP_INDEX_START",
+        "LOOP_INDEX_NEXT",
+        "PHI",
+        "RAISE_CAUSE",
+        "RERAISE",
+        "EXCEPTION_PUSH",
+        "EXCEPTION_POP",
+        "EXCEPTION_STACK_CLEAR",
+        "EXCEPTION_STACK_ENTER",
+        "EXCEPTION_STACK_EXIT",
+        "EXCEPTION_STACK_DEPTH",
+        "EXCEPTION_STACK_SET_DEPTH",
+        "EXCEPTION_CLEAR",
+        "EXCEPTION_LAST",
+        "EXCEPTION_LAST_PENDING",
+        "EXCEPTION_SET_CAUSE",
+        "EXCEPTION_SET_LAST",
+        "EXCEPTION_CONTEXT_SET",
+        "EXCEPTION_MATCH_BUILTIN",
+        "CONTEXT_UNWIND_TO",
+        "LINE",
+        "TRACE_ENTER_SLOT",
+        "TRACE_EXIT",
+        "CONST_NOT_IMPLEMENTED",
+        "CONST_ELLIPSIS",
+        "CALLARGS_NEW",
+        "CALLARGS_PUSH_POS",
+        "CALLARGS_PUSH_KW",
+        "CALLARGS_EXPAND_STAR",
+        "CALLARGS_EXPAND_KWSTAR",
+        "BORROW",
+        "RELEASE",
+        "EXCEPTION_NEW_BUILTIN_EMPTY",
+        "EXCEPTION_NEW_BUILTIN_ONE",
+        "EXCEPTION_NEW_BUILTIN",
+        "MISSING",
+        "TUPLE_NEW",
+        "LIST_NEW",
+        "DICT_NEW",
+        "SET_NEW",
+        "CODE_NEW",
+        "FUNC_NEW",
+        "CODE_SLOT_SET",
+        "CLASSMETHOD_NEW",
+        "STATICMETHOD_NEW",
+        "PROPERTY_NEW",
+        "ret",
+    }
+)
+
+# `ast.operator` subclass __name__ -> the binary-form frontend op.kind
+# (visit_BinOp). EXHAUSTIVE over ast.operator (generation-time checked).
+BINOP_OP_KIND: dict[str, str] = {
+    "Add": "ADD",
+    "Sub": "SUB",
+    "Mult": "MUL",
+    "Div": "DIV",
+    "FloorDiv": "FLOORDIV",
+    "Mod": "MOD",
+    "Pow": "POW",
+    "BitOr": "BIT_OR",
+    "BitAnd": "BIT_AND",
+    "BitXor": "BIT_XOR",
+    "LShift": "LSHIFT",
+    "RShift": "RSHIFT",
+    "MatMult": "MATMUL",
+}
+
+# `ast.operator` subclass __name__ -> the augmented-assignment op.kind
+# (visit_AugAssign). The in-place kind routes through the in-place dunder
+# (__iadd__/__ifloordiv__/...) before the binary fallback, matching CPython.
+AUGASSIGN_OP_KIND: dict[str, str] = {
+    "Add": "INPLACE_ADD",
+    "Sub": "INPLACE_SUB",
+    "Mult": "INPLACE_MUL",
+    "Div": "INPLACE_DIV",
+    "FloorDiv": "INPLACE_FLOORDIV",
+    "Mod": "INPLACE_MOD",
+    "Pow": "INPLACE_POW",
+    "BitOr": "INPLACE_BIT_OR",
+    "BitAnd": "INPLACE_BIT_AND",
+    "BitXor": "INPLACE_BIT_XOR",
+    "LShift": "INPLACE_LSHIFT",
+    "RShift": "INPLACE_RSHIFT",
+    "MatMult": "INPLACE_MATMUL",
+}
 
 
 def canonical_kind(kind: str) -> str:
