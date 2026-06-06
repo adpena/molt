@@ -15411,20 +15411,39 @@ impl SimpleBackend {
                     // decrementing function parameters here: parameters are treated as borrowed
                     // by this backend (caller owns), so only non-param temporaries should be
                     // released at the call site.
+                    //
+                    // RC drop-insertion substrate (design 20 §4.1, ACTIVATION FINDING #2):
+                    // this per-call-site dead-argument release is the SECOND native
+                    // value-tracking RC source (alongside the `tracked_*` registration that
+                    // finding #2(A) already gated) and it is NOT covered by that gate — it
+                    // computes dead args directly from the SimpleIR `last_use` map, not from
+                    // the tracked lists. For a `drop_inserted` function the TIR drop pass is
+                    // the SOLE RC authority and already emits a `DecRef` at every dead value's
+                    // last use, INCLUDING dead call arguments (`DecRef(arg)` immediately after
+                    // the call). Letting `arg_cleanup` also fire double-frees every call
+                    // argument that dies at its call site — the broad-shape over-release UAF
+                    // (heap-layout-dependent `invalid object header before dec_ref` /
+                    // refcount-underflow abort) that blocked activation. So under
+                    // `drop_inserted` we leave `arg_cleanup`/`arg_cleanup_roots` empty: the
+                    // emit loop becomes a no-op, the root-filtered retains become identity, and
+                    // `already_decrefed` is not polluted with roots the native side never
+                    // decrefs (the TIR drop owns them).
                     let mut arg_cleanup = Vec::new();
                     let mut arg_cleanup_names = BTreeSet::new();
                     let mut arg_cleanup_roots = BTreeSet::new();
-                    for (name, value) in args_names.iter().zip(args.iter()) {
-                        if param_name_set.contains(name.as_str()) {
-                            continue;
-                        }
-                        let last = last_use.get(name).copied().unwrap_or(op_idx);
-                        if last <= op_idx {
-                            arg_cleanup_names.insert(name.clone());
-                            let root = alias_root_name(&alias_roots, name).to_string();
-                            if arg_cleanup_roots.insert(root.clone()) {
-                                arg_cleanup.push(*value);
-                                already_decrefed.insert(root);
+                    if !drop_inserted {
+                        for (name, value) in args_names.iter().zip(args.iter()) {
+                            if param_name_set.contains(name.as_str()) {
+                                continue;
+                            }
+                            let last = last_use.get(name).copied().unwrap_or(op_idx);
+                            if last <= op_idx {
+                                arg_cleanup_names.insert(name.clone());
+                                let root = alias_root_name(&alias_roots, name).to_string();
+                                if arg_cleanup_roots.insert(root.clone()) {
+                                    arg_cleanup.push(*value);
+                                    already_decrefed.insert(root);
+                                }
                             }
                         }
                     }
