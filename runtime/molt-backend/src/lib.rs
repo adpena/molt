@@ -65,6 +65,20 @@ mod wasm_imports;
 #[cfg(feature = "egraphs")]
 pub mod egraph_simplify;
 
+/// The implicit FIRST parameter name the frontend prepends to every closure's
+/// parameter list to carry its captured environment (the tuple of capture
+/// cells). A function whose `param_names[0]` equals this marker IS a closure;
+/// `param_names[1..]` are its declared Python parameters.
+///
+/// This is the single backend-side source of truth for the marker. It MIRRORS
+/// the frontend constant `_MOLT_CLOSURE_PARAM` (`src/molt/frontend/_types.py`),
+/// which is the Python-side authority that actually emits the name; the two must
+/// stay byte-identical. Every backend that needs to recognize a closure by its
+/// env-param (`wasm.rs` arity adjustment, the TIR `inliner.rs` exclusion gate)
+/// references THIS const rather than re-spelling the literal, so a future rename
+/// is a one-line change on each side.
+pub const MOLT_CLOSURE_PARAM_NAME: &str = "__molt_closure__";
+
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 fn pending_bits() -> i64 {
     (QNAN | TAG_PENDING) as i64
