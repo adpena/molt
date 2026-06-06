@@ -345,7 +345,7 @@
         }
       }
     },
-    "tests/differential/basic/collections_parity.py": {
+    "tests/differential/stdlib/collections_parity.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1015,7 +1015,7 @@
         }
       }
     },
-    "tests/differential/basic/test_asyncio_basic.py": {
+    "tests/differential/stdlib/asyncio_basic.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1025,7 +1025,7 @@
         }
       }
     },
-    "tests/differential/basic/test_asyncio_cancel.py": {
+    "tests/differential/stdlib/asyncio_cancel.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1035,7 +1035,7 @@
         }
       }
     },
-    "tests/differential/basic/test_error_messages_arithmetic.py": {
+    "tests/differential/basic/error_messages_arithmetic.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1045,7 +1045,7 @@
         }
       }
     },
-    "tests/differential/basic/test_error_messages_attribute.py": {
+    "tests/differential/basic/error_messages_attribute.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1055,7 +1055,7 @@
         }
       }
     },
-    "tests/differential/basic/test_error_messages_name.py": {
+    "tests/differential/basic/error_messages_name.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1065,7 +1065,7 @@
         }
       }
     },
-    "tests/differential/basic/test_error_messages_runtime.py": {
+    "tests/differential/basic/error_messages_runtime.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1075,7 +1075,7 @@
         }
       }
     },
-    "tests/differential/basic/test_error_messages_type.py": {
+    "tests/differential/basic/error_messages_type.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
@@ -1105,7 +1105,7 @@
         }
       }
     },
-    "tests/differential/basic/typing_final.py": {
+    "tests/differential/stdlib/typing_final.py": {
       "dimensions": {
         "wasm": {
           "evidence": "calibrated-run 2026-06-06 wasm@3.14 via tools/wasm_diff.py (node run_wasm.js); deterministic build-fail reproduced 2x isolated on dev (wasm.rs:2196) and release (expected-i64-nothing-on-stack); native build+run byte-identical (task #55 wasm calibration)",
@@ -1115,7 +1115,7 @@
         }
       }
     },
-    "tests/differential/basic/typing_protocol_parity.py": {
+    "tests/differential/stdlib/typing_protocol_parity.py": {
       "dimensions": {
         "native": {
           "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",

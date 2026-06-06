@@ -8,7 +8,24 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 DIFF_ROOT = ROOT / "tests" / "differential"
 COVERAGE_INDEX = DIFF_ROOT / "COVERAGE_INDEX.yaml"
-ALLOWED_LANES = {"basic", "stdlib", "moltlib", "pyperformance"}
+# The canonical differential lanes. Each is a first-class differential corpus
+# discovered and run by tests/molt_diff.py; the committed native suite-honesty
+# snapshot (tools/suite_honesty/native_calibration.jsonl) covers
+# {basic, loop_overflow_peel, memory, pyperformance}.
+ALLOWED_LANES = {
+    "basic",  # core language + builtin (non-module) semantics. runner: tests/molt_diff.py
+    "stdlib",  # stdlib module/submodule semantics. runner: tests/molt_diff.py
+    "moltlib",  # molt-specific runtime/library features. runner: tests/molt_diff.py
+    "pyperformance",  # targeted pyperformance smoke inputs. runner: tests/molt_diff.py
+    # The loop integer-overflow peel matrix (the cited "peel matrix 9/9" gated
+    # lane): seeded/boundary sum() programs proving 47-bit/63-bit overflow
+    # promotion stays BigInt-correct. runner: tests/molt_diff.py.
+    "loop_overflow_peel",
+    # The RC/RSS-bounded corpus (DropInsertion arc): drop-site / alias /
+    # generator-consumer programs run under the molt_diff memory guard (RSS
+    # measurement default-on). runner: tests/molt_diff.py.
+    "memory",
+}
 
 # Core Python 3.12+ PEP coverage tracked in COVERAGE_INDEX.yaml.
 REQUIRED_CORE_PEPS = {
@@ -40,6 +57,51 @@ STDLIB_SECTION_BASIC_ALLOWLIST = {
 
 STDLIB_SECTION_BASIC_ALLOW_PREFIXES = ("tests/differential/basic/builtins_",)
 
+# Basic-lane files whose leading filename token collides with a stdlib module
+# name in STDLIB_PREFIXES, but whose CONTENT tests compiler internals or a
+# builtin (non-module) surface — NOT the stdlib module the prefix names. Each
+# entry is an explicit, justified exception to the "no stdlib-prefixed file in
+# basic/" rule. Adding a NEW stdlib-prefixed basic file still fails the check
+# until it is triaged into a lane or justified here (fail-closed).
+BASIC_LANE_PREFIX_ALLOWLIST = {
+    # `copy` token vs the `copy` module: exercises the LLVM TIR
+    # `Copy[_original_kind=...]` value-producing lowering arms (int_from_obj,
+    # slice, dict_keys, enumerate, object_new, ...), a backend codegen test.
+    "tests/differential/basic/copy_arm_conversions.py",
+    # `struct` token vs the `struct` module: MemGVN store-to-load forwarding
+    # (S5-2b) on instance fields — a compiler memory-optimization test.
+    "tests/differential/basic/struct_field_forwarding.py",
+    # `struct` token vs the `struct` module: SROA / scalar-replacement-of-
+    # aggregates (S5-2d) on non-escaping objects — a compiler codegen test.
+    "tests/differential/basic/struct_sroa.py",
+    # `operator` token vs the `operator` module: core `or`/`and` short-circuit
+    # operator-protocol semantics (operand return + type preservation), no
+    # `import operator`.
+    "tests/differential/basic/operator_semantics.py",
+    # `string` token vs the `string` module: the `str.split()` builtin method
+    # under scalar/control-flow forwarding — a str-builtin compiler test, no
+    # `import string`.
+    "tests/differential/basic/string_split_scalar_control.py",
+    # `stdlib` token: the module-attribute-access lowering mechanism exercised
+    # across multiple modules (sys.platform / version_info) — a compiler
+    # attribute-access test, not single-module stdlib semantics.
+    "tests/differential/basic/stdlib_attr_access.py",
+    # `stdlib` token: broad module-attribute access (sys + os + math) — same
+    # compiler attribute-access mechanism, multi-module vehicle.
+    "tests/differential/basic/stdlib_attr_broad.py",
+    # `stdlib` token: chained module-attribute access (sys.version_info.major,
+    # os.path.sep, math.floor(...)) — the chained-attribute lowering path.
+    "tests/differential/basic/stdlib_attr_chained.py",
+}
+
+# Leading filename tokens (split on the first "_") that name a stdlib module.
+# A basic/ file whose first token is in this set is presumed misfiled (it should
+# live in the stdlib lane) unless explicitly justified in
+# BASIC_LANE_PREFIX_ALLOWLIST. NOTE: "test" is included deliberately — it is not
+# only the stdlib `test` package but also DOUBLES AS enforcement of the
+# differential no-`test_`-prefix naming convention: differential test files are
+# named for what they cover (error_messages_*.py), never `test_*.py`. After the
+# 2026-06 layout cleanup there are zero `test_`-prefixed files in basic/.
 STDLIB_PREFIXES = {
     "abc",
     "argparse",
@@ -173,7 +235,7 @@ def _collect_lane_files() -> tuple[list[str], list[str]]:
             wrong_lane.append(rel)
         if lane == "basic" and path.parent == DIFF_ROOT / "basic":
             prefix = path.stem.split("_", 1)[0]
-            if prefix in STDLIB_PREFIXES:
+            if prefix in STDLIB_PREFIXES and rel not in BASIC_LANE_PREFIX_ALLOWLIST:
                 basic_stdlib_prefix.append(rel)
     return wrong_lane, basic_stdlib_prefix
 
@@ -226,6 +288,21 @@ def main() -> int:
         errors.append(
             "basic lane has stdlib-prefixed tests (move to stdlib lane):\n- "
             + "\n- ".join(basic_stdlib_prefix)
+        )
+
+    # The justification allowlists must not rot: an entry pointing at a file
+    # that no longer exists (deleted or moved) is a stale exception that would
+    # silently mask a future same-named file. Fail closed on dead entries so the
+    # allowlist stays a live, audited ledger.
+    stale_allowlist = sorted(
+        rel
+        for rel in (BASIC_LANE_PREFIX_ALLOWLIST | STDLIB_SECTION_BASIC_ALLOWLIST)
+        if not (ROOT / rel).exists()
+    )
+    if stale_allowlist:
+        errors.append(
+            "stale allowlist entries (file no longer exists — remove the "
+            "justification):\n- " + "\n- ".join(stale_allowlist)
         )
 
     all_paths, stdlib_paths, pyperformance_paths, peps = _parse_coverage_index()
