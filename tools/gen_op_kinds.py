@@ -35,6 +35,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import ast
 import sys
 from pathlib import Path
 
@@ -175,7 +176,165 @@ def load_table() -> dict:
                 )
             owner[spelling] = canon
 
+    _validate_frontend_tables(data, opcodes)
+
     return data
+
+
+# ---------------------------------------------------------------------------
+# Frontend op.kind table validation (molt task #44, F2a)
+# ---------------------------------------------------------------------------
+
+
+def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
+    """Structurally validate the three frontend `op.kind` tables.
+
+    These describe the FRONTEND's UPPERCASE pre-serialization `op.kind`
+    vocabulary (distinct from the wire `[[kind]]` spellings). The validation is
+    the structural kill for the frontend⇄backend dual raising-oracle drift:
+
+      * Every `[[frontend_raising_kind]]` row carrying `opcode = X` is
+        cross-checked X.may_throw == true (flipping an opcode to nothrow while
+        leaving it raising here is a generation-time FAILURE).
+      * Every `[[frontend_check_exception_skip]]` row carrying `opcode = X` is
+        cross-checked X.may_throw == false UNLESS it sets `control_flow = true`
+        (a may_throw skip member must justify itself as structurally handled).
+      * `[[binary_op]]` is cross-checked EXHAUSTIVE over `ast.operator` — a
+        missing operator subclass is a generation-time FAILURE (the task-#27
+        lesson that the hand augassign map silently omitted 7 inplace kinds).
+    """
+    may_throw_ops = {r["name"] for r in opcodes if r["may_throw"]}
+    opcode_names = {r["name"] for r in opcodes}
+
+    # -- [[frontend_raising_kind]] ------------------------------------------
+    raising = data.get("frontend_raising_kind", [])
+    if not isinstance(raising, list) or not raising:
+        raise OpKindTableError("table has no [[frontend_raising_kind]] rows")
+    seen_raising: set[str] = set()
+    for row in raising:
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError(f"[[frontend_raising_kind]] row missing 'kind': {row}")
+        if kind in seen_raising:
+            raise OpKindTableError(f"duplicate frontend_raising_kind: {kind}")
+        seen_raising.add(kind)
+        has_opcode = "opcode" in row
+        has_reason = "reason" in row
+        if has_opcode == has_reason:
+            raise OpKindTableError(
+                f"frontend_raising_kind {kind}: exactly one of 'opcode' / 'reason' "
+                "required (opcode = a may_throw OpCode it maps to; reason = a "
+                "documented frontend-specific justification)"
+            )
+        if has_opcode:
+            op = row["opcode"]
+            if op not in opcode_names:
+                raise OpKindTableError(
+                    f"frontend_raising_kind {kind}: opcode {op!r} is not a known OpCode"
+                )
+            if op not in may_throw_ops:
+                raise OpKindTableError(
+                    f"frontend_raising_kind {kind}: opcode {op!r} is NOT may_throw — "
+                    "a raising frontend kind must map to a may_throw OpCode (or use "
+                    "'reason' for a frontend-specific pre-specialization/preserved kind)"
+                )
+        else:
+            if not isinstance(row["reason"], str) or not row["reason"]:
+                raise OpKindTableError(
+                    f"frontend_raising_kind {kind}: 'reason' must be a non-empty string"
+                )
+
+    # -- [[frontend_check_exception_skip]] ----------------------------------
+    skip = data.get("frontend_check_exception_skip", [])
+    if not isinstance(skip, list) or not skip:
+        raise OpKindTableError(
+            "table has no [[frontend_check_exception_skip]] rows"
+        )
+    seen_skip: set[str] = set()
+    for row in skip:
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError(
+                f"[[frontend_check_exception_skip]] row missing 'kind': {row}"
+            )
+        if kind in seen_skip:
+            raise OpKindTableError(f"duplicate frontend_check_exception_skip: {kind}")
+        seen_skip.add(kind)
+        has_opcode = "opcode" in row
+        has_reason = "reason" in row
+        if has_opcode == has_reason:
+            raise OpKindTableError(
+                f"frontend_check_exception_skip {kind}: exactly one of 'opcode' / "
+                "'reason' required"
+            )
+        if has_opcode:
+            op = row["opcode"]
+            if op not in opcode_names:
+                raise OpKindTableError(
+                    f"frontend_check_exception_skip {kind}: opcode {op!r} is not a "
+                    "known OpCode"
+                )
+            control_flow = row.get("control_flow", False)
+            if not isinstance(control_flow, bool):
+                raise OpKindTableError(
+                    f"frontend_check_exception_skip {kind}: 'control_flow' must be a bool"
+                )
+            if control_flow:
+                # A may_throw opcode is skip-listed because its exceptional edge
+                # is handled structurally; the flag must be justified by an
+                # actually-throwing opcode.
+                if op not in may_throw_ops:
+                    raise OpKindTableError(
+                        f"frontend_check_exception_skip {kind}: control_flow = true but "
+                        f"opcode {op!r} is NOT may_throw (the flag is spurious — a "
+                        "nothrow opcode needs no control_flow exception)"
+                    )
+            else:
+                if op in may_throw_ops:
+                    raise OpKindTableError(
+                        f"frontend_check_exception_skip {kind}: opcode {op!r} is "
+                        "may_throw but not flagged control_flow — skipping its "
+                        "CHECK_EXCEPTION would drop the exception edge. Set "
+                        "control_flow = true (with justification) or remove the row."
+                    )
+        else:
+            if "control_flow" in row:
+                raise OpKindTableError(
+                    f"frontend_check_exception_skip {kind}: 'control_flow' only applies "
+                    "to opcode-backed rows (a frontend-only structural kind needs none)"
+                )
+            if not isinstance(row["reason"], str) or not row["reason"]:
+                raise OpKindTableError(
+                    f"frontend_check_exception_skip {kind}: 'reason' must be a "
+                    "non-empty string"
+                )
+
+    # -- [[binary_op]] (EXHAUSTIVE over ast.operator) -----------------------
+    binary = data.get("binary_op", [])
+    if not isinstance(binary, list) or not binary:
+        raise OpKindTableError("table has no [[binary_op]] rows")
+    seen_binary: set[str] = set()
+    for row in binary:
+        ast_op = row.get("ast_op")
+        if not isinstance(ast_op, str) or not ast_op:
+            raise OpKindTableError(f"[[binary_op]] row missing 'ast_op': {row}")
+        if ast_op in seen_binary:
+            raise OpKindTableError(f"duplicate binary_op ast_op: {ast_op}")
+        seen_binary.add(ast_op)
+        for col in ("binop_kind", "augassign_kind"):
+            if not isinstance(row.get(col), str) or not row[col]:
+                raise OpKindTableError(
+                    f"binary_op {ast_op}: {col!r} must be a non-empty string"
+                )
+    ast_operator_names = {cls.__name__ for cls in ast.operator.__subclasses__()}
+    if seen_binary != ast_operator_names:
+        raise OpKindTableError(
+            "[[binary_op]] must be EXHAUSTIVE over ast.operator subclasses "
+            "(every binary/augmented operator must have a row, or visit_BinOp / "
+            "visit_AugAssign would silently miss it — the task-#27 inplace-kind gap):"
+            f" table-only={sorted(seen_binary - ast_operator_names)} "
+            f"ast-only={sorted(ast_operator_names - seen_binary)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +550,17 @@ _PY_HEADER = """\
 # `CANONICAL_KIND` maps every alias spelling to its canonical wire kind; the
 # emitter routes its spelling through it so a `floordiv`/`floor_div`-style schism
 # can never re-open. `tests/test_gen_op_kinds.py` pins this file in sync.
+#
+# This file ALSO carries the frontend's four pre-serialization `op.kind` tables
+# (molt task #44, F2a), absorbed from the hand-kept structures that previously
+# lived in src/molt/frontend/__init__.py:
+#   RAISING_KIND_NAMES         — op.kinds that can raise (emit() attaches the
+#                                caret col_offset), from [[frontend_raising_kind]].
+#   CHECK_EXCEPTION_SKIP_KINDS — op.kinds after which emit() skips the auto
+#                                CHECK_EXCEPTION, from [[frontend_check_exception_skip]].
+#   BINOP_OP_KIND / AUGASSIGN_OP_KIND — ast.operator subclass __name__ -> the
+#                                binary / augmented-assignment op.kind, from
+#                                [[binary_op]] (EXHAUSTIVE over ast.operator).
 
 from __future__ import annotations
 
@@ -417,7 +587,48 @@ def render_py(data: dict) -> str:
     for canon in mapper_canon:
         out.append(f'        "{canon}",\n')
     out.append("    }\n")
-    out.append(")\n\n\n")
+    out.append(")\n\n")
+
+    # -- frontend op.kind tables (F2a) --------------------------------------
+    raising = data.get("frontend_raising_kind", [])
+    out.append("# Frontend `op.kind`s that can raise at runtime — emit() attaches the\n")
+    out.append("# expression-level col_offset for traceback caret annotations. Each row\n")
+    out.append("# is either an opcode-mapped may_throw kind (cross-checked against the\n")
+    out.append("# [[opcode]] oracle at generation) or a documented frontend-specific kind.\n")
+    out.append("RAISING_KIND_NAMES: frozenset[str] = frozenset(\n")
+    out.append("    {\n")
+    for row in raising:
+        out.append(f'        "{row["kind"]}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
+
+    skip = data.get("frontend_check_exception_skip", [])
+    out.append("# Frontend `op.kind`s after which emit() does NOT auto-insert a\n")
+    out.append("# CHECK_EXCEPTION (control-flow / structural kinds, plus the two may_throw\n")
+    out.append("# kinds whose exceptional edge is handled structurally — RAISE,\n")
+    out.append("# STATE_TRANSITION). NOT the complement of may_throw; see op_kinds.toml.\n")
+    out.append("CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(\n")
+    out.append("    {\n")
+    for row in skip:
+        out.append(f'        "{row["kind"]}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
+
+    binary = data.get("binary_op", [])
+    out.append("# `ast.operator` subclass __name__ -> the binary-form frontend op.kind\n")
+    out.append("# (visit_BinOp). EXHAUSTIVE over ast.operator (generation-time checked).\n")
+    out.append("BINOP_OP_KIND: dict[str, str] = {\n")
+    for row in binary:
+        out.append(f'    "{row["ast_op"]}": "{row["binop_kind"]}",\n')
+    out.append("}\n\n")
+
+    out.append("# `ast.operator` subclass __name__ -> the augmented-assignment op.kind\n")
+    out.append("# (visit_AugAssign). The in-place kind routes through the in-place dunder\n")
+    out.append("# (__iadd__/__ifloordiv__/...) before the binary fallback, matching CPython.\n")
+    out.append("AUGASSIGN_OP_KIND: dict[str, str] = {\n")
+    for row in binary:
+        out.append(f'    "{row["ast_op"]}": "{row["augassign_kind"]}",\n')
+    out.append("}\n\n\n")
 
     out.append("def canonical_kind(kind: str) -> str:\n")
     out.append('    """Return the canonical wire spelling for *kind*.\n\n')
