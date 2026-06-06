@@ -48,6 +48,7 @@ from molt.frontend._types import (
 )
 
 if TYPE_CHECKING:
+    from molt.frontend.sema import SemaResult
     from molt.type_facts import TypeFacts
 
 
@@ -55,6 +56,7 @@ class _GeneratorProtocol(Protocol):
     _STUB_IMPORT_MODULES: frozenset[str]
     _active_classcell_cell: MoltValue | None
     _active_midend_function_name: Any
+    _class_body_depth: int
     _deferred_runtime_warnings: list[str]
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _expr_col: tuple[int, int] | None
@@ -66,6 +68,7 @@ class _GeneratorProtocol(Protocol):
     _module_pressure_funcs_map_ref: Any
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any
+    _sema: "SemaResult | None"
     _source_is_stdlib_module: Any
     _typing_import_aliases: set[str]
     active_exceptions: list[ActiveException]
@@ -348,6 +351,8 @@ class _GeneratorProtocol(Protocol):
 
     def _prescan_compile_warnings(self, module_node: ast.Module) -> None: ...
 
+    def _populate_sema_state(self, node: ast.Module) -> "SemaResult": ...
+
     def _emit_deferred_warnings(self) -> None: ...
 
     def _emit_syntax_warning(self, node: ast.AST, message: str) -> None: ...
@@ -486,10 +491,7 @@ class _GeneratorProtocol(Protocol):
         self, node: ast.Module
     ) -> tuple[dict[str, int], set[str], bool]: ...
 
-    @classmethod
-    def _collect_module_func_defaults(
-        cls, node: ast.Module
-    ) -> dict[str, dict[str, Any]]: ...
+    # _collect_module_func_defaults moved to frontend/sema/funcmeta.py (F2b).
 
     @staticmethod
     def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]: ...
@@ -507,18 +509,18 @@ class _GeneratorProtocol(Protocol):
 
     def _module_stable_funcs(self, node: ast.Module) -> set[str]: ...
 
-    def _collect_module_func_kinds(self, node: ast.Module) -> dict[str, str]: ...
-
-    def _collect_module_class_names(self, node: ast.Module) -> set[str]: ...
-
-    def _collect_module_class_graph(
-        self, node: ast.Module
-    ) -> tuple[dict[str, list[list[str]]], set[str]]: ...
+    # _collect_module_func_kinds / _collect_module_class_names /
+    # _collect_module_class_graph / _collect_module_const_dicts moved to
+    # frontend/sema/ (F2b, doc 44). The mixins read the populated field stubs
+    # (module_declared_funcs / module_declared_classes / module_class_bases /
+    # module_subclassed_names / module_const_dicts) declared above, not these
+    # collector methods.
 
     def _collect_module_class_mutations(self, node: ast.Module) -> set[str]: ...
 
-    @staticmethod
-    def _collect_module_const_dicts(node: ast.Module) -> dict[str, dict[str, Any]]: ...
+    def _collect_comp_walrus_shared_names(
+        self, body: Sequence[ast.stmt]
+    ) -> list[str]: ...
 
     def _record_instance_attr_mutation(self, class_name: str, attr: str) -> None: ...
 
@@ -1599,6 +1601,8 @@ class _GeneratorProtocol(Protocol):
     def visit_Dict(self, node: ast.Dict) -> Any: ...
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None: ...
+
+    def _publish_class_value(self, name: str, class_val: MoltValue) -> None: ...
 
     def _emit_dynamic_call(
         self, node: ast.Call, callee: MoltValue, needs_bind: bool

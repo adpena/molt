@@ -128,6 +128,14 @@ from molt.frontend.lowering.op_kinds_generated import (
     RAISING_KIND_NAMES,
 )
 
+# Bind/Sema phase (doc 44 §F2b): free functions over the immutable ast.Module
+# computing the SemaResult — immutable semantic facts (static class graph, const
+# environment, top-level function metadata) — once, pre-walk, in the cfg_analysis.py
+# house shape. F2b is additive: visit_Module populates the existing pre-walk state
+# dicts FROM SemaResult (the _populate_sema_state shim) so the walk is byte-identical;
+# F2c rewires the read-sites onto SemaResult and deletes the mutable god-object dicts.
+from molt.frontend.sema import SemaResult, analyze_module
+
 # Visitor / lowering mixins composed into SimpleTIRGenerator (F1 decomposition).
 from molt.frontend.lowering.serialization import SerializationMixin
 from molt.frontend.visitors.pattern_match import PatternMatchMixin
@@ -217,6 +225,8 @@ __all__ = [
     "normalize_type_hint",
     "SimpleTIRGenerator",
     "compile_to_tir",
+    "SemaResult",
+    "analyze_module",
 ]
 
 
@@ -545,6 +555,10 @@ class SimpleTIRGenerator(
         # Populated during visit_Module to support compile-time **kwargs resolution
         # (e.g. @dataclass(**SLOTS) where SLOTS = {"slots": True}).
         self.module_const_dicts: dict[str, dict[str, Any]] = {}
+        # The immutable SemaResult for the module currently being lowered (doc 44
+        # §F2b). Computed once, pre-walk, by _populate_sema_state in visit_Module;
+        # None until then (and for direct non-module lowering entry points).
+        self._sema: SemaResult | None = None
         self._register_code_symbol("molt_main")
         if self.module_name:
             is_real_entry_module = (
@@ -2350,27 +2364,10 @@ class SimpleTIRGenerator(
             collector.visit(stmt)
         return counts, func_defs, has_dynamic_bind
 
-    @classmethod
-    def _collect_module_func_defaults(
-        cls,
-        node: ast.Module,
-    ) -> dict[str, dict[str, Any]]:
-        defaults: dict[str, dict[str, Any]] = {}
-        for stmt in node.body:
-            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if stmt.args.vararg or stmt.args.kwarg:
-                defaults[stmt.name] = {"has_vararg": True}
-                continue
-            params = cls._function_param_names(stmt.args)
-            default_specs = cls._default_specs_from_args(stmt.args)
-            defaults[stmt.name] = {
-                "params": len(params),
-                "defaults": default_specs,
-                "posonly": len(stmt.args.posonlyargs),
-                "kwonly": len(stmt.args.kwonlyargs),
-            }
-        return defaults
+    # _collect_module_func_defaults moved to frontend/sema/funcmeta.py (F2b,
+    # doc 44): the top-level function default/param-shape table is computed
+    # pre-walk by sema.collect_module_func_defaults and populated into
+    # self.module_func_defaults by _populate_sema_state.
 
     @staticmethod
     def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]:
@@ -2429,97 +2426,18 @@ class SimpleTIRGenerator(
             if counts.get(name, 0) == 1 and name not in global_rebinds
         }
 
-    def _collect_module_func_kinds(self, node: ast.Module) -> dict[str, str]:
-        kinds: dict[str, str] = {}
-        for stmt in node.body:
-            if isinstance(stmt, ast.AsyncFunctionDef):
-                kinds[stmt.name] = "async"
-            elif isinstance(stmt, ast.FunctionDef):
-                if self._function_contains_yield(stmt):
-                    kinds[stmt.name] = "gen"
-                else:
-                    kinds[stmt.name] = "sync"
-        return kinds
-
-    def _collect_module_class_names(self, node: ast.Module) -> set[str]:
-        return {stmt.name for stmt in node.body if isinstance(stmt, ast.ClassDef)}
-
-    def _collect_module_class_graph(
-        self, node: ast.Module
-    ) -> tuple[dict[str, list[list[str]]], set[str]]:
-        """Build the module-wide static class graph used to reason about the
-        zero-arg ``super()`` fold *before* any method body is compiled.
-
-        Returns ``(bases_by_class, subclassed_names)``:
-
-        * ``bases_by_class`` maps every class-statement name in this module
-          (top-level, nested, or function-local) to the list of *base-name
-          lists* across all class statements that define that name.  A name can
-          have multiple definitions (re-binding / conditional class defs); the
-          fold must hold for every one, so all are retained.  A class whose
-          bases are not all simple ``ast.Name`` references contributes the
-          sentinel ``["<opaque>"]`` for that definition, which forces any
-          MRO computation through it to bail (fail-closed).
-
-        * ``subclassed_names`` is the set of names referenced as a base anywhere
-          (the conservative "is this class ever subclassed" view), including
-          dotted/attribute bases and names appearing inside computed bases.
-
-        ``super()`` in ``C.method`` resolves to the class following ``C`` in
-        ``type(self).__mro__``.  Because the method is inherited, ``self`` may be
-        any subclass instance, and a diamond subclass can interpose a cooperative
-        C3 sibling between ``C`` and ``C``'s lexical next base.  The fold is only
-        sound when the *method-resolution successor* of ``C`` is identical across
-        ``C`` and every visible subclass of ``C`` — which requires the full base
-        graph of classes that may be defined *after* ``C`` in source order.
-        """
-        bases_by_class: dict[str, list[list[str]]] = {}
-        subclassed: set[str] = set()
-        _OPAQUE = "<opaque>"
-
-        def simple_base_name(expr: ast.expr) -> str | None:
-            if isinstance(expr, ast.Name):
-                return expr.id
-            return None
-
-        def record_subclassed(expr: ast.expr) -> None:
-            if isinstance(expr, ast.Name):
-                subclassed.add(expr.id)
-                return
-            if isinstance(expr, ast.Attribute):
-                current: ast.expr | None = expr
-                while isinstance(current, ast.Attribute):
-                    subclassed.add(current.attr)
-                    current = current.value
-                if isinstance(current, ast.Name):
-                    subclassed.add(current.id)
-                return
-            for sub in ast.walk(expr):
-                if isinstance(sub, ast.Name):
-                    subclassed.add(sub.id)
-
-        for stmt in ast.walk(node):
-            if not isinstance(stmt, ast.ClassDef):
-                continue
-            base_names: list[str] = []
-            opaque = False
-            # A keyword base (metaclass=, or any keyword) makes the class
-            # dynamically built: treat its MRO as un-foldable.
-            if stmt.keywords:
-                opaque = True
-            for base_expr in stmt.bases:
-                record_subclassed(base_expr)
-                name = simple_base_name(base_expr)
-                if name is None:
-                    opaque = True
-                else:
-                    base_names.append(name)
-            for kw in stmt.keywords:
-                if isinstance(kw.value, (ast.Name, ast.Attribute)):
-                    record_subclassed(kw.value)
-            entry = [_OPAQUE] if opaque else (base_names or ["object"])
-            bases_by_class.setdefault(stmt.name, []).append(entry)
-        return bases_by_class, subclassed
+    # _collect_module_func_kinds / _collect_module_class_names /
+    # _collect_module_class_graph moved to frontend/sema/ (F2b, doc 44):
+    #   collect_module_func_kinds  -> sema/funcmeta.py
+    #   collect_module_class_names -> sema/funcmeta.py
+    #   build_class_graph          -> sema/classgraph.py
+    # They are computed pre-walk by analyze_module() and populated into
+    # self.module_declared_funcs / self.module_declared_classes /
+    # self.module_class_bases / self.module_subclassed_names by
+    # _populate_sema_state.  (The per-construct helpers _function_contains_yield /
+    # _function_param_names / _split_function_args / _default_specs_from_args /
+    # _default_spec_for_expr STAY on the class — the lowering walk still calls them
+    # at ~30 sites; sema/funcmeta.py carries its own private copies.)
 
     def _collect_module_class_mutations(self, node: ast.Module) -> set[str]:
         class_names = {
@@ -2577,49 +2495,10 @@ class SimpleTIRGenerator(
             collector.visit(stmt)
         return mutated
 
-    @staticmethod
-    def _collect_module_const_dicts(node: ast.Module) -> dict[str, dict[str, Any]]:
-        """Collect module-level assignments of the form NAME = {"key": value, ...}
-        where all keys are string literals and all values are constants (bool, int,
-        str, None).  Used to resolve compile-time **kwargs spreads like
-        @dataclass(**SLOTS) where SLOTS = {"slots": True}.
-
-        Also scans inside top-level if/else blocks (e.g., version-gated
-        constants like `if sys.version_info >= (3, 10): SLOTS = {"slots": True}`)."""
-        result: dict[str, dict[str, Any]] = {}
-
-        def _scan_assign(stmt: ast.AST) -> None:
-            if not isinstance(stmt, ast.Assign):
-                return
-            if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
-                return
-            name = stmt.targets[0].id
-            if not isinstance(stmt.value, ast.Dict):
-                return
-            d = stmt.value
-            entries: dict[str, Any] = {}
-            valid = True
-            for k, v in zip(d.keys, d.values):
-                if not isinstance(k, ast.Constant) or not isinstance(k.value, str):
-                    valid = False
-                    break
-                if not isinstance(v, ast.Constant):
-                    valid = False
-                    break
-                entries[k.value] = v.value
-            if valid:
-                result[name] = entries
-
-        for stmt in node.body:
-            _scan_assign(stmt)
-            # Also scan inside top-level if/else blocks for version-gated constants
-            if isinstance(stmt, ast.If):
-                for sub in stmt.body:
-                    _scan_assign(sub)
-                for sub in stmt.orelse:
-                    _scan_assign(sub)
-
-        return result
+    # _collect_module_const_dicts moved to frontend/sema/constenv.py (F2b,
+    # doc 44): the module-level const-dict table is computed pre-walk by
+    # sema.collect_module_const_dicts and populated into self.module_const_dicts
+    # by _populate_sema_state.
 
     def _record_instance_attr_mutation(self, class_name: str, attr: str) -> None:
         if class_name not in self.classes:
@@ -2766,6 +2645,52 @@ class SimpleTIRGenerator(
         self.block_terminated = state["block_terminated"]
         self._module_cache_values = state["_module_cache_values"]
 
+    def _populate_sema_state(self, node: ast.Module) -> SemaResult:
+        """Compute the module's :class:`SemaResult` once, pre-walk, and populate
+        the existing god-object pre-walk state dicts from it (doc 44 §F2b).
+
+        This is the additive shim: the lowering walk continues to read the same
+        ``self.module_*`` dicts, so the emitted IR is byte-identical to the prior
+        inline-computation path.  Each dict is filled from exactly one
+        ``SemaResult`` field — this assignment table IS the F2c worklist (the
+        read-sites that F2c rewires onto ``self._sema`` and then deletes the dict).
+
+        Shim inventory — god-object dict  ←  SemaResult source:
+
+          self.module_const_dicts         ← sema.const_dicts
+                                            (sema/constenv.collect_module_const_dicts)
+          self.module_declared_funcs      ← sema.function_meta.declared_funcs
+                                            (sema/funcmeta.collect_module_func_kinds)
+          self.module_declared_classes    ← sema.function_meta.declared_classes
+                                            (sema/funcmeta.collect_module_class_names)
+          self.module_class_bases         ← sema.class_graph.bases_by_class
+                                            (sema/classgraph.build_class_graph)
+          self.module_subclassed_names    ← sema.class_graph.subclassed_names
+                                            (sema/classgraph.build_class_graph)
+          self.module_func_defaults       ← known_func_defaults override, else
+                                            sema.function_meta.defaults
+                                            (sema/funcmeta.collect_module_func_defaults)
+
+        These six dicts are each written exactly once (here) and only *read* during
+        the walk — verified against HEAD: no ``.add``/``.pop``/``[k]=`` mutation of
+        any of them occurs in the visit/emit methods.  Walk-mutated cursors
+        (``const_ints`` written in ``emit()``; ``exact_locals`` mutated across
+        visit methods; the per-function scope dicts populated lazily in
+        ``start_function``) are deliberately NOT Sema facts and stay where they are
+        (doc 44 risk #1: mis-classifying a cursor as a fact is a miscompile).
+        """
+        sema = analyze_module(node)
+        self._sema = sema
+        self.module_const_dicts = sema.const_dicts
+        self.module_declared_funcs = sema.function_meta.declared_funcs
+        self.module_declared_classes = sema.function_meta.declared_classes
+        self.module_class_bases = sema.class_graph.bases_by_class
+        self.module_subclassed_names = sema.class_graph.subclassed_names
+        self.module_func_defaults = self.known_func_defaults.get(
+            self.module_name, sema.function_meta.defaults
+        )
+        return sema
+
     def visit_Module(self, node: ast.Module) -> None:
         defer = self._module_can_defer_attrs(node)
         if self.module_chunking:
@@ -2798,13 +2723,12 @@ class SimpleTIRGenerator(
         prev_pending_classes = self.class_definition_pending
         self.stable_module_funcs = self._module_stable_funcs(node)
         self.mutated_classes = self._collect_module_class_mutations(node)
-        self.module_const_dicts = self._collect_module_const_dicts(node)
-        self.module_declared_funcs = self._collect_module_func_kinds(node)
-        self.module_declared_classes = self._collect_module_class_names(node)
-        (
-            self.module_class_bases,
-            self.module_subclassed_names,
-        ) = self._collect_module_class_graph(node)
+        # F2b (doc 44): the static class graph, const environment, and top-level
+        # function metadata are now computed once, pre-walk, by frontend/sema/ and
+        # the existing god-object dicts are populated FROM the immutable SemaResult.
+        # This is the additive shim — the walk reads the same dicts, so the IR is
+        # byte-identical; F2c rewires the read-sites onto SemaResult directly.
+        self._populate_sema_state(node)
         self.stable_module_classes = self._collect_stable_module_classes(node)
         self.class_definition_pending = set(self.module_declared_classes)
         self.reserved_func_symbols = {}
@@ -2816,9 +2740,9 @@ class SimpleTIRGenerator(
             if kind in {"sync", "async", "gen"}:
                 self._reserve_function_symbol(func_name)
         self.module_defined_funcs = set()
-        self.module_func_defaults = self.known_func_defaults.get(
-            self.module_name, self._collect_module_func_defaults(node)
-        )
+        # module_func_defaults is populated by _populate_sema_state above (the
+        # AST-derived defaults from SemaResult, with the known_func_defaults
+        # runtime override applied in the shim).
         self.future_annotations = self._module_has_future_annotations(node)
         self.module_annotations = None
         self.module_annotation_items = []
