@@ -3551,6 +3551,67 @@ pub extern "C" fn molt_int_from_bytes(
     })
 }
 
+/// CPython `PyMapping_Check` analog: does `obj`'s type provide a read-subscript
+/// (`tp_as_mapping->mp_subscript`)?  This is the exact predicate CPython's
+/// `__build_class__` uses to validate a `__prepare__()` result before executing
+/// the class body — a value that fails it is rejected with
+/// `TypeError: <metaclass>.__prepare__() must return a mapping, not <type>`.
+///
+/// The accept set is verified byte-for-byte against CPython 3.12: every builtin
+/// whose type defines `mp_subscript` (dict, list, tuple, str, bytes, bytearray,
+/// range, memoryview) plus any `TYPE_ID_OBJECT` instance whose class defines a
+/// `__getitem__` method (dict subclasses, custom mappings).  Crucially this is
+/// NARROWER than molt_index's subscript dispatch: `slice`, the dict views,
+/// `set`/`frozenset`, `int`, and bare type objects are subscript-*addressable*
+/// in places but have no `mp_subscript`, so CPython — and therefore this
+/// predicate — rejects them as class namespaces.  Keep this list synchronized
+/// with the builtin `mp_subscript` providers; it is the single source of truth
+/// for the `__prepare__` mapping contract.
+pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(obj_bits).as_ptr() else {
+        // Tagged immediates (int/bool/float/None) have no `tp_as_mapping`.
+        return false;
+    };
+    let tid = unsafe { object_type_id(ptr) };
+    match tid {
+        TYPE_ID_DICT
+        | TYPE_ID_LIST
+        | TYPE_ID_LIST_INT
+        | TYPE_ID_LIST_BOOL
+        | TYPE_ID_TUPLE
+        | TYPE_ID_STRING
+        | TYPE_ID_BYTES
+        | TYPE_ID_BYTEARRAY
+        | TYPE_ID_RANGE
+        | TYPE_ID_MEMORYVIEW => true,
+        TYPE_ID_OBJECT => {
+            // Dict subclasses and arbitrary user mappings: a real `__getitem__`
+            // method resolvable on the instance's class MRO.  Mirrors the
+            // `TYPE_ID_OBJECT` subscript path in `molt_index`.
+            let Some(getitem_name_bits) = attr_name_bits_from_bytes(_py, b"__getitem__") else {
+                return false;
+            };
+            // `attr_lookup_ptr` returns `None` cleanly (no pending exception)
+            // when the dunder is absent — exactly as the `TYPE_ID_OBJECT`
+            // subscript path in `molt_index` relies on.
+            let found = unsafe { attr_lookup_ptr(_py, ptr, getitem_name_bits) };
+            dec_ref_bits(_py, getitem_name_bits);
+            match found {
+                Some(bound) => {
+                    dec_ref_bits(_py, bound);
+                    true
+                }
+                None => false,
+            }
+        }
+        // Bare type objects, slice, set/frozenset, dict views, generators, …:
+        // no `mp_subscript`.  (A metaclass that defines `__getitem__` so its
+        // instances are subscriptable is out of scope for the class-namespace
+        // contract and is not used as a `__prepare__` result in practice.)
+        _ => false,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
