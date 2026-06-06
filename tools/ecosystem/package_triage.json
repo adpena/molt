@@ -192,11 +192,11 @@
     "rich": {
       "required_features": ["D16", "D12"],
       "optional_features": [],
-      "verdict": "incompatible-by-design",
-      "hardest_feature": "D16",
+      "verdict": "compatible",
+      "hardest_feature": "D12",
       "source": "doc-24 paper triage",
       "compile_probe_status": "pending",
-      "source_basis": "doc 24 Lane C cell says 'PARTIAL' but its OWN evidence overrides it: D16 is 'incompatible-by-design (TODAY)', rich note 'D16 gap bites at import', Lane D rank 3 'D16 blocks the import of ... rich'. Fail-closed: a feature that blocks the required (import) path => worst class. Derived 'incompatible-by-design'; flagged as a stricter reconciliation of an internal doc-24 inconsistency (Lane B/D evidence over the Lane C summary cell)."
+      "source_basis": "doc 24 Lane D rank 3 said D16 (module-level __getattr__, PEP 562) blocked rich's import. D16 is now SUPPORTED (runtime dispatch landed + module __dir__ completed the arc; differential pep562_module_getattr_dir.py byte-identical CPython 3.12/3.13/3.14). With D16 and D12 both supported, the min over rich's required features is now 'compatible' (improving-direction ratchet: raises compatible_floor, lowers incompatible_ceiling). compile_probe_status stays 'pending' — rich is not yet molt-build-verified end to end (the COMPILE-PROBE wave is still pending); only the dynamism-feature derivation improved."
     },
     "tqdm": {
       "required_features": ["D1"],
