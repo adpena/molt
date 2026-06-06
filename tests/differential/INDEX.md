@@ -32,7 +32,7 @@ Example targeted run:
 
 ```bash
 UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py \
-  tests/differential/basic/re_parity.py \
+  tests/differential/stdlib/re_parity.py \
   tests/differential/basic/dataclasses_parity.py \
   --python-version 3.12 \
   --build-profile dev \
@@ -52,7 +52,7 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py \
     - `tests/differential/stdlib/re_match_metadata.py`
     - `tests/differential/basic/dataclasses_frozen_instance_error.py`
   - original parity regressions now pass:
-    - `tests/differential/basic/re_parity.py`
+    - `tests/differential/stdlib/re_parity.py`
     - `tests/differential/basic/dataclasses_parity.py`
   - evidence artifacts:
     - `logs/diff-targeted-builtins/`

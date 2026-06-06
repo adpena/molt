@@ -440,7 +440,7 @@ CPython `Future.result()` (`asyncio/futures.py:180`) raises `InvalidStateError("
 5. Fix the `done-callbacks` ordering: `set_result_fast`/`set_exception_fast` must post each callback via `molt_event_loop_call_soon` rather than calling it synchronously.
 6. Fix the `InvalidStateError` message string to exactly match CPython 3.12: `"Result is not ready."` (with period).
 
-**Gate:** `tests/differential/basic/test_asyncio_basic.py::async_for_with_exception_propagation` passes on native. All asyncio differential tests that were previously passing remain passing.
+**Gate:** `tests/differential/stdlib/asyncio_basic.py::async_for_with_exception_propagation` passes on native. All asyncio differential tests that were previously passing remain passing.
 
 **Files to modify:**
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/builtins/asyncio_core.rs` — `FutureState`, `set_result_fast`, `set_exception_fast`.
