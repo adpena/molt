@@ -3130,10 +3130,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .backend
                     .context
                     .ptr_type(inkwell::AddressSpace::default());
+                // `molt_task_new` returns the NaN-boxed task handle (QNAN | TAG_PTR
+                // in the top 16 bits). The frame-payload stores below address raw
+                // heap memory, so the boxing tag MUST be stripped first — mirroring
+                // the native backend's `unbox_ptr_value(obj)` (simple_backend.rs)
+                // before its `store` to the frame. Using the boxed bits directly as
+                // a base address writes through `0x7FFC…`-tagged garbage → SIGSEGV
+                // at generator creation. The boxed `task_bits` is still what flows
+                // into the result value; only the field base pointer is unboxed.
+                let task_ptr_bits = self.unbox_ptr_bits(self.ensure_i64(task_bits));
                 let task_ptr = self
                     .backend
                     .builder
-                    .build_int_to_ptr(self.ensure_i64(task_bits), ptr_ty, "task_obj_ptr")
+                    .build_int_to_ptr(task_ptr_bits, ptr_ty, "task_obj_ptr")
                     .unwrap();
                 for (idx, &arg_id) in op.operands.iter().enumerate() {
                     let arg_bits = self.materialize_dynbox_operand(arg_id);
