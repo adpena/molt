@@ -12345,6 +12345,49 @@ impl SimpleBackend {
                         );
                     }
                 }
+                "function_defaults_version" => {
+                    // Read a function object's __defaults__/__kwdefaults__
+                    // mutation version stamp (a single slot load wrapped in
+                    // `molt_function_defaults_version`).  Produced by the TIR
+                    // `FunctionDefaultsVersion` op; consumed by the
+                    // defaults-devirt deopt guard's `== 0` compare.  The arg is
+                    // the boxed function object; the result is a boxed inline
+                    // int.  Non-foldable (the slot is mutable runtime state),
+                    // so it is always recomputed at its program point.
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let func_boxed = var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        &args[0],
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("FunctionDefaultsVersion arg not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_function_defaults_version",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*func_boxed]);
+                    let boxed_res = builder.inst_results(call)[0];
+                    if let Some(ref out__) = op.out {
+                        if int_primary_vars.contains(out__) {
+                            let raw_res = unbox_int(&mut builder, boxed_res, &nbc);
+                            def_var_named(&mut builder, &vars, out__, raw_res);
+                        } else {
+                            def_var_named(&mut builder, &vars, out__, boxed_res);
+                        }
+                    }
+                }
                 "is" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get_boxed_overflow_safe(

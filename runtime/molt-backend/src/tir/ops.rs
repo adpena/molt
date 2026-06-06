@@ -158,6 +158,16 @@ pub enum OpCode {
     /// Used as the condition of the `loop_break_if_exception` CondBranch that
     /// exits an iterator-consumer loop on a mid-iteration raise.
     ExceptionPending,
+    /// Read a function object's `__defaults__`/`__kwdefaults__` mutation version
+    /// stamp (`molt_function_defaults_version_slot`).  Takes one arg (the
+    /// function object) and yields the version as an inline int.  Side-effecting
+    /// / non-foldable for the same reason as `ExceptionPending`: the slot is
+    /// mutable runtime state (any `func.__defaults__ = ...` reassignment bumps
+    /// it), so no SSA/SCCP/GVN/LICM pass may hoist or fold the read across a
+    /// potential mutation.  The compile-time defaults-devirt deopt guard reads
+    /// it once per call and branches `version == 0` (baked literal, fast) vs
+    /// `!= 0` (live `__defaults__`/`__kwdefaults__` read).
+    FunctionDefaultsVersion,
     TryStart,
     TryEnd,
     StateBlockStart,
