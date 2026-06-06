@@ -807,14 +807,14 @@
 {"expect_molt_fail": false, "file": "tests/differential/memory/string_concat.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/pyperformance/pyperformance_manifest_catalog.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/pyperformance/pyperformance_subset_smoke.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/_bisect_basic.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/_bisect_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/_opcode_basic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/abc_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/abc_subclasshook_return_contract.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/abc_update_abstractmethods_intrinsic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/argparse_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/argparse_filetype_basic.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/argparse_subparsers_basic.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/argparse_subparsers_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/array_basic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/ast_basic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio__asyncio_running_loop_intrinsic.py", "raw_status": "pass"}

@@ -7165,7 +7165,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_argparse_add_subparsers",
         symbol: "molt_argparse_add_subparsers",
-        arity: 3,
+        arity: 4,
     },
     IntrinsicSpec {
         name: "molt_argparse_error",
@@ -7221,11 +7221,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_array_delitem",
         symbol: "molt_array_delitem",
         arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_array_drop",
-        symbol: "molt_array_drop",
-        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_array_extend",
@@ -13375,10 +13370,6 @@ fn resolve_array_symbol(symbol: &str) -> Option<u64> {
         "molt_array_delitem" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_array_delitem",
             crate::molt_array_delitem as *const (),
-        )),
-        "molt_array_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_array_drop",
-            crate::molt_array_drop as *const (),
         )),
         "molt_array_extend" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_array_extend",
