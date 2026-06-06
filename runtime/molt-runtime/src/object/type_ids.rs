@@ -50,6 +50,11 @@ pub(crate) const TYPE_ID_UNION: u32 = 247;
 pub(crate) const TYPE_ID_TRACEBACK_PAYLOAD: u32 = 251;
 pub(crate) const TYPE_ID_NATIVE_HANDLE: u32 = 252;
 
+/// Lazy `glob.iglob(...)` iterator. Holds a boxed `GlobIterState` work-stack
+/// machine that streams matching paths one per `__next__` at bounded RSS
+/// (CPython-faithful `glob` algorithm, but incremental instead of eager).
+pub(crate) const TYPE_ID_GLOB_ITER: u32 = 253;
+
 pub(crate) const TYPE_TAG_ANY: i64 = 0;
 pub(crate) const TYPE_TAG_INT: i64 = 1;
 pub(crate) const TYPE_TAG_FLOAT: i64 = 2;
@@ -126,7 +131,7 @@ pub(crate) const TYPE_ID_LIST_BOOL: u32 = 250;
 pub(crate) const TYPE_ID_FLOAT: u32 = 249;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_NATIVE_HANDLE;
+pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_GLOB_ITER;
 
 #[inline]
 pub(crate) fn is_valid_heap_type_id(type_id: u32) -> bool {
@@ -143,6 +148,7 @@ mod tests {
         assert!(is_valid_heap_type_id(TYPE_ID_STRING));
         assert!(is_valid_heap_type_id(TYPE_ID_FLOAT));
         assert!(is_valid_heap_type_id(TYPE_ID_LIST_BOOL));
+        assert!(is_valid_heap_type_id(TYPE_ID_GLOB_ITER));
 
         assert!(!is_valid_heap_type_id(0));
         assert!(!is_valid_heap_type_id(TYPE_ID_OBJECT - 1));

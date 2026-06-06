@@ -17,16 +17,35 @@ if sys.version_info >= (3, 13):
 
 _MOLT_GLOB_HAS_MAGIC = _require_intrinsic("molt_glob_has_magic")
 _MOLT_GLOB_ESCAPE = _require_intrinsic("molt_glob_escape")
-_MOLT_GLOB_GLOB = _require_intrinsic("molt_glob_glob")
-_MOLT_GLOB_IGLOB = _require_intrinsic("molt_glob_iglob")
+_MOLT_GLOB = _require_intrinsic("molt_glob")
+_MOLT_GLOB_ITER = _require_intrinsic("molt_glob_iter")
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir")
 if sys.version_info >= (3, 13):
     _MOLT_GLOB_TRANSLATE = _require_intrinsic("molt_glob_translate")
 
-# Module-level regex objects that CPython exposes (used by external code for
-# detection of magic characters).
+# Module-level regex objects that CPython exposes for third-party magic-char
+# detection. molt's glob does NOT use them internally (magic detection is the
+# `molt_glob_has_magic` intrinsic), so they are pure API-compat surface.
+#
+# `magic_check` (str) compiles eagerly, exactly like CPython. `magic_check_bytes`
+# (a *bytes* pattern) is compiled lazily via PEP 562 `__getattr__`: molt's `re`
+# engine does not yet support bytes patterns, and eagerly compiling it here
+# would crash glob at import (the str-only `re.compile` raises TypeError on a
+# bytes pattern). Deferring it keeps the whole module importable and every glob
+# operation working — including byte-path globbing, which flows through the
+# Rust `molt_glob`/`molt_glob_iter` intrinsics (full bytes support), NOT through
+# this regex. Accessing `glob.magic_check_bytes` surfaces molt's real
+# re-bytes-pattern limitation at the point of use rather than masking it.
+# BATON: when `re` gains bytes-pattern support, make this eager again.
 magic_check = _re.compile(r"([*?[])")
-magic_check_bytes = _re.compile(rb"([*?[])")
+
+
+def __getattr__(name: str):
+    if name == "magic_check_bytes":
+        value = _re.compile(rb"([*?[])")
+        globals()["magic_check_bytes"] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _DEPRECATED_FUNCTION_MESSAGE = (
     "{name} is deprecated and will be removed in Python {remove}. Use "
@@ -47,8 +66,12 @@ def glob(
     recursive: Any = False,
     include_hidden: Any = False,
 ) -> list[str] | list[bytes]:
-    """Return a list of paths matching a pathname pattern (via Rust intrinsic)."""
-    matches = _MOLT_GLOB_GLOB(pathname, root_dir, recursive)
+    """Return a list of paths matching a pathname pattern.
+
+    Equivalent to ``list(iglob(...))`` — the eager intrinsic drains the same
+    CPython-faithful matcher the lazy ``iglob`` streams, so the two agree.
+    """
+    matches = _MOLT_GLOB(pathname, root_dir, dir_fd, recursive, include_hidden)
     if not isinstance(matches, list):
         raise RuntimeError("glob intrinsic returned invalid value")
     return matches
@@ -62,11 +85,15 @@ def iglob(
     recursive: Any = False,
     include_hidden: Any = False,
 ):
-    """Return an iterator yielding paths matching a pathname pattern (via Rust intrinsic)."""
-    matches = _MOLT_GLOB_IGLOB(pathname, root_dir, recursive)
-    if not isinstance(matches, list):
-        raise RuntimeError("iglob intrinsic returned invalid value")
-    yield from matches
+    """Return an iterator which yields the paths matching a pathname pattern.
+
+    The returned object is a native lazy iterator (CPython's ``glob.iglob`` is
+    likewise a generator chain over ``os.scandir``): paths are produced on
+    demand, so large or deep trees stream at bounded memory instead of being
+    fully materialized. Like CPython, ``iglob`` itself returns the iterator
+    (it is not a generator function).
+    """
+    return _MOLT_GLOB_ITER(pathname, root_dir, dir_fd, recursive, include_hidden)
 
 
 def escape(pathname: Any) -> str | bytes:

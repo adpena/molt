@@ -67,8 +67,6 @@ pub(crate) mod functions_textwrap;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
-#[cfg(feature = "stdlib_fs_extra")]
-pub(crate) mod glob_mod;
 pub(crate) mod gpu;
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) mod gpu_primitives;
