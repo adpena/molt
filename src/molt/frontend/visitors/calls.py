@@ -2137,6 +2137,24 @@ class CallVisitorMixin(_MixinBase):
         inline_owner = method_info.get("inline_owner_class")
         if inline_return is None or inline_params is None:
             return None
+        # Fail-closed soundness gate (cross-module global mis-resolution).
+        # The body is spliced into the *current* module's scope and re-lowered.
+        # Any bare Name in the body that is not a substituted parameter or a
+        # builtin (recorded in `inline_free_names`) resolves through
+        # `visit_Name -> _emit_global_get` against the CURRENT module's globals.
+        # When the method is defined in a *different* module, such a name is one
+        # of the defining module's globals (e.g. `_MOLT_ARRAY_TOLIST`, a sibling
+        # helper, a module-level constant) and would mis-resolve here — a silent
+        # NameError at runtime.  Refuse the inline so the call site falls through
+        # to a real CALL to the method symbol, which reads the defining module's
+        # globals correctly (via the method body's own module-cache lookup).
+        # Same-module inlines are unaffected: the current module IS the defining
+        # module, so the global resolves to the same dict either way.
+        inline_free_names = method_info.get("inline_free_names")
+        if inline_free_names:
+            owner_module = method_info.get("inline_owner_module")
+            if owner_module is not None and owner_module != self.module_name:
+                return None
         # The first param is `self` (for non-classmethod / non-static).
         if len(inline_params) != 1 + len(call_args):
             return None
@@ -6040,9 +6058,31 @@ class CallVisitorMixin(_MixinBase):
                                                 inline_params = init_info.get(
                                                     "inline_params"
                                                 )
+                                                # Fail-closed cross-module gate
+                                                # (mirrors _try_inline_method_call):
+                                                # an __init__ value-expression that
+                                                # reads a defining-module global
+                                                # (recorded in inline_free_names)
+                                                # must not be spliced into a
+                                                # different module's scope, where
+                                                # the global would mis-resolve.
+                                                init_free_names = init_info.get(
+                                                    "inline_free_names"
+                                                )
+                                                init_cross_module = False
+                                                if init_free_names:
+                                                    init_owner_module = init_info.get(
+                                                        "inline_owner_module"
+                                                    )
+                                                    init_cross_module = (
+                                                        init_owner_module is not None
+                                                        and init_owner_module
+                                                        != self.module_name
+                                                    )
                                                 if (
                                                     init_assigns is not None
                                                     and inline_params is not None
+                                                    and not init_cross_module
                                                     and self._try_inline_init_assigns(
                                                         init_assigns,
                                                         inline_params,
