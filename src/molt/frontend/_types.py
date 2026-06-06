@@ -155,10 +155,10 @@ _MIDEND_ENV_KEYS = (
     "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
     "MOLT_MIDEND_HOT_TIER_PROMOTION",
     "MOLT_MIDEND_BUDGET_MS",
+    "MOLT_MIDEND_WORK_BUDGET",
     "MOLT_MIDEND_BUDGET_ALPHA",
     "MOLT_MIDEND_BUDGET_BETA",
     "MOLT_MIDEND_BUDGET_SCALE",
-    "MOLT_MIDEND_BUDGET_PREEMPT_RATIO",
     "MOLT_MIDEND_MAX_ROUNDS",
     "MOLT_SCCP_MAX_ITERS",
     "MOLT_CSE_MAX_ITERS",
@@ -170,6 +170,33 @@ class MidendTierClassification:
     tier: MidendTier
     source: str
     allow_hot_promotion: bool
+
+
+# --- Deterministic mid-end degrade-ladder work model (#73) ------------------
+# The mid-end's pass-degrade ladder used to gate on wall-clock elapsed time,
+# which made the compiled IR depend on machine speed (a determinism-contract
+# violation: identical source could emit different IR across processes).  The
+# ladder now charges a DETERMINISTIC work cost — the live op count — at each
+# inter-pass checkpoint and degrades when the running total exceeds a
+# deterministic per-function work budget.  These constants calibrate that
+# budget so non-pathological functions never degrade (preserving optimisation
+# quality) while a pass that pathologically grows the op count still trips the
+# ladder and bounds compile time.
+#
+# Number of degrade checkpoints reached per optimisation round on the
+# non-degraded path (the count of `maybe_apply_budget_degrade(...)` calls
+# inside the per-round body of `_canonicalize_control_aware_ops_impl`).  Used
+# only to size the budget headroom; an exact match is not required (the growth
+# headroom multiplier absorbs drift), but keep it in the right ballpark.
+_MIDEND_DEGRADE_CHECKPOINTS = 12
+# Multiplier applied to the nominal per-round work so a function whose op count
+# stays roughly stable across its permitted rounds never degrades.  Pathological
+# op-count explosion (a pass that balloons the IR) still exceeds the budget.
+_MIDEND_WORK_GROWTH_HEADROOM = 4.0
+# Conversion from the per-tier `budget_base_ms` constant into work-units of
+# base headroom, so the deterministic budget keeps the same relative ordering
+# across tiers that the old millisecond base provided.
+_MIDEND_WORK_BASE_UNITS_PER_MS = 50.0
 
 
 @dataclass(frozen=True)
@@ -189,6 +216,15 @@ class MidendFunctionPolicy:
     enable_licm: bool
     enable_guard_hoist: bool
     budget_ms: float
+    # Deterministic work-unit budget for the mid-end pass-degrade ladder.
+    # The degrade ladder MUST gate on this (a pure function of the IR — op and
+    # block counts), never on wall-clock elapsed time: a time-gated optimiser
+    # makes the compiled IR depend on machine speed / scheduling, which silently
+    # violated the determinism contract (#73 — identical source + seed produced
+    # divergent IR across processes whenever a compile happened to run slow
+    # enough to trip the old `time.perf_counter()` budget and disable CSE/LICM).
+    # `budget_ms` is retained for telemetry/logging only.
+    work_budget: float
     allow_hot_promotion: bool
     module_function_count: int
     module_total_ops: int
@@ -202,10 +238,15 @@ class MidendEnvConfig:
     monolith_total_ops_threshold: int
     hot_tier_promotion_enabled: bool
     budget_override_ms: float | None
+    # Deterministic work-unit budget override (env: MOLT_MIDEND_WORK_BUDGET).
+    # When set, replaces the computed per-function work budget the degrade
+    # ladder gates on.  This is the deterministic successor to the old
+    # `budget_override_ms` time escape-hatch; `budget_override_ms` now only
+    # affects the telemetry `budget_ms`, never pass selection.
+    work_budget_override: float | None
     budget_alpha: float
     budget_beta: float
     budget_scale: float
-    budget_preempt_ratio: float
     max_rounds_override: int | None
     sccp_iter_cap_override: int | None
     cse_iter_cap_override: int | None

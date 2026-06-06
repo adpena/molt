@@ -107,6 +107,9 @@ from molt.frontend._types import (
     _TrackedOpsList,
     CanonicalizationState,
     _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY,
+    _MIDEND_DEGRADE_CHECKPOINTS,
+    _MIDEND_WORK_GROWTH_HEADROOM,
+    _MIDEND_WORK_BASE_UNITS_PER_MS,
     CompatibilityError,
     CompatibilityReporter,
     FallbackPolicy,
@@ -19999,6 +20002,13 @@ class SimpleTIRGenerator(
                 budget_override_ms = max(0.0, float(budget_override_raw))
             except ValueError:
                 budget_override_ms = None
+        work_budget_override_raw = os.getenv("MOLT_MIDEND_WORK_BUDGET", "").strip()
+        work_budget_override: float | None = None
+        if work_budget_override_raw:
+            try:
+                work_budget_override = max(0.0, float(work_budget_override_raw))
+            except ValueError:
+                work_budget_override = None
         max_rounds_override = os.getenv("MOLT_MIDEND_MAX_ROUNDS", "").strip()
         sccp_iter_cap_override = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
         cse_iter_cap_override = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
@@ -20023,17 +20033,11 @@ class SimpleTIRGenerator(
             .lower()
             not in {"0", "false", "no", "off"},
             budget_override_ms=budget_override_ms,
+            work_budget_override=work_budget_override,
             budget_alpha=self._midend_float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03),
             budget_beta=self._midend_float_env("MOLT_MIDEND_BUDGET_BETA", 0.75),
             budget_scale=max(
                 0.0, self._midend_float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0)
-            ),
-            budget_preempt_ratio=min(
-                1.0,
-                max(
-                    0.0,
-                    self._midend_float_env("MOLT_MIDEND_BUDGET_PREEMPT_RATIO", 0.92),
-                ),
             ),
             max_rounds_override=(
                 self._midend_positive_int_env("MOLT_MIDEND_MAX_ROUNDS", 1, minimum=1)
@@ -20369,18 +20373,46 @@ class SimpleTIRGenerator(
             selected["cse_iter_cap"] = max(4, int(int(selected["cse_iter_cap"]) * 0.75))
             selected["enable_guard_hoist"] = False
             selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.8
+        alpha = self.midend_env.budget_alpha
+        beta = self.midend_env.budget_beta
+        scale = max(0.0, self.midend_env.budget_scale)
         budget_override_ms = self.midend_env.budget_override_ms
         if budget_override_ms is not None:
             budget_ms = budget_override_ms
         else:
-            alpha = self.midend_env.budget_alpha
-            beta = self.midend_env.budget_beta
-            scale = self.midend_env.budget_scale
             budget_ms = (
                 selected["budget_base_ms"]
                 + alpha * max(1, len(ops))
                 + beta * max(1, block_count)
-            ) * max(0.0, scale)
+            ) * scale
+        # Deterministic work-unit budget for the degrade ladder (#73).  The
+        # ladder accumulates a deterministic cost — the op count processed —
+        # at each inter-pass checkpoint, and degrades when the running total
+        # exceeds this budget.  Because the work-units depend only on the IR
+        # (op/block counts) and the deterministic per-tier round/iteration
+        # caps, the resulting pass selection — and the emitted IR — is a pure
+        # function of the input, independent of wall-clock timing.
+        #
+        # Calibration: a non-pathological function executes the full
+        # `max_rounds` round loop, hitting ~`_MIDEND_DEGRADE_CHECKPOINTS`
+        # work-charges per round, each ≈ the live op count.  The ceiling below
+        # admits that nominal cost (plus generous per-round growth headroom and
+        # the per-tier base) so normal functions never degrade, while a pass
+        # that pathologically balloons the op count still trips the ladder and
+        # bounds compile time — matching the original safety intent without its
+        # nondeterminism.
+        work_budget_override = self.midend_env.work_budget_override
+        if work_budget_override is not None:
+            work_budget = work_budget_override
+        else:
+            base_ops = max(1, len(ops))
+            rounds = max(1, int(selected["max_rounds"]))
+            nominal_round_work = _MIDEND_DEGRADE_CHECKPOINTS * base_ops
+            work_budget = (
+                float(selected["budget_base_ms"]) * _MIDEND_WORK_BASE_UNITS_PER_MS
+                + _MIDEND_WORK_GROWTH_HEADROOM * rounds * nominal_round_work
+                + beta * max(1, block_count)
+            ) * scale
         return MidendFunctionPolicy(
             profile=profile,
             tier=tier,
@@ -20397,6 +20429,7 @@ class SimpleTIRGenerator(
             enable_licm=bool(selected["enable_licm"]),
             enable_guard_hoist=bool(selected["enable_guard_hoist"]),
             budget_ms=float(budget_ms),
+            work_budget=float(work_budget),
             allow_hot_promotion=bool(
                 tier_classification.allow_hot_promotion and hot_promotion_enabled
             ),
@@ -23386,13 +23419,28 @@ class SimpleTIRGenerator(
             prior_out = out_values[block_id]
             out_changed_keys: list[str] = []
             if known != prior_out:
+                # DETERMINISM (#73, #34 bug class): `out_changed_keys` drives the
+                # order values are pushed onto the SCCP `value_queue` (see the
+                # `enqueue_value(key)` loop below), which in turn dictates the
+                # block-processing schedule of this worklist fixed point.  Built
+                # from a `set[str]` union, its iteration order is
+                # PYTHONHASHSEED-dependent — and while the SCCP lattice *result*
+                # is order-independent (monotone), the NUMBER of node re-visits
+                # to reach the fixed point is not.  For a function near the
+                # `max_iterations` cap, a worse schedule can exceed the cap and
+                # bail to the conservative empty-facts result, whereas a better
+                # schedule converges with full const facts.  That flips
+                # downstream CSE/const-dedup on or off, so the emitted IR
+                # silently diverged across hash seeds.  Sort the changed keys at
+                # this construction site so the worklist schedule — and thus the
+                # cap behaviour and the compiled IR — is byte-stable.
                 all_keys = set(prior_out.keys()) | set(known.keys())
-                out_changed_keys = [
+                out_changed_keys = sorted(
                     key
                     for key in all_keys
                     if prior_out.get(key, _SCCP_UNKNOWN)
                     != known.get(key, _SCCP_UNKNOWN)
-                ]
+                )
                 out_values[block_id] = known
 
             succs = cfg.successors.get(block_id, [])
@@ -25393,7 +25441,16 @@ class SimpleTIRGenerator(
             degraded=False,
         )
 
+        # `midend_start` measures wall-clock for TELEMETRY ONLY (logged in
+        # degrade/pass events).  It MUST NOT feed any pass-selection decision —
+        # the degrade ladder gates on the deterministic `work_units_spent`
+        # accumulator below so the emitted IR is a pure function of the input
+        # (#73; the old wall-clock gate made IR depend on machine speed).
         midend_start = time.perf_counter()
+        # Deterministic degrade-ladder accumulator: charged the live op count at
+        # each inter-pass checkpoint via `charge_work(...)`.  Compared against
+        # the deterministic `policy.work_budget` to decide degradation.
+        work_units_spent = 0.0
         degrade_events: list[dict[str, Any]] = []
         degraded = False
         enable_deep_edge_thread = policy.enable_deep_edge_thread
@@ -25404,8 +25461,9 @@ class SimpleTIRGenerator(
         sccp_iter_cap = max(1, policy.sccp_iter_cap)
         cse_iter_cap = max(1, policy.cse_iter_cap)
 
-        # --- Per-function wall-time budget with 3-level degrade ladder (MOL-27) ---
-        per_func_budget_ms = max(0.0, float(policy.budget_ms))
+        # --- Per-function DETERMINISTIC work budget, 3-level degrade ladder ---
+        # (formerly a wall-time budget, MOL-27; made deterministic for #73).
+        per_func_work_budget = max(0.0, float(policy.work_budget))
         degrade_level: int = 0
         degrade_level_reasons: list[str] = []
 
@@ -25427,27 +25485,15 @@ class SimpleTIRGenerator(
             hard_fail_on_non_convergence = True
 
         def spent_midend_ms() -> float:
+            # Telemetry only — never feeds a pass-selection decision (#73).
             return (time.perf_counter() - midend_start) * 1000.0
 
-        budget_preempt_ratio = self.midend_env.budget_preempt_ratio
-
-        def recent_pass_p95_ms(pass_name: str) -> float:
-            per_func = self.midend_pass_stats_by_function.get(
-                self._active_midend_function_name, {}
-            )
-            stats = per_func.get(pass_name, {})
-            samples = stats.get("samples_ms")
-            if not isinstance(samples, list):
-                return 0.0
-            filtered: list[float] = []
-            for sample in samples:
-                try:
-                    value = float(sample)
-                except (TypeError, ValueError):
-                    continue
-                if value >= 0.0:
-                    filtered.append(value)
-            return self._pass_stat_p95(filtered)
+        def charge_work(units: float) -> None:
+            # Deterministic work accounting for the degrade ladder.  `units` is
+            # an op-count-derived (hence input-determined) cost.
+            nonlocal work_units_spent
+            if units > 0.0:
+                work_units_spent += float(units)
 
         def add_degrade_event(
             reason: str,
@@ -25465,85 +25511,6 @@ class SimpleTIRGenerator(
             if value is not None:
                 event["value"] = value
             degrade_events.append(event)
-
-        def _check_per_func_budget(stage: str) -> bool:
-            """Apply the 3-level degrade ladder when the per-function budget is
-            exceeded.  Returns True if level 3 was reached (caller should bail)."""
-            nonlocal degrade_level, degraded
-            nonlocal enable_licm, enable_guard_hoist
-            nonlocal sccp_iter_cap, max_rounds
-            nonlocal enable_cse, enable_deep_edge_thread
-            nonlocal enable_idempotence_probe
-            spent = (time.perf_counter() - midend_start) * 1000.0
-            if spent <= per_func_budget_ms:
-                return False
-            if degrade_level < 1:
-                degrade_level = 1
-                reason = (
-                    f"per_func_budget_exceeded at {stage}: "
-                    f"spent={spent:.1f}ms > budget={per_func_budget_ms:.1f}ms; "
-                    f"level=1 (skip LICM + guard hoist)"
-                )
-                degrade_level_reasons.append(reason)
-                degraded = True
-                enable_licm = False
-                enable_guard_hoist = False
-                degrade_events.append(
-                    {
-                        "reason": "per_func_budget_level_1",
-                        "stage": stage,
-                        "action": "disable_licm_and_guard_hoist",
-                        "spent_ms": round(max(0.0, spent), 3),
-                        "degrade_level": 1,
-                    }
-                )
-            spent = (time.perf_counter() - midend_start) * 1000.0
-            if spent <= per_func_budget_ms:
-                return False
-            if degrade_level < 2:
-                degrade_level = 2
-                reason = (
-                    f"per_func_budget_exceeded at {stage}: "
-                    f"spent={spent:.1f}ms > budget={per_func_budget_ms:.1f}ms; "
-                    f"level=2 (skip SCCP multi-pass)"
-                )
-                degrade_level_reasons.append(reason)
-                sccp_iter_cap = 1
-                max_rounds = min(max_rounds, 1)
-                enable_cse = False
-                enable_deep_edge_thread = False
-                enable_idempotence_probe = False
-                degrade_events.append(
-                    {
-                        "reason": "per_func_budget_level_2",
-                        "stage": stage,
-                        "action": "single_sccp_pass_only",
-                        "spent_ms": round(max(0.0, spent), 3),
-                        "degrade_level": 2,
-                    }
-                )
-            spent = (time.perf_counter() - midend_start) * 1000.0
-            if spent <= per_func_budget_ms:
-                return False
-            if degrade_level < 3:
-                degrade_level = 3
-                reason = (
-                    f"per_func_budget_exceeded at {stage}: "
-                    f"spent={spent:.1f}ms > budget={per_func_budget_ms:.1f}ms; "
-                    f"level=3 (skip all optimisation)"
-                )
-                degrade_level_reasons.append(reason)
-                degrade_events.append(
-                    {
-                        "reason": "per_func_budget_level_3",
-                        "stage": stage,
-                        "action": "emit_unoptimized_ir",
-                        "spent_ms": round(max(0.0, spent), 3),
-                        "degrade_level": 3,
-                    }
-                )
-                return True
-            return degrade_level >= 3
 
         if not enable_deep_edge_thread:
             add_degrade_event(
@@ -25574,9 +25541,21 @@ class SimpleTIRGenerator(
             stage: str,
             round_index: int,
             *,
+            ops_now: int,
             upcoming_pass: str | None = None,
         ) -> None:
+            """Deterministically degrade the optimisation pipeline when the
+            accumulated DETERMINISTIC work exceeds the per-function work budget.
+
+            `ops_now` is the live op count at this checkpoint; it is charged to
+            the work accumulator before the budget is evaluated.  Charging the
+            op count makes the total work scale with how much IR each pass had
+            to process — a deterministic proxy for compile cost — so the
+            resulting pass selection (and thus the emitted IR) depends only on
+            the input, never on wall-clock timing (#73).
+            """
             nonlocal degraded
+            nonlocal degrade_level
             nonlocal enable_deep_edge_thread
             nonlocal enable_cse
             nonlocal enable_guard_hoist
@@ -25585,27 +25564,10 @@ class SimpleTIRGenerator(
             nonlocal sccp_iter_cap
             nonlocal cse_iter_cap
             nonlocal enable_idempotence_probe
-            if policy.budget_ms < 0:
+            if per_func_work_budget < 0:
                 return
-            while True:
-                spent_now = spent_midend_ms()
-                over_budget = spent_now > policy.budget_ms
-                preemptive = False
-                predicted_ms = 0.0
-                if (
-                    not over_budget
-                    and upcoming_pass is not None
-                    and budget_preempt_ratio > 0.0
-                ):
-                    predicted_ms = recent_pass_p95_ms(upcoming_pass)
-                    threshold_budget = policy.budget_ms * budget_preempt_ratio
-                    if (
-                        predicted_ms > 0.0
-                        and (spent_now + predicted_ms) > threshold_budget
-                    ):
-                        preemptive = True
-                if not over_budget and not preemptive:
-                    break
+            charge_work(max(1, ops_now))
+            while work_units_spent > per_func_work_budget:
                 action: str | None = None
                 if max_rounds > (round_index + 1):
                     max_rounds = round_index + 1
@@ -25634,14 +25596,21 @@ class SimpleTIRGenerator(
                 if action is None:
                     break
                 degraded = True
-                reason = "budget_exceeded" if over_budget else "budget_preemptive"
-                extra_value: dict[str, Any] | None = None
-                if preemptive and upcoming_pass is not None:
-                    extra_value = {
-                        "upcoming_pass": upcoming_pass,
-                        "predicted_ms": round(max(0.0, predicted_ms), 3),
-                    }
-                add_degrade_event(reason, stage, action, value=extra_value)
+                degrade_level = min(3, degrade_level + 1)
+                degrade_level_reasons.append(
+                    f"work_budget_exceeded at {stage}: "
+                    f"work={work_units_spent:.0f} > budget="
+                    f"{per_func_work_budget:.0f}; action={action}"
+                )
+                extra_value: dict[str, Any] = {
+                    "work_units": round(work_units_spent, 1),
+                    "work_budget": round(per_func_work_budget, 1),
+                }
+                if upcoming_pass is not None:
+                    extra_value["upcoming_pass"] = upcoming_pass
+                add_degrade_event(
+                    "work_budget_exceeded", stage, action, value=extra_value
+                )
 
         total_branch_prunes = 0
         total_loop_edge_prunes = 0
@@ -25671,6 +25640,7 @@ class SimpleTIRGenerator(
             maybe_apply_budget_degrade(
                 f"round_{round_index}_start",
                 round_index - 1,
+                ops_now=len(rewritten_ops),
                 upcoming_pass="simplify",
             )
             step_before = rewritten_ops
@@ -25691,6 +25661,7 @@ class SimpleTIRGenerator(
             maybe_apply_budget_degrade(
                 f"round_{round_index}_post_simplify",
                 round_index - 1,
+                ops_now=len(step_ops),
                 upcoming_pass="sccp_edge_thread",
             )
 
@@ -25803,11 +25774,14 @@ class SimpleTIRGenerator(
                     degraded=degraded,
                 )
             maybe_apply_budget_degrade(
-                f"round_{round_index}_post_sccp", round_index - 1
+                f"round_{round_index}_post_sccp",
+                round_index - 1,
+                ops_now=len(step_ops),
             )
             maybe_apply_budget_degrade(
                 f"round_{round_index}_pre_join",
                 round_index - 1,
+                ops_now=len(step_ops),
                 upcoming_pass="join_canonicalize",
             )
 
@@ -25831,6 +25805,7 @@ class SimpleTIRGenerator(
             maybe_apply_budget_degrade(
                 f"round_{round_index}_post_join",
                 round_index - 1,
+                ops_now=len(step_ops),
                 upcoming_pass="guard_hoist",
             )
 
@@ -25876,6 +25851,7 @@ class SimpleTIRGenerator(
             maybe_apply_budget_degrade(
                 f"round_{round_index}_post_guard_hoist",
                 round_index - 1,
+                ops_now=len(step_ops),
                 upcoming_pass="licm",
             )
 
@@ -25899,11 +25875,14 @@ class SimpleTIRGenerator(
                 )
             total_licm_hoists += licm_hoists
             maybe_apply_budget_degrade(
-                f"round_{round_index}_post_hoists", round_index - 1
+                f"round_{round_index}_post_hoists",
+                round_index - 1,
+                ops_now=len(step_ops),
             )
             maybe_apply_budget_degrade(
                 f"round_{round_index}_pre_prune",
                 round_index - 1,
+                ops_now=len(step_ops),
                 upcoming_pass="prune",
             )
 
@@ -25957,6 +25936,7 @@ class SimpleTIRGenerator(
             maybe_apply_budget_degrade(
                 f"round_{round_index}_post_prune",
                 round_index - 1,
+                ops_now=len(step_ops),
                 upcoming_pass="verifier",
             )
 
@@ -26011,6 +25991,7 @@ class SimpleTIRGenerator(
                 maybe_apply_budget_degrade(
                     f"round_{round_index}_post_dce",
                     round_index - 1,
+                    ops_now=len(step_ops),
                     upcoming_pass="cse",
                 )
 
@@ -26048,6 +26029,7 @@ class SimpleTIRGenerator(
                 maybe_apply_budget_degrade(
                     f"round_{round_index}_post_cse",
                     round_index - 1,
+                    ops_now=len(step_ops),
                 )
 
             rewritten_ops = step_ops
