@@ -208,6 +208,7 @@ tests/differential/stdlib/asyncio_future_callbacks.py
 tests/differential/stdlib/asyncio_future_cancel_callback.py
 tests/differential/stdlib/asyncio_future_cancel_message.py
 tests/differential/stdlib/asyncio_future_exception_result.py
+tests/differential/stdlib/asyncio_future_invalid_state_messages.py
 tests/differential/stdlib/asyncio_gather_basic.py
 tests/differential/stdlib/asyncio_gather_cancel_order.py
 tests/differential/stdlib/asyncio_gather_cancel_sibling.py
