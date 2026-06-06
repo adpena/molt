@@ -168,6 +168,20 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                                 AttrValue::Str(s) => parse_return_type_str(s.as_str()),
                                 _ => None,
                             })
+                        } else if op.opcode == OpCode::Copy
+                            && let Some(AttrValue::Str(kind)) = op.attrs.get("_original_kind")
+                            && crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(
+                                kind,
+                            ) {
+                            // Fresh-value op spelled as a `Copy` fallback (see the
+                            // `OpCode::Copy` arm of `infer_single_result_type_with_attrs`):
+                            // it mints a NEW object whose type is fixed by the op, NOT
+                            // by operand[0]. Pin that intrinsic type here so this
+                            // attr-less convergence loop does not type-propagate
+                            // operand[0] (e.g. `complex_from_obj`'s f64 real part) into
+                            // the fresh value. The mapping is operand-independent, so it
+                            // is safe to precompute.
+                            Some(fresh_value_kind_result_type(kind))
                         } else {
                             None
                         };
@@ -992,8 +1006,9 @@ pub(super) fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Op
 pub(super) fn infer_scalar_return_result_type(
     opcode: OpCode,
     operand_types: &[TirType],
+    attrs: Option<&super::ops::AttrDict>,
 ) -> Option<TirType> {
-    infer_result_type(opcode, operand_types).filter(|ty| {
+    infer_result_type_with_attrs(opcode, operand_types, attrs).filter(|ty| {
         matches!(
             ty,
             TirType::I64
@@ -1216,8 +1231,43 @@ fn infer_single_result_type_with_attrs(
         },
         OpCode::OrdAt => Some(TirType::I64),
 
-        // Copy propagates type.
-        OpCode::Copy => operand_types.first().cloned(),
+        // Copy propagates type — but ONLY for genuine type-transparent aliases.
+        //
+        // Unrecognized SimpleIR op kinds fall back to `OpCode::Copy` carrying
+        // their spelling in `_original_kind` (ssa.rs `kind_to_opcode`). Some of
+        // those fallbacks MINT A FRESH HEAP OBJECT whose runtime type is wholly
+        // independent of their first operand — e.g. `complex_from_obj` builds a
+        // `complex` from two `f64` parts; `ascii_from_obj`/`dict_from_obj`/etc.
+        // likewise. Propagating operand[0]'s type for these is a TYPE CONFUSION:
+        // a `complex` would be typed `F64` (its real-part operand), then the
+        // scalar lane classifier routes `float + complex` down the unboxed-float
+        // `fadd` path and the runtime coerces the complex via `molt_float_as_f64`
+        // → "float-compatible object expected" / wrong-typed result. A fresh
+        // value the TIR does not model has unknown type: `DynBox`.
+        //
+        // The fresh-value-minting classifier (`copy_kind_mints_fresh_owned_ref`,
+        // the op-kind registry single source of truth, also used by alias
+        // analysis + drop insertion) is exactly the discriminator: members mint a
+        // new owned object whose type is fixed by the op (NOT operand[0]),
+        // everything else is a transparent alias whose result type IS operand[0]'s
+        // type (int-carrier propagation through passthrough ops depends on this
+        // and must be preserved).
+        OpCode::Copy => {
+            if let Some(attrs) = attrs
+                && let Some(AttrValue::Str(kind)) = attrs.get("_original_kind")
+                && crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(kind)
+            {
+                // Fresh value: type is determined by the producing op, never by
+                // operand[0]. A few mint a known scalar/str result; the rest mint
+                // heap objects the TIR does not model further → DynBox. (`int()`
+                // is deliberately DynBox, not I64: it may return a heap BigInt, so
+                // typing it I64 would license a trusted-unbox on a BigInt pointer
+                // — the carrier-soundness rule the `ConstBigInt` arm encodes.)
+                Some(fresh_value_kind_result_type(kind))
+            } else {
+                operand_types.first().cloned()
+            }
+        }
 
         // Module lookup operations return arbitrary runtime values. Their
         // result type must not inherit the module/name operand type.
@@ -1238,6 +1288,27 @@ fn infer_single_result_type_with_attrs(
 
         // Everything else: cannot infer, leave as-is.
         _ => None,
+    }
+}
+
+/// Result type of a fresh-value-minting op (one that falls back to
+/// `OpCode::Copy` carrying its kind in `_original_kind` but, per
+/// [`crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref`],
+/// constructs a NEW owned object rather than aliasing operand[0]).
+///
+/// The result type is intrinsic to the op, NOT operand[0]'s type. The vast
+/// majority mint heap objects the TIR does not model further (`complex`, dicts,
+/// lists, sets, tuples, ranges, slices, iterators, generic instances) → DynBox.
+/// A handful mint a statically-known scalar/str result and are typed precisely
+/// so the scalar lanes still fire on them. `int()`/`int_from_*` are intentionally
+/// DynBox (may return a heap BigInt; an I64 type would license a trusted-unbox on
+/// a BigInt pointer — the same carrier-soundness rule `ConstBigInt` follows).
+fn fresh_value_kind_result_type(kind: &str) -> TirType {
+    match kind {
+        "float_from_obj" => TirType::F64,
+        "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "string_format"
+        | "string_join" => TirType::Str,
+        _ => TirType::DynBox,
     }
 }
 

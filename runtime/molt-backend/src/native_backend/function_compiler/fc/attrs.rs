@@ -547,7 +547,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             .unwrap_or_else(|| {
                 panic!("Attr object not found in {} op {}", func_name, op_idx)
             });
-            let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -579,17 +578,31 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+            // Pass the NaN-boxed receiver (NOT a pre-unboxed pointer) and call the
+            // bits-validating `molt_set_attr_object`. SETATTR's `_generic_ptr`
+            // SimpleIR form is emitted whenever the attr is not a statically-known
+            // field offset — which includes polymorphic receivers whose runtime
+            // value can be a TAGGED non-pointer (a tagged int/bool/None/float,
+            // e.g. `typing.final(42)` → `f.__final__ = True`). `unbox_ptr_value`
+            // on a tagged value yields a garbage address (the tag bits, e.g.
+            // 0x12), and the old `molt_set_attr_ptr` then dereferenced the object
+            // header at `addr-16` → SIGSEGV. `molt_set_attr_object` resolves the
+            // pointer via `maybe_ptr_from_bits`, raising a clean catchable
+            // AttributeError/TypeError for a tagged receiver and taking the exact
+            // same `molt_set_attr_generic` path for a real heap object — so there
+            // is no behavior change for writable receivers, only the missing
+            // tagged-receiver guard the `_ptr` variant unsoundly skipped.
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_set_attr_ptr",
+                "molt_set_attr_object",
                 &[types::I64, types::I64, types::I64, types::I64],
                 &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
                 .ins()
-                .call(local_callee, &[obj_ptr, attr_ptr, attr_len, *val]);
+                .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
@@ -678,7 +691,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             .unwrap_or_else(|| {
                 panic!("Attr object not found in {} op {}", func_name, op_idx)
             });
-            let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -696,17 +708,25 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+            // Pass the NaN-boxed receiver and call the bits-validating
+            // `molt_del_attr_object` (mirrors the `set_attr_generic_ptr` fix
+            // above): the `_generic_ptr` DELATTR form can target a tagged
+            // non-pointer receiver, and `unbox_ptr_value` of a tagged value
+            // followed by `molt_del_attr_ptr`'s header deref would SIGSEGV.
+            // `molt_del_attr_object` resolves via `maybe_ptr_from_bits` and raises
+            // a clean AttributeError/TypeError for a tagged receiver, with no
+            // behavior change for real heap objects.
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_del_attr_ptr",
+                "molt_del_attr_object",
                 &[types::I64, types::I64, types::I64],
                 &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
                 .ins()
-                .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
+                .call(local_callee, &[*obj, attr_ptr, attr_len]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);

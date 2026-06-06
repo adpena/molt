@@ -372,6 +372,45 @@ pub(crate) fn attr_error(_py: &PyToken<'_>, type_label: impl AsRef<str>, attr_na
     raise_exception(_py, "AttributeError", &msg)
 }
 
+/// CPython 3.13 added a trailing clause to the AttributeError raised when
+/// SETTING (or deleting) an attribute on an object that has no `__dict__` and no
+/// slot to hold it: `'X' object has no attribute 'Y' and no __dict__ for setting
+/// new attributes`. The GET path keeps the bare `'X' object has no attribute
+/// 'Y'` on every version, so this suffix is exclusive to the set/del-failure
+/// path. Version-gate it via `runtime_target_at_least(3, 13)` so molt matches
+/// CPython 3.12 (no suffix) and 3.13/3.14 (suffix) exactly.
+fn setattr_no_dict_suffix(_py: &PyToken<'_>) -> &'static str {
+    if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+        " and no __dict__ for setting new attributes"
+    } else {
+        ""
+    }
+}
+
+/// [`attr_error_with_obj`] for the set/del-failure path: appends the
+/// version-gated `and no __dict__ for setting new attributes` clause (3.13+) and
+/// records the `name`/`obj` members on the raised `AttributeError`.
+pub(crate) fn setattr_no_attr_error_with_obj(
+    _py: &PyToken<'_>,
+    type_label: impl AsRef<str>,
+    attr_name: &str,
+    obj_bits: u64,
+) -> i64 {
+    crate::gil_assert();
+    let msg = format!(
+        "'{}' object has no attribute '{}'{}",
+        type_label.as_ref(),
+        attr_name,
+        setattr_no_dict_suffix(_py),
+    );
+    let res = raise_exception(_py, "AttributeError", &msg);
+    let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
+    if !obj_from_bits(exc_bits).is_none() {
+        set_attribute_error_attrs(_py, exc_bits, attr_name, obj_bits);
+    }
+    res
+}
+
 fn set_attribute_error_members(_py: &PyToken<'_>, exc_bits: u64, attr_name: &str, obj_bits: u64) {
     crate::gil_assert();
     let exc_obj = obj_from_bits(exc_bits);

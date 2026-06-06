@@ -11412,6 +11412,16 @@ impl WasmBackend {
                         }
                     }
                     "set_attr_generic_ptr" => {
+                        // The `_generic_ptr` SETATTR form can target a tagged
+                        // non-pointer receiver (e.g. `typing.final(42)`). Resolving
+                        // it to a pointer first (`handle_resolve`) then calling
+                        // `set_attr_ptr` (which dereferences the object header)
+                        // would fault on a tagged value. Route through the
+                        // bits-validating `set_attr_object` instead — identical to
+                        // the `set_attr_generic_obj` arm — so a tagged receiver
+                        // raises a clean AttributeError/TypeError. This keeps the
+                        // native and WASM backends at parity (see the native
+                        // `fc::attrs` fix).
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         let val = locals[&args[1]];
@@ -11419,12 +11429,11 @@ impl WasmBackend {
                         let bytes = attr.as_bytes();
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
                         func.instruction(&Instruction::LocalGet(val));
-                        emit_call(func, reloc_enabled, import_ids["set_attr_ptr"]);
+                        emit_call(func, reloc_enabled, import_ids["set_attr_object"]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -11463,17 +11472,21 @@ impl WasmBackend {
                         }
                     }
                     "del_attr_generic_ptr" => {
+                        // Mirror the `set_attr_generic_ptr` fix: a tagged
+                        // non-pointer receiver must not be `handle_resolve`'d and
+                        // dereferenced by `del_attr_ptr`. Route through the
+                        // bits-validating `del_attr_object` (same as
+                        // `del_attr_generic_obj`) for native/WASM parity.
                         let args = op.args.as_ref().unwrap();
                         let obj = locals[&args[0]];
                         let attr = op.s_value.as_ref().unwrap();
                         let bytes = attr.as_bytes();
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         func.instruction(&Instruction::LocalGet(obj));
-                        emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                         self.emit_data_ptr(reloc_enabled, func_index, func, data);
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::I64Const(bytes.len() as i64));
-                        emit_call(func, reloc_enabled, import_ids["del_attr_ptr"]);
+                        emit_call(func, reloc_enabled, import_ids["del_attr_object"]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

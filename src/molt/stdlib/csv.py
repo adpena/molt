@@ -390,7 +390,17 @@ class _Reader:
                 raise StopIteration
 
             try:
-                row = _MOLT_CSV_READER_PARSE_LINE(self._handle, self._pending)
+                # Pass `self._eof` so the parser knows whether more physical
+                # lines can still follow. While not at EOF, an unterminated
+                # quoted field (a quote that opens but does not close before the
+                # buffer ends — e.g. a field with an embedded newline) raises
+                # "unexpected end of data"; we then read the next physical line
+                # and re-parse the accumulated buffer. At EOF a non-strict
+                # dialect instead commits the truncated field (no exception),
+                # while a strict dialect still raises — matching CPython's `_csv`.
+                row = _MOLT_CSV_READER_PARSE_LINE(
+                    self._handle, self._pending, self._eof
+                )
             except ValueError as exc:
                 msg = str(exc)
                 if msg == "unexpected end of data" and not self._eof:

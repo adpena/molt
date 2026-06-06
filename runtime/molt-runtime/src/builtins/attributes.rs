@@ -3146,11 +3146,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
             if type_id == TYPE_ID_TYPE {
                 let class_bits = MoltObject::from_ptr(obj_ptr).bits();
                 if is_builtin_class_bits(_py, class_bits) {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "cannot set attributes on builtin type",
+                    // CPython: setting an attribute on an immutable builtin type
+                    // raises `cannot set '<attr>' attribute of immutable type
+                    // '<type>'` (version-stable across 3.12/3.13/3.14).
+                    let class_label = class_name_for_error(class_bits);
+                    let msg = format!(
+                        "cannot set '{attr_name}' attribute of immutable type '{class_label}'"
                     );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
                 }
                 if attr_name == "__name__" || attr_name == "__qualname__" {
                     let val_obj = obj_from_bits(val_bits);
@@ -3669,7 +3672,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         } else {
                             name.as_str()
                         };
-                        return attr_error_with_obj(
+                        // `@dataclass(slots=True)` instance rejecting a non-slot
+                        // attribute: version-gated no-`__dict__` SET message (3.13+).
+                        return setattr_no_attr_error_with_obj(
                             _py,
                             type_label,
                             attr_name,
@@ -3705,7 +3710,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                 } else {
                     "dataclass"
                 };
-                return attr_error_with_obj(
+                return setattr_no_attr_error_with_obj(
                     _py,
                     type_label,
                     attr_name,
@@ -3838,16 +3843,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     && !info.allows_dict
                 {
                     dec_ref_bits(_py, attr_bits);
+                    // A `__slots__` instance with no `__dict__` rejecting an
+                    // attribute that is not one of its slots. CPython 3.13+ adds
+                    // "and no __dict__ for setting new attributes" on the SET path.
                     let type_label = class_name_for_error(class_bits);
-                    if !info.allows_attr {
-                        return attr_error_with_obj(
-                            _py,
-                            type_label,
-                            attr_name,
-                            MoltObject::from_ptr(obj_ptr).bits(),
-                        );
-                    }
-                    return attr_error_with_obj(
+                    return setattr_no_attr_error_with_obj(
                         _py,
                         type_label,
                         attr_name,
@@ -3872,14 +3872,14 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     return MoltObject::none().bits() as i64;
                 }
                 dec_ref_bits(_py, attr_bits);
-                return attr_error_with_obj(
+                return setattr_no_attr_error_with_obj(
                     _py,
                     "object",
                     attr_name,
                     MoltObject::from_ptr(obj_ptr).bits(),
                 );
             }
-            attr_error_with_obj(
+            setattr_no_attr_error_with_obj(
                 _py,
                 type_name(_py, MoltObject::from_ptr(obj_ptr)),
                 attr_name,
@@ -3955,11 +3955,14 @@ pub(crate) unsafe fn del_attr_ptr(
         if type_id == TYPE_ID_TYPE {
             let class_bits = MoltObject::from_ptr(obj_ptr).bits();
             if is_builtin_class_bits(_py, class_bits) {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "cannot delete attributes on builtin type",
+                // CPython routes `del <builtin_type>.<attr>` through the same
+                // immutable-type guard as set, yielding `cannot set '<attr>'
+                // attribute of immutable type '<type>'` (version-stable).
+                let class_label = class_name_for_error(class_bits);
+                let msg = format!(
+                    "cannot set '{attr_name}' attribute of immutable type '{class_label}'"
                 );
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
             if attr_name == "__annotate__" && pep649_enabled(_py) {
                 return raise_exception::<_>(
@@ -4336,10 +4339,15 @@ pub(crate) unsafe fn del_attr_ptr(
             }
             return attr_error(_py, "object", attr_name);
         }
-        attr_error(
+        // Final fallthrough: DEL of a missing attribute on a no-`__dict__` heap
+        // builtin (str/tuple/bytes/frozenset/...). CPython routes del through the
+        // generic-setattr-with-NULL path, so the message carries the same
+        // version-gated "no __dict__ for setting new attributes" clause (3.13+).
+        setattr_no_attr_error_with_obj(
             _py,
             type_name(_py, MoltObject::from_ptr(obj_ptr)),
             attr_name,
+            MoltObject::from_ptr(obj_ptr).bits(),
         )
     }
 }
@@ -4433,16 +4441,11 @@ pub(crate) unsafe fn object_setattr_raw(
         if let Some(info) = slots_info
             && !info.allows_dict
         {
+            // `__slots__` instance (no `__dict__`) rejecting a non-slot attribute
+            // via the `setattr()` builtin path: version-gated no-`__dict__` SET
+            // message (3.13+), matching `molt_set_attr_generic`.
             let type_label = class_name_for_error(class_bits);
-            if !info.allows_attr {
-                return attr_error_with_obj(
-                    _py,
-                    type_label,
-                    attr_name,
-                    MoltObject::from_ptr(obj_ptr).bits(),
-                );
-            }
-            return attr_error_with_obj(
+            return setattr_no_attr_error_with_obj(
                 _py,
                 type_label,
                 attr_name,
@@ -4473,7 +4476,7 @@ pub(crate) unsafe fn object_setattr_raw(
             dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
             return MoltObject::none().bits() as i64;
         }
-        attr_error_with_obj(
+        setattr_no_attr_error_with_obj(
             _py,
             "object",
             attr_name,
@@ -4747,6 +4750,24 @@ pub(crate) unsafe fn object_delattr_raw(
             && dict_del_in_place(_py, dict_ptr, attr_bits)
         {
             return MoltObject::none().bits() as i64;
+        }
+        // Deleting a non-existent attribute. CPython appends "and no __dict__ for
+        // setting new attributes" (3.13+) ONLY when the instance has no `__dict__`
+        // — i.e. a `__slots__`-only class. A class that allows a `__dict__` keeps
+        // the bare `'X' object has no attribute 'Y'` message on every version.
+        let slots_only = class_bits != 0
+            && obj_from_bits(class_bits).as_ptr().is_some_and(|class_ptr| {
+                object_type_id(class_ptr) == TYPE_ID_TYPE
+                    && class_slots_info(_py, class_ptr, attr_bits)
+                        .is_some_and(|info| !info.allows_dict)
+            });
+        if slots_only {
+            return setattr_no_attr_error_with_obj(
+                _py,
+                class_name_for_error(class_bits),
+                attr_name,
+                obj_bits,
+            );
         }
         attr_error(_py, class_name_for_error(class_bits), attr_name)
     }
@@ -5218,10 +5239,16 @@ pub unsafe extern "C" fn molt_set_attr_object(
             if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
                 return molt_set_attr_generic(ptr, attr_name_ptr, attr_name_len_bits, val_bits);
             }
+            // Tagged non-pointer receiver (int/str/float/bool/None/...): it has no
+            // `__dict__` and no slot to hold the attribute. CPython raises the
+            // version-gated "no __dict__ for setting new attributes" AttributeError
+            // here on the SET path (3.13+). The codegen `set_attr_generic_ptr`
+            // path now routes through this entry point, so this is also where
+            // `typing.final(42)` etc. land instead of the old misaligned deref.
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
-            attr_error(_py, type_name(_py, obj), attr_name)
+            setattr_no_attr_error_with_obj(_py, type_name(_py, obj), attr_name, obj_bits)
         })
     }
 }
@@ -5240,10 +5267,13 @@ pub unsafe extern "C" fn molt_del_attr_object(
             if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
                 return molt_del_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
             }
+            // Tagged non-pointer receiver: no `__dict__`, no slot. CPython's DEL
+            // path raises the same version-gated "no __dict__ for setting new
+            // attributes" AttributeError (3.13+) as the SET path.
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
-            attr_error(_py, type_name(_py, obj), attr_name)
+            setattr_no_attr_error_with_obj(_py, type_name(_py, obj), attr_name, obj_bits)
         })
     }
 }

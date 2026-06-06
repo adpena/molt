@@ -601,6 +601,13 @@ pub mod ffi {
 
         /// Re-acquire the GIL using the token returned by `molt_gil_release_guard`.
         pub fn molt_gil_reacquire_guard(token: u64);
+
+        // -- Target-version gate (object/ops_sys.rs) -------------------------
+
+        /// `1` when the configured target Python is `>= major.minor`, else `0`.
+        /// Lets satellite stdlib modules version-gate behavior identically to
+        /// their in-tree twin (the host owns the target-version state).
+        pub fn molt_runtime_target_at_least(major: i64, minor: i64) -> i64;
     }
 }
 
@@ -718,6 +725,14 @@ pub fn rt_exception_clear() -> u64 {
 #[inline]
 pub fn rt_is_truthy(bits: u64) -> bool {
     unsafe { ffi::molt_is_truthy(bits) == 1 }
+}
+
+/// `true` when the configured target Python is `>= major.minor`. Lets satellite
+/// stdlib modules version-gate behavior identically to their in-tree twin (the
+/// host owns the target-version state, queried via `molt_runtime_target_at_least`).
+#[inline]
+pub fn rt_target_at_least(major: i64, minor: i64) -> bool {
+    unsafe { ffi::molt_runtime_target_at_least(major, minor) != 0 }
 }
 
 /// Get the `str()` of a NaN-boxed value. Returns a NaN-boxed string handle.
@@ -916,7 +931,7 @@ pub mod prelude {
         rt_bytes_as_slice, rt_bytes_from, rt_dec_ref, rt_dict, rt_exception_clear,
         rt_exception_pending, rt_exception_pending_fast, rt_float, rt_inc_ref, rt_int,
         rt_is_truthy, rt_list, rt_none, rt_raise, rt_raise_str, rt_repr, rt_str,
-        rt_string_as_bytes, rt_string_from, rt_string_from_bytes, rt_tuple,
+        rt_string_as_bytes, rt_string_from, rt_string_from_bytes, rt_target_at_least, rt_tuple,
     };
 }
 
