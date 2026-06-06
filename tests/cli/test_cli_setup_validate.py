@@ -202,9 +202,9 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
         "luau"
     )
     assert "--profile" in luau_compile_step["cmd"]
-    assert luau_compile_step["cmd"][luau_compile_step["cmd"].index("--profile") + 1] == (
-        "release"
-    )
+    assert luau_compile_step["cmd"][
+        luau_compile_step["cmd"].index("--profile") + 1
+    ] == ("release")
     assert "tmp/validate/luau-smoke/hello.luau" in luau_compile_step["cmd"][-1]
     luau_runner_step = next(
         entry for entry in steps if entry["name"] == "luau-runner-available"

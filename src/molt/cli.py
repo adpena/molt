@@ -9346,7 +9346,9 @@ def _nm_candidate_binaries() -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
-def _runtime_intrinsic_symbols_file(runtime_lib: Path) -> tuple[Path | None, str | None]:
+def _runtime_intrinsic_symbols_file(
+    runtime_lib: Path,
+) -> tuple[Path | None, str | None]:
     """Materialize a newline-separated list of the `molt_*` intrinsic symbols the
     runtime staticlib *defines*, returning ``(cache file path, failure detail)``.
 
@@ -25837,9 +25839,7 @@ def _ensure_runtime_wasm(
         if use_legacy_wasm_flags:
             # Legacy path keeps --export-dynamic for bit-for-bit reproducibility
             # of older shared runtimes.
-            flags = (
-                f"{shared_import_flags} -C link-arg=--export-dynamic"
-            )
+            flags = f"{shared_import_flags} -C link-arg=--export-dynamic"
         else:
             # Split-runtime size policy (feedback_wasm_export_treeshaking: "only
             # export table refs for split-runtime builds").  --export-dynamic

@@ -45,7 +45,9 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     monkeypatch.setattr(
         module.harness_memory_guard,
         "HarnessExecutionContext",
-        type("FakeHarnessExecutionContext", (), {"from_env": staticmethod(fake_from_env)}),
+        type(
+            "FakeHarnessExecutionContext", (), {"from_env": staticmethod(fake_from_env)}
+        ),
     )
     monkeypatch.setattr(
         module.harness_memory_guard,

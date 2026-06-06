@@ -186,7 +186,9 @@ def _git_clean_entries(stdout: str) -> list[dict[str, str]]:
                 {"action": "would_remove", "path": line.removeprefix("Would remove ")}
             )
         elif line.startswith("Removing "):
-            entries.append({"action": "removed", "path": line.removeprefix("Removing ")})
+            entries.append(
+                {"action": "removed", "path": line.removeprefix("Removing ")}
+            )
         elif line:
             entries.append({"action": "output", "line": line})
     return entries
@@ -294,9 +296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "pathspecs": pathspecs,
                             "sentinel_returncode": sentinel_result.returncode,
                         },
-                        "errors": [
-                            "process sentinel failed before artifact cleanup"
-                        ],
+                        "errors": ["process sentinel failed before artifact cleanup"],
                     }
                 )
             return sentinel_result.returncode

@@ -349,7 +349,10 @@ def main(argv: list[str]) -> int:
                 rec = _worker(w)
                 done += 1
                 _emit(rec, sink, done, total, counts)
-                if rec["raw_status"] in molt_diff_FAILING and not rec["expect_molt_fail"]:
+                if (
+                    rec["raw_status"] in molt_diff_FAILING
+                    and not rec["expect_molt_fail"]
+                ):
                     silent_fail += 1
         else:
             with ProcessPoolExecutor(max_workers=args.jobs) as ex:

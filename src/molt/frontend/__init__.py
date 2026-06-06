@@ -2935,7 +2935,9 @@ class SimpleTIRGenerator(
         self.module_intrinsic_globals = self._collect_module_optional_intrinsic_globals(
             node
         )
-        self.reserved_external_func_symbols = set(self.module_intrinsic_globals.values())
+        self.reserved_external_func_symbols = set(
+            self.module_intrinsic_globals.values()
+        )
         for func_name, kind in self.module_declared_funcs.items():
             if kind in {"sync", "async", "gen"}:
                 self._reserve_function_symbol(func_name)
@@ -5632,7 +5634,9 @@ class SimpleTIRGenerator(
                 for name in assigned_names(stmt.target):
                     if stmt.value is None:
                         continue
-                    runtime_name = self._match_optional_intrinsic_loader_expr(stmt.value)
+                    runtime_name = self._match_optional_intrinsic_loader_expr(
+                        stmt.value
+                    )
                     if runtime_name is None:
                         clear_name(name)
                     else:
@@ -6832,9 +6836,7 @@ class SimpleTIRGenerator(
             collector.visit(stmt)
         return captured
 
-    def _collect_comp_walrus_shared_names(
-        self, body: Sequence[ast.stmt]
-    ) -> list[str]:
+    def _collect_comp_walrus_shared_names(self, body: Sequence[ast.stmt]) -> list[str]:
         """Names that are a comprehension walrus (``:=``) target AND are also
         bound by a non-comprehension assignment in the same function scope.
 
