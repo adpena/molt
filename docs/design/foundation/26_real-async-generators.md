@@ -480,3 +480,135 @@ Frontend files whose output the fusion pass consumes:
 - `/Users/adpena/Projects/molt/src/molt/frontend/_types.py:265-269` — `GEN_SEND_OFFSET`, `GEN_THROW_OFFSET`, `GEN_CLOSED_OFFSET`, `GEN_YIELD_FROM_OFFSET`, `GEN_CONTROL_SIZE`
 - `/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:7775-7898` — `_spill_async_temporaries` (the frame-slot spill logic whose output the fusion pass must correctly parse)
 - `/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:12046` and `:17695`, `:17959`, `:17962` — the `ALLOC_TASK` emission sites
+---
+
+## Phase 1 — Implementation Findings (2026-06-06)
+
+Phase 1 (Tier B, `tir/passes/generator_fusion.rs`) landed the **single-yield-site,
+module-scope** generator-fusion keystone, byte-identical vs CPython 3.12 on
+native (all 10 differential tests) and LLVM (9/10; t3_throw fails on a
+pre-existing Tier-D LLVM bug, below). What the blueprint (parts 07/26 above)
+assumed and what the real lowering actually does diverged in three load-bearing
+ways; the implementation handles all three, and two scoped sub-cases remain as
+Finding #1.
+
+### Structural reality vs the blueprint
+
+1. **No explicit resume CFG at TIR.** The blueprint assumed `STATE_SWITCH →
+   [resume blocks]` is an explicit TIR `Switch` with the frame slots already as
+   block-arg phis. The real lowering has NEITHER: a generator `_poll` lowers to a
+   **linear / structured** TIR body where `state_switch`/`state_yield` are
+   in-block ops with NO CFG edges to resume points (the resume dispatch is
+   reconstructed at *backend* lowering from the `state_yield` next-state ids —
+   `cfg.rs` `build_edges` has no `state_*` arm; native via a `state_label_ids`
+   `BTreeSet`, LLVM via `state_resume_blocks`). For the single-yield-site case the
+   resume-after-yield is the fall-through, so the splice is a straight-line
+   interleave: no return-dispatch `Switch` is needed.
+
+2. **Frame slots are MEMORY, not phis.** The slots (`closure_load`/`closure_store`
+   on the `self` frame pointer, byte offset in the `value` attr) are memory ops,
+   not SSA. The fusion pass does the frame-slot **mem2reg itself**: each user slot
+   (offset ≥ `GEN_CONTROL_BYTES`=48) becomes a loop-carried phi on the cloned
+   poll's own loop header. Param slots (offset = 48 + 8·i for i < AllocTask arity)
+   are seeded from the **caller's AllocTask args**; local slots from the poll
+   entry-block init `closure_store`. Conservative bail on conditional/multi-block
+   slot stores and non-const local inits.
+
+3. **Exception-stack bookkeeping must be elided.** The poll prologue saves the
+   exception-stack depth (`exception_stack_enter`/`depth`), restores it before
+   every `CheckException` via `Copy(exc_val, exc_val)`, and passes the copies as
+   `CheckException` operands; the exception-EXIT block takes the saved values as
+   block args on the implicit exception edge. After fusion the generator
+   exception stack does not exist: the pass drops the `exception_stack_*` ops + the
+   restore-copies (tracked transitively as `exc_derived`), clears `CheckException`
+   operands, and strips the exc-stack block args from the exception-exit block
+   (the consumer's own `CheckException` reads the runtime pending flag directly and
+   carries no operands/edge args). The cloned `label_id_map` is transferred
+   (block-key + label-value remapped) so the exception edge resolves.
+
+### Phase-1 Finding #1 — the two scoped extensions that remain
+
+These two cases **bail soundly to Tier D today** (correct, byte-identical via the
+heap-frame runtime); both are the SAME underlying mechanism — threading a second
+set of values through the fused loop — applied to a different value set.
+
+**(a) Multi-yield-SITE generators** (sequential `yield a; yield b; yield c` — N
+`state_yield` ops). The straight-line interleave does not suffice: each yield
+must hand control to the consumer body and then RESUME at a *different*
+post-yield point, so the consumer body needs a return-dispatch. The structurally
+correct form is the blueprint's §3-step-4 model made explicit: partition the
+cloned body into yield-delimited segments, build a `fused_dispatch_block(state_phi,
+slots…)` whose `Switch(state_phi)` routes to each segment, and route the single
+shared consumer body back through the dispatch with the yield's next-state. (For
+the common N-sequential-`yield` shape the user-slot set is empty, so this is
+return-dispatch with NO mem2reg.) Gate: `apply_fusion` bails when
+`yield_count != 1`.
+
+**(b) Function-scope consumers that carry loop state.** A function-scope consumer
+threads its own loop-carried values (e.g. an accumulator `total`) as block ARGS
+on its loop header — the standard SSA loop-phi form. (Module-scope consumers keep
+`total` in the module dict via `ModuleGetAttr`/`SetAttr`, so their loop blocks are
+arg-less — which is why module-scope fuses and function-scope does not yet.)
+Splicing the generator's loop between the consumer's loop-header edges requires
+re-threading those carried values through the fused loop: add them as args on the
+generator's loop header alongside the slot phis, seed them from the loop-entry
+edge, pass them through yield-pre → consumer-body → post-yield → back-edge.
+**`bench_generator_iter.py` is exactly this shape** (a `total` accumulator around
+`for val in gen(200)`, nested in a `while outer`), so the perf keystone benchmark
+needs extension (b) to fuse. Gate: `apply_fusion` bails when any block in the
+consumer loop region carries block args.
+
+Recommended next step: implement (b) first (it unblocks the keystone perf
+benchmark and is the simpler of the two — one extra value set threaded through an
+already-correct single-yield-site splice), then (a) (the return-dispatch, which
+also unblocks doc-26 Phase-1 test 2's "zero AllocTask" TIR-evidence requirement
+for sequential multi-yield).
+
+### Pre-existing bug surfaced (not introduced by fusion)
+
+`t3_throw` (a generator with `try/except` consumed with `.throw()`) fails LLVM
+codegen with an `%exception_stack_enter` phi error — and **fails identically with
+`MOLT_SKIP_GENERATOR_FUSION=1`**. This is a pre-existing Tier-D generator
+state-machine LLVM-lowering bug (the `_poll` exception-stack phi at a state-resume
+edge), in the same dominance class as the LLVM state-resume issue documented in
+`07`/session memory (commit `0fd0e9794`). The fusion pass bails on this shape
+(it has a real exception HANDLER), so the bug is orthogonal; it is recorded here
+as the next Tier-D LLVM correctness item.
+
+### Gate evidence (native, release-fast)
+
+- 10/10 doc-26 Phase-1 differential tests byte-identical vs CPython 3.12 (native);
+  module-scope single-yield-loop (`counter(n)`-shape) fuses (1 frame elided,
+  verified via the `single_yield_in_loop_recognized_and_spliced` unit test:
+  zero `AllocTask`/`StateYield`/`IterNext` in the fused caller, `verify_function`
+  clean).
+- 9/10 byte-identical on LLVM (t3 pre-existing, above).
+- 1126 backend lib tests pass, 0 warnings (all features), no regression.
+
+### Phase-1 perf finding — module-scope fusion is masked by the module-dict accumulator
+
+Measured (native, release-fast, `for x in gen(10_000_000): total += x` at MODULE
+scope, the only shape Phase 1 fuses today):
+- fused: ~12 s · Tier-D (fusion off): ~12 s · CPython 3.12: 0.89 s.
+
+Fusion correctly eliminates the generator frame (verified: 1 frame elided, no
+`AllocTask`/`StateYield`/`IterNext`), but the wall time is UNCHANGED and molt is
+~13× SLOWER than CPython — because at module scope `total += x` is
+`ModuleGetAttr` + `ModuleSetAttr` per iteration (the ~200× module-dict
+accumulator), which dominates and swamps the frame-elision win.
+`module_slot_promotion` (which would promote `total` to a loop-carried phi) does
+not fire on the freshly-fused loop in this run; whether that is an ordering gap
+(fusion runs before module-slot-promotion but the promotion's loop-shape
+recognition does not match the fused loop) or a deeper interaction is the first
+thing to check.
+
+**Consequence for the perf contract:** the dramatic generator-fusion win (and
+"molt faster than CPython" on generator loops) requires the FUNCTION-SCOPE case
+(Finding #1b), where `total` is a register local — there the fused loop is a
+plain counted loop with a register accumulator, exactly the shape molt already
+beats CPython on (`bench_sum` is 0.25 s for the same 10M). `bench_generator_iter`
+is function-scope and therefore the right perf gate once #1b lands. Until then,
+module-scope generators fuse correctly but show no perf win; this is a known,
+documented Phase-1 limitation, not a regression (Tier-D is equally slow, and
+`bench_sum`/non-generator loops are unaffected — the pass is a no-op without a
+fusable generator).
