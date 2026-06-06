@@ -29,8 +29,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.batch_compile_client import BatchCompileServerClient
-from tools import harness_memory_guard, memory_guard, process_sentinel, resource_pressure
+from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402  (must follow the sys.path self-bootstrap above)
+from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap above)
+    harness_memory_guard,
+    memory_guard,
+    process_sentinel,
+    resource_pressure,
+)
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
@@ -2472,9 +2477,7 @@ def _record_memory_guard_sentinel_violation(
             "reason": reason,
             "message": _memory_guard_message(
                 rss_violation,
-                limit_gb=limits.max_process_rss_gb
-                if limit_gb is None
-                else limit_gb,
+                limit_gb=limits.max_process_rss_gb if limit_gb is None else limit_gb,
                 phase=phase,
             ),
             "violation": _memory_guard_record(rss_violation),
@@ -2544,9 +2547,7 @@ def _run_subprocess(
                 "event": "subprocess_guard_tripped",
                 "message": guard_message,
                 "command": cmd,
-                "violation": _memory_guard_record(
-                    getattr(result, "violation", None)
-                ),
+                "violation": _memory_guard_record(getattr(result, "violation", None)),
             }
         )
         stderr = f"{stderr}{guard_message}\n"
