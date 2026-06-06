@@ -2510,8 +2510,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .get_function("molt_callargs_push_pos")
                     .unwrap();
                 for &arg_id in op.operands.get(1..).unwrap_or(&[]) {
-                    let arg = self.resolve(arg_id);
-                    let arg_i64 = self.ensure_i64(arg);
+                    // Method-call args flow through `molt_call_bind_ic` into the
+                    // bound method's trampoline, which decodes each NaN-boxed
+                    // `DynBox` into its parameter's raw representation. Box per the
+                    // value's representation plan rather than passing raw bits (a
+                    // raw `I64`/`F64` arg would be decoded as a boxed payload —
+                    // the same carrier miscompile as the plain-call paths).
+                    let arg_i64 = self.materialize_dynbox_operand(arg_id);
                     self.backend
                         .builder
                         .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cm_push")
@@ -7536,6 +7541,52 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "frozenset_new" => {
+                // `frozenset([...])` constructor. Like `set_new`/`list_from_range`
+                // it has no dedicated TIR `OpCode` — the SSA lifter folds it into a
+                // `Copy` carrying `_original_kind = "frozenset_new"`. Without this
+                // arm the LLVM Copy passthrough returned operand 0 (or, for the
+                // common zero-operand `frozenset_new` + separate `frozenset_add`
+                // shape, the None sentinel because there is no operand 0) — so
+                // `frozenset([1,2,3])` evaluated to `None` entirely (#61). The
+                // native/WASM/Luau backends all carry an explicit arm; this closes
+                // the LLVM-only coverage gap, mirroring `fc::set_ops::handle_set_op`
+                // exactly: `molt_frozenset_new(capacity)` then a `molt_frozenset_add`
+                // per element (the frozenset is mutated in place during
+                // construction). Any bundled elements are added inline; the
+                // zero-operand shape relies on the sibling `frozenset_add` arm.
+                let new_fn = self.ensure_runtime_i64_fn("molt_frozenset_new", 1);
+                let set_bits = self
+                    .backend
+                    .builder
+                    .build_call(
+                        new_fn,
+                        &[i64_ty.const_int(op.operands.len() as u64, false).into()],
+                        "frozenset_new",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if !op.operands.is_empty() {
+                    let add_fn = self.ensure_runtime_i64_fn("molt_frozenset_add", 2);
+                    for &item_id in &op.operands {
+                        let item_bits = self.materialize_dynbox_operand(item_id);
+                        self.backend
+                            .builder
+                            .build_call(
+                                add_fn,
+                                &[self.ensure_i64(set_bits).into(), item_bits.into()],
+                                "frozenset_add",
+                            )
+                            .unwrap();
+                    }
+                }
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, set_bits);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "frozenset_add" => {
                 if op.operands.len() != 2 {
                     return false;
@@ -9908,8 +9959,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_basic();
         let push_fn = self.ensure_runtime_i64_fn("molt_callargs_push_pos", 2);
         for &arg_id in arg_ids {
-            let arg = self.resolve(arg_id);
-            let arg_i64 = self.ensure_i64(arg);
+            // The dynamic-call ABI (`molt_callargs_push_pos` -> `molt_call_bind`
+            // -> trampoline) carries every argument as a NaN-boxed `DynBox`; the
+            // callee trampoline then decodes each box into its parameter's raw
+            // representation (`unbox_dynbox_to_param_ty_with_builder`). Passing a
+            // raw scalar here (the old `ensure_i64`, a bitcast-level cast that
+            // does NOT NaN-box) made the trampoline decode a raw `I64`/`F64`
+            // payload as a boxed tag — e.g. a closure returning its arg, or a
+            // bare `sum`/`format` result, surfaced as a denormal float / `15.0`.
+            // `materialize_dynbox_operand` boxes per the value's representation
+            // plan, mirroring the direct-call arg path (`coerce_to_tir_type`).
+            let arg_i64 = self.materialize_dynbox_operand(arg_id);
             self.backend
                 .builder
                 .build_call(push_fn, &[builder_val.into(), arg_i64.into()], "push")
@@ -9941,8 +10001,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 Vec::with_capacity(arg_ids.len() + 1);
             args.push(callable_i64.into());
             for &arg_id in arg_ids {
-                let arg = self.resolve(arg_id);
-                args.push(self.ensure_i64(arg).into());
+                // `molt_call_func_fast{N}` is the boxed-domain dynamic-dispatch
+                // entry: it forwards each argument into the callee's trampoline,
+                // which decodes a NaN-boxed `DynBox` into the parameter's raw
+                // representation. A raw scalar passed here (the old `ensure_i64`)
+                // is decoded as a boxed payload by the trampoline — the closure
+                // call/return ABI carrier miscompile (#58/#37). Box per the
+                // value's representation plan, exactly like the bind path above
+                // and the direct-call path (`coerce_to_tir_type`).
+                args.push(self.materialize_dynbox_operand(arg_id).into());
             }
             return self
                 .backend
