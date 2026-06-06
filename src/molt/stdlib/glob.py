@@ -47,6 +47,7 @@ def __getattr__(name: str):
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 _DEPRECATED_FUNCTION_MESSAGE = (
     "{name} is deprecated and will be removed in Python {remove}. Use "
     "glob.glob and pass a directory to its root_dir argument instead."
