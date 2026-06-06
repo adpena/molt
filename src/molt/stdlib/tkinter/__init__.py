@@ -114,33 +114,36 @@ def _has_process_spawn_capability():
 _TK_AVAILABLE = _tk_runtime_export("_MOLT_TK_AVAILABLE")
 _HAS_GUI_CAPABILITY = _has_gui_capability
 _HAS_PROCESS_SPAWN_CAPABILITY = _has_process_spawn_capability
-_TK_CREATE = _tk_runtime_export("_MOLT_TK_APP_NEW")
-_TK_MAINLOOP = _tk_runtime_export("_MOLT_TK_MAINLOOP")
-_TK_DO_ONE_EVENT = _tk_runtime_export("_MOLT_TK_DO_ONE_EVENT")
-_TK_QUIT = _tk_runtime_export("_MOLT_TK_QUIT")
-_TK_AFTER = _tk_runtime_export("_MOLT_TK_AFTER")
-_TK_CALL = _tk_runtime_export("_MOLT_TK_CALL")
-_TK_BIND_REGISTER = _tk_runtime_export("_MOLT_TK_BIND_CALLBACK_REGISTER")
-_TK_BIND_UNREGISTER = _tk_runtime_export("_MOLT_TK_BIND_CALLBACK_UNREGISTER")
-_TK_WIDGET_BIND_REGISTER = _tk_runtime_export("_MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER")
-_TK_WIDGET_BIND_UNREGISTER = _tk_runtime_export(
-    "_MOLT_TK_WIDGET_BIND_CALLBACK_UNREGISTER"
-)
-_TK_TEXT_TAG_BIND_REGISTER = _tk_runtime_export(
-    "_MOLT_TK_TEXT_TAG_BIND_CALLBACK_REGISTER"
-)
-_TK_TEXT_TAG_BIND_UNREGISTER = _tk_runtime_export(
-    "_MOLT_TK_TEXT_TAG_BIND_CALLBACK_UNREGISTER"
-)
-_TK_DESTROY_WIDGET = _tk_runtime_export("_MOLT_TK_DESTROY_WIDGET")
-_TK_LAST_ERROR = _tk_runtime_export("_MOLT_TK_LAST_ERROR")
-_TK_TRACE_ADD = _tk_runtime_export("_MOLT_TK_TRACE_ADD")
-_TK_TRACE_REMOVE = _tk_runtime_export("_MOLT_TK_TRACE_REMOVE")
-_TK_TRACE_CLEAR = _tk_runtime_export("_MOLT_TK_TRACE_CLEAR")
-_TK_TRACE_INFO = _tk_runtime_export("_MOLT_TK_TRACE_INFO")
-_TK_WAIT_VARIABLE = _tk_runtime_export("_MOLT_TK_TKWAIT_VARIABLE")
-_TK_WAIT_WINDOW = _tk_runtime_export("_MOLT_TK_TKWAIT_WINDOW")
-_TK_WAIT_VISIBILITY = _tk_runtime_export("_MOLT_TK_TKWAIT_VISIBILITY")
+_TK_CREATE = _tk_runtime_export("create")
+# ``create`` returns a ``TkappType`` wrapper; ``_unwrap_app`` yields the bare
+# interpreter handle that the ``molt_tk_*`` intrinsics consume. It accepts a raw
+# handle unchanged, so it is the canonical, wrapper-agnostic unwrap.
+_TK_UNWRAP_APP = _require_tk_callable("_unwrap_app")
+# These bindings target the ``_tkinter`` Python wrappers (not the bare
+# ``_MOLT_TK_*`` intrinsics) so they accept either a ``TkappType`` or a raw
+# handle as their first argument — every wrapper unwraps via ``_unwrap_app``.
+# ``_tk_app`` is a ``TkappType``, so binding to the wrappers keeps every call
+# site handle-agnostic. (``_TK_CALL``/``_TK_CREATE`` also bind to wrappers.)
+_TK_MAINLOOP = _tk_runtime_export("mainloop")
+_TK_DO_ONE_EVENT = _tk_runtime_export("dooneevent")
+_TK_QUIT = _tk_runtime_export("quit")
+_TK_AFTER = _tk_runtime_export("after")
+_TK_CALL = _tk_runtime_export("call")
+_TK_BIND_REGISTER = _tk_runtime_export("bind_register")
+_TK_BIND_UNREGISTER = _tk_runtime_export("bind_unregister")
+_TK_WIDGET_BIND_REGISTER = _tk_runtime_export("widget_bind_register")
+_TK_WIDGET_BIND_UNREGISTER = _tk_runtime_export("widget_bind_unregister")
+_TK_TEXT_TAG_BIND_REGISTER = _tk_runtime_export("text_tag_bind_register")
+_TK_TEXT_TAG_BIND_UNREGISTER = _tk_runtime_export("text_tag_bind_unregister")
+_TK_DESTROY_WIDGET = _tk_runtime_export("destroy_widget")
+_TK_LAST_ERROR = _tk_runtime_export("last_error")
+_TK_TRACE_ADD = _tk_runtime_export("trace_add")
+_TK_TRACE_REMOVE = _tk_runtime_export("trace_remove")
+_TK_TRACE_CLEAR = _tk_runtime_export("trace_clear")
+_TK_TRACE_INFO = _tk_runtime_export("trace_info")
+_TK_WAIT_VARIABLE = _tk_runtime_export("wait_variable")
+_TK_WAIT_WINDOW = _tk_runtime_export("wait_window")
+_TK_WAIT_VISIBILITY = _tk_runtime_export("wait_visibility")
 
 wantobjects = 1
 TkVersion = 8.6
@@ -783,8 +786,8 @@ class Misc:
             def wrapped():
                 return callback(*args)
 
-            return _MOLT_TK_AFTER_IDLE(self._tk_app, wrapped)
-        return _MOLT_TK_AFTER_IDLE(self._tk_app, callback)
+            return _MOLT_TK_AFTER_IDLE(_TK_UNWRAP_APP(self._tk_app), wrapped)
+        return _MOLT_TK_AFTER_IDLE(_TK_UNWRAP_APP(self._tk_app), callback)
 
     def after_cancel(self, identifier):
         _require_gui_window_capability()
@@ -799,28 +802,28 @@ class Misc:
             return None
 
         token = getattr(identifier, "_token", identifier)
-        _MOLT_TK_AFTER_CANCEL(self._tk_app, token)
+        _MOLT_TK_AFTER_CANCEL(_TK_UNWRAP_APP(self._tk_app), token)
         return None
 
     def after_info(self, identifier=None):
         _require_gui_window_capability()
-        return _MOLT_TK_AFTER_INFO(self._tk_app, identifier)
+        return _MOLT_TK_AFTER_INFO(_TK_UNWRAP_APP(self._tk_app), identifier)
 
     def bind_command(self, name, callback):
         _require_gui_window_capability()
         if not callable(callback):
             raise TypeError("bind_command callback must be callable")
-        _MOLT_TK_BIND_COMMAND(self._tk_app, name, callback)
+        _MOLT_TK_BIND_COMMAND(_TK_UNWRAP_APP(self._tk_app), name, callback)
 
     def createcommand(self, name, callback):
         _require_gui_window_capability()
-        _MOLT_TK_BIND_COMMAND(self._tk_app, str(name), callback)
+        _MOLT_TK_BIND_COMMAND(_TK_UNWRAP_APP(self._tk_app), str(name), callback)
         root = getattr(self, "tk", None)
         if root is not None and hasattr(root, "_registered_commands"):
             root._registered_commands.add(str(name))
 
     def deletecommand(self, name):
-        value = _MOLT_TK_UNBIND_COMMAND(self._tk_app, str(name))
+        value = _MOLT_TK_UNBIND_COMMAND(_TK_UNWRAP_APP(self._tk_app), str(name))
         root = getattr(self, "tk", None)
         if root is not None and hasattr(root, "_registered_commands"):
             root._registered_commands.discard(str(name))
@@ -1995,6 +1998,12 @@ class Tk(Wm):
             "use": use,
         }
         self._tkloaded = False
+        # ``_tkinter.create`` returns a ``TkappType`` — the molt equivalent of
+        # CPython's ``_tkinter.tkapp`` object. ``Tk.__getattr__`` delegates
+        # tkapp-only methods (``wantobjects``, ``exprlong``, ``createfilehandler``,
+        # …) to it, mirroring CPython where ``self.tk`` is the tkapp. The raw
+        # ``molt_tk_*`` intrinsics need the bare handle, so the call sites that
+        # invoke them unwrap via ``_TK_UNWRAP_APP``.
         self._tk_app = _TK_CREATE(options=options)
         self._registered_commands = set()
         self._protocol_commands = {}
@@ -2008,7 +2017,7 @@ class Tk(Wm):
 
     def loadtk(self):
         if not self._tkloaded:
-            self._tk_app.loadtk()
+            self.call("loadtk")
             self._loadtk()
         return None
 

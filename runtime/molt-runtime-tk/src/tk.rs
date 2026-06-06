@@ -14043,6 +14043,44 @@ fn run_tcl_after_and_sync_callbacks(py: &PyToken, handle: i64, args: &[u64]) -> 
     Ok(out)
 }
 
+/// Tcl commands whose evaluation may run the event loop and therefore fire
+/// registered procs (bound callbacks, `after`/`after_idle` handlers, traces).
+/// After such a command, `::__molt_pending_callbacks` must be drained so the
+/// Python-side callbacks actually run, matching CPython where the event loop
+/// invokes the command directly.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn is_event_pumping_command(command: &str) -> bool {
+    matches!(command, "update" | "tkwait" | "vwait" | "grab")
+}
+
+/// Run a Tcl command that pumps the event loop, then repeatedly drain and
+/// dispatch any pending Python callbacks it queued. Draining loops because a
+/// dispatched callback may itself schedule further idle work that the same
+/// `update` already executed (and thus already enqueued).
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn run_tcl_command_and_drain_callbacks(
+    py: &PyToken,
+    handle: i64,
+    args: &[u64],
+) -> Result<u64, u64> {
+    let out = run_tcl_command(py, handle, args)?;
+    // Bound the drain so a callback that re-queues itself synchronously cannot
+    // wedge the call; each iteration dispatches at least one queued proc.
+    for _ in 0..MAX_PENDING_CALLBACK_DRAIN_ROUNDS {
+        let pending_callbacks = take_pending_tcl_callbacks(py, handle)?;
+        if pending_callbacks.is_empty() {
+            break;
+        }
+        for callback_argv in pending_callbacks {
+            dispatch_named_callback_from_strings(py, handle, callback_argv)?;
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+const MAX_PENDING_CALLBACK_DRAIN_ROUNDS: usize = 1024;
+
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 fn native_loadtk_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.len() != 1 {
@@ -14150,6 +14188,16 @@ fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64>
         }
         if command == "loadtk" {
             return native_loadtk_command(py, handle, args);
+        }
+        // Commands that pump the Tcl event loop may fire registered procs
+        // (bound callbacks, `after_idle`, traces). Those procs only append
+        // their invocation to `::__molt_pending_callbacks`; the actual Python
+        // dispatch happens out-of-band. `pump_tcl_events` drains that queue for
+        // `dooneevent`/`mainloop`, but `update`/`tkwait`/`vwait` reach the
+        // interpreter through the generic command path, so they must drain it
+        // too — otherwise callbacks scheduled before an `update()` never run.
+        if is_event_pumping_command(&command) {
+            return run_tcl_command_and_drain_callbacks(py, handle, args);
         }
         run_tcl_command(py, handle, args)
     }
