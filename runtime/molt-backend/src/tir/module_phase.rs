@@ -146,6 +146,23 @@ pub fn run_module_pipeline(
         );
     }
 
+    // Tier-B generator frame elision (doc 26 Phase 1 / D1 `07_D1-coroelide.md`).
+    // Runs AFTER the inliner (a fused-away callee may have been inlined into the
+    // poll body, and inlining cannot fire on the generator object itself) and
+    // BEFORE module-slot-promotion (the fused loop's now-SSA frame slots are
+    // ordinary loop phis that the promotion / value-range machinery refines).
+    // The pass re-runs the per-function pipeline on each fused caller itself, so
+    // its changed set is folded into `changed_functions` for the native
+    // back-conversion + the LLVM/WASM direct lowering.
+    let fusion_stats =
+        super::passes::generator_fusion::run_generator_fusion(module, &call_graph, tti);
+    if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
+        eprintln!(
+            "[Tier-B] module '{}': generator fusion elided {} frame(s), spliced {} yield site(s)",
+            module.name, fusion_stats.frames_elided, fusion_stats.yield_sites_spliced,
+        );
+    }
+
     // Module-slot promotion (after inlining, so merged bodies — whose calls
     // disappeared — become promotable loops). Promoted functions are
     // re-optimized through the same refine→pipeline→refine contract the inliner
@@ -176,6 +193,11 @@ pub fn run_module_pipeline(
     }
 
     let mut changed_functions = inline_stats.changed_functions;
+    for name in fusion_stats.changed_functions {
+        if !changed_functions.contains(&name) {
+            changed_functions.push(name);
+        }
+    }
     for name in promo_changed {
         if !changed_functions.contains(&name) {
             changed_functions.push(name);
