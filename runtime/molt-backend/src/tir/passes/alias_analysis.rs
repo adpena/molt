@@ -233,6 +233,126 @@ pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
     aliases
 }
 
+// ===========================================================================
+// Borrow provenance — the interior-borrow keepalive relation (RC drop-insertion
+// substrate, design 20).
+// ===========================================================================
+
+/// True if `op` is an attribute/element READ whose result may be a BORROW into —
+/// or an opaque HANDLE indexing — its source object's backing store. Such a
+/// result keeps its source object semantically alive: freeing the source (running
+/// its finalizer) can invalidate the result. The source is operand 0.
+///
+/// This is DISTINCT from the transparent-alias relation (`copy_is_known_local_alias`):
+/// a borrow result is NOT bit-identical to the source and must NOT be unioned into
+/// the source's alias root (that would let MemGVN forward a store on the source to
+/// a load of the result — a miscompile). It is a one-directional LIVENESS coupling
+/// only: "the source must outlive this result."
+///
+/// FAIL-CLOSED (conservative superset). Every `LoadAttr` and `Index` is treated as
+/// potentially borrowing, including the `ProvenPure` typed-slot forms. For an
+/// owned-result load (the common case — a normal `obj.field` whose result carries
+/// its own `+1`) the coupling only DEFERS the source's drop to after the result's
+/// last use, which is harmless (a slightly later drop, never a leak, never a UAF).
+/// For the borrow / opaque-handle case it is mandatory for soundness:
+///
+/// > The intrinsic-handle stdlib classes (`collections.Counter`, …) store their
+/// > native data in a global registry keyed by a RAW-INTEGER handle held in an
+/// > instance slot (`self._handle`). The fast-path lowering inlines `len(c)` /
+/// > `c[k]` as `h = get_attr(c, "_handle")` then `molt_counter_len(h)` /
+/// > `molt_counter_getitem(h, k)`. The handle `h` is a raw int (no refcount), and
+/// > the registry entry is owned by the wrapper's `__del__` (`molt_counter_drop`).
+/// > If the drop pass releases the wrapper `c` at its last DIRECT operand use (the
+/// > `get_attr`), the wrapper's finalizer destroys the registry entry BEFORE the
+/// > intrinsic call reads `h` → the call sees an empty/destroyed counter (the
+/// > round-6 BLOCKER-1 use-after-free: `len(Counter(...))` returned 0).
+///
+/// `OrdAt` is excluded: its result is an `i64` code point (a pure scalar copied out
+/// of the element), not a reference into the container, so no keepalive is owed.
+fn op_borrow_source(op: &TirOp) -> Option<ValueId> {
+    match op.opcode {
+        OpCode::LoadAttr | OpCode::Index => op.operands.first().copied(),
+        _ => None,
+    }
+}
+
+/// The interior-borrow keepalive relation for a function: maps each borrowing-read
+/// result (the result of a [`OpCode::LoadAttr`] / [`OpCode::Index`]) to the alias
+/// ROOT of the source object it borrows from. Both the liveness analysis and the
+/// drop pass consume this single relation so the source-object liveness is extended
+/// — identically — through the borrow result's uses (see [`op_borrow_source`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BorrowProvenance {
+    /// borrow-result value → alias root of its immediate source object.
+    immediate_source: HashMap<ValueId, ValueId>,
+}
+
+impl BorrowProvenance {
+    /// The transitive set of source-object alias roots that `value` borrows from —
+    /// the roots that must remain live wherever `value` is live. Empty when `value`
+    /// is not (transitively) a borrow result. Resolves chains
+    /// (`h2 = LoadAttr(h1); h1 = LoadAttr(obj)` → using `h2` keeps both `h1`'s root
+    /// and `obj`'s root alive). `canon` maps any value to its transparent-alias
+    /// root (so a `Copy` of a borrow result resolves to the same sources).
+    pub fn keepalive_roots(
+        &self,
+        value: ValueId,
+        canon: &dyn Fn(ValueId) -> ValueId,
+    ) -> Vec<ValueId> {
+        let mut out: Vec<ValueId> = Vec::new();
+        let mut seen: HashSet<ValueId> = HashSet::new();
+        // Seed with the value's own root and the value itself (a borrow result may
+        // be referenced either by its raw SSA id or through a transparent Copy).
+        let mut work: Vec<ValueId> = vec![value, canon(value)];
+        while let Some(v) = work.pop() {
+            if !seen.insert(v) {
+                continue;
+            }
+            if let Some(&src_root) = self.immediate_source.get(&v) {
+                if out.iter().all(|&r| r != src_root) {
+                    out.push(src_root);
+                }
+                // The source root may itself be a borrow result (chain). Walk it.
+                work.push(src_root);
+                work.push(canon(src_root));
+            }
+        }
+        out
+    }
+
+    /// True if the relation is empty (no borrowing reads in the function) — lets a
+    /// consumer skip the per-use keepalive walk entirely on the common path.
+    pub fn is_empty(&self) -> bool {
+        self.immediate_source.is_empty()
+    }
+}
+
+/// Build the [`BorrowProvenance`] relation for `func`. Keyed by the borrow-result
+/// SSA id; the value is the source's alias root (canonicalized through the shared
+/// transparent-alias union-find, so a borrow of a `Copy`-aliased object records the
+/// underlying owned root). One forward scan, mirroring [`build_alias_union_find`].
+pub fn build_borrow_provenance(func: &TirFunction, aliases: &AliasUnionFind) -> BorrowProvenance {
+    let mut bp = BorrowProvenance::default();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            let Some(src) = op_borrow_source(op) else {
+                continue;
+            };
+            let src_root = aliases.root(src);
+            for &result in &op.results {
+                // A self-referential edge (result aliases its own source) would
+                // loop the keepalive walk; the `seen` guard in `keepalive_roots`
+                // already breaks cycles, but never record an identity edge.
+                if aliases.root(result) == src_root {
+                    continue;
+                }
+                bp.immediate_source.insert(result, src_root);
+            }
+        }
+    }
+    bp
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AliasUnionFind {
     parent: HashMap<ValueId, ValueId>,
@@ -1898,5 +2018,96 @@ mod tests {
         assert!(!pt0.may_alias(&MemRegion::ScalarRegister));
         // TypedField vs a distinct StackObject ⇒ disjoint (different object).
         assert!(!pt0.may_alias(&MemRegion::StackObject { root: ValueId(9) }));
+    }
+
+    /// Borrow provenance (design 20 interior-borrow keepalive). A `LoadAttr` /
+    /// `Index` result records its source object's alias root; a use of the result
+    /// keeps the source alive. `OrdAt` (an i64-producing fused read) does NOT.
+    #[test]
+    fn borrow_provenance_records_loadattr_and_index_sources() {
+        use crate::tir::blocks::Terminator;
+        use crate::tir::function::TirFunction;
+        use crate::tir::ops::{Dialect, TirOp};
+        use crate::tir::types::TirType;
+
+        fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands,
+                results,
+                attrs: AttrDict::new(),
+                source_span: None,
+            }
+        }
+
+        let mut func = TirFunction::new("bp".into(), vec![], TirType::DynBox);
+        let obj = func.fresh_value();
+        let h = func.fresh_value(); // LoadAttr(obj)
+        let cont = func.fresh_value();
+        let key = func.fresh_value();
+        let elem = func.fresh_value(); // Index(cont, key)
+        let ch = func.fresh_value(); // OrdAt(cont, key) — i64, no borrow
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(op(OpCode::LoadAttr, vec![obj], vec![h]));
+            b.ops.push(op(OpCode::Index, vec![cont, key], vec![elem]));
+            b.ops.push(op(OpCode::OrdAt, vec![cont, key], vec![ch]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+        let aliases = build_alias_union_find(&func);
+        let canon = |v: ValueId| aliases.root(v);
+        let bp = build_borrow_provenance(&func, &aliases);
+        assert!(!bp.is_empty());
+        // The LoadAttr result keeps `obj` alive.
+        assert_eq!(bp.keepalive_roots(h, &canon), vec![aliases.root(obj)]);
+        // The Index result keeps the container alive.
+        assert_eq!(bp.keepalive_roots(elem, &canon), vec![aliases.root(cont)]);
+        // `OrdAt` produces a scalar code point — no borrow keepalive.
+        assert!(bp.keepalive_roots(ch, &canon).is_empty());
+        // A non-borrow value (the container itself) has no keepalive sources.
+        assert!(bp.keepalive_roots(cont, &canon).is_empty());
+    }
+
+    /// Borrow provenance is TRANSITIVE: `h2 = LoadAttr(h1); h1 = LoadAttr(obj)` —
+    /// a use of `h2` keeps BOTH `h1` and `obj` alive (a chained interior borrow).
+    #[test]
+    fn borrow_provenance_is_transitive() {
+        use crate::tir::blocks::Terminator;
+        use crate::tir::function::TirFunction;
+        use crate::tir::ops::{Dialect, TirOp};
+        use crate::tir::types::TirType;
+
+        fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands,
+                results,
+                attrs: AttrDict::new(),
+                source_span: None,
+            }
+        }
+
+        let mut func = TirFunction::new("bpt".into(), vec![], TirType::DynBox);
+        let obj = func.fresh_value();
+        let h1 = func.fresh_value();
+        let h2 = func.fresh_value();
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(op(OpCode::LoadAttr, vec![obj], vec![h1]));
+            b.ops.push(op(OpCode::LoadAttr, vec![h1], vec![h2]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+        let aliases = build_alias_union_find(&func);
+        let canon = |v: ValueId| aliases.root(v);
+        let bp = build_borrow_provenance(&func, &aliases);
+        let mut roots = bp.keepalive_roots(h2, &canon);
+        roots.sort_by_key(|r| r.0);
+        let mut expected = vec![aliases.root(h1), aliases.root(obj)];
+        expected.sort_by_key(|r| r.0);
+        assert_eq!(roots, expected, "h2 must keep both h1 and obj alive");
     }
 }
