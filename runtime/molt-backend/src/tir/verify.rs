@@ -370,7 +370,8 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     ));
                 }
             }
-            Terminator::Switch { cases, default, .. } => {
+            Terminator::Switch { cases, default, .. }
+            | Terminator::StateDispatch { cases, default, .. } => {
                 if !func.blocks.contains_key(default) {
                     errors.push(VerifyError::block(
                         *bid,
@@ -450,6 +451,12 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 }
             }
             Terminator::Switch {
+                cases,
+                default,
+                default_args,
+                ..
+            }
+            | Terminator::StateDispatch {
                 cases,
                 default,
                 default_args,
@@ -617,6 +624,20 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                     check_use(*bid, None, *v, errors);
                 }
             }
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
+                for (_, _, args) in cases {
+                    for v in args {
+                        check_use(*bid, None, *v, errors);
+                    }
+                }
+                for v in default_args {
+                    check_use(*bid, None, *v, errors);
+                }
+            }
             Terminator::Return { values } => {
                 for v in values {
                     check_use(*bid, None, *v, errors);
@@ -734,7 +755,8 @@ fn successors_of(block: &super::blocks::TirBlock) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             let mut succs = vec![*default];
             for (_, target, _) in cases {
                 succs.push(*target);

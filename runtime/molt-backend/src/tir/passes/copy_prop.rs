@@ -155,6 +155,30 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     }
                 }
             }
+            // `StateDispatch` has no condition value (the saved state is read
+            // from the frame header at codegen time); only its per-edge args.
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
+                for (_, _, args) in cases.iter_mut() {
+                    for arg in args.iter_mut() {
+                        let resolved = resolve(*arg, &copy_map);
+                        if resolved != *arg {
+                            *arg = resolved;
+                            stats.values_changed += 1;
+                        }
+                    }
+                }
+                for arg in default_args.iter_mut() {
+                    let resolved = resolve(*arg, &copy_map);
+                    if resolved != *arg {
+                        *arg = resolved;
+                        stats.values_changed += 1;
+                    }
+                }
+            }
             Terminator::Return { values } => {
                 for val in values.iter_mut() {
                     let resolved = resolve(*val, &copy_map);

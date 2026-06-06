@@ -24,7 +24,8 @@ pub fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             let mut targets: Vec<BlockId> = cases.iter().map(|(_, t, _)| *t).collect();
             targets.push(*default);
             targets.dedup();
