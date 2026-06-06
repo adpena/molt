@@ -1,15 +1,15 @@
 {
-  "_comment": "SINGLE SOURCE OF TRUTH for KNOWN-failing differential tests (task #46). An entry here is a DEBT WITH AN OWNER, not an accepted state; it leaves only by being fixed. Every `fail` dimension carries tracking + root_cause + evidence (machine-checked by tools/check_suite_honesty.py). A passing test is the implicit default and is NOT listed. Tests excluded by design (exec/eval/compile) live in TOO_DYNAMIC_EXPECTED_FAILURE_TESTS; tests with an inline `# MOLT_META: expect_fail=molt` marker are tracked there \u2014 neither is duplicated here (the guard forbids overlap).",
-  "_dimensions": "Keys under `dimensions` are '<backend>' or '<backend>@<cpython-version>'. Backends: native, llvm, wasm, luau. Only `native` is calibrated in this seed (against native_calibration.jsonl on CPython 3.14). llvm/wasm/luau are UNCALIBRATED at the suite level pending their own calibration lanes (follow-up task #46-llvm-wasm-luau-calibration); add per-test backend dimensions only with verified evidence from those runs, never from description. Per this session's reviews: generator shapes pre-3fe511c3d are now FIXED (do NOT seed); candidate llvm/wasm debts to verify in that lane include sum int->float #37, alias_reassign bigint-carrier, gen.throw shapes #51 (LLVM dominance + a noted native miscompile).",
   "_calibration_scope": "native_calibration.jsonl covers tests/differential/{basic,loop_overflow_peel,memory,pyperformance} (808 tests) on CPython 3.14, each silent failure CONFIRMED in a clean isolated re-run (the parallel calibration produced ~14 build-contention false-fails that the re-run cleared; those are NOT seeded). tests/differential/stdlib (1934 tests) is UNCALIBRATED here and is the named follow-up task #46-stdlib-calibration: until it is calibrated, the guard simply does not reality-check stdlib paths (it cannot invent a verdict it has not observed -- fail-closed against false greenness, loud about the gap).",
-  "_root_cause_groups": "Many native failures share a root cause; the `tracking` field names the shared bug (e.g. #3 asyncio, #50 generic_class). Per-test entries are kept because the ratchet enforces per-test, but fixing the shared bug should flip a whole group to pass at once \u2014 then remove that group's entries.",
+  "_comment": "SINGLE SOURCE OF TRUTH for KNOWN-failing differential tests (task #46). An entry here is a DEBT WITH AN OWNER, not an accepted state; it leaves only by being fixed. Every `fail` dimension carries tracking + root_cause + evidence (machine-checked by tools/check_suite_honesty.py). A passing test is the implicit default and is NOT listed. Tests excluded by design (exec/eval/compile) live in TOO_DYNAMIC_EXPECTED_FAILURE_TESTS; tests with an inline `# MOLT_META: expect_fail=molt` marker are tracked there \u2014 neither is duplicated here (the guard forbids overlap).",
   "_compliance_note": "The `compliance` block tracks the pytest compliance suite (tests/compliance/py3{12,13,14}/test_spec.py), a DIFFERENT harness from the differential JSONL. The guard LINTS these entries (every `fail`/`uncalibrated` is validated the same way -- tracking + root_cause + evidence on a fail; loud uncalibrated) but does NOT differential-reality-check them (no shared results file). Each key is 'tests/compliance/<pkg>/test_spec.py::<Class>::<method>'. FINDING THIS SESSION: the py314 PEP-649 deferred-annotation case that earlier reports flagged ('2' != '0') now PASSES on native@3.14 (molt defers annotations correctly) -- it is FIXED and deliberately NOT seeded as a debt (mirrors the stale generator-shape entries). The py313 multiline-docstring case is host-version-gated (skips on a 3.14 host) and could not be cleanly re-confirmed here under build contention, so it is marked native@3.13 'uncalibrated' (loud) pending a py3.13 calibration run, rather than asserted or silently dropped.",
+  "_dimensions": "Keys under `dimensions` are '<backend>' or '<backend>@<cpython-version>'. Backends: native, llvm, wasm, luau. Only `native` is calibrated in this seed (against native_calibration.jsonl on CPython 3.14). llvm/wasm/luau are UNCALIBRATED at the suite level pending their own calibration lanes (follow-up task #46-llvm-wasm-luau-calibration); add per-test backend dimensions only with verified evidence from those runs, never from description. Per this session's reviews: generator shapes pre-3fe511c3d are now FIXED (do NOT seed); candidate llvm/wasm debts to verify in that lane include sum int->float #37, alias_reassign bigint-carrier, gen.throw shapes #51 (LLVM dominance + a noted native miscompile).",
+  "_root_cause_groups": "Many native failures share a root cause; the `tracking` field names the shared bug (e.g. #3 asyncio, #50 generic_class). Per-test entries are kept because the ratchet enforces per-test, but fixing the shared bug should flip a whole group to pass at once \u2014 then remove that group's entries.",
   "compliance": {
     "tests/compliance/py313/test_spec.py::TestDocstringHandling::test_multiline_docstring_stripping": {
       "dimensions": {
         "native@3.13": {
-          "status": "uncalibrated",
-          "note": "Flagged as a known fail in this session's compliance review (multiline __doc__ stripping). Host is CPython 3.14 (this py313 test skips); a clean molt build to confirm on 3.13 was not obtainable under the concurrent stdlib calibration. UNCALIBRATED pending follow-up #46-stdlib-calibration's py3.13 compliance lane -- do not treat as green."
+          "note": "Flagged as a known fail in this session's compliance review (multiline __doc__ stripping). Host is CPython 3.14 (this py313 test skips); a clean molt build to confirm on 3.13 was not obtainable under the concurrent stdlib calibration. UNCALIBRATED pending follow-up #46-stdlib-calibration's py3.13 compliance lane -- do not treat as green.",
+          "status": "uncalibrated"
         }
       }
     }
@@ -345,16 +345,6 @@
         }
       }
     },
-    "tests/differential/basic/classmethod_staticmethod.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "object.__new__ expects type \u2014 classmethod/staticmethod construction path",
-          "status": "fail",
-          "tracking": "#50-adjacent"
-        }
-      }
-    },
     "tests/differential/basic/collections_parity.py": {
       "dimensions": {
         "native": {
@@ -682,16 +672,6 @@
           "root_cause": "generator poll-loop / reentry shape divergence",
           "status": "fail",
           "tracking": "generator-shape"
-        }
-      }
-    },
-    "tests/differential/basic/generic_class.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "SIGSEGV on generic class (PEP 695 type-parameter) compilation",
-          "status": "fail",
-          "tracking": "#50"
         }
       }
     },
