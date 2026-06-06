@@ -99,6 +99,22 @@ const fn target_uses_tir_drop_insertion(target: TargetKind) -> bool {
         // block-arg's repr consistent across the back-edge so the variable-keyed
         // backends (native, WASM) lower it without a type mismatch. Until that
         // lands, native keeps its existing (partial-leak-but-safe) RC.
+        //
+        // ADDITIONALLY (design 20 §4.1 Finding #5, same day): Finding #4(C)'s
+        // "systemic stdlib-module-init miscompile" was 100% the STALE-STDLIB-
+        // CACHE confound — fixed by keying the stdlib_shared cache on backend
+        // BINARY identity (commit fdbb51329/aaad21122). With trustworthy builds
+        // the headline cases (import typing/re/collections/warnings) pass
+        // byte-identical, memory corpus 14/14 + compliance 46/46 green, and
+        // ZERO drop-induced regressions were found across ~180 triaged corpus
+        // files (every failure verified pre-existing vs the dormant binary).
+        // So the remaining NATIVE gates are exactly TWO: (1) the round-8
+        // loop-phi repr fix above, and (2) one clean full
+        // tests/differential/basic wired-vs-dormant sweep (per-file fresh
+        // builds, xfail-aware, SIGURG-surviving harness — scaffold in the
+        // round-5 baton). Then this is a one-line flip; the native-RC
+        // retirement (Findings #2/#3) auto-engages via the drop_inserted
+        // marker.
         TargetKind::NativeCranelift => false,
     }
 }
