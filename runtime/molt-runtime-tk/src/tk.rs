@@ -3849,10 +3849,16 @@ fn eval_tcl_without_gil(
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn tcl_trace_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_TCL").is_ok())
+}
+
+/// Locking wrapper: resolve the interpreter context under one registry lock,
+/// then run the command. Used by paths that have not already resolved the
+/// context (event-loop draining, the headless fallthrough).
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
-    // Phase 2 (first): extract interpreter context + cached type pointers, then
-    // drop the registry lock. We need `api`/`interp`/`types` before building the
-    // typed argument objects.
     let (api, interp_addr, types) = {
         let mut registry = tk_registry().lock().unwrap();
         let app = app_mut_from_registry(py, &mut registry, handle)?;
@@ -3867,12 +3873,29 @@ fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> 
             return Err(app_tcl_error_locked(py, app, err));
         }
         (interp.api, interp.interp_addr, interp.types)
-        // registry lock dropped here
     };
+    run_tcl_command_with_ctx(py, handle, args, api, interp_addr, types)
+}
+
+/// Run a Tcl command with a pre-resolved interpreter context (no Phase-2 lock).
+/// This is the hot path: `tk_call_dispatch` resolves the context in the same
+/// single lock that checks callbacks/filehandlers, so a generic `tk.call`
+/// touches the registry mutex only twice (resolve + final clear_last_error).
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn run_tcl_command_with_ctx(
+    py: &PyToken,
+    handle: i64,
+    args: &[u64],
+    api: &'static TclApi,
+    interp_addr: usize,
+    types: TclTypePtrs,
+) -> Result<u64, u64> {
     let interp = interp_addr as *mut c_void;
 
     // Optional Tcl tracing (string-renders the typed args for human reading).
-    if std::env::var("MOLT_TRACE_TCL").is_ok() {
+    // The env var is read once and cached — a getenv syscall per tk.call would be
+    // a measurable tax on the hot path.
+    if tcl_trace_enabled() {
         let rendered: Vec<TclObj> = args.iter().map(|&b| tcl_obj_from_bits(py, b)).collect();
         eprintln!("[tcl] {}", TclObj::new_list(rendered));
     }
@@ -14666,11 +14689,110 @@ fn handle_tk_popup_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u6
     Ok(MoltObject::none().bits())
 }
 
+/// Single-lock resolution of a `tk.call` command on the native (libtcl) path.
+/// One registry lock acquisition gathers everything the hot path needs:
+/// whether the command names a bound Python callback, whether it names a file
+/// handler, and (otherwise) the interpreter context for a direct Tcl eval. This
+/// replaces the prior 3 separate lock acquisitions (lookup_bound_callback +
+/// invoke_filehandler_command's lock + run_tcl_command's Phase-2 lock).
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+enum NativeDispatch {
+    Callback(u64),
+    FileHandler,
+    TclCommand {
+        api: &'static TclApi,
+        interp_addr: usize,
+        types: TclTypePtrs,
+    },
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+fn resolve_native_dispatch(
+    py: &PyToken,
+    handle: i64,
+    command: &str,
+) -> Result<NativeDispatch, u64> {
+    let mut registry = tk_registry().lock().unwrap();
+    let app = app_mut_from_registry(py, &mut registry, handle)?;
+    if let Some(bits) = app.callbacks.get(command).copied() {
+        inc_ref_bits(py, bits);
+        return Ok(NativeDispatch::Callback(bits));
+    }
+    if app.filehandler_commands.contains_key(command) {
+        return Ok(NativeDispatch::FileHandler);
+    }
+    let Some(interp) = app.interpreter.as_ref() else {
+        return Err(app_tcl_error_locked(
+            py,
+            app,
+            "tk runtime interpreter is unavailable",
+        ));
+    };
+    if let Err(err) = interp.ensure_owner_thread() {
+        return Err(app_tcl_error_locked(py, app, err));
+    }
+    Ok(NativeDispatch::TclCommand {
+        api: interp.api,
+        interp_addr: interp.interp_addr,
+        types: interp.types,
+    })
+}
+
 fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> {
     if args.is_empty() {
         return Err(raise_tcl_for_handle(py, handle, "empty tkinter command"));
     }
     let command = get_string_arg(py, handle, args[0], "command name")?;
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+    {
+        // Commands with their own callback-sync semantics keep their dedicated
+        // paths (they re-lock as needed; they are not on the hot per-call path).
+        if command == "rename" {
+            return run_tcl_rename_and_sync_callbacks(py, handle, args);
+        }
+        if command == "after" {
+            return run_tcl_after_and_sync_callbacks(py, handle, args);
+        }
+        if command == "loadtk" {
+            return native_loadtk_command(py, handle, args);
+        }
+        // Single-lock resolution for the common path.
+        match resolve_native_dispatch(py, handle, &command)? {
+            NativeDispatch::Callback(callback_bits) => {
+                let out_bits = invoke_callback(py, callback_bits, &args[1..]);
+                dec_ref_bits(py, callback_bits);
+                if exception_pending(py) {
+                    if !obj_from_bits(out_bits).is_none() {
+                        dec_ref_bits(py, out_bits);
+                    }
+                    set_last_error(handle, "bound tkinter command raised an exception");
+                    return Err(MoltObject::none().bits());
+                }
+                clear_last_error(handle);
+                return Ok(out_bits);
+            }
+            NativeDispatch::FileHandler => {
+                if let Some(out_bits) = invoke_filehandler_command(py, handle, &command)? {
+                    return Ok(out_bits);
+                }
+                // Fall through to a normal Tcl eval if the handler vanished.
+            }
+            NativeDispatch::TclCommand {
+                api,
+                interp_addr,
+                types,
+            } => {
+                if is_event_pumping_command(&command) {
+                    return run_tcl_command_and_drain_callbacks(py, handle, args);
+                }
+                return run_tcl_command_with_ctx(py, handle, args, api, interp_addr, types);
+            }
+        }
+        return run_tcl_command(py, handle, args);
+    }
+
+    #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
     if let Some(callback_bits) = lookup_bound_callback(py, handle, &command)? {
         let out_bits = invoke_callback(py, callback_bits, &args[1..]);
         dec_ref_bits(py, callback_bits);
@@ -14684,32 +14806,9 @@ fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64>
         clear_last_error(handle);
         return Ok(out_bits);
     }
+    #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
     if let Some(out_bits) = invoke_filehandler_command(py, handle, &command)? {
         return Ok(out_bits);
-    }
-
-    #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
-    {
-        if command == "rename" {
-            return run_tcl_rename_and_sync_callbacks(py, handle, args);
-        }
-        if command == "after" {
-            return run_tcl_after_and_sync_callbacks(py, handle, args);
-        }
-        if command == "loadtk" {
-            return native_loadtk_command(py, handle, args);
-        }
-        // Commands that pump the Tcl event loop may fire registered procs
-        // (bound callbacks, `after_idle`, traces). Those procs only append
-        // their invocation to `::__molt_pending_callbacks`; the actual Python
-        // dispatch happens out-of-band. `pump_tcl_events` drains that queue for
-        // `dooneevent`/`mainloop`, but `update`/`tkwait`/`vwait` reach the
-        // interpreter through the generic command path, so they must drain it
-        // too — otherwise callbacks scheduled before an `update()` never run.
-        if is_event_pumping_command(&command) {
-            return run_tcl_command_and_drain_callbacks(py, handle, args);
-        }
-        run_tcl_command(py, handle, args)
     }
 
     #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]
@@ -15339,12 +15438,9 @@ pub extern "C" fn molt_tk_call(app_bits: u64, argv_bits: u64) -> u64 {
         let Ok(handle) = parse_app_handle(_py, app_bits) else {
             return raise_invalid_handle_error(_py);
         };
-        {
-            let mut registry = tk_registry().lock().unwrap();
-            if app_mut_from_registry(_py, &mut registry, handle).is_err() {
-                return raise_invalid_handle_error(_py);
-            }
-        }
+        // The handle is validated by the single registry lock inside the dispatch
+        // path (run_tcl_command / the callback+filehandler resolution); a separate
+        // up-front validation lock here is redundant per-call overhead.
         let Some(args) = decode_value_list(obj_from_bits(argv_bits)) else {
             return raise_tcl_for_handle(_py, handle, "tk call argv must be a list or tuple");
         };
