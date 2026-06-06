@@ -299,6 +299,16 @@ impl IntRange {
     pub fn fits_inline_int47(self) -> bool {
         self.lo >= INLINE_INT47_LO && self.hi <= INLINE_INT47_HI
     }
+
+    /// True if the interval is PROVEN to exclude zero (entirely positive or
+    /// entirely negative). `FULL_I64`/"unknown" returns `false` (we never prove
+    /// non-zero from the top of the lattice). Used to gate the raw machine
+    /// `sdiv`/`srem` lane: a divisor that is not proven non-zero must take the
+    /// boxed runtime path, which raises `ZeroDivisionError` on a zero divisor
+    /// instead of emitting a poison/trapping raw divide.
+    pub fn proves_nonzero(self) -> bool {
+        !self.is_full() && (self.lo > 0 || self.hi < 0)
+    }
 }
 
 /// The smallest value of the form `2^k - 1` that is `>= x` (i.e. fill every bit

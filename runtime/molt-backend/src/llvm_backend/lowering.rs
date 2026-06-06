@@ -4663,6 +4663,220 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Type-specialized binary arithmetic ──
 
+    /// Emit a divisor-zero-guarded I64 division-family op (`/`, `//`, `%`).
+    ///
+    /// A raw machine `sdiv`/`srem` (or float divide) by zero is a SILENT
+    /// miscompile: LLVM `sdiv x, 0` is poison (observed: a garbage NaN-box bit
+    /// pattern instead of CPython's `ZeroDivisionError`). The native backend
+    /// already guards this with an inline runtime zero-check; this mirrors that
+    /// pattern for LLVM so all backends raise byte-identically.
+    ///
+    /// Shape (cold slow path so the non-zero hot path stays a straight-line raw
+    /// divide — no perf regression vs the unguarded code):
+    /// ```text
+    ///   if rhs != 0 { fast: <raw divide>        }  ──┐
+    ///   else        { slow: molt_<op>(box,box)  }  ──┤→ merge: phi
+    /// ```
+    /// `molt_floordiv`/`molt_mod`/`molt_div` set `ZeroDivisionError` for the
+    /// zero divisor, so the slow path never returns normally; its (dead) result
+    /// is still unboxed to the fast lane's carrier type to keep the phi
+    /// well-typed.
+    fn emit_i64_divrem_zero_guarded(
+        &mut self,
+        op: &crate::tir::ops::TirOp,
+        name: &str,
+        lhs_i: inkwell::values::IntValue<'ctx>,
+        rhs_i: inkwell::values::IntValue<'ctx>,
+    ) -> (BasicValueEnum<'ctx>, TirType) {
+        let i64_ty = self.backend.context.i64_type();
+        let zero = i64_ty.const_zero();
+        let rhs_nonzero = self
+            .backend
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, rhs_i, zero, "rhs_nonzero")
+            .unwrap();
+        let current_fn = self.llvm_fn;
+        let fast_bb = self
+            .backend
+            .context
+            .append_basic_block(current_fn, "divrem_fast");
+        let slow_bb = self
+            .backend
+            .context
+            .append_basic_block(current_fn, "divrem_zero");
+        let merge_bb = self
+            .backend
+            .context
+            .append_basic_block(current_fn, "divrem_merge");
+        self.all_llvm_blocks.push(fast_bb);
+        self.all_llvm_blocks.push(slow_bb);
+        self.all_llvm_blocks.push(merge_bb);
+        self.backend
+            .builder
+            .build_conditional_branch(rhs_nonzero, fast_bb, slow_bb)
+            .unwrap();
+
+        // ── Fast path: divisor proven non-zero here, raw machine divide. ──
+        self.backend.builder.position_at_end(fast_bb);
+        let (fast_val, out_ty): (BasicValueEnum<'ctx>, TirType) = match name {
+            "div" => {
+                // Python `/` on ints returns float (7 / 2 == 3.5).
+                let f64_ty = self.backend.context.f64_type();
+                let lhs_f = self
+                    .backend
+                    .builder
+                    .build_signed_int_to_float(lhs_i, f64_ty, "div_lhs_f")
+                    .unwrap();
+                let rhs_f = self
+                    .backend
+                    .builder
+                    .build_signed_int_to_float(rhs_i, f64_ty, "div_rhs_f")
+                    .unwrap();
+                let v = self
+                    .backend
+                    .builder
+                    .build_float_div(lhs_f, rhs_f, "div_f")
+                    .unwrap();
+                (v.into(), TirType::F64)
+            }
+            "floordiv" => {
+                // Python `//`: floor toward -inf. q = sdiv; r = srem;
+                // if (r != 0 && (lhs ^ rhs) < 0) q -= 1.
+                let one = i64_ty.const_int(1, false);
+                let q = self
+                    .backend
+                    .builder
+                    .build_int_signed_div(lhs_i, rhs_i, "fdiv_q")
+                    .unwrap();
+                let r = self
+                    .backend
+                    .builder
+                    .build_int_signed_rem(lhs_i, rhs_i, "fdiv_r")
+                    .unwrap();
+                let r_ne_0 = self
+                    .backend
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, r, zero, "r_ne_0")
+                    .unwrap();
+                let xor = self
+                    .backend
+                    .builder
+                    .build_xor(lhs_i, rhs_i, "signs_xor")
+                    .unwrap();
+                let signs_differ = self
+                    .backend
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::SLT, xor, zero, "signs_differ")
+                    .unwrap();
+                let needs_adjust = self
+                    .backend
+                    .builder
+                    .build_and(r_ne_0, signs_differ, "needs_adj")
+                    .unwrap();
+                let q_minus_1 = self.backend.builder.build_int_sub(q, one, "q_m1").unwrap();
+                let q_m1_basic: BasicValueEnum<'ctx> = q_minus_1.into();
+                let q_basic: BasicValueEnum<'ctx> = q.into();
+                let adj = self
+                    .backend
+                    .builder
+                    .build_select(needs_adjust, q_m1_basic, q_basic, "floordiv")
+                    .unwrap();
+                (adj, TirType::I64)
+            }
+            "mod" => {
+                // Python `%`: result has the sign of the divisor.
+                // r = srem; if (r != 0 && (r ^ rhs) < 0) r += rhs.
+                let r = self
+                    .backend
+                    .builder
+                    .build_int_signed_rem(lhs_i, rhs_i, "mod_r")
+                    .unwrap();
+                let r_ne_0 = self
+                    .backend
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::NE, r, zero, "mod_r_ne_0")
+                    .unwrap();
+                let xor = self
+                    .backend
+                    .builder
+                    .build_xor(r, rhs_i, "mod_signs_xor")
+                    .unwrap();
+                let signs_differ = self
+                    .backend
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::SLT, xor, zero, "mod_signs_differ")
+                    .unwrap();
+                let needs_adjust = self
+                    .backend
+                    .builder
+                    .build_and(r_ne_0, signs_differ, "mod_adj")
+                    .unwrap();
+                let r_plus_rhs = self
+                    .backend
+                    .builder
+                    .build_int_add(r, rhs_i, "mod_adjusted")
+                    .unwrap();
+                let r_adj_basic: BasicValueEnum<'ctx> = r_plus_rhs.into();
+                let r_basic: BasicValueEnum<'ctx> = r.into();
+                let result = self
+                    .backend
+                    .builder
+                    .build_select(needs_adjust, r_adj_basic, r_basic, "pymod")
+                    .unwrap();
+                (result, TirType::I64)
+            }
+            other => unreachable!("emit_i64_divrem_zero_guarded called with {other:?}"),
+        };
+        self.backend
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .unwrap();
+        let fast_pred = self.backend.builder.get_insert_block().unwrap();
+
+        // ── Slow path: divisor == 0 ⇒ boxed runtime raises ZeroDivisionError. ──
+        self.backend.builder.position_at_end(slow_bb);
+        let rt_name = match name {
+            "div" => "molt_div",
+            "floordiv" => "molt_floordiv",
+            "mod" => "molt_mod",
+            other => unreachable!("emit_i64_divrem_zero_guarded called with {other:?}"),
+        };
+        let boxed = self
+            .call_runtime_2_boxed(rt_name, op.operands[0], op.operands[1])
+            .into_int_value();
+        // The runtime raised; this value is unreachable-but-typed. Convert the
+        // DynBox bits to the fast lane's carrier so the phi types line up.
+        let slow_val: BasicValueEnum<'ctx> = match out_ty {
+            TirType::F64 => self
+                .backend
+                .builder
+                .build_bit_cast(boxed, self.backend.context.f64_type(), "div_zero_f64")
+                .unwrap(),
+            _ => unbox_dynbox_to_param_ty_with_builder(
+                &self.backend.builder,
+                self.backend.context,
+                boxed,
+                &out_ty,
+            )
+            .into(),
+        };
+        self.backend
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .unwrap();
+        let slow_pred = self.backend.builder.get_insert_block().unwrap();
+
+        // ── Merge. ──
+        self.backend.builder.position_at_end(merge_bb);
+        let phi_ty: inkwell::types::BasicTypeEnum<'ctx> = match out_ty {
+            TirType::F64 => self.backend.context.f64_type().into(),
+            _ => i64_ty.into(),
+        };
+        let phi = self.backend.builder.build_phi(phi_ty, "divrem").unwrap();
+        phi.add_incoming(&[(&fast_val, fast_pred), (&slow_val, slow_pred)]);
+        (phi.as_basic_value(), out_ty)
+    }
+
     fn emit_binary_arith(&mut self, op: &crate::tir::ops::TirOp, name: &str) {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
@@ -4737,121 +4951,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "div") => {
-                // Python `/` on ints always returns float (7 / 2 == 3.5)
-                let f64_ty = self.backend.context.f64_type();
-                let lhs_f = self
-                    .backend
-                    .builder
-                    .build_signed_int_to_float(lhs.into_int_value(), f64_ty, "div_lhs_f")
-                    .unwrap();
-                let rhs_f = self
-                    .backend
-                    .builder
-                    .build_signed_int_to_float(rhs.into_int_value(), f64_ty, "div_rhs_f")
-                    .unwrap();
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_div(lhs_f, rhs_f, "div_f")
-                    .unwrap();
-                (v.into(), TirType::F64)
-            }
-            (TirType::I64, TirType::I64, "floordiv") => {
-                // Python `//`: rounds toward negative infinity (not toward zero like C sdiv).
-                // Emit: q = sdiv(lhs, rhs); r = srem(lhs, rhs);
-                //       if (r != 0 && (lhs ^ rhs) < 0) q -= 1
-                let lhs_i = lhs.into_int_value();
-                let rhs_i = rhs.into_int_value();
-                let i64_ty = self.backend.context.i64_type();
-                let q = self
-                    .backend
-                    .builder
-                    .build_int_signed_div(lhs_i, rhs_i, "fdiv_q")
-                    .unwrap();
-                let r = self
-                    .backend
-                    .builder
-                    .build_int_signed_rem(lhs_i, rhs_i, "fdiv_r")
-                    .unwrap();
-                let zero = i64_ty.const_zero();
-                let one = i64_ty.const_int(1, false);
-                let r_ne_0 = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::NE, r, zero, "r_ne_0")
-                    .unwrap();
-                let xor = self
-                    .backend
-                    .builder
-                    .build_xor(lhs_i, rhs_i, "signs_xor")
-                    .unwrap();
-                let signs_differ = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::SLT, xor, zero, "signs_differ")
-                    .unwrap();
-                let needs_adjust = self
-                    .backend
-                    .builder
-                    .build_and(r_ne_0, signs_differ, "needs_adj")
-                    .unwrap();
-                let q_minus_1 = self.backend.builder.build_int_sub(q, one, "q_m1").unwrap();
-                let q_m1_basic: inkwell::values::BasicValueEnum = q_minus_1.into();
-                let q_basic: inkwell::values::BasicValueEnum = q.into();
-                let adj = self
-                    .backend
-                    .builder
-                    .build_select(needs_adjust, q_m1_basic, q_basic, "floordiv")
-                    .unwrap();
-                (adj, TirType::I64)
-            }
-            (TirType::I64, TirType::I64, "mod") => {
-                // Python `%`: result has sign of the divisor (not dividend like C srem).
-                // Emit: r = srem(lhs, rhs);
-                //       if (r != 0 && (r ^ rhs) < 0) r += rhs
-                let lhs_i = lhs.into_int_value();
-                let rhs_i = rhs.into_int_value();
-                let i64_ty = self.backend.context.i64_type();
-                let zero = i64_ty.const_zero();
-                let r = self
-                    .backend
-                    .builder
-                    .build_int_signed_rem(lhs_i, rhs_i, "mod_r")
-                    .unwrap();
-                let r_ne_0 = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::NE, r, zero, "mod_r_ne_0")
-                    .unwrap();
-                let xor = self
-                    .backend
-                    .builder
-                    .build_xor(r, rhs_i, "mod_signs_xor")
-                    .unwrap();
-                let signs_differ = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::SLT, xor, zero, "mod_signs_differ")
-                    .unwrap();
-                let needs_adjust = self
-                    .backend
-                    .builder
-                    .build_and(r_ne_0, signs_differ, "mod_adj")
-                    .unwrap();
-                let r_plus_rhs = self
-                    .backend
-                    .builder
-                    .build_int_add(r, rhs_i, "mod_adjusted")
-                    .unwrap();
-                let r_adj_basic: inkwell::values::BasicValueEnum = r_plus_rhs.into();
-                let r_basic: inkwell::values::BasicValueEnum = r.into();
-                let result = self
-                    .backend
-                    .builder
-                    .build_select(needs_adjust, r_adj_basic, r_basic, "pymod")
-                    .unwrap();
-                (result, TirType::I64)
+            (TirType::I64, TirType::I64, "div" | "floordiv" | "mod") => {
+                // A raw machine divide by zero is poison (LLVM) — route through a
+                // divisor-zero guard so a zero divisor raises ZeroDivisionError
+                // via the boxed runtime instead of silently yielding garbage.
+                self.emit_i64_divrem_zero_guarded(op, name, lhs.into_int_value(), rhs.into_int_value())
             }
 
             // F64 + F64 -> F64 (direct machine instruction).
