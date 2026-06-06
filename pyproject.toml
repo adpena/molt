@@ -118,6 +118,7 @@ lint = [
     "{project_python} tools/check_stdlib_intrinsics.py --critical-allowlist",
     "{project_python} tools/check_dynamic_policy.py",
     "{project_python} tools/check_ecosystem_compat.py",
+    "{project_python} tools/check_suite_honesty.py",
     "@subprocess-guard-audit",
     "@memory-guard-wiring-audit",
     "{project_python} tools/update_status_blocks.py --check",
