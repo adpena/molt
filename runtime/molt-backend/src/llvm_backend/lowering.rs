@@ -5366,17 +5366,40 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     /// Effective semantic carrier type for a block argument (phi).
     ///
-    /// A `TirType::I64` block argument that the shared `ScalarRepresentationPlan`
-    /// does not prove overflow-safe is carried as `DynBox` (NaN-boxed) instead
-    /// of a raw i64. Both lower to the i64 machine type, so this only changes
-    /// the semantic carrier — but it is what keeps a non-overflow-safe
-    /// accumulator boxed across the loop back-edge instead of unboxing a runtime
-    /// BigInt result into a truncating 47-bit payload.
+    /// The carrier is reconciled with the single `is_overflow_safe_int`
+    /// representation authority (`repr_by_value`'s `RawI64Safe` view), which is
+    /// derived from the value-range proof shared with native/WASM. Two
+    /// directions, both keyed on that same authority so `value_types` can never
+    /// diverge from the `Repr` the raw-i64 lanes gate on:
+    ///
+    ///   * **Demotion** `I64 -> DynBox`: a `TirType::I64` phi the plan does NOT
+    ///     prove overflow-safe is carried `DynBox` (NaN-boxed). `type_refine`
+    ///     assigns `add(I64, I64) -> I64` with no overflow proof, so an unproven
+    ///     i64 accumulator must stay boxed across the back-edge instead of
+    ///     unboxing a runtime BigInt into a truncating 47-bit payload.
+    ///   * **Promotion** `DynBox -> I64`: a `DynBox`-declared phi the plan DOES
+    ///     prove overflow-safe is carried as a raw `I64`. This is the masked
+    ///     back-edge accumulator (`s = (s << 1) & MASK`): the value-range phi
+    ///     narrowing proves `s` fits the inline window, so `is_overflow_safe_int`
+    ///     mints `RawI64Safe` for it — but `type_refine` (which runs without that
+    ///     value-range fact) left the phi `DynBox`. Without this promotion the
+    ///     phi carries boxed, so the in-loop `<<`/`&` see a `DynBox` operand and
+    ///     bail to the boxed `molt_lshift`/`molt_bit_and` runtime even though the
+    ///     raw lane was proven legal — defeating the whole narrowing. The phi
+    ///     incoming edges are reconciled by `coerce_to_tir_type`, which unboxes a
+    ///     boxed incoming (`molt_int_from_i64` / a boxed back-edge value) into the
+    ///     raw i64 the I64 phi slot expects. The promotion is sound because
+    ///     `is_overflow_safe_int` is granted ONLY for values a value-range proof
+    ///     places entirely within the inline-int47 window (so a heap BigInt can
+    ///     never reach the raw slot); it is restricted to a `DynBox` declared
+    ///     type so a non-integer carrier (`Str`/`F64`/container) is never
+    ///     reinterpreted as i64.
     fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
-        if matches!(declared, TirType::I64) && !self.repr_facts.is_overflow_safe_int(id) {
-            TirType::DynBox
-        } else {
-            declared.clone()
+        let overflow_safe = self.repr_facts.is_overflow_safe_int(id);
+        match declared {
+            TirType::I64 if !overflow_safe => TirType::DynBox,
+            TirType::DynBox if overflow_safe => TirType::I64,
+            _ => declared.clone(),
         }
     }
 
@@ -12049,6 +12072,149 @@ mod tests {
             ir.contains("and i64"),
             "expected NaN-boxing AND mask in IR: {}",
             ir
+        );
+    }
+
+    #[test]
+    fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
+        // #43 end-to-end (the perf payoff the value-range phi narrowing exists
+        // for): a `DynBox`-declared loop-header phi that the representation plan
+        // proves `RawI64Safe` must be carried as a raw `I64` so the in-loop
+        // `<<`/`&` emit raw machine `shl`/`and` instead of the boxed
+        // `molt_lshift`/`molt_bit_and` runtime. `type_refine` leaves the masked
+        // accumulator `DynBox` (its inline-window fit is a value-range-only fact),
+        // so without `effective_block_arg_type`'s DynBox->I64 promotion the phi
+        // carries boxed and every iteration round-trips through the runtime — the
+        // exact regression this guards.
+        //
+        // Shape:  s_phi: DynBox = phi[ 1 (preheader), band (back-edge) ]
+        //         shl  = s_phi << 1
+        //         band = shl & MASK            (MASK = 2**32 - 1)
+        //         -> header(band)
+        // with the plan proving s_phi / shl / band all RawI64Safe.
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+
+        let mut func = TirFunction::new("masked_shift".into(), vec![], TirType::None);
+        let s_start = func.fresh_value(); // ConstInt 1
+        let mask_c = func.fresh_value(); // ConstInt (2**32 - 1)
+        let one_c = func.fresh_value(); // ConstInt 1 (shift count)
+        let s_phi = func.fresh_value(); // header phi (DynBox-declared)
+        let shl = func.fresh_value(); // s_phi << 1
+        let band = func.fresh_value(); // shl & MASK
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+
+        let mk_int = |result: ValueId, v: i64| TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![result],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("value".into(), AttrValue::Int(v));
+                m
+            },
+            source_span: None,
+        };
+        let mk_bin = |opcode: OpCode, a: ValueId, b: ValueId, r: ValueId| TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![a, b],
+            results: vec![r],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![
+                mk_int(s_start, 1),
+                mk_int(mask_c, (1i64 << 32) - 1),
+                mk_int(one_c, 1),
+            ];
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![s_start],
+            };
+        }
+        // The phi is DECLARED DynBox (as type_refine leaves the masked accumulator).
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue { id: s_phi, ty: TirType::DynBox }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: body,
+                    args: vec![],
+                },
+            },
+        );
+        func.loop_roles
+            .insert(header, crate::tir::blocks::LoopRole::LoopHeader);
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    mk_bin(OpCode::Shl, s_phi, one_c, shl),
+                    mk_bin(OpCode::BitAnd, shl, mask_c, band),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![band],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles
+            .insert(exit, crate::tir::blocks::LoopRole::LoopEnd);
+
+        // The plan proves the masked accumulator chain RawI64Safe (what the
+        // value-range phi narrowing yields end to end). The ConstInts are I64 by
+        // their own lowering; the proof here is for the phi + the two op results.
+        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+        for v in [s_phi, shl, band] {
+            facts
+                .repr_by_value
+                .insert(v, crate::representation_plan::Repr::RawI64Safe);
+        }
+        backend.function_repr_facts.insert(func.name.clone(), facts);
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+
+        assert!(
+            ir.contains("shl i64"),
+            "masked accumulator shift must lower to a RAW machine `shl i64`, not \
+             the boxed runtime. IR:\n{ir}"
+        );
+        assert!(
+            !ir.contains("@molt_lshift"),
+            "a RawI64Safe-proven masked shift must NOT call the boxed `molt_lshift`. \
+             IR:\n{ir}"
+        );
+        assert!(
+            !ir.contains("@molt_bit_and"),
+            "a RawI64Safe-proven masked `& MASK` must NOT call the boxed \
+             `molt_bit_and`. IR:\n{ir}"
+        );
+        // The header phi must be a raw `i64` phi (promoted from its DynBox
+        // declaration) so the back-edge carries the raw masked value.
+        assert!(
+            ir.contains("phi i64"),
+            "the RawI64Safe masked accumulator phi must be a raw `i64` phi. IR:\n{ir}"
         );
     }
 
