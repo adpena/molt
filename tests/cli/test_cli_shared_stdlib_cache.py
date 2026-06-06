@@ -7,7 +7,7 @@ import pytest
 import molt.cli as cli
 
 
-def _cache_variant() -> str:
+def _cache_variant(backend_binary_identity: str = "") -> str:
     return cli._build_cache_variant(
         profile="dev",
         runtime_cargo="dev-fast",
@@ -17,6 +17,7 @@ def _cache_variant() -> str:
         codegen_env="codegen=v1",
         linked=False,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        backend_binary_identity=backend_binary_identity,
     )
 
 
@@ -740,3 +741,124 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
         cli._stdlib_object_manifest_sidecar_path(staged).read_text(encoding="utf-8")
         == _manifest("abc123") + "\n"
     )
+
+
+# --- Finding #4 confound: bind the shared-stdlib cache key to the backend binary
+# identity so a rebuilt backend with different codegen never reuses stale objects.
+
+
+def test_build_cache_variant_includes_backend_binary_identity() -> None:
+    base = _cache_variant()
+    keyed = _cache_variant("path/to/molt-backend|123|456")
+    assert "backend_bin=" not in base
+    assert "backend_bin=path/to/molt-backend|123|456" in keyed
+    assert base != keyed
+
+
+def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
+    stdlib_modules = _explicit_stdlib_modules("sys")
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+
+    variant_a = _cache_variant("/molt-backend|1700000000000000000|10000000")
+    variant_b = _cache_variant("/molt-backend|1700000009000000000|10000000")
+
+    key_a = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        target_triple=None,
+        cache_variant=variant_a,
+    )
+    key_b = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        target_triple=None,
+        cache_variant=variant_b,
+    )
+
+    # Identical IR, target, and compiler fingerprint — ONLY the backend binary
+    # identity differs (a rebuild). The cache key (and the .o path) must change so
+    # the stale object compiled by the prior binary is never linked.
+    assert key_a != key_b
+    assert cli._stdlib_object_cache_path(
+        Path("cache"), key_a
+    ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
+
+
+def test_backend_binary_identity_tracks_stat_and_fails_safe(tmp_path: Path) -> None:
+    backend_bin = tmp_path / "molt-backend"
+
+    missing = cli._backend_binary_identity(backend_bin)
+    assert missing.startswith("missing:")
+
+    backend_bin.write_bytes(b"AAAA")
+    os.utime(backend_bin, (1_700_000_000, 1_700_000_000))
+    ident_small = cli._backend_binary_identity(backend_bin)
+    assert not ident_small.startswith("missing:")
+    assert ident_small != missing
+
+    # A rebuild that changes content/size and bumps mtime must change identity.
+    backend_bin.write_bytes(b"BBBBBBBB")
+    os.utime(backend_bin, (1_700_000_010, 1_700_000_010))
+    ident_big = cli._backend_binary_identity(backend_bin)
+    assert ident_big != ident_small
+
+    # Same bytes but a newer mtime (cargo relink with identical content) still
+    # changes identity — mirrors backend_cache_dir_for's path+mtime convention.
+    backend_bin.write_bytes(b"BBBBBBBB")
+    os.utime(backend_bin, (1_700_000_020, 1_700_000_020))
+    ident_touched = cli._backend_binary_identity(backend_bin)
+    assert ident_touched != ident_big
+
+
+def test_backend_features_for_target_single_source_of_truth() -> None:
+    empty: dict[str, str] = {}
+    assert cli._backend_features_for_target(
+        is_wasm=False,
+        is_luau_transpile=False,
+        is_rust_transpile=False,
+        env=empty,
+    ) == ("native-backend",)
+    assert cli._backend_features_for_target(
+        is_wasm=True,
+        is_luau_transpile=False,
+        is_rust_transpile=False,
+        env=empty,
+    ) == ("wasm-backend",)
+    # luau implies rust-transpile too; luau wins.
+    assert cli._backend_features_for_target(
+        is_wasm=False,
+        is_luau_transpile=True,
+        is_rust_transpile=True,
+        env=empty,
+    ) == ("luau-backend",)
+    assert cli._backend_features_for_target(
+        is_wasm=False,
+        is_luau_transpile=False,
+        is_rust_transpile=True,
+        env=empty,
+    ) == ("rust-backend",)
+    # The llvm feature folds in and changes both codegen and the binary path.
+    assert cli._backend_features_for_target(
+        is_wasm=False,
+        is_luau_transpile=False,
+        is_rust_transpile=False,
+        env={"MOLT_BACKEND": "llvm"},
+    ) == ("native-backend", "llvm")
+    # The target-string wrapper derives the booleans purely from `target`.
+    assert cli._backend_features_for_build_target(
+        target="native", is_wasm=False, env=empty
+    ) == ("native-backend",)
+    assert cli._backend_features_for_build_target(
+        target="luau", is_wasm=False, env=empty
+    ) == ("luau-backend",)
+    assert cli._backend_features_for_build_target(
+        target="rust", is_wasm=False, env=empty
+    ) == ("rust-backend",)
+    assert cli._backend_features_for_build_target(
+        target="wasm", is_wasm=True, env=empty
+    ) == ("wasm-backend",)
