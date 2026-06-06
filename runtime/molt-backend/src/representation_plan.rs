@@ -999,7 +999,9 @@ impl ScalarRepresentationPlan {
                 | "bit_xor"
                 | "inplace_bit_xor"
                 | "lshift"
+                | "inplace_lshift"
                 | "rshift"
+                | "inplace_rshift"
                 | "shl"
                 | "shr"
                 | "neg"
@@ -1887,6 +1889,7 @@ impl ScalarRepresentationPlan {
                         | "inplace_add"
                         | "inplace_sub"
                         | "inplace_mul"
+                        | "inplace_div"
                         | "neg"
                         | "unary_neg"
                         | "copy_var"
@@ -2123,7 +2126,7 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }
-            "pow" => {
+            "pow" | "inplace_pow" => {
                 if (args.len() >= 2 && is_float(&args[1]))
                     || args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
@@ -2133,7 +2136,7 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }
-            "div" => {
+            "div" | "inplace_div" => {
                 if args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
@@ -2142,7 +2145,7 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }
-            "lshift" | "rshift" | "shl" | "shr" => {
+            "lshift" | "rshift" | "shl" | "shr" | "inplace_lshift" | "inplace_rshift" => {
                 if args_all(&is_int) {
                     Some(ScalarKind::Int)
                 } else {
@@ -3080,7 +3083,9 @@ fn integer_only_result_op(kind: &str) -> bool {
             | "bitor"
             | "bitxor"
             | "lshift"
+            | "inplace_lshift"
             | "rshift"
+            | "inplace_rshift"
             | "shl"
             | "shr"
             | "neg"

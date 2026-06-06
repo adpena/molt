@@ -127,6 +127,28 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         "molt_floordiv",
         "molt_mod",
         "molt_pow",
+        // In-place augmented-assignment runtime entries. The boxed slow paths of
+        // emit_binary_arith / emit_bitwise dispatch `x //= y` etc. through these
+        // (they try the `__i<op>__` dunder before the binary protocol). They
+        // must be declared here or call_runtime_2's get_function lookup panics
+        // ("Runtime function not declared"). matmul handled via the generic
+        // try_lower_preserved_runtime_call (molt_inplace_matmul), declared by
+        // its own ensure_runtime_i64_fn at the call site.
+        //
+        // add/sub/mul: the first-class OpCode::InplaceAdd/Sub/Mul share
+        // emit_binary_arith with their binary opcode and previously dispatched
+        // the boxed fallback to molt_add/sub/mul (skipping __iadd__/etc. — a
+        // latent LLVM-only parity bug); the boxed slow path now correctly calls
+        // molt_inplace_add/sub/mul, which therefore must be declared here.
+        "molt_inplace_add",
+        "molt_inplace_sub",
+        "molt_inplace_mul",
+        "molt_inplace_div",
+        "molt_inplace_floordiv",
+        "molt_inplace_mod",
+        "molt_inplace_pow",
+        "molt_inplace_lshift",
+        "molt_inplace_rshift",
     ] {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
         let func = module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
@@ -222,6 +244,13 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         "molt_bit_xor",
         "molt_lshift",
         "molt_rshift",
+        // In-place bitwise: the Copy-carried `inplace_bit_*` arms in
+        // lower_preserved_simpleir_op route through emit_bitwise, whose boxed
+        // fallback now dispatches `|=`/`&=`/`^=` to molt_inplace_bit_* (trying
+        // `__ior__`/etc. first — previously they wrongly used molt_bit_*).
+        "molt_inplace_bit_and",
+        "molt_inplace_bit_or",
+        "molt_inplace_bit_xor",
     ] {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
         let func = module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));

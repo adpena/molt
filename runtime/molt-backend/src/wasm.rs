@@ -87,7 +87,12 @@ fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
 
 fn wasm_scalar_integer_fast_path_for_op(plan: &ScalarRepresentationPlan, op: &OpIR) -> bool {
     match op.kind.as_str() {
-        "div" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" => plan.op_args_are_integer_family(op),
+        // `/=` shares `/`'s int-family fast-path gating: both produce a float on
+        // int operands, so the lane is keyed on integer-family operands rather
+        // than an integer result.
+        "div" | "inplace_div" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" => {
+            plan.op_args_are_integer_family(op)
+        }
         _ => plan.op_prefers_integer_runtime_lane(op),
     }
 }
@@ -7246,7 +7251,16 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "lshift" | "shl" => {
+                    "lshift" | "shl" | "inplace_lshift" => {
+                        // `<<` and `<<=`.  Int fast lane identical (builtin int has
+                        // no __ilshift__); boxed fallback symbol differs —
+                        // molt_inplace_lshift tries __ilshift__ before the binary
+                        // chain.
+                        let boxed_key = if op.kind == "inplace_lshift" {
+                            "inplace_lshift"
+                        } else {
+                            "lshift"
+                        };
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
@@ -7298,26 +7312,26 @@ impl WasmBackend {
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["lshift"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
 
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["lshift"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                             if guarded {
                                 emit_trusted_int_fast_path_guard_close(
                                     func,
                                     reloc_enabled,
                                     &[lhs, rhs],
-                                    import_ids["lshift"],
+                                    import_ids[boxed_key],
                                 );
                             }
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["lshift"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                         }
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -7326,7 +7340,14 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "rshift" | "shr" => {
+                    "rshift" | "shr" | "inplace_rshift" => {
+                        // `>>` and `>>=`.  Inplace variant: molt_inplace_rshift
+                        // tries __irshift__ before the binary chain.
+                        let boxed_key = if op.kind == "inplace_rshift" {
+                            "inplace_rshift"
+                        } else {
+                            "rshift"
+                        };
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
@@ -7369,20 +7390,20 @@ impl WasmBackend {
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["rshift"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                             if guarded {
                                 emit_trusted_int_fast_path_guard_close(
                                     func,
                                     reloc_enabled,
                                     &[lhs, rhs],
-                                    import_ids["rshift"],
+                                    import_ids[boxed_key],
                                 );
                             }
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["rshift"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                         }
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -7391,13 +7412,21 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "matmul" => {
+                    "matmul" | "inplace_matmul" => {
+                        // `@` and `@=`.  No int/float fast lane; the boxed symbol
+                        // changes — molt_inplace_matmul tries __imatmul__ before
+                        // the binary __matmul__/__rmatmul__ chain.
+                        let boxed_key = if op.kind == "inplace_matmul" {
+                            "inplace_matmul"
+                        } else {
+                            "matmul"
+                        };
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["matmul"]);
+                        emit_call(func, reloc_enabled, import_ids[boxed_key]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -7405,7 +7434,16 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "div" => {
+                    "div" | "inplace_div" => {
+                        // `/` and `/=`.  Int/float fast lanes identical (builtin
+                        // numerics have no __itruediv__); boxed fallback symbol
+                        // changes — molt_inplace_div tries __itruediv__ before the
+                        // binary __truediv__/__rtruediv__ chain.
+                        let boxed_key = if op.kind == "inplace_div" {
+                            "inplace_div"
+                        } else {
+                            "div"
+                        };
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
@@ -7444,14 +7482,14 @@ impl WasmBackend {
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["div"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                             if guarded {
                                 emit_trusted_int_fast_path_guard_close(
                                     func,
                                     reloc_enabled,
                                     &[lhs, rhs],
-                                    import_ids["div"],
+                                    import_ids[boxed_key],
                                 );
                             }
                         } else {
@@ -7483,7 +7521,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["div"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                         }
                         if let Some(out) = op.out.as_ref() {
@@ -7493,7 +7531,16 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "floordiv" => {
+                    "floordiv" | "inplace_floordiv" => {
+                        // `//` and `//=`.  Int/float fast lanes identical (builtin
+                        // numerics have no __ifloordiv__); boxed fallback symbol
+                        // changes — molt_inplace_floordiv tries __ifloordiv__
+                        // before the binary __floordiv__/__rfloordiv__ chain.
+                        let boxed_key = if op.kind == "inplace_floordiv" {
+                            "inplace_floordiv"
+                        } else {
+                            "floordiv"
+                        };
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
@@ -7555,25 +7602,25 @@ impl WasmBackend {
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["floordiv"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["floordiv"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                             if guarded {
                                 emit_trusted_int_fast_path_guard_close(
                                     func,
                                     reloc_enabled,
                                     &[lhs, rhs],
-                                    import_ids["floordiv"],
+                                    import_ids[boxed_key],
                                 );
                             }
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["floordiv"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                         }
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -7582,7 +7629,16 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "mod" => {
+                    "mod" | "inplace_mod" => {
+                        // `%` and `%=`.  Int/float fast lanes identical (builtin
+                        // numerics have no __imod__); boxed fallback symbol
+                        // changes — molt_inplace_mod tries __imod__ before the
+                        // binary __mod__/__rmod__ chain.
+                        let boxed_key = if op.kind == "inplace_mod" {
+                            "inplace_mod"
+                        } else {
+                            "mod"
+                        };
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
@@ -7640,25 +7696,25 @@ impl WasmBackend {
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["mod"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["mod"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                             func.instruction(&Instruction::End);
                             if guarded {
                                 emit_trusted_int_fast_path_guard_close(
                                     func,
                                     reloc_enabled,
                                     &[lhs, rhs],
-                                    import_ids["mod"],
+                                    import_ids[boxed_key],
                                 );
                             }
                         } else {
                             func.instruction(&Instruction::LocalGet(lhs));
                             func.instruction(&Instruction::LocalGet(rhs));
-                            emit_call(func, reloc_enabled, import_ids["mod"]);
+                            emit_call(func, reloc_enabled, import_ids[boxed_key]);
                         }
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -7667,13 +7723,21 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "pow" => {
+                    "pow" | "inplace_pow" => {
+                        // `**` and `**=`.  No int/float fast lane in WASM; the
+                        // boxed symbol changes — molt_inplace_pow tries __ipow__
+                        // before the binary __pow__/__rpow__ chain.
+                        let boxed_key = if op.kind == "inplace_pow" {
+                            "inplace_pow"
+                        } else {
+                            "pow"
+                        };
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(lhs));
                         func.instruction(&Instruction::LocalGet(rhs));
-                        emit_call(func, reloc_enabled, import_ids["pow"]);
+                        emit_call(func, reloc_enabled, import_ids[boxed_key]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

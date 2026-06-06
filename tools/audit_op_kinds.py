@@ -445,6 +445,23 @@ class FrontendKinds:
         return out
 
 
+def _static_kind_strings(expr: ast.expr) -> set[str] | None:
+    """Resolve a fully-static `"kind"` value expression to the set of string
+    literals it can evaluate to. Handles the two static emission idioms:
+    a bare string constant, and a (possibly nested) conditional expression
+    whose branches are themselves static — e.g. the shared binary/inplace
+    arms `"div" if op.kind == "DIV" else "inplace_div"`. Returns None for
+    anything dynamic (those flow to the guard/assignment resolvers)."""
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return {expr.value}
+    if isinstance(expr, ast.IfExp):
+        body = _static_kind_strings(expr.body)
+        orelse = _static_kind_strings(expr.orelse)
+        if body is not None and orelse is not None:
+            return body | orelse
+    return None
+
+
 def extract_frontend_kinds() -> FrontendKinds:
     src = SERIALIZATION_PY.read_text()
     tree = ast.parse(src)
@@ -456,8 +473,9 @@ def extract_frontend_kinds() -> FrontendKinds:
         for k, v in zip(node.keys, node.values):
             if not (isinstance(k, ast.Constant) and k.value == "kind"):
                 continue
-            if isinstance(v, ast.Constant) and isinstance(v.value, str):
-                fk.constant.add(v.value)
+            static = _static_kind_strings(v)
+            if static is not None:
+                fk.constant.update(static)
                 continue
             ln = getattr(v, "lineno", -1)
             guard = _enclosing_kind_guard(node)
