@@ -134,6 +134,19 @@ PREFIXES = [
 ]
 TOKEN_TYPES = ["CoreGilToken", "PyToken<'_>", "PyToken<'a>", "PyToken"]
 
+# Access-layer-equivalent runtime calls: the in-tree copy calls a `molt-runtime`
+# helper DIRECTLY (threading the `PyToken` GIL token); the satellite reaches the
+# same behavior through a `molt-runtime-core` `rt_*` FFI-bridge wrapper that
+# acquires the GIL internally and so takes no token. They are the same operation
+# in the two access layers (exactly like the GIL-macro / token normalizations).
+# Map both spellings to a common token so the residual reflects only genuine
+# SEMANTIC drift, not the bridge shape. Order longest-first.
+RT_WRAPPER_EQUIVALENTS = [
+    ("object::ops_sys::runtime_target_at_least(_py, ", "__RT_TARGET_AT_LEAST__("),
+    ("runtime_target_at_least(_py, ", "__RT_TARGET_AT_LEAST__("),
+    ("rt_target_at_least(", "__RT_TARGET_AT_LEAST__("),
+]
+
 
 def _strip_use_blocks(lines: list[str]) -> list[str]:
     """Drop `use ...;` items, including multi-line brace-balanced blocks."""
@@ -198,6 +211,8 @@ def normalize(path: Path) -> list[str]:
             line = line.replace(t, "__TOK__")
         for p in PREFIXES:
             line = line.replace(p, "")
+        for src, dst in RT_WRAPPER_EQUIVALENTS:
+            line = line.replace(src, dst)
         line = _strip_trailing_comment(line)
         s2 = line.strip()
         # Collapse a single-line `unsafe { EXPR }` / `unsafe { EXPR };` wrapper:

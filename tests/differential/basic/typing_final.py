@@ -53,6 +53,31 @@ def victim():
 print("identity:", final(victim) is victim)
 
 
+# final's silently-ignored branch: on a target whose __final__ is NOT writable
+# (a builtin/immutable object or a __slots__ instance), `final` swallows the
+# AttributeError/TypeError and returns the object unchanged. This exercises the
+# `try: f.__final__ = True except (AttributeError, TypeError): pass` path, which
+# previously could not run end-to-end because SETATTR on such a target panicked
+# (a tagged-int receiver SIGSEGV'd; a __slots__ instance tripped a layout
+# assert). They must now degrade to the catchable exception `final` expects.
+print("final(42) is 42:", final(42) is 42)
+print("final('x') is 'x':", final("x") == "x")
+print("final((1,2)) == (1,2):", final((1, 2)) == (1, 2))
+print("final(None) is None:", final(None) is None)
+print("final(int) is int:", final(int) is int)
+
+
+class _Slotted:
+    __slots__ = ("a",)
+
+
+_inst = _Slotted()
+_inst.a = 9
+print("final(slots-inst) preserved:", final(_inst).a)
+print("final(slots-inst) identity:", final(_inst) is _inst)
+print("slots-inst has __final__:", hasattr(_inst, "__final__"))
+
+
 # final is exported from the module namespace.
 import typing
 

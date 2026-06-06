@@ -43,6 +43,37 @@ else:
     _MixinBase = object
 
 
+def _iter_slots_field_names(value: ast.expr | None) -> list[str]:
+    """Field names declared by a ``__slots__`` assignment that consume an instance
+    field slot.
+
+    Accepts the literal forms ``__slots__`` is normally given — a single string,
+    or a tuple/list/set of string literals. ``__dict__`` and ``__weakref__`` are
+    excluded because the runtime's ``apply_class_slots_layout`` does not assign
+    them a field offset (they toggle instance-dict / weakref support instead), so
+    the frontend's slot-size accounting must skip them in lock-step to keep
+    ``class_info["size"]`` equal to the runtime's ``class_layout_size``.
+    Non-literal ``__slots__`` (a computed expression) yields no names; such a
+    class falls back to the runtime layout authority unchanged.
+    """
+    if value is None:
+        return []
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        elements: list[ast.expr] = [value]
+    elif isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+        elements = list(value.elts)
+    else:
+        return []
+    names: list[str] = []
+    for element in elements:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            name = element.value
+            if name in ("__dict__", "__weakref__"):
+                continue
+            names.append(name)
+    return names
+
+
 class ClassDefVisitorMixin(_MixinBase):
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None:
         if len(node.body) != 1:
@@ -773,6 +804,19 @@ class ClassDefVisitorMixin(_MixinBase):
                     for target in item.targets:
                         if isinstance(target, ast.Name):
                             class_attrs[target.id] = item.value
+                            # `__slots__` declares fixed instance field slots that
+                            # the runtime's `apply_class_slots_layout` assigns real
+                            # offsets to. Register each declared slot name as a
+                            # field here so `class_info["size"]` reserves storage
+                            # for it (slot_count * 8 + reserved_tail) — matching the
+                            # runtime's `class_layout_size`. Omitting them made a
+                            # `__slots__`-only class's frontend size disagree with
+                            # the runtime's (e.g. a single slot: 8 vs 16), tripping
+                            # the `alloc_instance_for_class_sized` layout-drift
+                            # assert (and silently under-allocating in release).
+                            if target.id == "__slots__":
+                                for slot_name in _iter_slots_field_names(item.value):
+                                    add_field(slot_name)
 
             methods_in_body = [
                 item for item in node.body if isinstance(item, ast.FunctionDef)

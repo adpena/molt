@@ -578,9 +578,11 @@ fn propagate_arithmetic_types(blocks: &[TirBlock], types: &mut HashMap<ValueId, 
                     .iter()
                     .map(|id| types.get(id).cloned().unwrap_or(TirType::DynBox))
                     .collect();
-                if let Some(inferred) =
-                    super::type_refine::infer_scalar_return_result_type(op.opcode, &operand_types)
-                {
+                if let Some(inferred) = super::type_refine::infer_scalar_return_result_type(
+                    op.opcode,
+                    &operand_types,
+                    Some(&op.attrs),
+                ) {
                     types.insert(result_id, inferred);
                     changed = true;
                 }

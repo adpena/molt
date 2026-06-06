@@ -7975,7 +7975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_csv_reader_parse_line",
         symbol: "molt_csv_reader_parse_line",
-        arity: 2,
+        arity: 3,
     },
     IntrinsicSpec {
         name: "molt_csv_sniff",
