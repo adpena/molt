@@ -906,9 +906,7 @@ fn local_slot_init_const(poll: &TirFunction, offset: i64) -> Option<LocalInit> {
     let mut result: Option<LocalInit> = None;
     for op in &entry.ops {
         if op.opcode == OpCode::ClosureStore && attr_value_int(op) == Some(offset) {
-            let Some(&stored) = op.operands.get(1) else {
-                return None;
-            };
+            let &stored = op.operands.get(1)?;
             let loc = def_location(poll, stored)?;
             let def = &poll.blocks[&loc.0].ops[loc.1];
             result = if def.opcode == OpCode::ConstInt {
@@ -1093,7 +1091,7 @@ fn clone_and_rewrite_poll(
         for block in poll.blocks.values() {
             for op in &block.ops {
                 if op.opcode == OpCode::Copy
-                    && op.attrs.get("_original_kind").is_none()
+                    && !op.attrs.contains_key("_original_kind")
                     && op.operands.iter().any(|v| exc_derived.contains(v))
                     && let Some(&res) = op.results.first()
                     && exc_derived.insert(res)
@@ -1226,12 +1224,8 @@ fn clone_and_rewrite_poll(
             if op.opcode == OpCode::ClosureStore {
                 let off = attr_value_int(op).unwrap_or(-1);
                 if off >= GEN_CONTROL_BYTES {
-                    let Some(&idx) = slot_index.get(&off) else {
-                        return None;
-                    };
-                    let Some(&stored) = op.operands.get(1) else {
-                        return None;
-                    };
+                    let &idx = slot_index.get(&off)?;
+                    let &stored = op.operands.get(1)?;
                     // Entry-block stores are the init (handled in the preheader),
                     // not the back-edge. Only record stores OUTSIDE the entry.
                     if bid != poll.entry_block {
@@ -1250,9 +1244,7 @@ fn clone_and_rewrite_poll(
             // record its location and pair operand, and DROP it from the op
             // stream — the split happens at this index in the cloned block.
             if op.opcode == OpCode::StateYield {
-                let Some(&pair) = op.operands.first() else {
-                    return None;
-                };
+                let &pair = op.operands.first()?;
                 yield_block_idx = Some((new_bid, new_ops.len(), remap(pair, &value_map)));
                 continue;
             }
@@ -1951,6 +1943,7 @@ fn delete_frame_creation_ops(
 ///     retargeted to `post_block` (the generator's post-yield continuation);
 ///   * the **entry** edge(s) from outside the loop → retargeted to `preheader`
 ///     (the generator's cloned entry).
+///
 /// Returns `false` if the header has a predecessor that is neither (an
 /// unexpected irreducible shape) — a conservative bail.
 fn rewire_consumer_header_edges(
