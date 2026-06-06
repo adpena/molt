@@ -27,8 +27,8 @@
 # Gates that run for ANY non-empty change: the cheap Python contracts that must
 # never regress regardless of what was touched.
 always = [
-  ".venv/bin/python -m ruff check .",
-  ".venv/bin/python -m ruff format --check .",
+  "python3 tools/venv_exec.py python -m ruff check .",
+  "python3 tools/venv_exec.py python -m ruff format --check .",
 ]
 
 # --- Native (Cranelift) backend Rust -------------------------------------
@@ -81,7 +81,10 @@ globs = [
   "src/molt/**/*.py",
 ]
 gates = [
-  "python3 -m ty check src",
+  # NOTE: `ty check src` is NOT yet a canonical CI gate (16 pre-existing
+  # diagnostics repo-wide). Adding it is the ty-ratchet follow-up arc: fix the
+  # debt, then add the gate here + in CI in the same change (mirror-reality
+  # first; ratchets are their own arcs).
   "python3 tools/verified_subset.py check",
   "python3 tools/check_dynamic_policy.py",
 ]
@@ -166,7 +169,7 @@ globs = [
   "tests/test_molt_dev.py",
 ]
 gates = [
-  "python3 -m pytest -q tests/test_molt_dev.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
 ]
 
 # --- CI workflow / pyproject lint wiring ---------------------------------
@@ -178,5 +181,5 @@ globs = [
   "pyproject.toml",
 ]
 gates = [
-  "python3 -m pytest -q tests/test_ci_workflow_topology.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_ci_workflow_topology.py",
 ]
