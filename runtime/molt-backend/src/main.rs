@@ -81,6 +81,7 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_STDLIB_CACHE_KEY",
     "MOLT_STDLIB_MODULE_SYMBOLS",
     "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
+    "MOLT_DEBUG_DROP",
 ];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
