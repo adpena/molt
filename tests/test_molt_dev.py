@@ -36,6 +36,14 @@ Hazard -> proving test(s):
                                 test_gate_manifest_always_runs
                                 test_committed_gate_manifest_is_valid
                                 test_integrate_runs_selected_gate_and_halts_on_failure
+ 11 backgrounded runs die       test_detached_run_completes_and_records_rc
+    silently                    test_detached_run_nonzero_rc_is_loud
+                                test_detached_daemon_survives_spawner_and_runs_in_new_session
+                                test_detached_run_refuses_live_duplicate_and_never_kills
+                                test_detached_verify_detects_died_silent
+                                test_detached_verify_too_young_is_not_trusted
+                                test_detached_run_missing_command_is_usage_error
+                                test_detached_run_exec_failure_records_sentinel_rc
 """
 
 from __future__ import annotations
@@ -942,3 +950,229 @@ def _integrate_ns(drv, **overrides):
     import argparse
 
     return argparse.Namespace(**base)
+
+
+# --------------------------------------------------------------------------
+# Hazard 11: backgrounded long-runs die silently (detached-run / detached-verify)
+# --------------------------------------------------------------------------
+
+
+def _dr_ns(drv, name, state_root, command, *, cwd=None, env=None, replace=False):
+    import argparse
+
+    return argparse.Namespace(
+        name=name,
+        state_dir=str(state_root),
+        cwd=cwd,
+        env=env,
+        replace=replace,
+        verify_min_age_hint=30,
+        json=False,
+        command=["--", *command],
+    )
+
+
+def _dv_ns(drv, name, state_root, *, min_age_s=0.0, as_json=True):
+    import argparse
+
+    return argparse.Namespace(
+        name=name, state_dir=str(state_root), min_age_s=min_age_s, json=as_json
+    )
+
+
+def _wait_rc(state: Path, timeout_s: float = 15.0) -> int:
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    rc_f = state / "rc"
+    while time.monotonic() < deadline:
+        if rc_f.exists():
+            return int(rc_f.read_text().strip())
+        time.sleep(0.05)
+    raise AssertionError(f"rc file never appeared in {state} within {timeout_s}s")
+
+
+def _verify_json(drv, capsys, ns) -> tuple[int, dict]:
+    import json as _json
+
+    rc = drv.cmd_detached_verify(ns)
+    out = capsys.readouterr().out
+    payload = next(line for line in out.splitlines() if line.strip().startswith("{"))
+    return rc, _json.loads(payload)
+
+
+def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
+    state_root = tmp_path / "detached"
+    rc = drv.cmd_detached_run(
+        _dr_ns(
+            drv,
+            "ok-run",
+            state_root,
+            [sys.executable, "-c", "print('MARKER-OUT', flush=True)"],
+        )
+    )
+    assert rc == drv.EXIT_OK
+    state = state_root / "ok-run"
+    assert _wait_rc(state) == 0
+    # Unbuffered log captured the child's stdout despite daemonization.
+    assert "MARKER-OUT" in (state / "run.log").read_text()
+    # cmd.json records the exact argv for postmortems.
+    import json as _json
+
+    recorded = _json.loads((state / "cmd.json").read_text())
+    assert recorded["argv"][0] == sys.executable
+    vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "ok-run", state_root))
+    assert vrc == drv.EXIT_OK
+    assert verdict["status"] == "done" and verdict["rc"] == 0
+
+
+def test_detached_run_nonzero_rc_is_loud(drv, tmp_path, capsys):
+    state_root = tmp_path / "detached"
+    drv.cmd_detached_run(
+        _dr_ns(
+            drv,
+            "fail-run",
+            state_root,
+            [sys.executable, "-c", "import sys; sys.exit(7)"],
+        )
+    )
+    state = state_root / "fail-run"
+    assert _wait_rc(state) == 7
+    vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "fail-run", state_root))
+    assert vrc == drv.EXIT_FAIL
+    assert verdict["status"] == "done" and verdict["rc"] == 7
+
+
+def test_detached_daemon_survives_spawner_and_runs_in_new_session(
+    drv, tmp_path, capsys
+):
+    state_root = tmp_path / "detached"
+    rc = drv.cmd_detached_run(
+        _dr_ns(
+            drv,
+            "sleeper",
+            state_root,
+            [sys.executable, "-c", "import time; time.sleep(2); print('woke')"],
+        )
+    )
+    assert rc == drv.EXIT_OK  # spawner returned while the daemon still runs
+    state = state_root / "sleeper"
+    assert not (state / "rc").exists()  # still running -> detachment is real
+    # New session: daemon sid differs from the test process's sid.
+    daemon_sid = int((state / "sid").read_text().strip())
+    assert daemon_sid != os.getsid(0)
+    vrc, verdict = _verify_json(
+        drv, capsys, _dv_ns(drv, "sleeper", state_root, min_age_s=0.0)
+    )
+    assert vrc == drv.EXIT_OK and verdict["status"] == "running"
+    assert _wait_rc(state) == 0
+    vrc2, verdict2 = _verify_json(drv, capsys, _dv_ns(drv, "sleeper", state_root))
+    assert vrc2 == drv.EXIT_OK and verdict2["status"] == "done"
+
+
+def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path):
+    state_root = tmp_path / "detached"
+    drv.cmd_detached_run(
+        _dr_ns(
+            drv,
+            "dup",
+            state_root,
+            [sys.executable, "-c", "import time; time.sleep(3)"],
+        )
+    )
+    state = state_root / "dup"
+    live_pid = int((state / "pid").read_text().strip())
+    # A second spawn under the same name must REFUSE (never kill), even
+    # with --replace (replace only clears DEAD state).
+    for replace in (False, True):
+        with pytest.raises(drv.DriverError, match="RUNNING"):
+            drv.cmd_detached_run(
+                _dr_ns(
+                    drv,
+                    "dup",
+                    state_root,
+                    [sys.executable, "-c", "print('imposter')"],
+                    replace=replace,
+                )
+            )
+    # The original daemon was not harmed by the refusals.
+    assert drv.probe_pid(live_pid)["alive"]
+    assert _wait_rc(state) == 0
+    # After completion: same name still refuses WITHOUT --replace...
+    with pytest.raises(drv.DriverError, match="--replace"):
+        drv.cmd_detached_run(
+            _dr_ns(drv, "dup", state_root, [sys.executable, "-c", "print('x')"])
+        )
+    # ...and respawns cleanly WITH --replace.
+    rc = drv.cmd_detached_run(
+        _dr_ns(
+            drv,
+            "dup",
+            state_root,
+            [sys.executable, "-c", "print('second')"],
+            replace=True,
+        )
+    )
+    assert rc == drv.EXIT_OK
+    assert _wait_rc(state) == 0
+    assert "second" in (state / "run.log").read_text()
+
+
+def test_detached_verify_detects_died_silent(drv, tmp_path, capsys):
+    # Fabricate the hazard-11 signature: a pid that is GONE and no rc file.
+    proc = subprocess.run([sys.executable, "-c", "pass"], capture_output=True)
+    assert proc.returncode == 0
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_pid = dead.pid
+    dead.wait()
+    state = tmp_path / "detached" / "ghost"
+    state.mkdir(parents=True)
+    (state / "pid").write_text(str(dead_pid))
+    (state / "run.log").write_text("")
+    vrc, verdict = _verify_json(
+        drv, capsys, _dv_ns(drv, "ghost", tmp_path / "detached")
+    )
+    assert vrc == drv.EXIT_FAIL
+    assert verdict["status"] == "died-silent"
+
+
+def test_detached_verify_too_young_is_not_trusted(drv, tmp_path, capsys):
+    state_root = tmp_path / "detached"
+    drv.cmd_detached_run(
+        _dr_ns(
+            drv,
+            "young",
+            state_root,
+            [sys.executable, "-c", "import time; time.sleep(3)"],
+        )
+    )
+    vrc, verdict = _verify_json(
+        drv, capsys, _dv_ns(drv, "young", state_root, min_age_s=9999.0)
+    )
+    assert vrc == drv.EXIT_FAIL
+    assert verdict["status"] == "too-young"
+    assert _wait_rc(state_root / "young") == 0
+
+
+def test_detached_run_missing_command_is_usage_error(drv, tmp_path):
+    with pytest.raises(drv.DriverError) as exc_info:
+        drv.cmd_detached_run(_dr_ns(drv, "noop", tmp_path / "detached", []))
+    assert exc_info.value.code == drv.EXIT_USAGE
+
+
+def test_detached_run_exec_failure_records_sentinel_rc(drv, tmp_path, capsys):
+    state_root = tmp_path / "detached"
+    drv.cmd_detached_run(
+        _dr_ns(
+            drv,
+            "noexec",
+            state_root,
+            ["/nonexistent/binary/definitely-not-here"],
+        )
+    )
+    state = state_root / "noexec"
+    assert _wait_rc(state) == 127  # exec-failure sentinel, NOT died-silent
+    assert "exec failed" in (state / "run.log").read_text()
+    vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "noexec", state_root))
+    assert vrc == drv.EXIT_FAIL
+    assert verdict["status"] == "done" and verdict["rc"] == 127

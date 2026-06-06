@@ -75,6 +75,7 @@ code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 | 8 | **Content-marker verification** | `integrate --marker` checks declared `exists:`/`contains:` markers post-rebase, pre-push, via python file ops. |
 | 9 | **Liveness/recovery probes** | `probe --file <p> --pid <n>` reports size+mtime (`os.stat`) and pid liveness (`os.kill(pid, 0)`) — replacing ad-hoc shell one-liners. Non-zero exit if a file is missing or a pid is dead. |
 | 10 | **Gate selection by change-class** | `integrate` reads `tools/molt_dev_gates.toml` (touched-path glob → required gates) and runs exactly the gates the change demands; `always` gates run for any change; `--extra-gate` adds more. Real `**` glob semantics. |
+| 11 | **Backgrounded long-runs die silently** (the harness reaps `run_in_background` process groups at detach [exit 144]; sandboxed tool calls reap even `setsid` daemons at container teardown — both lose block-buffered output: empty log, no exit status) | `detached-run` double-forks + `setsid` with **unbuffered IO** and an atomic state dir (`pid`/`sid`/`cmd.json`/`run.log`/`rc`); `detached-verify` is the **required second tool call** proving the daemon outlived the spawning call (`--min-age-s`), with a three-way verdict: `running` / `done(rc)` / **`died-silent`**. Spawn-and-verify in one call is structurally untrustable (teardown happens after the call returns), so the protocol is two-step *by design*. `detached-run` **never kills**: a live same-name daemon refuses; `--replace` only clears DEAD/finished state. |
 
 ## Subcommand surface
 
@@ -86,7 +87,30 @@ code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 | `verify-toolchain` | Behavior-marker probe + binary-freshness report. `--marker`, `--probe-arg`, `--require-fresh`, `--reference`, `--require-differs`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
 | `python-oracle` | Resolve + PIN + verify a CPython version before use. `--python-version`, `--no-uv`, `--json`. |
+| `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
+| `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
+
+### The detached-run protocol (hazard 11)
+
+```bash
+# Tool call 1 (UNSANDBOXED — the sandbox is precisely what kills daemons):
+python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip \
+  -- python3 tests/molt_diff.py tests/differential/basic --jobs 4 \
+     --json-output /tmp/sweep.json
+
+# Tool call 2+ (any later call; --min-age-s proves it survived teardown):
+python3 tools/molt_dev.py detached-verify --name flip_sweep --min-age-s 30 --json
+# → running        keep waiting (poll again later)
+# → done, rc=N     read the artifacts; rc≠0 exits 1
+# → died-silent    the hazard-11 group-kill class, reported LOUDLY
+```
+
+Discovered 2026-06-06 (twice in one session): a backgrounded 807-test sweep
+died at harness detach with an **empty log** — block buffering ate every line —
+and the `setsid` respawn died at sandbox teardown the same way. The state-dir
+`rc` file is the only trustworthy completion signal; its absence with a dead
+pid is a *diagnosis*, not a mystery.
 
 ## The gate manifest (`tools/molt_dev_gates.toml`)
 
