@@ -2395,7 +2395,7 @@ impl WasmBackend {
             let default_has_closure = func_ir
                 .params
                 .first()
-                .is_some_and(|name| name == "__molt_closure__");
+                .is_some_and(|name| name == crate::MOLT_CLOSURE_PARAM_NAME);
             let mut default_arity = func_ir.params.len();
             if default_has_closure && default_arity > 0 {
                 default_arity = default_arity.saturating_sub(1);

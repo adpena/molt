@@ -216,6 +216,14 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 ///   loop headers in separate blocks). A callee whose entry block is itself a
 ///   branch target would need its entry args preserved, which this arc's
 ///   direct-binding splice does not model, so it is refused (never miscompiled).
+/// * **closure** — the callee's first param is the implicit captured-environment
+///   param ([`is_closure`] / [`crate::MOLT_CLOSURE_PARAM_NAME`]). The
+///   direct param->operand splice would bind that env-param to the `Call`'s
+///   LEADING FUNCTION-VALUE operand (operands are `[callee_value, args...]`)
+///   instead of the captured environment, miscompiling `__molt_closure__[i]`
+///   into a subscript of a function. The arity guard cannot catch this (the
+///   closure's extra param re-balances the operand count). Threading the real
+///   env is a separate perf arc; refusing is conservative-correct.
 pub fn is_inlineable(
     callee: &TirFunction,
     call_graph: &CallGraph,
@@ -255,6 +263,27 @@ pub fn is_inlineable(
     if entry_block_has_predecessor(callee) {
         return false;
     }
+    if is_closure(callee) {
+        // A closure carries its captured environment as an implicit FIRST
+        // parameter (`__molt_closure__`, prepended by the frontend; see
+        // `crate::MOLT_CLOSURE_PARAM_NAME`). The direct param->operand splice in
+        // `splice_call_site` binds parameters 1:1 to the `Call`'s operands, and
+        // a `Call`'s operands are `[callee_function_value, args...]` — so it would
+        // bind the env-param to the LEADING FUNCTION-VALUE operand instead of the
+        // captured environment. The inlined body's `__molt_closure__[i]` then
+        // subscripts the function object ('function' object is not subscriptable).
+        //
+        // The arity guard (callee param count == operand count) does NOT catch
+        // this: a non-closure callee has N params while the `Call` carries N+1
+        // operands (mismatch -> refused), but a closure adds exactly one param,
+        // re-balancing the counts so the guard passes (false match). The only
+        // correct handling threads the real env — extract it from the function
+        // value's closure bits and bind THAT to param[0] — which is a separate
+        // perf arc (see the module-level "Optional follow-up"). Until then this is
+        // a conservative-correct exclusion: refusing to inline is always sound;
+        // inlining wrongly is a silent miscompile.
+        return false;
+    }
     let op_count = summaries
         .get(&callee.name)
         .map(|s| s.op_count)
@@ -282,6 +311,25 @@ fn entry_block_has_predecessor(callee: &TirFunction) -> bool {
         }
         Terminator::Return { .. } | Terminator::Unreachable => false,
     })
+}
+
+/// True if `callee` is a closure — i.e. its first parameter is the implicit
+/// captured-environment param the frontend prepends to every closure
+/// (`crate::MOLT_CLOSURE_PARAM_NAME` == `"__molt_closure__"`). This is the same
+/// predicate the WASM backend uses to recognize a closure and adjust its arity
+/// (`wasm.rs`, on `FunctionIR::params`); here it gates the inliner exclusion (see
+/// `is_inlineable`). Both reference the one shared const so the marker has a
+/// single source of truth.
+///
+/// `param_names` is populated on the production lift (`lower_from_simple.rs`),
+/// aligned 1:1 with the entry block's arguments, and reliably contains the
+/// marker for closures. (The `p{idx}` default from `TirFunction::new` is
+/// test-only and never collides with the marker.)
+fn is_closure(callee: &TirFunction) -> bool {
+    callee
+        .param_names
+        .first()
+        .is_some_and(|p| p == crate::MOLT_CLOSURE_PARAM_NAME)
 }
 
 /// One statically-resolvable, inlinable call site inside a caller block.
@@ -813,6 +861,27 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
         return false;
     }
 
+    // DEFENSE-IN-DEPTH: never splice a closure here. `is_inlineable` already
+    // excludes closures (see `is_closure`), so a closure should never reach this
+    // splice. But the arity guard below CANNOT distinguish a closure from a
+    // legitimate same-arity call — a closure's leading `__molt_closure__` param
+    // re-balances against the `Call`'s leading function-value operand, so the
+    // guard would pass (false match) and the splice would bind the env-param to
+    // the function object, miscompiling `__molt_closure__[i]` into a subscript of
+    // a function. Refuse structurally so a future `is_inlineable` change cannot
+    // silently re-open the hole. Refusal (not panic) keeps a release build sound;
+    // the debug assert flags the invariant violation in tests.
+    debug_assert!(
+        !is_closure(callee),
+        "splice_call_site: closure '{}' reached splice — is_inlineable must \
+         exclude closures (the arity guard cannot, its env-param re-balances \
+         the operand count)",
+        callee.name
+    );
+    if is_closure(callee) {
+        return false;
+    }
+
     // Arity must match (params bind 1:1 to args). A static call whose arg count
     // disagrees with the callee's param count is a shape we will not splice
     // (defensive — the frontend should keep these aligned, but a mismatch must
@@ -1227,6 +1296,69 @@ mod tests {
             source_span: None,
         });
         block.terminator = Terminator::Return { values: vec![sum] };
+        f.value_types.insert(sum, TirType::I64);
+        f
+    }
+
+    /// A CLOSURE callee shaped like the frontend's lowering of
+    /// `def add(x): return base + x` capturing `base`: `param_names =
+    /// ["__molt_closure__", "x"]`, body unpacks the captured env
+    /// (`index [__molt_closure__, 0] -> cell; index [cell, 0] -> base`) and
+    /// returns `base + x`. This is the exact shape that miscompiled (task #44):
+    /// the splice would have bound `__molt_closure__` to the call's leading
+    /// function-value operand, so `index [__molt_closure__, 0]` subscripts a
+    /// function. `is_inlineable` must refuse it via the env-param marker.
+    fn closure_callee(name: &str) -> TirFunction {
+        let mut f = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox, TirType::I64],
+            TirType::I64,
+        );
+        // The production lift sets param_names from the frontend params; mirror
+        // that here (TirFunction::new defaults to "p0"/"p1", test-only). The
+        // FIRST param is the captured-environment marker -> this is a closure.
+        f.param_names = vec![crate::MOLT_CLOSURE_PARAM_NAME.to_string(), "x".into()];
+        let env = ValueId(0); // __molt_closure__
+        let x = ValueId(1);
+        let cell = f.fresh_value();
+        let base = f.fresh_value();
+        let sum = f.fresh_value();
+        let entry = f.entry_block;
+        let mut idx0a = AttrDict::new();
+        idx0a.insert("value".into(), AttrValue::Int(0));
+        let mut idx0b = AttrDict::new();
+        idx0b.insert("value".into(), AttrValue::Int(0));
+        let block = f.blocks.get_mut(&entry).unwrap();
+        // cell = __molt_closure__[0]
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Index,
+            operands: vec![env],
+            results: vec![cell],
+            attrs: idx0a,
+            source_span: None,
+        });
+        // base = cell[0]
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Index,
+            operands: vec![cell],
+            results: vec![base],
+            attrs: idx0b,
+            source_span: None,
+        });
+        // sum = base + x
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Add,
+            operands: vec![base, x],
+            results: vec![sum],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        block.terminator = Terminator::Return { values: vec![sum] };
+        f.value_types.insert(cell, TirType::DynBox);
+        f.value_types.insert(base, TirType::I64);
         f.value_types.insert(sum, TirType::I64);
         f
     }
@@ -1794,6 +1926,120 @@ mod tests {
             is_inlineable(obs, &cg, &sm, &tti),
             "observation-only callee is inlinable"
         );
+    }
+
+    #[test]
+    fn closure_callee_not_inlined() {
+        // task #44: a closure (first param == __molt_closure__) must NOT be
+        // inlinable. The direct param->operand splice cannot bind the captured
+        // env (it would bind the call's leading function-value operand instead),
+        // so `is_inlineable` refuses it — conservative-correct exclusion.
+        let callee = closure_callee("__main____add");
+        assert!(
+            is_closure(&callee),
+            "first param is the env marker => closure"
+        );
+        let m = module(vec![callee]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        assert!(
+            !is_inlineable(&m.functions[0], &cg, &sm, &tti),
+            "closure callee must be refused (task #44 miscompile gate)"
+        );
+    }
+
+    #[test]
+    fn non_closure_same_arity_still_inlineable() {
+        // The WIN must survive: a NON-closure 2-param callee (param_names do NOT
+        // start with the env marker) is still inlinable. The closure gate keys on
+        // the marker, not on arity, so a legitimate same-arity function is never
+        // de-inlined by the fix.
+        let callee = add_callee(); // params ["p0", "p1"] — not a closure
+        assert!(
+            !is_closure(&callee),
+            "add_callee's first param is not the env marker"
+        );
+        let m = module(vec![callee]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        assert!(
+            is_inlineable(&m.functions[0], &cg, &sm, &tti),
+            "non-closure same-arity callee stays inlinable (perf win preserved)"
+        );
+    }
+
+    #[test]
+    fn run_inliner_refuses_closure_call_site() {
+        // End-to-end through the production chokepoint: a caller that calls a
+        // closure must NOT have the call spliced away. The Call op survives and
+        // the closure body is NOT cloned into the caller (no Index over the
+        // function value), so the miscompile cannot occur.
+        let callee = closure_callee("__main____add");
+        // caller g(): r = __main____add(<func>, 10); return r.
+        // Operands model the real call ABI [callee_value, arg0].
+        let mut g = TirFunction::new("g".into(), vec![], TirType::I64);
+        let func_val = g.fresh_value();
+        let ten = g.fresh_value();
+        let res = g.fresh_value();
+        let entry = g.entry_block;
+        let mut fattrs = AttrDict::new();
+        fattrs.insert("value".into(), AttrValue::Int(0)); // stand-in producer
+        let mut tattrs = AttrDict::new();
+        tattrs.insert("value".into(), AttrValue::Int(10));
+        let mut call_attrs = AttrDict::new();
+        call_attrs.insert(
+            "s_value".into(),
+            AttrValue::Str("__main____add".to_string()),
+        );
+        let block = g.blocks.get_mut(&entry).unwrap();
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![func_val],
+            attrs: fattrs,
+            source_span: None,
+        });
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![ten],
+            attrs: tattrs,
+            source_span: None,
+        });
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![func_val, ten],
+            results: vec![res],
+            attrs: call_attrs,
+            source_span: None,
+        });
+        block.terminator = Terminator::Return { values: vec![res] };
+        g.value_types.insert(res, TirType::I64);
+
+        let mut m = module(vec![g, callee]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+        assert_eq!(stats.sites_inlined, 0, "closure call site is NOT inlined");
+        let g = m.functions.iter().find(|f| f.name == "g").unwrap();
+        let calls: usize = g
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.opcode == OpCode::Call)
+            .count();
+        assert_eq!(calls, 1, "the Call op survives (closure not spliced)");
+        // No Index op leaked into the caller (the closure body was not cloned).
+        let indexes: usize = g
+            .blocks
+            .values()
+            .flat_map(|b| b.ops.iter())
+            .filter(|op| op.opcode == OpCode::Index)
+            .count();
+        assert_eq!(indexes, 0, "closure body not cloned into caller");
     }
 
     // -- run_inliner end-to-end ----------------------------------------------
