@@ -108,17 +108,44 @@ The guard (`python3 tools/check_suite_honesty.py`) exits non-zero when:
 
 ## Calibrating other backends (llvm / wasm / luau)
 
-The committed snapshot is **native only**; the other backends start `uncalibrated`
-in every entry. Calibrating them is tracked as a follow-up (named in the manifest
-header). To seed a backend dimension you run that backend's differential lane with
-the results sink, then add `verified-evidence` dimensions and re-derive. Never
+The committed native snapshot covers `tests/differential/{basic,loop_overflow_peel,
+memory,pyperformance}`; `tests/differential/stdlib` and the non-native backends
+start `uncalibrated`. To seed a dimension you run that backend's differential lane
+with the results sink, then add `verified-evidence` dimensions and re-derive. Never
 seed a dimension you have not actually run — mark it `uncalibrated` (loud) instead.
+
+### WASM dimension (task #55)
+
+The WASM backend has its **own committed snapshot**, `wasm_calibration.jsonl`,
+produced by `tools/wasm_diff.py` — the wasm analogue of `native_calibration.jsonl`.
+`wasm_diff.py` builds each test with `molt build --target wasm` and runs the linked
+module through the **canonical Node host shim** (`node wasm/run_wasm.js
+<output_linked.wasm>`); bare wasmtime/wasmer cannot satisfy the `env.molt_*_host`
+imports by design (see `tools/wasm_run_matrix.py`). It REUSES `tests/molt_diff.py`'s
+CPython oracle, `# MOLT_META` gating, stdout/stderr canonicalization, and the
+`expect_molt_fail` partition verbatim, so the wasm verdict is byte-identical in
+semantics to the native lane — only the build+run is wasm-specific. When
+`wasm_calibration.jsonl` is present, `cmd_check` reality-checks every `wasm`
+manifest dimension against it exactly as it does native (both directions); when it
+is absent, a `wasm` *fail* dim is a fail-closed gap (cannot be confirmed) and a
+`wasm` *uncalibrated* dim is simply not checked.
+
+### Long runs: the setsid daemon
+
+A full corpus calibration outlives many turns. `tools/calib_daemon.py` double-forks
++ `os.setsid()` so the run lives in its own session, immune to the launcher process
+group's teardown (a `nohup … &` from inside a tool is reaped when that group dies).
+It writes a pidfile + a donefile (exit status) so a poller can detect completion
+without a live parent. Run calibration SERIAL (`--jobs 1`) and RE-VERIFY every
+candidate fail in isolation before seeding — a contended parallel build can produce
+false build-failures, so the survey is only a candidate filter; ground truth comes
+from the isolated re-run.
 
 ## Commands
 
 ```bash
 python3 tools/check_suite_honesty.py                 # check vs snapshot+baseline (CI gate)
-python3 tools/check_suite_honesty.py --verbose       # + per-backend table
+python3 tools/check_suite_honesty.py --verbose       # + per-backend table (native + wasm)
 python3 tools/check_suite_honesty.py --show TEST     # one test's expectations
 python3 tools/check_suite_honesty.py --lint-only     # manifest lint only (no reality)
 python3 tools/check_suite_honesty.py --update-baseline   # down-only
@@ -126,6 +153,14 @@ python3 tools/check_suite_honesty.py --reconcile --results FILE
         # rewrite native dims FROM a calibration run (placeholders to fill)
 python3 tools/check_suite_honesty.py --calibrate [paths...]
         # run molt_diff to (re)generate native_calibration.jsonl
+python3 tools/check_suite_honesty.py --calibrate-wasm [paths...]
+        # run wasm_diff to (re)generate wasm_calibration.jsonl
+
+# Long serial calibration that survives the launcher (poll RUN.done for exit code):
+MOLT_DIFF_RESULTS_JSONL=/tmp/stdlib.jsonl MOLT_DIFF_RETRY_ISOLATED=0 \
+python3 tools/calib_daemon.py --log RUN.log --pidfile RUN.pid --donefile RUN.done -- \
+  python3 tests/molt_diff.py --build-profile release --jobs 1 \
+    --files-from STDLIB_LIST.txt
 ```
 
 Wired in CI as a `docs-gates` step in `.github/workflows/ci.yml` and as a `lint`
