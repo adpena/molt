@@ -1859,6 +1859,11 @@ fn preanalyze_function_ir(
     // keeps variables alive; they propagate to after_block for later cleanup.
     let mut loop_body_out_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     let mut loop_body_init_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    // Per-iteration heap temporaries of a generator/async `_poll` (see the
+    // computation below). Declared in the function scope — assigned exactly once
+    // inside the unconditional block below — so the later alias-group last_use
+    // unification can also keep them un-extended.
+    let stateful_per_iter_temps: BTreeSet<String>;
     {
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
         let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
@@ -1885,6 +1890,178 @@ fn preanalyze_function_ir(
                 _ => {}
             }
         }
+
+        // Post-pass 2: detect back-edge loops for TIR-generated control flow.
+        // When TIR linearizes loops into label/jump/br_if, store_var ops
+        // inside these loops need explicit inc_ref/dec_ref (the store_var
+        // handler checks `back_edge_ranges` to decide).  Computed BEFORE the
+        // func_end lifetime extension below so the per-iteration-temporary
+        // analysis can see both structured and TIR-linearized loop bodies.
+        let back_edge_ranges: Vec<(usize, usize)> = {
+            let mut ranges = Vec::new();
+            let mut label_pos: std::collections::HashMap<i64, usize> =
+                std::collections::HashMap::new();
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(op.kind.as_str(), "label" | "state_label")
+                    && let Some(id) = op.value
+                {
+                    label_pos.insert(id, idx);
+                }
+            }
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(op.kind.as_str(), "jump" | "br_if")
+                    && let Some(target_id) = op.value
+                    && let Some(&target_pos) = label_pos.get(&target_id)
+                    && target_pos < idx
+                {
+                    ranges.push((target_pos, idx));
+                }
+            }
+            ranges
+        };
+
+        // ── Per-iteration temporaries in generator/async `_poll` state machines ──
+        //
+        // The blanket "extend every lifetime to func_end" model below implements
+        // the Swift-ARC release-at-scope-exit discipline: a loop-carried heap value
+        // is released once, at the function's return, instead of inside the loop.
+        // For an ORDINARY function that is correct — the return *is* the scope exit,
+        // reached once after the loop completes.
+        //
+        // A generator/async `_poll` is a state machine that RETURNS ON EVERY YIELD
+        // and is re-entered on the next resume.  Its "function return" is a yield
+        // SUSPENSION, not the generator's scope exit.  Extending a *per-iteration*
+        // heap temporary's lifetime to func_end therefore defers its release to a
+        // point that, on the suspend path, never drains it — so the temporary is
+        // re-allocated and orphaned on every resume.  The canonical victim is the
+        // `(value, done)` pair tuple built by `tuple_new` immediately before each
+        // `state_yield`: it is allocated rc=1, retained to rc=2 by the suspend
+        // (so it survives the return to the consumer), and the consumer releases it
+        // once → rc=1, leaked.  Over a streamed generator (and multiplied by every
+        // delegation level of `yield from` / `for y in inner(): yield …`) this is an
+        // unbounded O(iterations × depth) leak.
+        //
+        // Fix: in a `stateful` function, do NOT extend the lifetime of values that
+        // are genuinely dead within a single iteration (a pure per-iteration SSA
+        // temporary — defined inside a loop body, last-used inside the same body,
+        // never referenced elsewhere, and not a `store_var`/slot-carried value).
+        // Their real `last_use` is preserved so the suspend-boundary drain (added in
+        // the `state_yield` / `state_transition` / `chan_*_yield` handlers) releases
+        // them per-iteration — byte-identical semantics, O(active-chain-depth) memory.
+        // Loop-carried values (accumulators, cell-list contents) are live across the
+        // back-edge, so they fail the "dead within one iteration" test and remain
+        // fully protected by the func_end extension.
+        stateful_per_iter_temps = if stateful && !drop_inserted {
+            // First definition site of every name (min index over defining ops).
+            let mut first_def: BTreeMap<&str, usize> = BTreeMap::new();
+            for name in &func_ir.params {
+                if name != "none" {
+                    first_def.entry(name.as_str()).or_insert(0);
+                }
+            }
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if let Some(out) = op.out.as_deref()
+                    && out != "none"
+                {
+                    first_def.entry(out).or_insert(idx);
+                }
+                // `store_var` logically (re)defines its destination variable.
+                if op.kind == "store_var"
+                    && let Some(var) = op.var.as_deref()
+                    && var != "none"
+                {
+                    first_def.entry(var).or_insert(idx);
+                }
+            }
+            // Names that are ever a `store_var` target carry loop state across the
+            // back-edge (they are slot-backed and balanced by the store_var
+            // retain-new/release-old path); never treat them as per-iteration temps.
+            let mut store_var_targets: BTreeSet<&str> = BTreeSet::new();
+            for op in &func_ir.ops {
+                if op.kind == "store_var"
+                    && let Some(name) = op.var.as_deref().or(op.out.as_deref())
+                    && name != "none"
+                {
+                    store_var_targets.insert(name);
+                }
+            }
+            // Linear indices of every suspend op (yield / await / channel rendezvous).
+            // A value whose live range *strictly contains* a suspend must survive the
+            // poll's return-and-resume, so it is never a per-iteration temporary.
+            let suspend_ops: Vec<usize> = func_ir
+                .ops
+                .iter()
+                .enumerate()
+                .filter(|(_, op)| {
+                    matches!(
+                        op.kind.as_str(),
+                        "state_yield"
+                            | "state_transition"
+                            | "chan_send_yield"
+                            | "chan_recv_yield"
+                    )
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+
+            let mut temps: BTreeSet<String> = BTreeSet::new();
+            // A name N is a per-iteration temporary — releasable at its real last use
+            // by the ordinary in-body / suspend-boundary drain rather than deferred to
+            // func_end — iff ALL of:
+            //
+            //   1. N is NOT loop-carried: no back-edge body (s, e) has
+            //      `first_def(N) < s <= last_use(N)`.  That predicate means N is
+            //      defined before a loop header `s` and still read at/after it, so it
+            //      must survive the back-edge.  Its negation guarantees N's live range
+            //      does not straddle any loop header — N is recomputed each iteration
+            //      (a fresh SSA temporary), not threaded around the loop.  This admits
+            //      both in-body temporaries (the `(value, done)` pair built right
+            //      before a `state_yield`) AND resume-prologue temporaries (the
+            //      `yield from` delegation pair from `iter_next`, defined before the
+            //      loop header and dead before it — the case the "strictly inside one
+            //      body" test missed).
+            //
+            //   2. No suspend op lies STRICTLY INSIDE `(first_def(N), last_use(N))`.
+            //      If a yield/await sat between N's definition and its last read, N
+            //      would have to survive the poll's return; the open interval lets a
+            //      value whose last use IS the suspend (the yielded pair, last-used by
+            //      `state_yield` itself) still qualify — it is released by the
+            //      suspend-boundary drain.
+            //
+            //   3. N is not a `store_var` target — those carry loop/resume state in a
+            //      slot and are balanced by the store_var retain-new/release-old path.
+            //
+            // `last_use` here is the global maximum use index and `first_def` the
+            // global minimum definition index, so these interval tests bound EVERY
+            // reference to N.  Loop-carried accumulators and cell-list contents fail
+            // (1) or (2) and remain protected by the func_end extension.
+            for (name, &last) in &last_use {
+                if name == "none" || store_var_targets.contains(name.as_str()) {
+                    continue;
+                }
+                let Some(&def) = first_def.get(name.as_str()) else {
+                    continue;
+                };
+                if last < def {
+                    continue;
+                }
+                let loop_carried = back_edge_ranges
+                    .iter()
+                    .any(|&(s, _e)| def < s && s <= last);
+                if loop_carried {
+                    continue;
+                }
+                let crosses_suspend = suspend_ops.iter().any(|&sx| def < sx && sx < last);
+                if crosses_suspend {
+                    continue;
+                }
+                temps.insert(name.clone());
+            }
+            temps
+        } else {
+            BTreeSet::new()
+        };
+
         // Extend ALL variable lifetimes to function end for ANY function
         // that has loops (structured or TIR-generated). This prevents
         // drain_cleanup_tracked from emitting premature dec_ref for values
@@ -1910,41 +2087,21 @@ fn preanalyze_function_ir(
         // that precision, so it is dropped for drop-inserted functions. (SSA
         // block-param threading for loop-carried values is handled by the TIR phi
         // / native join-slot machinery, not by this RC-only extension.)
+        //
+        // `stateful_per_iter_temps` are excluded: their release belongs INSIDE the
+        // loop body (at the suspend boundary), not at the per-yield return — see the
+        // generator-`_poll` analysis above.
         if !loop_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
-            for entry in last_use.values_mut() {
+            for (name, entry) in last_use.iter_mut() {
+                if stateful_per_iter_temps.contains(name) {
+                    continue;
+                }
                 if *entry < func_end {
                     *entry = func_end;
                 }
             }
         }
-
-        // Post-pass 2: detect back-edge loops for TIR-generated control flow.
-        // When TIR linearizes loops into label/jump/br_if, store_var ops
-        // inside these loops need explicit inc_ref/dec_ref (the store_var
-        // handler checks `back_edge_ranges` to decide).
-        let back_edge_ranges: Vec<(usize, usize)> = {
-            let mut ranges = Vec::new();
-            let mut label_pos: std::collections::HashMap<i64, usize> =
-                std::collections::HashMap::new();
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "label" | "state_label")
-                    && let Some(id) = op.value
-                {
-                    label_pos.insert(id, idx);
-                }
-            }
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "jump" | "br_if")
-                    && let Some(target_id) = op.value
-                    && let Some(&target_pos) = label_pos.get(&target_id)
-                    && target_pos < idx
-                {
-                    ranges.push((target_pos, idx));
-                }
-            }
-            ranges
-        };
         // Also extend last_use for variables in back-edge ranges to the
         // back-edge jump position. This prevents drain_cleanup_tracked
         // from emitting ADDITIONAL dec_ref beyond what store_var handles.
@@ -1957,9 +2114,17 @@ fn preanalyze_function_ir(
         // lifetime extension. Drop it for drop-inserted functions, whose RC is
         // owned by the TIR `DecRef`/`IncRef` ops (the back-edge `DecRef(old)`
         // releases the carried value with per-iteration precision).
+        //
+        // `stateful_per_iter_temps` excluded for the same reason as the
+        // structured-loop extension: a generator/async `_poll`'s per-iteration
+        // heap temporaries are released at the suspend boundary, not deferred to
+        // the per-yield return (which would orphan them on every resume).
         if !back_edge_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
-            for entry in last_use.values_mut() {
+            for (name, entry) in last_use.iter_mut() {
+                if stateful_per_iter_temps.contains(name) {
+                    continue;
+                }
                 if *entry < func_end {
                     *entry = func_end;
                 }
@@ -2082,6 +2247,12 @@ fn preanalyze_function_ir(
                 .or_insert(last);
         }
         for (name, root) in &alias_roots {
+            // A per-iteration `_poll` temporary must keep its real last use so the
+            // suspend-boundary drain releases it each iteration; do not let the
+            // alias-group unification re-extend it to a group-mate's later use.
+            if stateful_per_iter_temps.contains(name) {
+                continue;
+            }
             let Some(group_last) = max_last_use_by_root.get(root).copied() else {
                 continue;
             };
@@ -13648,6 +13819,23 @@ impl SimpleBackend {
                     let local_sleep = self.module.declare_func_in_func(sleep_callee, builder.func);
                     builder.ins().call(local_sleep, &[self_ptr, future_ptr]);
                     reachable_blocks.insert(master_return_block);
+                    // Suspend-boundary cleanup: an async `_poll` returns the PENDING
+                    // sentinel here and is re-entered on the next resume, so dead
+                    // per-iteration heap temporaries must be released now rather than
+                    // deferred to the per-await return (see
+                    // `drain_dead_block_temps_for_suspend`).
+                    drain_dead_block_temps_for_suspend(
+                        &mut builder,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
+                        &last_use,
+                        &alias_roots,
+                        &mut already_decrefed,
+                        &entry_vars,
+                        &vars,
+                        local_dec_ref_obj,
+                        op_idx,
+                    );
                     jump_block(&mut builder, master_return_block, &[pending_const]);
 
                     switch_to_block_with_rebind(
@@ -13743,6 +13931,35 @@ impl SimpleBackend {
                         // retain it here so downstream cleanup/control-flow lowering cannot
                         // invalidate yielded data before next()/send()/throw() unwraps it.
                         emit_inc_ref_obj(&mut builder, *pair, local_inc_ref_obj, &nbc);
+                    }
+                    // ── Suspend-boundary cleanup of dead per-iteration temporaries ──
+                    //
+                    // A `_poll` returns on every yield, so this jump-to-return is the
+                    // per-iteration scope exit for any heap temporary that is dead
+                    // before the suspend.  The headline case is the `(value, done)`
+                    // pair tuple built by `tuple_new` right before this op: it was
+                    // allocated rc=1, retained to rc=2 above (so it survives the
+                    // return), and is registered as a block-tracked temporary whose
+                    // real `last_use` is THIS op (kept un-extended for stateful
+                    // functions — see `stateful_per_iter_temps`).  Draining it here
+                    // takes its alloc reference back to rc=1, so the consumer's single
+                    // release frees it — closing the per-yield (and, under delegation,
+                    // O(iterations × depth)) tuple leak.  Loop-carried values survive
+                    // because their `last_use` was extended past this op and the
+                    // `last <= op_idx` gate keeps them live.
+                    drain_dead_block_temps_for_suspend(
+                        &mut builder,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
+                        &last_use,
+                        &alias_roots,
+                        &mut already_decrefed,
+                        &entry_vars,
+                        &vars,
+                        local_dec_ref_obj,
+                        op_idx,
+                    );
+                    if returns_value {
                         jump_block(&mut builder, master_return_block, &[*pair]);
                     } else {
                         jump_block(&mut builder, master_return_block, &[]);
@@ -25057,6 +25274,72 @@ impl SimpleBackend {
         });
         self.defined_func_names.insert(func_ir.name.clone());
         self.module.clear_context(&mut self.ctx);
+    }
+}
+
+/// Release dead block-tracked heap temporaries of the current block at a
+/// generator/async `_poll` suspend boundary (`state_yield` / `state_transition`
+/// / `chan_*_yield`), immediately before the jump to the master return block.
+///
+/// A `_poll` returns to its caller on every yield/await and is re-entered on the
+/// next resume, so each suspend is the per-iteration scope exit for any heap
+/// temporary that is dead before it.  Without this drain those temporaries —
+/// chiefly the `(value, done)` pair tuple emitted right before each
+/// `state_yield` — are re-allocated and orphaned on every resume, producing an
+/// unbounded leak that delegation (`yield from` / manual for-yield) multiplies
+/// by the chain depth.
+///
+/// Only names whose `last_use <= op_idx` are released (the
+/// `drain_cleanup_tracked_dedup` gate); loop-carried values keep their
+/// func_end-extended `last_use` and therefore survive the suspend.  This is the
+/// suspend-boundary twin of the function-return drain in the `ret` handler,
+/// restricted to the per-iteration temporaries identified by
+/// `stateful_per_iter_temps`.
+///
+/// Free function (not a method): a live `FunctionBuilder` holds `&mut
+/// self.ctx.func`, so a `&mut self` method taking the builder would double-borrow
+/// `self` — the same reason the surrounding codegen routes through free helpers.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn drain_dead_block_temps_for_suspend(
+    builder: &mut FunctionBuilder,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
+    last_use: &BTreeMap<String, usize>,
+    alias_roots: &BTreeMap<String, String>,
+    already_decrefed: &mut BTreeSet<String>,
+    entry_vars: &BTreeMap<String, Value>,
+    vars: &BTreeMap<String, Variable>,
+    local_dec_ref_obj: FuncRef,
+    op_idx: usize,
+) {
+    let Some(block) = builder.current_block() else {
+        return;
+    };
+    for tracked in [block_tracked_obj, block_tracked_ptr] {
+        let Some(names) = tracked.get_mut(&block) else {
+            continue;
+        };
+        let cleanup = drain_cleanup_tracked_dedup(
+            names,
+            last_use,
+            alias_roots,
+            op_idx,
+            None,
+            Some(already_decrefed),
+        );
+        for name in cleanup {
+            // Prefer the definition-time Value (entry_vars); fall back to the
+            // current SSA value of the slot — identical to the `ret` cleanup
+            // path (`resolve_cleanup_value`).  For a loop-body temporary the
+            // current value is the freshly-defined object, which is exactly
+            // what must be released at the suspend.  obj- and ptr-tracked
+            // names both release through molt_dec_ref_obj (NaN-box aware).
+            let Some(val) = resolve_cleanup_value(builder, vars, entry_vars, &name) else {
+                continue;
+            };
+            builder.ins().call(local_dec_ref_obj, &[val]);
+        }
     }
 }
 
