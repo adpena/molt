@@ -7,7 +7,12 @@ unsafe extern "C" {
     fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64;
     fn molt_callargs_new(pos_capacity: u64, kw_capacity: u64) -> u64;
     fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> u64;
-    fn molt_is_callable(obj_bits: u64) -> u64;
+    // Decode-free callability oracle. Returns a C-ABI bool (1/0) so this crate
+    // never re-interprets the NaN-boxed `bool` object `molt_is_callable`
+    // returns — the mis-decode (`as_int()` on a TAG_BOOL → None) that made
+    // `bind`/`trace`/`tag_bind` reject genuine callables. Single source of
+    // truth shared with Python `callable()` (both back onto `is_callable_impl`).
+    fn molt_is_callable_bool(obj_bits: u64) -> i32;
     // Low-level object layout access (from tk_bridge.rs):
     fn molt_rt_object_type_id(ptr: *mut u8) -> u32;
     fn molt_rt_seq_vec_ref(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize);
@@ -1934,8 +1939,13 @@ fn next_callback_command_name(app: &mut TkAppState, prefix: &str) -> String {
 }
 
 fn callback_is_callable(callback_bits: u64) -> bool {
-    let callable_check = unsafe { molt_is_callable(callback_bits) };
-    to_i64(obj_from_bits(callable_check)) == Some(1)
+    // Use the decode-free `molt_is_callable_bool` oracle (single source of
+    // truth shared with Python `callable()`). The previous
+    // `to_i64(molt_is_callable(..)) == Some(1)` decode was wrong:
+    // `molt_is_callable` returns a Python `bool` (TAG_BOOL) and `as_int()`
+    // rejects bools, so the check was always `false` for genuine callables —
+    // the root cause of `bind callback must be callable` on plain functions.
+    unsafe { molt_is_callable_bool(callback_bits) != 0 }
 }
 
 fn register_callback_command(
@@ -16345,8 +16355,7 @@ pub extern "C" fn molt_tk_filehandler_create(
         let Some(mask) = to_i64(obj_from_bits(mask_bits)) else {
             return raise_tcl_for_handle(_py, handle, "filehandler mask must be an integer");
         };
-        let callable_check = unsafe { molt_is_callable(callback_bits) };
-        if to_i64(obj_from_bits(callable_check)) != Some(1) {
+        if !callback_is_callable(callback_bits) {
             return raise_exception_u64(_py, "TypeError", "bad argument list");
         }
 
