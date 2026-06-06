@@ -1,0 +1,211 @@
+{
+  "_comment": "Machine-readable dynamism-feature taxonomy (Lane B of docs/design/foundation/24_ecosystem_compat_gap_audit.md), encoded as DATA so library compatibility is DERIVABLE per binding policy amendment A. This file is the SINGLE SOURCE OF TRUTH for feature status; package verdicts in package_triage.json are COMPUTED as the min over required features looked up here. Do NOT hand-edit a package verdict. To change a verdict you change a feature status here (with evidence) and re-derive. Enforced by tools/check_ecosystem_compat.py. See tools/ecosystem/README.md.",
+  "_status_vocabulary": {
+    "supported": "Feature is supported natively, with file:line evidence in the tree. -> verdict class 'compatible'.",
+    "typed-shim": "Forbidden in raw form, but molt re-expresses its intent through a supported primitive; the shim is a first-class, tested artifact. -> verdict class 'compatible-via-typed-shim'.",
+    "bridge": "Reachable only through the (gated, allowlisted) CPython-ABI dlopen bridge or libmolt recompile. -> verdict class 'compatible-via-bridge'. NOTE: the bridge vs 0215-spec is an OPEN USER DECISION (doc 24 OQ1/OQ2); verdicts that reduce to this class carry a policy-decision-pending note.",
+    "partial": "Doc 24 marks the feature PARTIAL: works at import / on a pure subset, but not on the full required call path; a named arc/baton converts it to a higher class. -> verdict class 'partial'. Fail-closed: a partial-required package is NOT claimed 'compatible'.",
+    "unsupported": "Explicit verified-subset exclusion (today). MUST name 'excluded_feature' and 'tracking'. -> verdict class 'incompatible-by-design'."
+  },
+  "_status_to_verdict_class": {
+    "supported": "compatible",
+    "typed-shim": "compatible-via-typed-shim",
+    "bridge": "compatible-via-bridge",
+    "partial": "partial",
+    "unsupported": "incompatible-by-design"
+  },
+  "_interpretation_notes": [
+    "INTERPRETATION (flagged): doc 24's mission enumerates FOUR verdict classes (compatible / compatible-via-typed-shim / compatible-via-bridge / incompatible-by-design), but doc 24 Lane C assigns the verdict 'PARTIAL' to ~8 of the 25 packages (import-green / pure-path-OK, blocked on a named arc for full function). Collapsing those into any of the four would either falsely assert support (compatible*) or falsely assert a permanent exclusion (incompatible-by-design). To stay fail-closed AND faithful to doc 24's findings, a FIFTH verdict class 'partial' is introduced, ordered strictly between 'compatible-via-bridge' and 'incompatible-by-design'. The four mission classes remain the canonical-named set; 'partial' is the honest representation of doc 24's PARTIAL rows. This is the one taxonomy interpretation added to make the audit machine-checkable.",
+    "INTERPRETATION (flagged): D20 (async/await) is 'compatible (runtime-light) / PARTIAL (runtime-heavy, wasm)' in doc 24. A single feature cannot hold two statuses, and the fail-closed rule forbids rounding the dual state UP to 'supported'. D20 is encoded as 'partial' (the worse of the two states governs, since a package that requires async on the runtime-heavy/wasm path is not reliably compatible). The native runtime-light support is recorded in notes.",
+    "INTERPRETATION (flagged): D7 ('compatible (registry)') and D8/D9 ('PARTIAL -> shim-able') — D7 is encoded 'supported' (doc 24 LANE A.2 lists abc.register as PRESENT via the registry path); D8 and D9 are encoded 'partial' (doc 24 explicitly: 'full structural subtyping incomplete' / '_ProtocolMeta instancecheck partial'). 'shim-able' is the future arc, not today's status; fail-closed keeps them 'partial' today.",
+    "INTERPRETATION (flagged): D17 (import-time monkeypatching) is doc-24 'PARTIAL' -> encoded 'partial'. D16/D19/D26 are 'incompatible-by-design (TODAY) -> shim-able/arc'; the TODAY status governs (fail-closed), encoded 'unsupported' with the conversion arc recorded in 'tracking'."
+  ],
+  "features": {
+    "D1": {
+      "name": "Decorators (static + parametrized + stateful)",
+      "status": "supported",
+      "evidence": "runtime call/closure path; tests/runtime_compat/scripts/test_tenacity.py proves a real retry decorator runs",
+      "notes": "Used by nearly all packages."
+    },
+    "D2": {
+      "name": "Descriptors (__get__/__set__/__delete__, property)",
+      "status": "supported",
+      "evidence": "runtime/molt-runtime/src/builtins/attributes.rs:4273,4377,4504; intrinsic property/classmethod/staticmethod",
+      "notes": "Used by SQLAlchemy, attrs, pydantic."
+    },
+    "D3": {
+      "name": "__slots__",
+      "status": "supported",
+      "evidence": "runtime/molt-runtime/src/builtins/types.rs slot layout; dataclass slots=True rebuild",
+      "notes": "Used by attrs, pydantic, perf-libs."
+    },
+    "D4": {
+      "name": "Metaclasses (__new__/__init__/__prepare__, conflict resolution)",
+      "status": "supported",
+      "evidence": "runtime/molt-runtime/src/builtins/types.rs:4757-4901",
+      "notes": "Used by Django models, SQLAlchemy declarative base, abc. CORRECTS doc 17 (which called this 'likely unsupported')."
+    },
+    "D5": {
+      "name": "__init_subclass__",
+      "status": "supported",
+      "evidence": "runtime/molt-runtime/src/object/ops.rs:9886 dispatch_init_subclass_hooks",
+      "notes": "Used by pydantic v2, plugin registries."
+    },
+    "D6": {
+      "name": "__set_name__",
+      "status": "supported",
+      "evidence": "runtime/molt-runtime/src/object/ops.rs:9780 class_apply_set_name; attributes.rs:3148 class_set_name_bits",
+      "notes": "Used by descriptors, ORMs."
+    },
+    "D7": {
+      "name": "ABCs + abc.register virtual subclasses",
+      "status": "supported",
+      "evidence": "src/molt/stdlib/abc.py:147 (_abc_registry); runtime/molt-runtime/src/builtins/abc.rs ABCMeta intrinsic boot",
+      "notes": "Used by collections.abc consumers. Doc 24 'compatible (registry)'; the registry path is PRESENT per LANE A.2."
+    },
+    "D8": {
+      "name": "__subclasshook__ structural checks",
+      "status": "partial",
+      "evidence": "runtime/molt-runtime/src/builtins/abc.rs hook path; full structural subtyping incomplete",
+      "notes": "Used by typing Protocols, abc. Doc 24: 'PARTIAL -> shim-able'.",
+      "tracking": "doc 24 LANE D rank 7 (D9/D8 Protocol runtime_checkable + __subclasshook__); convert PARTIAL -> supported via structural-subtyping shim."
+    },
+    "D9": {
+      "name": "@runtime_checkable Protocol isinstance",
+      "status": "partial",
+      "evidence": "src/molt/stdlib/typing.py:873; _ProtocolMeta instancecheck partial",
+      "notes": "Used by pydantic, beartype. Doc 24: 'PARTIAL -> shim-able'.",
+      "tracking": "doc 24 LANE D rank 7 (D9/D8 Protocol runtime_checkable + __subclasshook__)."
+    },
+    "D10": {
+      "name": "Class introspection: __annotations__, get_type_hints (no forward-ref strings)",
+      "status": "supported",
+      "evidence": "src/molt/stdlib/typing.py:1260; runtime attrs",
+      "notes": "Used by attrs, pydantic, cattrs, dataclasses-json. CORRECTS doc 17 (which listed get_type_hints as 'pending')."
+    },
+    "D11": {
+      "name": "Forward-ref string annotation eval (get_type_hints on \"Foo\")",
+      "status": "unsupported",
+      "evidence": "src/molt/stdlib/builtins.py:300 _dynamic_execution_unavailable (eval excluded)",
+      "excluded_feature": "eval of annotation strings",
+      "notes": "Used by pydantic v2 (heavy), SQLAlchemy 2.0 Mapped[]. Mitigated by `from __future__ import annotations` + a typed resolver. Doc 24: 'incompatible-by-design (subset: eval) unless a typed resolver shim lands'.",
+      "tracking": "doc 24 LANE F Arc 4 (D11 forward-ref string annotation resolver, no general eval); LANE D rank 4."
+    },
+    "D12": {
+      "name": "inspect.signature / Parameter binding",
+      "status": "supported",
+      "evidence": "src/molt/stdlib/inspect.py:48 _signature_from_intrinsic, :85 bind, :97 signature (AOT-derived)",
+      "notes": "Used by click, FastAPI-style DI, pytest. CORRECTS doc 17 (which listed inspect.signature among pending items)."
+    },
+    "D13": {
+      "name": "inspect.getsource / frame/source reflection",
+      "status": "unsupported",
+      "evidence": "no source object in AOT binary; src/molt/stdlib/inspect.py is signature/Parameter-only (LANE A.4: getsource not viable in AOT)",
+      "excluded_feature": "source/frame reflection (unrestricted reflection)",
+      "notes": "Used by IPython, some test libs. Doc 24: 'incompatible-by-design (unrestricted reflection)'.",
+      "tracking": "doc 24 verified-subset policy boundary (LANE A.5) — permanent exclusion, no conversion arc; AOT binary has no source object. Tracked as a documented design exclusion, not a gap."
+    },
+    "D14": {
+      "name": "Controlled string-exec codegen (dataclasses/namedtuple/attrs-__init__)",
+      "status": "typed-shim",
+      "evidence": "src/molt/stdlib/dataclasses.py:510,883 (structural synthesis + types.new_class)",
+      "notes": "Used by dataclasses, NamedTuple, attrs (slotted). The canonical compatible-via-typed-shim template. functionally tested (tests/runtime_compat/scripts/test_attrs.py)."
+    },
+    "D15": {
+      "name": "Arbitrary user exec/eval/compile",
+      "status": "unsupported",
+      "evidence": "src/molt/stdlib/builtins.py:300 _dynamic_execution_unavailable",
+      "excluded_feature": "exec/eval/compile",
+      "notes": "Used by jinja2 compiled-template path, simpleeval, marshmallow custom. Doc 24: 'incompatible-by-design'.",
+      "tracking": "doc 24 LANE A.5 verified-subset policy boundary — permanent exclusion (CLAUDE.md: no exec/eval/compile). Tracked as a documented design exclusion, not a gap."
+    },
+    "D16": {
+      "name": "Module-level __getattr__ (PEP 562) — lazy top-level imports",
+      "status": "unsupported",
+      "evidence": "searched ops.rs/platform.rs/frontend: no module-level __getattr__ dispatch found (all __getattr__ hits are class/instance) — LANE A.2 gap row",
+      "excluded_feature": "module-level __getattr__ (PEP 562) dispatch (absent TODAY)",
+      "notes": "Used by numpy, scipy, tensorflow, rich, sqlalchemy top-level. Doc 24: 'incompatible-by-design (TODAY) -> shim-able (PRIORITY)'. Highest-ROI single feature (LANE D rank 3).",
+      "tracking": "doc 24 LANE F Arc 2 (D16 module-level __getattr__ PEP 562: runtime module-attr fallback hook + frontend lowering); LANE D rank 3 (low-medium effort, large unlock)."
+    },
+    "D17": {
+      "name": "Import-time monkeypatching (module.__dict__[x]=... at import)",
+      "status": "partial",
+      "evidence": "static graph cannot reflect runtime mutation; deterministic import-time mutation may be capturable (LANE B.1 row)",
+      "notes": "Used by six, future, eventlet (import-time patch). Doc 24: 'PARTIAL'.",
+      "tracking": "doc 24 LANE B.1 D17 — characterize which import-time mutations are deterministically capturable vs genuinely runtime; no dedicated arc yet (planning input)."
+    },
+    "D18": {
+      "name": "Runtime monkeypatching / mock.patch / fixture injection",
+      "status": "unsupported",
+      "evidence": "src/molt/compat.py + CLAUDE.md verified-subset exclusion (no runtime monkeypatching)",
+      "excluded_feature": "runtime monkeypatching",
+      "notes": "Used by pytest fixtures, unittest.mock-heavy, gevent monkey. Doc 24: 'incompatible-by-design'.",
+      "tracking": "doc 24 LANE A.5 verified-subset policy boundary — permanent exclusion (CLAUDE.md: no runtime monkeypatching). Tracked as a documented design exclusion, not a gap."
+    },
+    "D19": {
+      "name": "Generators / yield / yield from / async generators",
+      "status": "unsupported",
+      "evidence": "excluded today; generator-fusion keystone docs/design/generator_fusion.md is the planned lift",
+      "excluded_feature": "generators / yield (TODAY)",
+      "notes": "Used by trio, tenacity (some), SQLAlchemy, starlette, tornado. Doc 24: 'incompatible-by-design (TODAY) -> keystone arc'. Largest shared blocker (LANE D rank 1).",
+      "tracking": "doc 24 LANE F Arc 5 (D19 generators) + docs/design/generator_fusion.md keystone; LANE D rank 1 (very high effort, 50+ pkgs)."
+    },
+    "D20": {
+      "name": "async/await core",
+      "status": "partial",
+      "evidence": "event loop/tasks/futures OK (runtime-light); 4/5 runtime-heavy wasm fail (doc 16) — LANE B.1 row",
+      "notes": "Used by httpx, anyio, asyncio apps. Doc 24: 'compatible (runtime-light) / PARTIAL (runtime-heavy, wasm)'. Encoded 'partial' (worse state governs, fail-closed); native runtime-light path is supported.",
+      "tracking": "doc 24 LANE D rank 6 (D20 asyncio runtime-heavy + wasm) + docs/design/foundation/18_asyncio-wasm-event-loop-fix-plan.md."
+    },
+    "D21": {
+      "name": "threading primitives",
+      "status": "partial",
+      "evidence": "core present; full primitive parity pending; wasm no threads (LANE B.1 row)",
+      "notes": "Used by concurrent libs. Doc 24: 'PARTIAL'.",
+      "tracking": "doc 24 LANE B.1 D21 — full threading-primitive parity arc (pending); wasm threads out of scope."
+    },
+    "D22": {
+      "name": "ctypes / cffi FFI",
+      "status": "partial",
+      "evidence": "src/molt/stdlib/ctypes/ real port (0 NotImplementedError in __init__.py); FFI depth is a compile-probe item; wasm no dynamic link (LANE A.6 / B.1)",
+      "notes": "Used by cryptography(cffi), bcrypt, PIL-via-cffi. Doc 24: 'PARTIAL'.",
+      "tracking": "doc 24 LANE D rank 9 (D22 ctypes/cffi FFI completeness) + COMPILE-PROBE item 7 (CDLL/Structure/c_int round-trip)."
+    },
+    "D23": {
+      "name": "CPython C-API extension (binary .so)",
+      "status": "bridge",
+      "evidence": "runtime/molt-cpython-abi/ Track-2 dlopen bridge (~6258 lines, gated feature cext_loader, runtime-wired platform.rs:3652); OR Track-1 libmolt recompile (docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)",
+      "notes": "Used by numpy, scipy, pandas, lxml, pillow, orjson, pydantic-core. Doc 24: 'compatible-via-bridge (gated, unproven)'. POLICY DECISION PENDING: 0215 spec says 'no CPython ABI compatibility' but the bridge does exactly that (doc 24 OQ1/OQ2).",
+      "tracking": "doc 24 LANE F Arc 3 (finish + prove + reconcile-policy the CPython-ABI bridge: real-wheel proof + two-track policy doc + capability gating); LANE D rank 2. Bridge is ~70% built, gated OFF, unproven against a real published wheel."
+    },
+    "D24": {
+      "name": "Entry-points / plugin discovery (importlib.metadata.entry_points)",
+      "status": "supported",
+      "evidence": "src/molt/stdlib/importlib/metadata/__init__.py:43 (intrinsic-backed)",
+      "notes": "Used by pytest plugins, click plugins, flake8."
+    },
+    "D25": {
+      "name": "Exception __traceback__ chain object model",
+      "status": "partial",
+      "evidence": "intrinsic format_exception/extract_tb (doc 16); full traceback object pending (LANE B.1 row)",
+      "notes": "Used by logging, pytest, sentry-style. Doc 24: 'PARTIAL'.",
+      "tracking": "doc 24 LANE F Arc 5 (D25 traceback object model) + LANE D rank 8."
+    },
+    "D26": {
+      "name": "Regex advanced (lookahead, named groups, backrefs, flag scoping)",
+      "status": "unsupported",
+      "evidence": "native engine raises NotImplementedError; host fallback disabled (doc 16) — LANE B.1 row",
+      "excluded_feature": "advanced regex (lookahead/backrefs/flag-scoping) — native engine NotImplementedError (TODAY)",
+      "notes": "Used by pyyaml, pathspec, parsers. Doc 24: 'incompatible-by-design (TODAY) -> engine arc'.",
+      "tracking": "doc 24 LANE F Arc 5 (D26 regex) + LANE D rank 5 (native engine feature arc)."
+    },
+    "D27": {
+      "name": "sys.modules / __path__ rewriting at runtime",
+      "status": "unsupported",
+      "evidence": "src/molt/compat.py + CLAUDE.md verified-subset exclusion (no runtime import-graph mutation)",
+      "excluded_feature": "runtime import-graph mutation (sys.modules / __path__ rewriting)",
+      "notes": "Used by namespace plugins doing runtime path tricks. Doc 24: 'incompatible-by-design'.",
+      "tracking": "doc 24 LANE A.5 verified-subset policy boundary — permanent exclusion. Tracked as a documented design exclusion, not a gap."
+    }
+  }
+}
