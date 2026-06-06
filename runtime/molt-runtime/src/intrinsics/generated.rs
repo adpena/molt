@@ -3548,6 +3548,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
     },
     IntrinsicSpec {
+        name: "molt_glob_iter",
+        symbol: "molt_glob_iter",
+        arity: 5,
+    },
+    IntrinsicSpec {
         name: "molt_io_class",
         symbol: "molt_io_class",
         arity: 1,
@@ -11698,16 +11703,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
     },
     IntrinsicSpec {
-        name: "molt_glob_glob",
-        symbol: "molt_glob_glob",
-        arity: 3,
-    },
-    IntrinsicSpec {
-        name: "molt_glob_iglob",
-        symbol: "molt_glob_iglob",
-        arity: 3,
-    },
-    IntrinsicSpec {
         name: "molt_fnmatch_fnmatch",
         symbol: "molt_fnmatch_fnmatch",
         arity: 2,
@@ -17778,15 +17773,9 @@ fn resolve_glob_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_glob_translate",
             crate::molt_glob_translate as *const (),
         )),
-        #[cfg(feature = "stdlib_fs_extra")]
-        "molt_glob_glob" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_glob_glob",
-            crate::molt_glob_glob as *const (),
-        )),
-        #[cfg(feature = "stdlib_fs_extra")]
-        "molt_glob_iglob" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_glob_iglob",
-            crate::molt_glob_iglob as *const (),
+        "molt_glob_iter" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_glob_iter",
+            crate::molt_glob_iter as *const (),
         )),
         _ => None,
     }
