@@ -182,6 +182,31 @@ pub fn run_module_pipeline(
         }
     }
 
+    // ── RC drop insertion: the terminal phase (design 20, round-7) ──────────
+    //
+    // Drop insertion runs HERE — once per function, AFTER the E1 inliner and
+    // module-slot promotion (and the per-caller / per-promoted re-optimizations
+    // those ran through the per-function pipeline) — rather than embedded in that
+    // per-function pipeline, so it cannot defeat `module_slot_promotion` (a
+    // refcount barrier in a loop blocks promotion of a module-global accumulator).
+    // See [`crate::tir::drop_phase`] for the full structural rationale. Backend
+    // conditioning lives inside the passes (`build_drop_pipeline` →
+    // `target_uses_tir_drop_insertion`): on a non-activated target the phase is a
+    // no-op, so this finalizer changes nothing there. The phase topology is
+    // identical across every backend (the point of round-7).
+    //
+    // A function the drop phase changed (drops inserted → `DecRef`/`IncRef` ops +
+    // the `drop_inserted` marker native codegen reads to suppress its competing
+    // automatic temp-RC) is added to `changed_functions` so the native/wasm
+    // drivers back-convert it to SimpleIR; the LLVM lane lowers the whole module
+    // directly and ignores the flag. A function with no droppable temporaries
+    // reports unchanged and is left out — no wasted back-conversion.
+    for name in super::drop_phase::finalize_module_drops(module, tti) {
+        if !changed_functions.contains(&name) {
+            changed_functions.push(name);
+        }
+    }
+
     // Rebuild over the post-inline module: inlining removed `Call` ops and grew
     // caller bodies, so the leaf set / edges / op counts the returned analysis
     // exposes must reflect the merged program.
