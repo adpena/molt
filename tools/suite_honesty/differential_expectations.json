@@ -1,0 +1,1179 @@
+{
+  "_comment": "SINGLE SOURCE OF TRUTH for KNOWN-failing differential tests (task #46). An entry here is a DEBT WITH AN OWNER, not an accepted state; it leaves only by being fixed. Every `fail` dimension carries tracking + root_cause + evidence (machine-checked by tools/check_suite_honesty.py). A passing test is the implicit default and is NOT listed. Tests excluded by design (exec/eval/compile) live in TOO_DYNAMIC_EXPECTED_FAILURE_TESTS; tests with an inline `# MOLT_META: expect_fail=molt` marker are tracked there \u2014 neither is duplicated here (the guard forbids overlap).",
+  "_dimensions": "Keys under `dimensions` are '<backend>' or '<backend>@<cpython-version>'. Backends: native, llvm, wasm, luau. Only `native` is calibrated in this seed (against native_calibration.jsonl on CPython 3.14). llvm/wasm/luau are UNCALIBRATED at the suite level pending their own calibration lanes (follow-up task #46-llvm-wasm-luau-calibration); add per-test backend dimensions only with verified evidence from those runs, never from description. Per this session's reviews: generator shapes pre-3fe511c3d are now FIXED (do NOT seed); candidate llvm/wasm debts to verify in that lane include sum int->float #37, alias_reassign bigint-carrier, gen.throw shapes #51 (LLVM dominance + a noted native miscompile).",
+  "_calibration_scope": "native_calibration.jsonl covers tests/differential/{basic,loop_overflow_peel,memory,pyperformance} (808 tests) on CPython 3.14, each silent failure CONFIRMED in a clean isolated re-run (the parallel calibration produced ~14 build-contention false-fails that the re-run cleared; those are NOT seeded). tests/differential/stdlib (1934 tests) is UNCALIBRATED here and is the named follow-up task #46-stdlib-calibration: until it is calibrated, the guard simply does not reality-check stdlib paths (it cannot invent a verdict it has not observed -- fail-closed against false greenness, loud about the gap).",
+  "_root_cause_groups": "Many native failures share a root cause; the `tracking` field names the shared bug (e.g. #3 asyncio, #50 generic_class). Per-test entries are kept because the ratchet enforces per-test, but fixing the shared bug should flip a whole group to pass at once \u2014 then remove that group's entries.",
+  "_compliance_note": "The `compliance` block tracks the pytest compliance suite (tests/compliance/py3{12,13,14}/test_spec.py), a DIFFERENT harness from the differential JSONL. The guard LINTS these entries (every `fail`/`uncalibrated` is validated the same way -- tracking + root_cause + evidence on a fail; loud uncalibrated) but does NOT differential-reality-check them (no shared results file). Each key is 'tests/compliance/<pkg>/test_spec.py::<Class>::<method>'. FINDING THIS SESSION: the py314 PEP-649 deferred-annotation case that earlier reports flagged ('2' != '0') now PASSES on native@3.14 (molt defers annotations correctly) -- it is FIXED and deliberately NOT seeded as a debt (mirrors the stale generator-shape entries). The py313 multiline-docstring case is host-version-gated (skips on a 3.14 host) and could not be cleanly re-confirmed here under build contention, so it is marked native@3.13 'uncalibrated' (loud) pending a py3.13 calibration run, rather than asserted or silently dropped.",
+  "compliance": {
+    "tests/compliance/py313/test_spec.py::TestDocstringHandling::test_multiline_docstring_stripping": {
+      "dimensions": {
+        "native@3.13": {
+          "status": "uncalibrated",
+          "note": "Flagged as a known fail in this session's compliance review (multiline __doc__ stripping). Host is CPython 3.14 (this py313 test skips); a clean molt build to confirm on 3.13 was not obtainable under the concurrent stdlib calibration. UNCALIBRATED pending follow-up #46-stdlib-calibration's py3.13 compliance lane -- do not treat as green."
+        }
+      }
+    }
+  },
+  "tests": {
+    "tests/differential/basic/async_anext_default_future.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_cancellation_token.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_comprehensions.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_comprehensions_await_filters.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_comprehensions_nested.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_for_else.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_for_iter.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_for_temporary_iterable_return_self.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_for_with_exception_propagation.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_asend_after_close.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_asend_none_edges.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_athrow_after_stop.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_completion_edges.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_completion_more.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_ge_after_stop.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_introspection.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_post_stop_edges.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_generator_reentrancy.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_hang_probe.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_long_running.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/async_loop_sleep.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/attr_dunder_access.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "attribute access/__getattribute__/dir/error-context divergence",
+          "status": "fail",
+          "tracking": "attribute-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/attr_security.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "attribute access/__getattribute__/dir/error-context divergence",
+          "status": "fail",
+          "tracking": "attribute-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/bool_len_exceptions.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/builtin_numeric_ops.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/builtins_api_surface_312_plus.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/builtins_name_resolution_locals_import.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/builtins_open_call_arg_cleanup.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/bytes_error_handlers.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/capability_error_messages_io_net.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "CPython error-message text parity gap (3.12/3.13/3.14 phrasing)",
+          "status": "fail",
+          "tracking": "error-message-parity"
+        }
+      }
+    },
+    "tests/differential/basic/class_no_init_args.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "class/metaclass __prepare__/decorator-order/init-args/MRO divergence",
+          "status": "fail",
+          "tracking": "class-construction"
+        }
+      }
+    },
+    "tests/differential/basic/class_prepare_decorator_order.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "class/metaclass __prepare__/decorator-order/init-args/MRO divergence",
+          "status": "fail",
+          "tracking": "class-construction"
+        }
+      }
+    },
+    "tests/differential/basic/class_prepare_decorator_order_extended.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "class/metaclass __prepare__/decorator-order/init-args/MRO divergence",
+          "status": "fail",
+          "tracking": "class-construction"
+        }
+      }
+    },
+    "tests/differential/basic/classmethod_staticmethod.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "object.__new__ expects type \u2014 classmethod/staticmethod construction path",
+          "status": "fail",
+          "tracking": "#50-adjacent"
+        }
+      }
+    },
+    "tests/differential/basic/collections_parity.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "container (list/set/dict view) op or mutation divergence",
+          "status": "fail",
+          "tracking": "container-ops"
+        }
+      }
+    },
+    "tests/differential/basic/compile_parser_modes.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/complex_format_errors.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/composite_task_abi.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/comprehension_lambda_capture.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "comprehension/lambda closure capture: late-binding cell semantics diverge",
+          "status": "fail",
+          "tracking": "comprehension-late-binding"
+        }
+      }
+    },
+    "tests/differential/basic/comprehension_nested_async.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/comprehension_outer_capture.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "comprehension/lambda closure capture: late-binding cell semantics diverge",
+          "status": "fail",
+          "tracking": "comprehension-late-binding"
+        }
+      }
+    },
+    "tests/differential/basic/comprehensions.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "comprehension/lambda closure capture: late-binding cell semantics diverge",
+          "status": "fail",
+          "tracking": "comprehension-late-binding"
+        }
+      }
+    },
+    "tests/differential/basic/container_dunders.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "container dunder lowering hits LIR-verify panic (simple_backend.rs:2593)",
+          "status": "fail",
+          "tracking": "native LIR-verify panic"
+        }
+      }
+    },
+    "tests/differential/basic/container_mutation.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "container (list/set/dict view) op or mutation divergence",
+          "status": "fail",
+          "tracking": "container-ops"
+        }
+      }
+    },
+    "tests/differential/basic/core_stdlib_intrinsics_smoke.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/descriptor_delete.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "descriptor __get__/__set__/__delete__ protocol divergence",
+          "status": "fail",
+          "tracking": "descriptor-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/descriptor_get_class_instance.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "descriptor __get__/__set__/__delete__ protocol divergence",
+          "status": "fail",
+          "tracking": "descriptor-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/descriptor_metaclass_get.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "descriptor __get__/__set__/__delete__ protocol divergence",
+          "status": "fail",
+          "tracking": "descriptor-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/descriptor_protocol_basic.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "descriptor __get__/__set__/__delete__ protocol divergence",
+          "status": "fail",
+          "tracking": "descriptor-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/dict_subclass_slots.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "dict subclass with __slots__/__weakref__ layout divergence",
+          "status": "fail",
+          "tracking": "dict-subclass-slots"
+        }
+      }
+    },
+    "tests/differential/basic/dict_subclass_slots_dict.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "dict subclass with __slots__/__weakref__ layout divergence",
+          "status": "fail",
+          "tracking": "dict-subclass-slots"
+        }
+      }
+    },
+    "tests/differential/basic/dict_subclass_slots_weakref.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "dict subclass with __slots__/__weakref__ layout divergence",
+          "status": "fail",
+          "tracking": "dict-subclass-slots"
+        }
+      }
+    },
+    "tests/differential/basic/dict_subclass_slots_weakref_ref.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "dict subclass with __slots__/__weakref__ layout divergence",
+          "status": "fail",
+          "tracking": "dict-subclass-slots"
+        }
+      }
+    },
+    "tests/differential/basic/dunder_sub_pow_neg.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/entry_module_import.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "import / module-attr / imported-callable capture divergence",
+          "status": "fail",
+          "tracking": "import-binding"
+        }
+      }
+    },
+    "tests/differential/basic/except_module_attr.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "exception hierarchy/traceback/notes/finally-precedence shape divergence",
+          "status": "fail",
+          "tracking": "exception-shape"
+        }
+      }
+    },
+    "tests/differential/basic/exception_hierarchy.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "exception hierarchy/traceback/notes/finally-precedence shape divergence",
+          "status": "fail",
+          "tracking": "exception-shape"
+        }
+      }
+    },
+    "tests/differential/basic/exception_traceback_attribute.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "exception hierarchy/traceback/notes/finally-precedence shape divergence",
+          "status": "fail",
+          "tracking": "exception-shape"
+        }
+      }
+    },
+    "tests/differential/basic/exception_traceback_chain.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "exception hierarchy/traceback/notes/finally-precedence shape divergence",
+          "status": "fail",
+          "tracking": "exception-shape"
+        }
+      }
+    },
+    "tests/differential/basic/exceptiongroup_notes_propagation.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "exception hierarchy/traceback/notes/finally-precedence shape divergence",
+          "status": "fail",
+          "tracking": "exception-shape"
+        }
+      }
+    },
+    "tests/differential/basic/file_detach.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/float_ops.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/float_round_trunc_format.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/free_vars_basic.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "lexical scope / nonlocal / free-var / locals() binding divergence",
+          "status": "fail",
+          "tracking": "scope-closure"
+        }
+      }
+    },
+    "tests/differential/basic/function_def_eval_order.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/generator_poll_loop_cond_reentry_roundtrip.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "generator poll-loop / reentry shape divergence",
+          "status": "fail",
+          "tracking": "generator-shape"
+        }
+      }
+    },
+    "tests/differential/basic/generator_reraise.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "generator poll-loop / reentry shape divergence",
+          "status": "fail",
+          "tracking": "generator-shape"
+        }
+      }
+    },
+    "tests/differential/basic/generic_class.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "SIGSEGV on generic class (PEP 695 type-parameter) compilation",
+          "status": "fail",
+          "tracking": "#50"
+        }
+      }
+    },
+    "tests/differential/basic/getattr_calls.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "attribute access/__getattribute__/dir/error-context divergence",
+          "status": "fail",
+          "tracking": "attribute-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/global_nonlocal_conflict.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "lexical scope / nonlocal / free-var / locals() binding divergence",
+          "status": "fail",
+          "tracking": "scope-closure"
+        }
+      }
+    },
+    "tests/differential/basic/import_six.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "import / module-attr / imported-callable capture divergence",
+          "status": "fail",
+          "tracking": "import-binding"
+        }
+      }
+    },
+    "tests/differential/basic/imported_default_callable_capture.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "import / module-attr / imported-callable capture divergence",
+          "status": "fail",
+          "tracking": "import-binding"
+        }
+      }
+    },
+    "tests/differential/basic/imported_intrinsics_callable_smoke.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "import / module-attr / imported-callable capture divergence",
+          "status": "fail",
+          "tracking": "import-binding"
+        }
+      }
+    },
+    "tests/differential/basic/lambda_sorting.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/list_contains_eq.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "container (list/set/dict view) op or mutation divergence",
+          "status": "fail",
+          "tracking": "container-ops"
+        }
+      }
+    },
+    "tests/differential/basic/listcomp_scope.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "comprehension/lambda closure capture: late-binding cell semantics diverge",
+          "status": "fail",
+          "tracking": "comprehension-late-binding"
+        }
+      }
+    },
+    "tests/differential/basic/locals_mutation_semantics.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "lexical scope / nonlocal / free-var / locals() binding divergence",
+          "status": "fail",
+          "tracking": "scope-closure"
+        }
+      }
+    },
+    "tests/differential/basic/match_class_attr_access_errors.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "structural pattern matching (PEP 634): class-pattern lookup order / guard / error shape divergence",
+          "status": "fail",
+          "tracking": "pattern-matching"
+        }
+      }
+    },
+    "tests/differential/basic/match_class_attr_lookup_order.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "structural pattern matching (PEP 634): class-pattern lookup order / guard / error shape divergence",
+          "status": "fail",
+          "tracking": "pattern-matching"
+        }
+      }
+    },
+    "tests/differential/basic/match_class_getattribute_vs_getattr.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "structural pattern matching (PEP 634): class-pattern lookup order / guard / error shape divergence",
+          "status": "fail",
+          "tracking": "pattern-matching"
+        }
+      }
+    },
+    "tests/differential/basic/match_class_kw_lookup_order.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "structural pattern matching (PEP 634): class-pattern lookup order / guard / error shape divergence",
+          "status": "fail",
+          "tracking": "pattern-matching"
+        }
+      }
+    },
+    "tests/differential/basic/match_class_pattern_errors.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "structural pattern matching (PEP 634): class-pattern lookup order / guard / error shape divergence",
+          "status": "fail",
+          "tracking": "pattern-matching"
+        }
+      }
+    },
+    "tests/differential/basic/memoryview_format_codes.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "unicode/bytes/memoryview error-attribute or format-code divergence",
+          "status": "fail",
+          "tracking": "unicode-bytes"
+        }
+      }
+    },
+    "tests/differential/basic/metaclass_getattribute_order.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "class/metaclass __prepare__/decorator-order/init-args/MRO divergence",
+          "status": "fail",
+          "tracking": "class-construction"
+        }
+      }
+    },
+    "tests/differential/basic/mro_inconsistent.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "class/metaclass __prepare__/decorator-order/init-args/MRO divergence",
+          "status": "fail",
+          "tracking": "class-construction"
+        }
+      }
+    },
+    "tests/differential/basic/negative_indexing_extended.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "container (list/set/dict view) op or mutation divergence",
+          "status": "fail",
+          "tracking": "container-ops"
+        }
+      }
+    },
+    "tests/differential/basic/nonlocal_and_class_closure.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "lexical scope / nonlocal / free-var / locals() binding divergence",
+          "status": "fail",
+          "tracking": "scope-closure"
+        }
+      }
+    },
+    "tests/differential/basic/nonlocal_missing_binding.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "lexical scope / nonlocal / free-var / locals() binding divergence",
+          "status": "fail",
+          "tracking": "scope-closure"
+        }
+      }
+    },
+    "tests/differential/basic/object_dunder_builtins.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/pattern_matching_class_guard_matrix.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "structural pattern matching (PEP 634): class-pattern lookup order / guard / error shape divergence",
+          "status": "fail",
+          "tracking": "pattern-matching"
+        }
+      }
+    },
+    "tests/differential/basic/pep634_pattern_matching_more.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "structural pattern matching (PEP 634): class-pattern lookup order / guard / error shape divergence",
+          "status": "fail",
+          "tracking": "pattern-matching"
+        }
+      }
+    },
+    "tests/differential/basic/pep649_lazy_annotations.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "PEP 649 deferred annotation evaluation divergence",
+          "status": "fail",
+          "tracking": "pep649-annotations"
+        }
+      }
+    },
+    "tests/differential/basic/pep657_error_locations.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "version-specific PEP feature (f-string/error-location) divergence",
+          "status": "fail",
+          "tracking": "pep-feature"
+        }
+      }
+    },
+    "tests/differential/basic/pep701_fstring_comment_backslash_edges.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "version-specific PEP feature (f-string/error-location) divergence",
+          "status": "fail",
+          "tracking": "pep-feature"
+        }
+      }
+    },
+    "tests/differential/basic/range_ops.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/set_view_ops.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "container (list/set/dict view) op or mutation divergence",
+          "status": "fail",
+          "tracking": "container-ops"
+        }
+      }
+    },
+    "tests/differential/basic/setattr_exception_try_module_scope.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/shift_matmul.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/str_lowered_methods.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/super_descriptor_precedence.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "descriptor __get__/__set__/__delete__ protocol divergence",
+          "status": "fail",
+          "tracking": "descriptor-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/test_asyncio_basic.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/test_asyncio_cancel.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "async/await runtime gap: task/gather/async-generator shapes diverge from CPython",
+          "status": "fail",
+          "tracking": "#3 (memory/project_asyncio_p0_arc)"
+        }
+      }
+    },
+    "tests/differential/basic/test_error_messages_arithmetic.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "CPython error-message text parity gap (3.12/3.13/3.14 phrasing)",
+          "status": "fail",
+          "tracking": "error-message-parity"
+        }
+      }
+    },
+    "tests/differential/basic/test_error_messages_attribute.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "CPython error-message text parity gap (3.12/3.13/3.14 phrasing)",
+          "status": "fail",
+          "tracking": "error-message-parity"
+        }
+      }
+    },
+    "tests/differential/basic/test_error_messages_name.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "CPython error-message text parity gap (3.12/3.13/3.14 phrasing)",
+          "status": "fail",
+          "tracking": "error-message-parity"
+        }
+      }
+    },
+    "tests/differential/basic/test_error_messages_runtime.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "CPython error-message text parity gap (3.12/3.13/3.14 phrasing)",
+          "status": "fail",
+          "tracking": "error-message-parity"
+        }
+      }
+    },
+    "tests/differential/basic/test_error_messages_type.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "CPython error-message text parity gap (3.12/3.13/3.14 phrasing)",
+          "status": "fail",
+          "tracking": "error-message-parity"
+        }
+      }
+    },
+    "tests/differential/basic/try_except_finally_precedence.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "exception hierarchy/traceback/notes/finally-precedence shape divergence",
+          "status": "fail",
+          "tracking": "exception-shape"
+        }
+      }
+    },
+    "tests/differential/basic/type_methods_burndown_surface.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/type_subscript_error_regression.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/basic/typing_protocol_parity.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "typing.Protocol / runtime-typing parity divergence",
+          "status": "fail",
+          "tracking": "typing-protocol"
+        }
+      }
+    },
+    "tests/differential/basic/unary_pos.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "numeric (float/bigint/complex/range/shift) formatting or op-result divergence",
+          "status": "fail",
+          "tracking": "numeric-repr"
+        }
+      }
+    },
+    "tests/differential/basic/unicode_error_attrs.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "unicode/bytes/memoryview error-attribute or format-code divergence",
+          "status": "fail",
+          "tracking": "unicode-bytes"
+        }
+      }
+    },
+    "tests/differential/basic/unicode_surrogate_handling.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "unicode/bytes/memoryview error-attribute or format-code divergence",
+          "status": "fail",
+          "tracking": "unicode-bytes"
+        }
+      }
+    },
+    "tests/differential/basic/ws_pair_basic.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    },
+    "tests/differential/pyperformance/pyperformance_subset_smoke.py": {
+      "dimensions": {
+        "native": {
+          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
+          "root_cause": "differential output diverges from CPython (subject-level cause not yet classified; see evidence)",
+          "status": "fail",
+          "tracking": "uncategorized-debt"
+        }
+      }
+    }
+  }
+}
