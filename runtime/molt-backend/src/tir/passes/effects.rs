@@ -710,8 +710,12 @@ mod tests {
         OpCode::BitOr,
         OpCode::BitXor,
         OpCode::BitNot,
-        OpCode::Shl,
-        OpCode::Shr,
+        // NOTE: `Shl`/`Shr` are deliberately NOT movable. They raise
+        // `ValueError("negative shift count")` for a negative count, so they are
+        // `pure_may_throw` — CSE-safe under dominance but UNSOUND to hoist above
+        // a guard (a guard may be what proves the count non-negative). They
+        // therefore live in `EXPECTED_TYPE_GATED_NUMBERABLE` (CSE) but not here
+        // (LICM), exactly like `Div`/`FloorDiv`/`Mod`/`Pow`.
         OpCode::And,
         OpCode::Or,
         OpCode::Not,
@@ -847,20 +851,29 @@ mod tests {
     fn cse_extra_over_movable_is_exactly_the_pure_may_throw_arith() {
         // The only ops that are CSE-safe but NOT movable are the pure-but-
         // may-throw primitive arithmetic ops. This pins the documented reason
-        // GVN's set is larger than LICM's: dropping `nothrow` admits exactly
-        // {Div, FloorDiv, Mod, Pow} and nothing else.
+        // GVN's set is larger than LICM's: dropping `nothrow` admits exactly the
+        // `pure_may_throw` family — {Div, FloorDiv, Mod, Pow} (zero divisor /
+        // `0 ** -1`) plus {Shl, Shr} (negative shift count) — and nothing else.
         let mut extra: Vec<OpCode> = all_opcodes()
             .into_iter()
             .filter(|&op| opcode_is_cse_safe(op) && !opcode_is_pure_movable(op))
             .collect();
         extra.sort_by_key(|op| format!("{op:?}"));
 
-        let mut expected = vec![OpCode::Div, OpCode::FloorDiv, OpCode::Mod, OpCode::Pow];
+        let mut expected = vec![
+            OpCode::Div,
+            OpCode::FloorDiv,
+            OpCode::Mod,
+            OpCode::Pow,
+            OpCode::Shl,
+            OpCode::Shr,
+        ];
         expected.sort_by_key(|op| format!("{op:?}"));
 
         assert_eq!(
             extra, expected,
-            "CSE-extra-over-movable must be exactly {{Div, FloorDiv, Mod, Pow}}"
+            "CSE-extra-over-movable must be exactly the pure_may_throw family \
+             {{Div, FloorDiv, Mod, Pow, Shl, Shr}}"
         );
     }
 }
