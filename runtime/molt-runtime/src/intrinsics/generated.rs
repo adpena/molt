@@ -6188,6 +6188,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_function_defaults_version",
+        symbol: "molt_function_defaults_version",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_builtin_class_lookup",
         symbol: "molt_builtin_class_lookup",
         arity: 1,
@@ -13103,6 +13108,10 @@ fn resolve_core_symbol(symbol: &str) -> Option<u64> {
         "molt_function_set_defaults" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_function_set_defaults",
             crate::molt_function_set_defaults as *const (),
+        )),
+        "molt_function_defaults_version" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_function_defaults_version",
+            crate::molt_function_defaults_version as *const (),
         )),
         "molt_builtin_class_lookup" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_builtin_class_lookup",

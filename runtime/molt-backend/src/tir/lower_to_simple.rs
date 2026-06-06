@@ -1885,6 +1885,17 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
+        OpCode::FunctionDefaultsVersion => Some(OpIR {
+            // Reads a function object's `__defaults__`/`__kwdefaults__`
+            // mutation version stamp as an inline int.  One operand (the
+            // function object); produces the value the defaults-devirt deopt
+            // guard compares against 0.  Non-foldable: it observes mutable
+            // runtime state (`side_effecting` in the op-kind registry).
+            kind: "function_defaults_version".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
         OpCode::TryStart => Some(OpIR {
             kind: "try_start".to_string(),
             value: attr_int(&op.attrs, "value"),

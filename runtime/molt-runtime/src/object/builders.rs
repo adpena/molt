@@ -1062,7 +1062,14 @@ pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
 // Context manager alloc moved to runtime/molt-runtime/src/builtins/context.rs.
 
 pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 10 * std::mem::size_of::<u64>();
+    // Slots 0..9 are the function object fields (fn_ptr, arity, dict, closure,
+    // code, trampoline, annotations, annotate, call_target, globals); slot 10
+    // is the `__defaults__`/`__kwdefaults__` mutation version stamp (a plain
+    // u64 counter, NOT a refcounted object — dealloc leaves it alone). It is 0
+    // at creation and bumped only on a user-reachable mutation of those attrs,
+    // so the compile-time devirt's baked-literal defaults stay valid IFF the
+    // version is still 0 ("never mutated since creation").
+    let total = std::mem::size_of::<MoltHeader>() + 11 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_FUNCTION);
     if ptr.is_null() {
         return ptr;
@@ -1079,6 +1086,7 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
         *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = std::ptr::null();
         *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         inc_ref_bits(_py, none_bits);
         let globals_bits = crate::molt_globals_builtin();
         if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {

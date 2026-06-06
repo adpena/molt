@@ -1239,6 +1239,15 @@ fn opcode_touches_memory(opcode: OpCode) -> bool {
             // starving store-to-load forwarding for no soundness gain.
             | OpCode::ExceptionPending
             | OpCode::CheckException
+            // Reads the function object's defaults version stamp slot. It never
+            // WRITES heap memory, so it is not a clobber; its ordering against a
+            // `__defaults__` mutation (always an opaque, side-effecting CALL) is
+            // preserved by its own `side_effecting`/`Impure` classification,
+            // which independently bars GVN-CSE and LICM hoisting. Treating it as
+            // memory-touching would make it a spurious `GenericHeap` clobber
+            // that starves store-to-load forwarding for no soundness gain
+            // (identical reasoning to `ExceptionPending`).
+            | OpCode::FunctionDefaultsVersion
     )
 }
 
@@ -1304,6 +1313,7 @@ mod tests {
             BuildTuple, BuildSet, BuildSlice, GetIter, IterNext, IterNextUnboxed, ForIter,
             AllocTask, StateSwitch, StateTransition, StateYield, ChanSendYield, ChanRecvYield,
             ClosureLoad, ClosureStore, Yield, YieldFrom, Raise, CheckException, ExceptionPending,
+            FunctionDefaultsVersion,
             TryStart, TryEnd, StateBlockStart, StateBlockEnd, ConstInt, ConstBigInt, ConstFloat, ConstStr,
             ConstBool, ConstNone, ConstBytes, Copy, Import, ImportFrom, ModuleCacheGet,
             ModuleCacheSet, ModuleCacheDel, ModuleGetAttr, ModuleImportFrom, ModuleGetGlobal,
@@ -1325,7 +1335,8 @@ mod tests {
             | BuildSet | BuildSlice | GetIter | IterNext | IterNextUnboxed | ForIter | AllocTask
             | StateSwitch | StateTransition | StateYield | ChanSendYield | ChanRecvYield
             | ClosureLoad | ClosureStore | Yield | YieldFrom | Raise | CheckException
-            | ExceptionPending | TryStart | TryEnd | StateBlockStart | StateBlockEnd | ConstInt
+            | ExceptionPending | FunctionDefaultsVersion | TryStart | TryEnd | StateBlockStart
+            | StateBlockEnd | ConstInt
             | ConstBigInt | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
             | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
             | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal

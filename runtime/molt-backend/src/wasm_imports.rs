@@ -105,6 +105,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("func_new_closure", 7),
     ("function_closure_bits", 2),
     ("function_default_kind", 2),
+    ("function_defaults_version", 2),
     ("function_is_coroutine", 2),
     ("function_is_generator", 2),
     ("function_init_metadata_packed", 7),
@@ -1182,6 +1183,8 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("trace_set_line", &["trace_set_line"]),
     // ── On-demand: check_exception ──
     ("check_exception", &["exception_pending"]),
+    // ── Defaults-devirt deopt guard: reads the function defaults version ──
+    ("function_defaults_version", &["function_defaults_version"]),
     // ── Arithmetic ops ──
     // Auto-discovered by kind match, declared here for completeness
     // so the scanner has explicit dep table hits.

@@ -8206,6 +8206,28 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "function_defaults_version" => {
+                        // Read a function object's __defaults__/__kwdefaults__
+                        // mutation version stamp as a NaN-boxed inline int
+                        // (`molt_function_defaults_version(func)`).  Produced by
+                        // the compile-time defaults-devirt deopt guard; consumed
+                        // by its `== 0` compare (baked literal vs live read).
+                        // Non-foldable: it observes mutable runtime state.
+                        let args = op.args.as_ref().unwrap();
+                        let func_local = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(func_local));
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids["function_defaults_version"],
+                        );
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "is" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
