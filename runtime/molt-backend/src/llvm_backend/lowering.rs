@@ -4999,7 +4999,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     fn emit_containment(&mut self, op: &crate::tir::ops::TirOp) {
         let result_id = op.results[0];
-        let val = self.call_runtime_2_boxed("molt_contains", op.operands[1], op.operands[0]);
+        // `molt_contains(container, item)`. The membership op's operands are
+        // [container, item] (matching the native `contains` arm and the SimpleIR
+        // `contains`/`in`/`not_in` convention), so they must be passed in that
+        // order — swapping them makes `3 in [1, 2, 3]` call `molt_contains(3,
+        // [1, 2, 3])`, reporting `argument of type 'int' is not iterable`.
+        let val = self.call_runtime_2_boxed("molt_contains", op.operands[0], op.operands[1]);
         let final_val = if op.opcode == OpCode::NotIn {
             // Invert the boolean result from molt_contains
             let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
