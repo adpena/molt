@@ -777,7 +777,7 @@ class Future:
 
     def result(self) -> Any:
         if not molt_asyncio_future_done(self._fut_handle):
-            raise InvalidStateError("Result is not ready")
+            raise InvalidStateError("Result is not set.")
         if molt_asyncio_future_cancelled(self._fut_handle):
             if self._exception is not None:
                 raise self._exception
@@ -796,7 +796,7 @@ class Future:
 
     def exception(self) -> BaseException | None:
         if not molt_asyncio_future_done(self._fut_handle):
-            raise InvalidStateError("Result is not ready")
+            raise InvalidStateError("Exception is not set.")
         if molt_asyncio_future_cancelled(self._fut_handle):
             if self._exception is not None:
                 raise self._exception
@@ -829,7 +829,7 @@ class Future:
 
     def set_result(self, result: Any) -> None:
         if molt_asyncio_future_done(self._fut_handle):
-            raise InvalidStateError("Result is already set")
+            raise InvalidStateError("invalid state")
         self._result = result
         molt_asyncio_future_set_result_fast(self._fut_handle, result)
         if self._molt_promise is not None:
@@ -838,7 +838,7 @@ class Future:
 
     def set_exception(self, exception: BaseException) -> None:
         if molt_asyncio_future_done(self._fut_handle):
-            raise InvalidStateError("Result is already set")
+            raise InvalidStateError("invalid state")
         self._exception = exception
         if _is_cancelled_exc(exception):
             molt_asyncio_future_cancel_fast(self._fut_handle, None)
