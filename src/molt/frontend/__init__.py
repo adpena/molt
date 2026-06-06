@@ -11501,10 +11501,54 @@ class SimpleTIRGenerator(
         # Collect walrus (:=) targets in the element expression and
         # filters. These must leak to the enclosing scope per PEP 572.
         walrus_names = self._collect_inline_comp_walrus_names(exprs, comp.ifs)
+        # At module scope the single storage authority for a name is the
+        # module dict (MODULE_SET_ATTR / MODULE_GET_ATTR), not a boxed
+        # function cell: other functions read the global via the module dict,
+        # and module-scope SSA refs dangle across chunk boundaries (#45 item
+        # 3).  A walrus target that is *also* bound non-comprehensionally (a
+        # ``while`` test walrus, a plain assignment, ...) writes through the
+        # module dict, so the comprehension must read/write the same dict —
+        # boxing it into a transient cell forks storage and the comp reads a
+        # stale/None cell instead of the loop-carried value.  Route module
+        # walrus targets through the module dict, exactly as the GeneratorExp
+        # path already does (visit_GeneratorExp), and box only at non-module
+        # scope.
+        module_walrus_names: list[str] = []
+        if (
+            self.current_func_name == "molt_main"
+            and getattr(self, "module_obj", None) is not None
+        ):
+            module_walrus_names = list(walrus_names)
+            if module_walrus_names:
+                self.module_global_mutations.update(module_walrus_names)
+                # A bare module-scope name read is a LOAD_GLOBAL: it must raise
+                # NameError (not the AttributeError that MODULE_GET_ATTR yields)
+                # when the binding is absent — e.g. ``[acc := acc + i for i in
+                # r]`` with no prior ``acc`` reads an unbound name.  del_targets
+                # is the carrier for "module name that may be read while unbound
+                # → route through MODULE_GET_GLOBAL" (see _collect_deleted_names:
+                # it covers except-handler targets too, not only ``del``), so
+                # registering the walrus targets there gives the same NameError
+                # semantics the GeneratorExp poll-fn path gets via global_decls.
+                self.del_targets.update(module_walrus_names)
+                # Drop any SSA/cell caches so subsequent reads at module scope
+                # re-read from the module dict (the comprehension writes there
+                # via _store_local_value's module_global_mutations branch).
+                for wname in module_walrus_names:
+                    self.locals.pop(wname, None)
+                    self.globals.pop(wname, None)
+                    self.exact_locals.pop(wname, None)
+                    self.boxed_locals.pop(wname, None)
+                    self.boxed_local_hints.pop(wname, None)
         # Box walrus targets so their values survive the loop boundary.
         # The boxed cell lives on the heap, so store_index inside the
         # loop persists and index after the loop reads the final value.
+        # Module-scope walrus targets are excluded — they live in the module
+        # dict (handled above).
+        module_walrus_set = set(module_walrus_names)
         for wname in walrus_names:
+            if wname in module_walrus_set:
+                continue
             if wname not in self.boxed_locals:
                 self._box_local(wname)
         # If the element expression or filters contain lambdas that
@@ -11683,7 +11727,13 @@ class SimpleTIRGenerator(
         # cell was updated inside the loop; read the final value and
         # store it as the local (and module attr at module scope) so
         # subsequent code sees the walrus assignment.
+        # Module-scope walrus targets are skipped: they have no boxed cell
+        # (they store straight to the module dict each iteration via
+        # _store_local_value's module_global_mutations branch), so the dict
+        # already holds the final value and is the authoritative reader.
         for wname in walrus_names:
+            if wname in module_walrus_set:
+                continue
             wcell = self._load_boxed_cell(wname)
             if wcell is not None:
                 _widx = MoltValue(self.next_var(), type_hint="int")
