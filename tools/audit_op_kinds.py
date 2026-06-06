@@ -67,7 +67,43 @@ NATIVE_RS = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs
 WASM_RS = ROOT / "runtime/molt-backend/src/wasm.rs"
 RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 
+# The op-kind single-source-of-truth registry (task #57, phase 2). Since phase 2
+# landed, the backend's mapper and CopyLowering-classifier vocabularies are
+# GENERATED from this table (op_kinds_generated.rs delegated to by
+# ssa::kind_to_opcode / alias_analysis); the hand-written Rust functions no longer
+# carry the inline `match`/`matches!` arms the original audit parsed. The audit
+# therefore sources the BACKEND-side tables from this registry (the source of
+# truth) and keeps AST-extracting the FRONTEND emitter — so the drift matrix is
+# exactly "does the frontend emit a kind the registry does not cover?". The
+# registry⇄generated-Rust direction is pinned separately by
+# tests/test_gen_op_kinds.py; the registry⇄enum exhaustiveness by the Rust
+# compiler. (LLVM arms, runtime symbols, and native/WASM SimpleIR dispatch are
+# still extracted directly from source — they are not generated.)
+OP_KINDS_TOML = ROOT / "runtime/molt-backend/src/tir/op_kinds.toml"
+
 BASELINE_PATH = ROOT / "tools/op_kinds_baseline.json"
+
+
+def _load_op_kinds_toml() -> dict:
+    """Parse the op-kind registry. Fail loud if absent — the audit's backend-side
+    vocabulary depends on it post phase-2."""
+    try:
+        import tomllib  # Python 3.11+
+    except ModuleNotFoundError:  # pragma: no cover
+        import tomli as tomllib  # type: ignore[no-redef]
+    if not OP_KINDS_TOML.exists():
+        raise RustMatchParseError(f"op-kind registry missing: {OP_KINDS_TOML}")
+    return tomllib.loads(OP_KINDS_TOML.read_text())
+
+
+def mapper_kinds_from_registry(data: dict) -> set[str]:
+    """The kind_to_opcode mapper vocabulary = every canonical + alias spelling of
+    every [[kind]] row in the registry."""
+    out: set[str] = set()
+    for row in data.get("kind", []):
+        out.add(row["canonical"])
+        out.update(row.get("aliases", []))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +305,7 @@ def extract_matches_macro(path: Path, fn: str) -> list[str]:
     m = re.search(r"\bfn\s+" + re.escape(fn) + r"\b", src)
     if m is None:
         raise RustMatchParseError(f"fn {fn} not found")
-    mm = re.search(r"matches!\s*\(", src[m.start():])
+    mm = re.search(r"matches!\s*\(", src[m.start() :])
     if mm is None:
         raise RustMatchParseError(f"matches!() not found in fn {fn}")
     start = m.start() + mm.end()
@@ -372,9 +408,7 @@ def _resolve_name_assignment(
     """
     for sub in ast.walk(func):
         if isinstance(sub, ast.Assign):
-            if any(
-                isinstance(t, ast.Name) and t.id == name for t in sub.targets
-            ):
+            if any(isinstance(t, ast.Name) and t.id == name for t in sub.targets):
                 val = sub.value
                 # op.kind.lower()
                 if (
@@ -388,9 +422,7 @@ def _resolve_name_assignment(
                         return None
                     return {k.lower() for k in guard_kinds}
                 # {DICT}[op.kind]
-                if isinstance(val, ast.Subscript) and isinstance(
-                    val.value, ast.Dict
-                ):
+                if isinstance(val, ast.Subscript) and isinstance(val.value, ast.Dict):
                     return {
                         v.value
                         for v in val.value.values
@@ -577,11 +609,7 @@ class KindRow:
         """A `Copy`-carried kind is soundly lowered on the LLVM lane iff it has a
         dedicated arm, is in the vec table, or `molt_<kind>` exists for the generic
         by-symbol fallback. Otherwise the LLVM `Copy` arm FAILS LOUD at build."""
-        return (
-            self.llvm_dedicated_arm
-            or self.llvm_vec_table
-            or self.llvm_symbol_exists
-        )
+        return self.llvm_dedicated_arm or self.llvm_vec_table or self.llvm_symbol_exists
 
     def as_dict(self) -> dict:
         return {
@@ -676,11 +704,7 @@ class AuditResult:
                 cats["llvm_coverage_gap"].append(kind)
             if row.classifier_class == "FreshValue" and not row.llvm_covered:
                 cats["freshvalue_llvm_gap"].append(kind)
-            if (
-                emitted_unmapped
-                and not explicit_classified
-                and row.llvm_symbol_exists
-            ):
+            if emitted_unmapped and not explicit_classified and row.llvm_symbol_exists:
                 cats["classifier_silent_fallthrough"].append(kind)
             if (
                 emitted_unmapped
@@ -716,17 +740,21 @@ def classify(
 
 def run_audit() -> AuditResult:
     fk = extract_frontend_kinds()
-    mapper = set(extract_match_arms(SSA_RS, "kind_to_opcode", "match kind {"))
+    # Backend mapper + CopyLowering-classifier vocabularies come from the registry
+    # (the single source of truth; the hand-written Rust delegates to its
+    # generated tables). See the OP_KINDS_TOML note above.
+    registry = _load_op_kinds_toml()
+    mapper = mapper_kinds_from_registry(registry)
+    fresh = set(registry.get("classifier_fresh_value", []))
+    fresh_prefixes = list(registry.get("classifier_fresh_value_prefixes", []))
+    inert = set(registry.get("classifier_inert_marker", []))
+    no_heap = set(registry.get("classifier_no_heap_move", []))
+    # LLVM arms, the vec-reduction table, and the runtime symbol surface are NOT
+    # generated — extract them from source as before.
     llvm_arms = set(
         extract_match_arms(LLVM_RS, "lower_preserved_simpleir_op", "match kind {")
     )
     llvm_vec = extract_vec_reduction_ops()
-    fresh = set(extract_matches_macro(ALIAS_RS, "copy_kind_mints_fresh_owned_ref"))
-    fresh_prefixes = extract_prefix_rules(ALIAS_RS, "copy_kind_mints_fresh_owned_ref")
-    inert = set(extract_match_arms(ALIAS_RS, "classify_copy_kind", "match k {"))
-    no_heap = set(
-        extract_matches_macro(ALIAS_RS, "copy_kind_is_explicit_no_heap_move")
-    )
     runtime_syms = extract_runtime_molt_symbols()
     native_arms = extract_simpleir_arm_kinds(NATIVE_RS)
     wasm_arms = extract_simpleir_arm_kinds(WASM_RS)
@@ -870,11 +898,11 @@ def print_report(res: AuditResult) -> None:
             )
         print()
 
-    print("FULL DRIFT MATRIX  (fe=frontend-emits map=mapper-arm la=llvm-arm "
-          "lv=llvm-vec ls=llvm-sym st=structural)")
-    hdr = (
-        f"{'kind':34s} fe map  la lv ls {'classifier':16s} nat wasm st"
+    print(
+        "FULL DRIFT MATRIX  (fe=frontend-emits map=mapper-arm la=llvm-arm "
+        "lv=llvm-vec ls=llvm-sym st=structural)"
     )
+    hdr = f"{'kind':34s} fe map  la lv ls {'classifier':16s} nat wasm st"
     print(hdr)
     print("-" * len(hdr))
     for kind, row in res.rows.items():

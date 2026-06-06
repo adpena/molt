@@ -1786,142 +1786,17 @@ fn rpo_from(n: usize, entry: usize, successors: &[Vec<usize>]) -> Vec<usize> {
 use super::is_structural;
 
 /// Map a SimpleIR `kind` string to a TIR `OpCode`.
+///
+/// The kind→opcode table is the single-source-of-truth op-kind registry
+/// (`runtime/molt-backend/src/tir/op_kinds.toml`, generated into
+/// [`crate::tir::op_kinds_generated::kind_to_opcode_table`]; see
+/// `docs/design/foundation/25_op_kind_registry.md`). A kind with no first-class
+/// opcode falls back to `OpCode::Copy` (carrying its spelling in
+/// `_original_kind`), exactly as before — this is the runtime backstop the
+/// registry's sync test (`tests/test_gen_op_kinds.py`) and the drift audit
+/// (`tools/audit_op_kinds.py --check`) keep statically total for known kinds.
 fn kind_to_opcode(kind: &str) -> OpCode {
-    match kind {
-        "add" => OpCode::Add,
-        "sub" => OpCode::Sub,
-        "mul" => OpCode::Mul,
-        "inplace_add" => OpCode::InplaceAdd,
-        "inplace_sub" => OpCode::InplaceSub,
-        "inplace_mul" => OpCode::InplaceMul,
-        "div" => OpCode::Div,
-        "floor_div" => OpCode::FloorDiv,
-        "mod" => OpCode::Mod,
-        "pow" => OpCode::Pow,
-        "neg" => OpCode::Neg,
-        "pos" => OpCode::Pos,
-        "eq" | "string_eq" => OpCode::Eq,
-        "ne" => OpCode::Ne,
-        "lt" => OpCode::Lt,
-        "le" => OpCode::Le,
-        "gt" => OpCode::Gt,
-        "ge" => OpCode::Ge,
-        "is" => OpCode::Is,
-        "is_not" => OpCode::IsNot,
-        "in" => OpCode::In,
-        "not_in" => OpCode::NotIn,
-        "bit_and" => OpCode::BitAnd,
-        "bit_or" => OpCode::BitOr,
-        "bit_xor" => OpCode::BitXor,
-        "bit_not" => OpCode::BitNot,
-        "shl" | "lshift" => OpCode::Shl,
-        "shr" | "rshift" => OpCode::Shr,
-        "and" => OpCode::And,
-        "or" => OpCode::Or,
-        "not" => OpCode::Not,
-        "bool" | "cast_bool" | "builtin_bool" => OpCode::Bool,
-        "alloc" => OpCode::Alloc,
-        "stack_alloc" => OpCode::StackAlloc,
-        "object_new_bound" => OpCode::ObjectNewBound,
-        "object_new_bound_stack" => OpCode::ObjectNewBoundStack,
-        "free" => OpCode::Free,
-        "get_attr"
-        | "get_attr_generic_ptr"
-        | "get_attr_generic_obj"
-        | "get_attr_name"
-        | "guarded_field_get"
-        | "load"
-        | "load_attr" => OpCode::LoadAttr,
-        "set_attr"
-        | "store_attr"
-        | "set_attr_name"
-        | "set_attr_generic_ptr"
-        | "set_attr_generic_obj"
-        | "guarded_field_set"
-        | "guarded_field_set_init"
-        | "store"
-        | "store_init" => OpCode::StoreAttr,
-        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
-            OpCode::DelAttr
-        }
-        "index" => OpCode::Index,
-        "store_index" | "index_set" => OpCode::StoreIndex,
-        "del_index" => OpCode::DelIndex,
-        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind"
-        | "call_function" | "call_guarded" | "invoke_ffi" => OpCode::Call,
-        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => {
-            OpCode::Call
-        }
-        "call_method" => OpCode::CallMethod,
-        "call_builtin" | "builtin_print" | "print" | "range_new" => OpCode::CallBuiltin,
-        "ord_at" => OpCode::OrdAt,
-        "box" | "box_from_raw_int" => OpCode::BoxVal,
-        "unbox" | "unbox_to_raw_int" => OpCode::UnboxVal,
-        "type_guard" => OpCode::TypeGuard,
-        "inc_ref" => OpCode::IncRef,
-        "dec_ref" => OpCode::DecRef,
-        "build_list" => OpCode::BuildList,
-        "build_dict" => OpCode::BuildDict,
-        "build_tuple" => OpCode::BuildTuple,
-        "build_set" => OpCode::BuildSet,
-        "build_slice" => OpCode::BuildSlice,
-        "get_iter" => OpCode::GetIter,
-        "iter_next" => OpCode::IterNext,
-        "iter_next_unboxed" => OpCode::IterNextUnboxed,
-        // CheckedAdd round-trip: the module phase re-lifts every function
-        // from post-pipeline SimpleIR on every build, so without this
-        // mapping a peeled fast loop would fall to the Copy fallback and
-        // the overflow check would silently vanish (the exception_pending
-        // precedent below).
-        "checked_add" => OpCode::CheckedAdd,
-        "for_iter" => OpCode::ForIter,
-        "state_switch" => OpCode::StateSwitch,
-        "state_transition" => OpCode::StateTransition,
-        "state_yield" => OpCode::StateYield,
-        "chan_send_yield" => OpCode::ChanSendYield,
-        "chan_recv_yield" => OpCode::ChanRecvYield,
-        "closure_load" => OpCode::ClosureLoad,
-        "closure_store" => OpCode::ClosureStore,
-        "alloc_task" => OpCode::AllocTask,
-        "yield" => OpCode::Yield,
-        "yield_from" => OpCode::YieldFrom,
-        "raise" => OpCode::Raise,
-        "check_exception" => OpCode::CheckException,
-        // Runtime exception-pending flag read.  Emitted directly by
-        // lower_to_simple when it materializes the `ExceptionPending` body op
-        // for a `loop_break_if_exception` CondBranch; this reverse mapping keeps
-        // the SimpleIR↔TIR round-trip idempotent (without it the op would fall
-        // to the `OpCode::Copy` fallback below and be dropped, re-opening the
-        // iterator-consumer infinite-loop bug on the TIR-roundtripping backends).
-        "exception_pending" => OpCode::ExceptionPending,
-        "try_start" => OpCode::TryStart,
-        "try_end" => OpCode::TryEnd,
-        "state_block_start" => OpCode::StateBlockStart,
-        "state_block_end" => OpCode::StateBlockEnd,
-        "const" | "const_int" | "load_const" => OpCode::ConstInt,
-        "const_bigint" => OpCode::ConstBigInt,
-        "const_float" => OpCode::ConstFloat,
-        "const_str" => OpCode::ConstStr,
-        "const_bool" => OpCode::ConstBool,
-        "const_none" => OpCode::ConstNone,
-        "const_bytes" => OpCode::ConstBytes,
-        "copy" | "store_var" | "load_var" => OpCode::Copy,
-        "import" | "import_name" | "module_import" => OpCode::Import,
-        "import_from" => OpCode::ImportFrom,
-        "module_cache_get" => OpCode::ModuleCacheGet,
-        "module_cache_set" => OpCode::ModuleCacheSet,
-        "module_cache_del" => OpCode::ModuleCacheDel,
-        "module_get_attr" => OpCode::ModuleGetAttr,
-        "module_import_from" => OpCode::ModuleImportFrom,
-        "module_get_global" => OpCode::ModuleGetGlobal,
-        "module_get_name" => OpCode::ModuleGetName,
-        "module_set_attr" => OpCode::ModuleSetAttr,
-        "module_del_global" => OpCode::ModuleDelGlobal,
-        "module_del_global_if_present" => OpCode::ModuleDelGlobalIfPresent,
-        "warn_stderr" => OpCode::WarnStderr,
-        // Fallback for unknown ops.
-        _ => OpCode::Copy,
-    }
+    crate::tir::op_kinds_generated::kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
 }
 
 fn gpu_runtime_symbol_for_simple_kind(kind: &str) -> Option<&'static str> {

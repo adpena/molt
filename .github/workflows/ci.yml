@@ -46,10 +46,16 @@ jobs:
       - name: Check suite-honesty ratchet (tracked-fail manifest, down-only)
         run: uv run python3 tools/check_suite_honesty.py
 
+      - name: Check op-kind registry generated files are in sync
+        run: uv run python3 tools/gen_op_kinds.py --check
+
+      - name: Check op-kind drift (frontend emitter vs registry; down-only baseline)
+        run: uv run python3 tools/audit_op_kinds.py --check
+
       - name: Run docs architecture tests
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py
+            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_intrinsics.py
 
       - name: Summarize guarded command hotspots
         if: always()
