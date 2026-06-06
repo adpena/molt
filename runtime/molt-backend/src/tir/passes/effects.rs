@@ -563,7 +563,8 @@ mod tests {
             | BuildSet | BuildSlice | GetIter | IterNext | IterNextUnboxed | ForIter | AllocTask
             | StateSwitch | StateTransition | StateYield | ChanSendYield | ChanRecvYield
             | ClosureLoad | ClosureStore | Yield | YieldFrom | Raise | CheckException
-            | ExceptionPending | TryStart | TryEnd | StateBlockStart | StateBlockEnd | ConstInt
+            | ExceptionPending | FunctionDefaultsVersion | TryStart | TryEnd | StateBlockStart
+            | StateBlockEnd | ConstInt
             | ConstBigInt | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
             | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
             | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
@@ -651,6 +652,7 @@ mod tests {
             Raise,
             CheckException,
             ExceptionPending,
+            FunctionDefaultsVersion,
             TryStart,
             TryEnd,
             StateBlockStart,

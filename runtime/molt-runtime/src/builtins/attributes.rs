@@ -3566,6 +3566,17 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     if is_task_trampoline_attr_name(attr_name) {
                         refresh_function_task_trampoline_cache(_py, obj_ptr);
                     }
+                    // Reassigning `__defaults__`/`__kwdefaults__` invalidates any
+                    // compile-time-baked literal default the devirtualizer may
+                    // have emitted at a direct call site: bump the function's
+                    // defaults version so the guarded fast path deopts to a live
+                    // read (CPython binds defaults at call time). This is the
+                    // ONLY user-reachable mutation entry point — function
+                    // CREATION sets these via `function_set_attr_bits`, which
+                    // does not bump, keeping a fresh function at version 0.
+                    if attr_name == "__defaults__" || attr_name == "__kwdefaults__" {
+                        function_bump_defaults_version(obj_ptr);
+                    }
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }

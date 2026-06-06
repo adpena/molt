@@ -3853,6 +3853,46 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            // ── FunctionDefaultsVersion: read a function object's
+            //    __defaults__/__kwdefaults__ mutation version stamp as a boxed
+            //    inline int (`molt_function_defaults_version(func)`).  Produced
+            //    by the compile-time defaults-devirt deopt guard and consumed by
+            //    its `== 0` compare (baked literal vs live read).  Non-foldable:
+            //    it observes mutable runtime state, so the read always survives.
+            OpCode::FunctionDefaultsVersion => {
+                let ver_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_function_defaults_version")
+                    .unwrap_or_else(|| {
+                        let i64_ty = self.backend.context.i64_type();
+                        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+                        self.backend.module.add_function(
+                            "molt_function_defaults_version",
+                            fn_ty,
+                            Some(inkwell::module::Linkage::External),
+                        )
+                    });
+                let func_val = op
+                    .operands
+                    .first()
+                    .and_then(|id| self.values.get(id).copied())
+                    .expect("FunctionDefaultsVersion operand not materialized");
+                let raw = self
+                    .backend
+                    .builder
+                    .build_call(ver_fn, &[func_val.into()], "func_defaults_version")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, raw);
+                    // Returns a NaN-boxed inline int; the consuming `== 0`
+                    // compare routes through the boxed-int equality path.
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
             // ── CheckException: inspect the current exception state ──
             OpCode::CheckException => {
                 let check_fn = self

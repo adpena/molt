@@ -585,6 +585,19 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 
+# Reads a function object's `__defaults__`/`__kwdefaults__` mutation version
+# stamp (a mutable runtime slot). Like `ExceptionPending`, the value can change
+# between loop iterations (a `func.__defaults__ = ...` reassignment, even one
+# performed reentrantly by the called method), so this op MUST NOT be CSE'd or
+# LICM-hoisted across a potential mutation: side_effecting keeps it pinned at
+# its program point. The deopt guard reads it once per call (a single slot
+# load) and compares against 0 ("never mutated since creation").
+[[opcode]]
+name = "FunctionDefaultsVersion"
+may_throw = false
+side_effecting = true
+purity = "impure"
+
 [[opcode]]
 name = "TryStart"
 may_throw = false
@@ -1161,6 +1174,11 @@ mapper_opcode = "CheckException"
 canonical = "exception_pending"
 aliases = []
 mapper_opcode = "ExceptionPending"
+
+[[kind]]
+canonical = "function_defaults_version"
+aliases = []
+mapper_opcode = "FunctionDefaultsVersion"
 
 [[kind]]
 canonical = "try_start"

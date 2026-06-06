@@ -2201,6 +2201,17 @@ class SerializationMixin(_MixinBase):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "FUNCTION_DEFAULTS_VERSION":
+                # Read a function object's __defaults__/__kwdefaults__ mutation
+                # version stamp (one MoltValue operand: the function object).
+                # Non-foldable; consumed by the defaults-devirt deopt guard.
+                json_ops.append(
+                    {
+                        "kind": "function_defaults_version",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "GETATTR_SPECIAL_OBJ":
                 json_ops.append(
                     {
