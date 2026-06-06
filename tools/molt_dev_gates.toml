@@ -27,8 +27,8 @@
 # Gates that run for ANY non-empty change: the cheap Python contracts that must
 # never regress regardless of what was touched.
 always = [
-  "python3 tools/venv_exec.py python -m ruff check .",
-  "python3 tools/venv_exec.py python -m ruff format --check .",
+  ".venv/bin/python -m ruff check .",
+  ".venv/bin/python -m ruff format --check .",
 ]
 
 # --- Native (Cranelift) backend Rust -------------------------------------

@@ -58,6 +58,7 @@ Usage
   python3 tools/check_satellite_parity.py --show PAIR # print a pair's residual
   python3 tools/check_satellite_parity.py --update-baseline   # regenerate
 """
+
 from __future__ import annotations
 
 import argparse
@@ -76,8 +77,14 @@ INTREE_DIR = RUNTIME / "molt-runtime" / "src"
 # `#[cfg(not(feature = "stdlib_*"))]` gates in builtins/mod.rs and verified
 # against the on-disk crates.
 PAIRS: dict[str, tuple[str, str]] = {
-    "functions_http": ("builtins/functions_http.rs", "molt-runtime-http/src/functions_http.rs"),
-    "functions_logging": ("builtins/functions_logging.rs", "molt-runtime-http/src/functions_logging.rs"),
+    "functions_http": (
+        "builtins/functions_http.rs",
+        "molt-runtime-http/src/functions_http.rs",
+    ),
+    "functions_logging": (
+        "builtins/functions_logging.rs",
+        "molt-runtime-http/src/functions_logging.rs",
+    ),
     "itertools": ("builtins/itertools.rs", "molt-runtime-itertools/src/itertools.rs"),
     "difflib": ("builtins/difflib.rs", "molt-runtime-difflib/src/difflib.rs"),
     "ipaddress": ("builtins/ipaddress.rs", "molt-runtime-ipaddress/src/ipaddress.rs"),
@@ -91,16 +98,31 @@ PAIRS: dict[str, tuple[str, str]] = {
     "regex": ("builtins/regex.rs", "molt-runtime-regex/src/regex.rs"),
     "base64_mod": ("builtins/base64_mod.rs", "molt-runtime-serial/src/base64_mod.rs"),
     "binascii": ("builtins/binascii.rs", "molt-runtime-serial/src/binascii.rs"),
-    "configparser": ("builtins/configparser.rs", "molt-runtime-serial/src/configparser.rs"),
+    "configparser": (
+        "builtins/configparser.rs",
+        "molt-runtime-serial/src/configparser.rs",
+    ),
     "csv": ("builtins/csv.rs", "molt-runtime-serial/src/csv.rs"),
     "datetime": ("builtins/datetime.rs", "molt-runtime-serial/src/datetime.rs"),
     "decimal": ("builtins/decimal.rs", "molt-runtime-serial/src/decimal.rs"),
     "structs": ("builtins/structs.rs", "molt-runtime-serial/src/structs.rs"),
-    "functions_zipfile": ("builtins/functions_zipfile.rs", "molt-runtime-serial/src/zipfile.rs"),
-    "functions_email": ("builtins/functions_email.rs", "molt-runtime-serial/src/email.rs"),
-    "stringprep": ("builtins/stringprep.rs", "molt-runtime-stringprep/src/stringprep.rs"),
+    "functions_zipfile": (
+        "builtins/functions_zipfile.rs",
+        "molt-runtime-serial/src/zipfile.rs",
+    ),
+    "functions_email": (
+        "builtins/functions_email.rs",
+        "molt-runtime-serial/src/email.rs",
+    ),
+    "stringprep": (
+        "builtins/stringprep.rs",
+        "molt-runtime-stringprep/src/stringprep.rs",
+    ),
     "html": ("builtins/html.rs", "molt-runtime-text/src/html.rs"),
-    "unicodedata_mod": ("builtins/unicodedata_mod.rs", "molt-runtime-text/src/unicodedata_mod.rs"),
+    "unicodedata_mod": (
+        "builtins/unicodedata_mod.rs",
+        "molt-runtime-text/src/unicodedata_mod.rs",
+    ),
     "xml_etree": ("builtins/xml_etree.rs", "molt-runtime-xml/src/xml_etree.rs"),
     "xml_sax": ("builtins/xml_sax.rs", "molt-runtime-xml/src/xml_sax.rs"),
     "zoneinfo": ("builtins/zoneinfo.rs", "molt-runtime-zoneinfo/src/zoneinfo.rs"),
@@ -219,11 +241,11 @@ def normalize(path: Path) -> list[str]:
         # the satellite must wrap each extern-C bridge call in `unsafe {}` while
         # the in-tree direct call is safe. Same EXPR, same effect.
         if s2.startswith("unsafe {") and s2.endswith("};"):
-            inner = s2[len("unsafe {"):-2].strip()
+            inner = s2[len("unsafe {") : -2].strip()
             if inner and "{" not in inner:
                 s2 = inner + ";"
         elif s2.startswith("unsafe {") and s2.endswith("}"):
-            inner = s2[len("unsafe {"):-1].strip()
+            inner = s2[len("unsafe {") : -1].strip()
             if inner and "{" not in inner:
                 s2 = inner
         if s2 == "":
@@ -309,8 +331,12 @@ def cmd_update_baseline() -> int:
         "ratchet_ceiling": total,
         "pairs": pairs,
     }
-    BASELINE_PATH.write_text(json.dumps(baseline, indent=2, sort_keys=False) + "\n", encoding="utf-8")
-    print(f"baseline updated: {len(pairs)} pairs, total residual {total}, ceiling {total}")
+    BASELINE_PATH.write_text(
+        json.dumps(baseline, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
+    print(
+        f"baseline updated: {len(pairs)} pairs, total residual {total}, ceiling {total}"
+    )
     return 0
 
 
@@ -390,10 +416,12 @@ def cmd_show(name: str) -> int:
     lines, digest = residual(name)
     intree, sat = PAIRS[name]
     print(f"# pair {name}")
-    print(f"#   in-tree:   runtime/molt-runtime/src/{_intree_path(name).relative_to(INTREE_DIR)}")
+    print(
+        f"#   in-tree:   runtime/molt-runtime/src/{_intree_path(name).relative_to(INTREE_DIR)}"
+    )
     print(f"#   satellite: runtime/{sat}")
     print(f"#   residual lines: {len(lines)}  sha256: {digest}")
-    print(f"#   ('<' = only in-tree, '>' = only satellite, both normalized)")
+    print("#   ('<' = only in-tree, '>' = only satellite, both normalized)")
     for ln in lines:
         print(ln)
     return 0
@@ -401,10 +429,17 @@ def cmd_show(name: str) -> int:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--update-baseline", action="store_true",
-                    help="regenerate the committed baseline (ratchet ceiling may only decrease)")
-    ap.add_argument("--verbose", action="store_true", help="print per-pair residual sizes")
-    ap.add_argument("--show", metavar="PAIR", help="print one pair's normalized residual diff")
+    ap.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="regenerate the committed baseline (ratchet ceiling may only decrease)",
+    )
+    ap.add_argument(
+        "--verbose", action="store_true", help="print per-pair residual sizes"
+    )
+    ap.add_argument(
+        "--show", metavar="PAIR", help="print one pair's normalized residual diff"
+    )
     args = ap.parse_args(argv)
     if args.show:
         return cmd_show(args.show)
