@@ -761,8 +761,24 @@ fn propagate_raw_i64_safe_values(
             all_value_ids.push(arg.id);
         }
         for op in &block.ops {
-            if op.opcode == OpCode::Copy
-                && let (Some(&result), Some(&source)) = (op.results.first(), op.operands.first())
+            // Forward raw-i64 safety through a `Copy` ONLY when it is a genuine
+            // value-identity move (`copy`/`copy_var`/`store_var`/`load_var`/
+            // `identity_alias`, or a plain attribute-free SSA copy) — the
+            // fail-closed `copy_value_source` predicate, shared with the
+            // value-range pass so the two cannot drift. A Copy that CARRIES an
+            // operator (`inplace_lshift`/`inplace_add`/`str_from_obj`/… — the
+            // frontend lifts the in-place augmented ops and conversions to
+            // `Copy{_original_kind}`) is NOT a value move: its result is the
+            // operator's result, not operand 0. Forwarding safety through it
+            // unconditionally marked an `a <<= 80` result (a `Copy{inplace_lshift}`
+            // of a small lhs) RawI64Safe purely because the lhs `1` fit inline —
+            // so the LLVM/WASM shift lane emitted a RAW machine shift by 80, which
+            // LLVM constant-folds to `poison` (shift >= bit width is UB). The
+            // value-range op-result range for the first-class `Shl`/`Shr` already
+            // refuses the overflow case; this aligns the propagation's Copy
+            // forwarding with that same value-identity contract.
+            if let Some(source) = crate::tir::passes::value_range::copy_value_source(op)
+                && let Some(&result) = op.results.first()
             {
                 copy_source.insert(result, source);
             }
