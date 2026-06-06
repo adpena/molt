@@ -255,7 +255,9 @@ def test_populate_sema_state_fills_god_object_dicts_from_result() -> None:
 def test_populate_sema_state_honors_known_func_defaults_override() -> None:
     # When known_func_defaults supplies the module, the override wins over the
     # AST-derived defaults (the runtime-input semantics preserved by the shim).
-    override = {"mymod": {"f": {"params": 99, "defaults": [], "posonly": 0, "kwonly": 0}}}
+    override = {
+        "mymod": {"f": {"params": 99, "defaults": [], "posonly": 0, "kwonly": 0}}
+    }
     gen = SimpleTIRGenerator(module_name="mymod", known_func_defaults=override)
     gen._populate_sema_state(ast.parse("def f(a, b=1): return a\n"))
     assert gen.module_func_defaults == override["mymod"]
