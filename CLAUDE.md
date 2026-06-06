@@ -141,10 +141,19 @@ Rules:
 export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
 ```
 
-Each session gets its own `target-<id>/` cargo directory (e.g., `target-agent_1/`). All cargo builds, path resolution, staleness checks, and cache lookups automatically route through the session-specific directory.
+Each session gets its own `target/sessions/<id>/` cargo directory (the CLI's
+`_session_target_dir`). The **molt CLI** routes all builds, path resolution,
+staleness checks, and cache lookups through it automatically. **Raw `cargo`
+commands do NOT honor `MOLT_SESSION_ID`** — they fall through to the shared
+`target/` and will lock-collide with (and silently kill) concurrent agents'
+builds. For any direct cargo invocation also export:
+
+```bash
+export CARGO_TARGET_DIR="$PWD/target/sessions/$MOLT_SESSION_ID"
+```
 
 This gives each session:
-- **Its own cargo target directory** (`target-agent_1/`) — no cargo lock contention, no artifact clobbering
+- **Its own cargo target directory** (`target/sessions/<id>/`) — no cargo lock contention, no artifact clobbering
 - **Its own daemon socket** — no kill/restart conflicts between sessions
 - **Its own build state and lock-check caches** — fully isolated build lifecycle
 - **No `cargo clean`** — incremental builds only, no binary deletion
