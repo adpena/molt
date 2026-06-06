@@ -825,6 +825,11 @@ impl ScalarRepresentationPlan {
                 }
             }
         }
+        // Restore the true container kind for constructor outputs before alias
+        // propagation, so a `set`/`dict`/`list`/`tuple` built by `set_new`/etc.
+        // (lifted to a type-aliasing `OpCode::Copy` passthrough) is not mistyped
+        // as its first element — the root of the membership-dispatch miscompile.
+        plan.seed_container_constructor_facts(func_ir);
         plan.propagate_simple_aliases(func_ir);
         plan.propagate_integer_family(func_ir);
         plan.propagate_container_storage(func_ir);
@@ -1135,6 +1140,52 @@ impl ScalarRepresentationPlan {
                     self.insert_container_storage_fact(simple_out.clone(), fact.clone());
                 }
             }
+        }
+    }
+
+    /// Seed each container-constructor op's output with its true container
+    /// [`TirType`], overriding the type inferred via the TIR lift.
+    ///
+    /// The frontend/native container constructors (`list_new`, `dict_new`,
+    /// `set_new`, `tuple_new`, `frozenset_new`, and the list/tuple conversion
+    /// variants) have no dedicated TIR `OpCode`; `ssa::kind_to_opcode` lifts them
+    /// to the `OpCode::Copy` passthrough fallback. Copy's type rule aliases the
+    /// result to its first operand — which for a constructor is one *element*
+    /// (e.g. the first `str` of a `set`), not the container. That mistyping makes
+    /// [`Self::name_container_kind`] report the element type, so a `contains`
+    /// dispatch (`function_compiler.rs`) calls the wrong specialized intrinsic on
+    /// the container — e.g. `molt_str_contains` on a `set`/`dict`, which reads the
+    /// container's bytes as a string and faults (a P0 SIGSEGV), or `molt_len_str`
+    /// on a `set` from the `len` dispatch.
+    ///
+    /// The container kind is unambiguous from the constructor op kind itself, so
+    /// this restores it directly from the SimpleIR stream. Operating on the plan
+    /// facts (not the TIR `value_types`) keeps the fix free of the generator
+    /// poll-tuple / `frozenset` *return-type* contracts that the TIR types feed:
+    /// the plan facts exist solely for backend lane/dispatch selection, where
+    /// `frozenset` correctly probes through the shared set hash path
+    /// (`molt_set_contains` reads set/frozenset by the same layout) and an
+    /// unknown-arity tuple is the right "is a tuple" answer.
+    fn seed_container_constructor_facts(&mut self, func_ir: &FunctionIR) {
+        for op in &func_ir.ops {
+            let Some(out) = op.out.as_deref() else {
+                continue;
+            };
+            let Some(ty) = container_constructor_result_ty(op.kind.as_str()) else {
+                continue;
+            };
+            // The constructor's container kind is authoritative; force it over
+            // any (mistyped) LIR-derived fact and clear the conflict/weak markers
+            // so a later alias/weak insert cannot blacklist or displace it.
+            self.conflicted_names.remove(out);
+            self.weak_fact_names.remove(out);
+            self.facts_by_name.insert(
+                out.to_string(),
+                ScalarRepresentationFact {
+                    ty,
+                    repr: LirRepr::DynBox,
+                },
+            );
         }
     }
 
@@ -1971,7 +2022,13 @@ impl ScalarRepresentationPlan {
         self.infer_scalar_lane_with_overrides(op, ScalarKind::NoneValue, &BTreeSet::new())
     }
 
-    fn infer_scalar_lane_with_overrides(
+    // `pub(crate)` for stable cross-CGU linkage. This is referenced from another
+    // codegen unit (a `pub(crate)` caller inlined into `luau_lower`) under the
+    // multi-CGU dev/debug profile; a private `fn` here gets ThinLTO-internalized
+    // (an `.llvm.<hash>` local symbol) and the cross-CGU reference then fails to
+    // link. Declaring the real (external) linkage requirement keeps the dev,
+    // release-fast, and debug profiles all linkable.
+    pub(crate) fn infer_scalar_lane_with_overrides(
         &self,
         op: &OpIR,
         override_kind: ScalarKind,
@@ -3094,6 +3151,40 @@ fn alias_source_name(op: &OpIR) -> Option<&str> {
                 .as_ref()
                 .and_then(|args| args.first().map(String::as_str))
         }),
+        _ => None,
+    }
+}
+
+/// The container [`TirType`] produced by a SimpleIR container-constructor op
+/// kind, or `None` for any non-constructor kind.
+///
+/// These are the frontend/native container constructors that
+/// [`ssa::kind_to_opcode`](crate::tir::ssa) lifts to the `OpCode::Copy`
+/// passthrough (no dedicated opcode); see [`ScalarRepresentationPlan::
+/// seed_container_constructor_facts`] for why the plan must override the
+/// resulting element-aliased type with the true container kind. Element/key
+/// types are intentionally `DynBox` and tuples are unknown-arity: the plan's
+/// container facts drive lane/dispatch selection, which needs only the kind.
+fn container_constructor_result_ty(kind: &str) -> Option<TirType> {
+    let dynbox = || Box::new(TirType::DynBox);
+    match kind {
+        // List builders (variadic elements, typed-int list, runtime fill, range
+        // materialization, `.copy()`) — all produce `list`; the element type is
+        // not tracked here. NOTE: `list_index_range` is deliberately absent — it
+        // is `list.index(value, start, end)`, which returns the int index, not a
+        // list (frontend `type_hint="int"`).
+        "list_new" | "list_int_new" | "list_fill_new" | "list_from_range" | "list_copy" => {
+            Some(TirType::List(dynbox()))
+        }
+        // Dict builders. Keys/values not tracked here.
+        "dict_new" | "dict_from_obj" => Some(TirType::Dict(dynbox(), dynbox())),
+        // Set / frozenset builders. molt has no distinct frozenset container
+        // kind; both probe through the shared set hash layout, so both type
+        // `Set` for dispatch (`molt_set_contains` handles set + frozenset).
+        "set_new" | "frozenset_new" => Some(TirType::Set(dynbox())),
+        // Tuple builders. The element types/arity are not needed for container
+        // dispatch, so an unknown-arity tuple is the canonical "is a tuple" fact.
+        "tuple_new" | "tuple_from_list" => Some(TirType::Tuple(Vec::new())),
         _ => None,
     }
 }
