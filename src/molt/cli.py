@@ -12071,6 +12071,96 @@ def _backend_bin_path(
     )
 
 
+def _backend_features_for_target(
+    *,
+    is_wasm: bool,
+    is_luau_transpile: bool,
+    is_rust_transpile: bool,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Resolve the cargo feature set the backend binary is built with.
+
+    Single source of truth for the target -> backend-feature mapping: the build
+    dispatch path selects features from these booleans, and the cache-key
+    binary-identity resolver reuses the same mapping so the key tracks the exact
+    binary the daemon will run. The ``MOLT_BACKEND == "llvm"`` branch adds the
+    ``llvm`` feature, which changes both the binary's codegen and its on-disk
+    path (feature-tagged), so it must participate in the identity.
+    """
+    source = env if env is not None else os.environ
+    if is_luau_transpile:
+        features: tuple[str, ...] = ("luau-backend",)
+    elif is_rust_transpile:
+        features = ("rust-backend",)
+    elif is_wasm:
+        features = ("wasm-backend",)
+    else:
+        features = ("native-backend",)
+    if source.get("MOLT_BACKEND") == "llvm":
+        features = (*features, "llvm")
+    return features
+
+
+def _backend_features_for_build_target(
+    *,
+    target: str,
+    is_wasm: bool,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Resolve backend features from the public ``target`` string.
+
+    ``is_luau_transpile``/``is_rust_transpile`` are pure functions of ``target``
+    (``target == "luau"`` / ``target in {"rust", "luau"}``); this convenience
+    wrapper lets call sites that only carry ``target`` reach the same single
+    source of truth as the build-dispatch booleans.
+    """
+    return _backend_features_for_target(
+        is_wasm=is_wasm,
+        is_luau_transpile=target == "luau",
+        is_rust_transpile=target in {"rust", "luau"},
+        env=env,
+    )
+
+
+def _backend_binary_identity(backend_bin: Path) -> str:
+    """Return a stable identity string for the backend binary the daemon runs.
+
+    Finding #4 (design 20 section 4.1) confound: the ``stdlib_shared_<key>.o``
+    cache -- and the module/function ``.o`` caches that share
+    ``_build_cache_variant`` -- were keyed on the backend *source tree*
+    fingerprint (``_cache_fingerprint``) but NOT on the backend *binary*
+    identity. A rebuilt backend with different codegen (e.g. drop passes wired
+    in) whose source fingerprint happened to be stable -- or any A/B toggle that
+    did not monotonically bump tracked source mtimes -- silently linked stale
+    objects compiled by the OLD binary. The mtime-based
+    ``_invalidate_stale_stdlib_cache`` guard is best-effort and separate from the
+    key; it does not survive worktree/git mtime resets or concurrent-session
+    target dirs.
+
+    This mirrors the established staleness convention the codebase already uses
+    for the per-function TIR cache (``backend_cache_dir_for`` salts its namespace
+    with the executable path + mtime) and the intrinsic-symbol sidecar
+    (size + mtime): the identity is the resolved path plus ``(mtime_ns, size)``.
+    We intentionally use a stat-based stamp rather than a content hash -- hashing
+    the multi-hundred-MB binary on every build would dominate cold-start cost,
+    and the per-function TIR cache already accepts exactly this trade-off.
+
+    Fail-safe: if the binary cannot be stat'd (not yet built), return a
+    ``missing:`` sentinel keyed on the path. That sentinel differs from every
+    real-binary identity, so a stale ``.o`` left by a prior binary is never
+    reused; once the binary exists the identity becomes its real stamp.
+    """
+    try:
+        resolved = backend_bin.resolve()
+    except OSError:
+        resolved = backend_bin
+    try:
+        stat = backend_bin.stat()
+    except OSError:
+        return f"missing:{resolved}"
+    return f"{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
+
+
 @functools.lru_cache(maxsize=256)
 def _runtime_lib_path_cached(
     project_root_str: str,
@@ -20252,18 +20342,15 @@ def _prepare_backend_dispatch(
         backend_env.pop("MOLT_WASM_DATA_BASE", None)
         backend_env.pop("MOLT_WASM_TABLE_BASE", None)
         backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", None)
-    if is_luau_transpile:
-        backend_features: tuple[str, ...] = ("luau-backend",)
-    elif is_rust_transpile:
-        backend_features = ("rust-backend",)
-    elif is_wasm:
-        backend_features = ("wasm-backend",)
-    else:
-        backend_features = ("native-backend",)
-    # When the LLVM backend is requested, add the 'llvm' feature so the
-    # backend binary is compiled with inkwell/LLVM support.
-    if os.environ.get("MOLT_BACKEND") == "llvm":
-        backend_features = (*backend_features, "llvm")
+    # Single source of truth (shared with the cache-key binary-identity
+    # resolver): the 'llvm' feature is folded in by the helper when
+    # MOLT_BACKEND == "llvm" so the backend binary is compiled with inkwell/LLVM
+    # support and the feature-tagged path/identity stays consistent.
+    backend_features: tuple[str, ...] = _backend_features_for_target(
+        is_wasm=is_wasm,
+        is_luau_transpile=is_luau_transpile,
+        is_rust_transpile=is_rust_transpile,
+    )
     if deterministic or profile == "release":
         os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
     # Auto-set Cranelift optimization level based on profile for size-critical
@@ -23035,6 +23122,7 @@ def _build_cache_variant(
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = "micro",
     partition_mode: bool = False,
+    backend_binary_identity: str = "",
 ) -> str:
     """Build a cache variant key from build configuration.
 
@@ -23050,6 +23138,17 @@ def _build_cache_variant(
     ``stdlib_shared.o`` (and main backend object), so a micro build could
     silently reuse a full build's object and vice versa — a stale cache hit
     that yields the wrong runtime surface or a duplicate/missing-symbol link.
+
+    ``backend_binary_identity`` MUST be part of the variant: it is the stat-based
+    identity (path + mtime + size) of the backend binary that will compile these
+    objects (see ``_backend_binary_identity``). The variant flows into every
+    ``.o`` cache key (stdlib-shared, module, per-function), so binding it here
+    makes the cache key change whenever the backend binary changes — closing the
+    Finding #4 (design 20 §4.1) confound where a rebuilt backend with different
+    codegen silently linked stale objects compiled by the prior binary. The
+    backend *source-tree* fingerprint (``_cache_fingerprint``) does not catch
+    this when source mtimes are reset by git/worktree ops or when two
+    same-source builds produce different binaries.
     """
     parts = [
         f"profile={profile}",
@@ -23065,6 +23164,8 @@ def _build_cache_variant(
         parts.append("linked=1")
     if partition_mode:
         parts.append("partitioned=v1")
+    if backend_binary_identity:
+        parts.append(f"backend_bin={backend_binary_identity}")
     return ";".join(parts)
 
 
@@ -23099,6 +23200,17 @@ def _prepare_backend_cache_setup(
         if split_stdlib_object
         else None
     )
+    # Bind the cache key to the backend binary the daemon will run, so a rebuilt
+    # backend with different codegen never silently reuses .o objects compiled by
+    # the prior binary (Finding #4, design 20 §4.1). Resolve the binary path via
+    # the same feature mapping the build dispatch uses, so the stamped identity
+    # matches the actual daemon executable for this target/profile.
+    backend_bin = _backend_bin_path(
+        project_root,
+        backend_cargo_profile,
+        _backend_features_for_build_target(target=target, is_wasm=is_wasm),
+    )
+    backend_binary_identity = _backend_binary_identity(backend_bin)
     cache_variant = _build_cache_variant(
         profile=profile,
         runtime_cargo=runtime_cargo_profile,
@@ -23109,6 +23221,7 @@ def _prepare_backend_cache_setup(
         linked=linked,
         target_python=target_python,
         stdlib_profile=stdlib_profile,
+        backend_binary_identity=backend_binary_identity,
     )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
