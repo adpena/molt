@@ -52,7 +52,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(Protocol):
-    _RAISING_OP_KINDS: Any
     _STUB_IMPORT_MODULES: frozenset[str]
     _active_classcell_cell: MoltValue | None
     _active_midend_function_name: Any
