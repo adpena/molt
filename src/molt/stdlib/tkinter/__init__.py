@@ -128,7 +128,15 @@ _TK_MAINLOOP = _tk_runtime_export("mainloop")
 _TK_DO_ONE_EVENT = _tk_runtime_export("dooneevent")
 _TK_QUIT = _tk_runtime_export("quit")
 _TK_AFTER = _tk_runtime_export("after")
-_TK_CALL = _tk_runtime_export("call")
+# Bind the hot `call` path directly to the `_tkinter.call` function object rather
+# than through a `_tk_runtime_export` closure: the closure's getattr + *args/
+# **kwargs repack is per-call overhead on the busiest tkinter entry point.
+_TK_CALL = _require_tk_callable("call")
+# The raw `molt_tk_call` intrinsic. `Misc.call` invokes it directly with the bare
+# interpreter handle, collapsing the Misc.call -> _TK_CALL -> _tkinter.call ->
+# _unwrap_app -> intrinsic chain (4 Python calls) down to a single intrinsic call
+# — the per-call function-invocation overhead is the dominant tkinter tax.
+_MOLT_TK_CALL = _require_intrinsic("molt_tk_call")
 _TK_BIND_REGISTER = _tk_runtime_export("bind_register")
 _TK_BIND_UNREGISTER = _tk_runtime_export("bind_unregister")
 _TK_WIDGET_BIND_REGISTER = _tk_runtime_export("widget_bind_register")
@@ -663,8 +671,17 @@ class Misc:
     _noarg_ = NO_VALUE
 
     def call(self, *argv):
-        _require_gui_window_capability()
-        return _TK_CALL(self._tk_app, *argv)
+        # The gui.window capability is verified once when the interpreter is
+        # created (Tk.__init__); it cannot be revoked mid-process, and a Misc
+        # instance cannot exist without a constructed interpreter. Re-checking on
+        # every call is the dominant per-call tax (2-4 capability-probe intrinsic
+        # calls), so the hot path trusts the construction-time guarantee — exactly
+        # like CPython, whose Misc.call goes straight to the C tkapp.
+        #
+        # Call the intrinsic directly with the bare handle. `self._tk_app` is the
+        # TkappType wrapper; `_handle` is its interpreter handle. This collapses
+        # the wrapper-call chain to one intrinsic invocation.
+        return _MOLT_TK_CALL(self._tk_app._handle, list(argv))
 
     def _call_widget(self, command, *args):
         return self.call(self._w, command, *args)
@@ -957,10 +974,12 @@ class Misc:
         return tuple(_MOLT_TK_SPLITLIST(value))
 
     def getvar(self, name="PY_VAR"):
-        return _TK_CALL(self._tk_app, "set", name)
+        # Direct intrinsic call (see Misc.call): the variable get/set path is hot
+        # (StringVar/IntVar/DoubleVar), so it bypasses the wrapper chain.
+        return _MOLT_TK_CALL(self._tk_app._handle, ["set", name])
 
     def setvar(self, name="PY_VAR", value="1"):
-        return _TK_CALL(self._tk_app, "set", name, value)
+        return _MOLT_TK_CALL(self._tk_app._handle, ["set", name, value])
 
     def unsetvar(self, name="PY_VAR"):
         return _TK_CALL(self._tk_app, "unset", name)
