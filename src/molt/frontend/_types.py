@@ -1211,6 +1211,16 @@ class MethodInfo(TypedDict):
     inline_return: NotRequired[ast.expr | None]
     inline_params: NotRequired[list[str] | None]
     inline_owner_class: NotRequired[str | None]
+    # Module that *defines* the inlinable method.  An inline splices the body
+    # into the caller's scope; any bare-Name reference in the body that is not a
+    # substituted parameter or a builtin resolves against the *caller's* module
+    # globals (``visit_Name`` -> ``_emit_global_get``).  When the body reads one
+    # of the defining module's globals (recorded in ``inline_free_names``), the
+    # inline is therefore only sound when the call site is compiled in that same
+    # module.  ``_try_inline_method_call`` consults both to refuse a cross-module
+    # inline that would mis-resolve a defining-module global.
+    inline_owner_module: NotRequired[str | None]
+    inline_free_names: NotRequired[frozenset[str]]
     inline_init_assigns: NotRequired[list[tuple[str, ast.expr]] | None]
 
 

@@ -815,7 +815,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/argparse_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/argparse_filetype_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/argparse_subparsers_basic.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/array_basic.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/array_basic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/ast_basic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio__asyncio_running_loop_intrinsic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_api_surface_core.py", "raw_status": "pass"}

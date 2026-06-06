@@ -1540,6 +1540,32 @@ class ClassDefVisitorMixin(_MixinBase):
                     if (inline_return is not None or inline_init_assigns is not None)
                     else None
                 ),
+                # Module that defines this method, captured now (while compiling
+                # the owner class) so the inline site can compare it against the
+                # caller's module.  `inline_free_names` records the body's bare
+                # references to that module's globals; a non-empty set forbids a
+                # cross-module inline (the global would mis-resolve in the
+                # caller's scope).  __init__-style inline-assign bodies carry the
+                # same gate via the union over every assigned value-expression.
+                "inline_owner_module": (
+                    self.module_name
+                    if (inline_return is not None or inline_init_assigns is not None)
+                    else None
+                ),
+                "inline_free_names": (
+                    self._inline_body_external_names(inline_return, params)
+                    if inline_return is not None
+                    else (
+                        frozenset().union(
+                            *(
+                                self._inline_body_external_names(value_expr, params)
+                                for _attr, value_expr in inline_init_assigns
+                            )
+                        )
+                        if inline_init_assigns
+                        else frozenset()
+                    )
+                ),
                 "inline_init_assigns": inline_init_assigns,
             }
 
@@ -3576,6 +3602,44 @@ class ClassDefVisitorMixin(_MixinBase):
                 return False
         return True
 
+    def _inline_body_external_names(
+        self, expr: "ast.expr", params: list[str]
+    ) -> "frozenset[str]":
+        """Collect the bare ``Name`` *loads* in an inline-body expression that
+        are neither substituted parameters nor builtins.
+
+        At inline time the body is spliced into the caller's scope and the
+        parameters are substituted (``self.locals = {param: arg_value}``).  A
+        bare ``Name`` that is NOT a parameter falls through ``visit_Name`` to
+        ``_emit_global_get`` and resolves against the **caller's** module
+        globals — which is only correct when the call site is compiled in the
+        method's *defining* module.  A reference to the defining module's own
+        global (a module-level constant, a sibling function, an intrinsic
+        binding such as ``_MOLT_ARRAY_TOLIST``) therefore silently mis-resolves
+        across a module boundary, yielding a ``NameError`` at runtime.
+
+        Builtins (``len``, ``super``, exception/type names, …) are excluded
+        because ``visit_Name`` materialises them statically and identically in
+        every scope, so they remain sound under cross-module splicing.
+
+        The returned set drives ``_try_inline_method_call``'s cross-module
+        refusal (the fail-closed soundness gate).
+        """
+        param_set = set(params)
+        external: set[str] = set()
+        for node in ast.walk(expr):
+            if not isinstance(node, ast.Name):
+                continue
+            if not isinstance(node.ctx, ast.Load):
+                continue
+            name = node.id
+            if name in param_set:
+                continue
+            if self._name_resolves_to_builtin(name):
+                continue
+            external.add(name)
+        return frozenset(external)
+
     def _extract_inline_return(
         self, item: "ast.FunctionDef", params: list[str]
     ) -> "ast.expr | None":
@@ -3583,12 +3647,15 @@ class ClassDefVisitorMixin(_MixinBase):
         trivially inlinable: body is a single Return statement (an
         optional leading docstring is allowed), the returned expression
         references only parameters, attributes-on-parameters,
-        constants, and pure operations (BinOp, UnaryOp, Compare,
-        BoolOp, IfExp, Tuple/List of inlinable elements).
+        constants, builtins, and pure operations (BinOp, UnaryOp,
+        Compare, BoolOp, IfExp, Tuple/List of inlinable elements), plus
+        nested Calls thereof.
 
-        No Calls, no Subscripts, no global references, no name
-        rebinding — those would require the full visitor with proper
-        scope handling and break the substitution model.
+        The returned expression MAY reference globals of the *defining*
+        module (e.g. ``_MOLT_ARRAY_TOLIST(self._handle)``); such bodies
+        are still inline-eligible but ``_try_inline_method_call`` refuses
+        to splice them across a module boundary (where the global would
+        mis-resolve).  See ``_inline_body_external_names``.
         """
         body = item.body
         # Skip docstring if present.
