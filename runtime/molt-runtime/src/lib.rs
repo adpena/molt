@@ -478,8 +478,6 @@ pub use crate::builtins::functions_stat::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;
-#[cfg(feature = "stdlib_fs_extra")]
-pub use crate::builtins::glob_mod::*;
 pub use crate::builtins::graphlib::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::gzip::*;
