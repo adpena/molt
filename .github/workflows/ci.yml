@@ -46,6 +46,9 @@ jobs:
       - name: Check ecosystem compatibility ratchet (derived verdicts, down-only)
         run: uv run python3 tools/check_ecosystem_compat.py
 
+      - name: Check differential suite layout (lane/naming hygiene)
+        run: uv run python3 tools/check_differential_suite_layout.py
+
       - name: Check suite-honesty ratchet (tracked-fail manifest, down-only)
         run: uv run python3 tools/check_suite_honesty.py
 

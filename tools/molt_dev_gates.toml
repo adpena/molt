@@ -129,13 +129,17 @@ gates = [
 # --- Differential / suite-honesty surface --------------------------------
 [[rule]]
 name = "suite-honesty"
-description = "Differential tests or the honesty manifest: the down-only suite-honesty ratchet."
+description = "Differential tests or the honesty manifest: suite-layout hygiene + the down-only suite-honesty ratchet."
 globs = [
   "tests/differential/**/*.py",
   "tools/suite_honesty/**",
   "tools/check_suite_honesty.py",
+  "tools/check_differential_suite_layout.py",
 ]
 gates = [
+  # Lane/naming hygiene: no unexpected lane dirs, no stdlib-prefixed basic
+  # files (no `test_`-prefixed differential tests), live allowlist ledger.
+  "python3 tools/check_differential_suite_layout.py",
   "python3 tools/check_suite_honesty.py",
 ]
 
