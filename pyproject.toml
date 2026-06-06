@@ -119,6 +119,8 @@ lint = [
     "{project_python} tools/check_dynamic_policy.py",
     "{project_python} tools/check_ecosystem_compat.py",
     "{project_python} tools/check_suite_honesty.py",
+    "{project_python} tools/gen_op_kinds.py --check",
+    "{project_python} tools/audit_op_kinds.py --check",
     "@subprocess-guard-audit",
     "@memory-guard-wiring-audit",
     "{project_python} tools/update_status_blocks.py --check",

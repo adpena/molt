@@ -86,46 +86,19 @@ pub(crate) fn tir_has_static_module_class_binding_effect_proof(op: &TirOp) -> bo
     tir_effect_proof(op) == Some(EffectProof::StaticModuleClassBinding)
 }
 
+/// Whether `opcode` may raise — DCE must preserve it even when its result is
+/// dead. EXHAUSTIVE over the `OpCode` enum: the classification lives in the
+/// single-source-of-truth op-kind registry
+/// (`runtime/molt-backend/src/tir/op_kinds.toml`'s per-OpCode `may_throw` column,
+/// generated into [`crate::tir::op_kinds_generated`]; see
+/// `docs/design/foundation/25_op_kind_registry.md`). Because the generated match
+/// has no wildcard arm, a newly added `OpCode` variant fails to compile until it
+/// is given an explicit effect classification in the table — the structural kill
+/// for the `matches!`-default-false trap (the ModuleImportFrom lesson) that
+/// silently classified a new opcode as no-throw.
 #[inline]
 pub(super) fn opcode_may_throw(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::Raise
-            | OpCode::Index
-            | OpCode::OrdAt
-            | OpCode::StoreIndex
-            | OpCode::LoadAttr
-            | OpCode::StoreAttr
-            | OpCode::DelAttr
-            | OpCode::DelIndex
-            | OpCode::Import
-            | OpCode::ImportFrom
-            | OpCode::ModuleCacheGet
-            | OpCode::ModuleCacheSet
-            | OpCode::ModuleCacheDel
-            | OpCode::ModuleGetAttr
-            | OpCode::ModuleImportFrom
-            | OpCode::ModuleGetGlobal
-            | OpCode::ModuleGetName
-            | OpCode::ModuleSetAttr
-            | OpCode::ModuleDelGlobal
-            | OpCode::ModuleDelGlobalIfPresent
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::GetIter
-            | OpCode::IterNext
-            | OpCode::IterNextUnboxed
-            | OpCode::ForIter
-            | OpCode::StateTransition
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::ClosureLoad
-            | OpCode::ClosureStore
-    )
+    crate::tir::op_kinds_generated::opcode_may_throw_table(opcode)
 }
 
 #[inline]
@@ -133,75 +106,34 @@ pub(super) fn op_may_throw(op: &TirOp) -> bool {
     !tir_has_static_module_class_binding_effect_proof(op) && opcode_may_throw(op.opcode)
 }
 
+/// Whether `opcode` has an observable side effect — DCE must preserve it even
+/// when its result is dead. EXHAUSTIVE over the `OpCode` enum via the
+/// single-source-of-truth op-kind registry
+/// (`runtime/molt-backend/src/tir/op_kinds.toml`'s per-OpCode `side_effecting`
+/// column, generated into [`crate::tir::op_kinds_generated`]; see
+/// `docs/design/foundation/25_op_kind_registry.md`).
+///
+/// Safety-critical rationale preserved from the original hand-list (now encoded
+/// in the table):
+/// - `ExceptionPending` reads the mutable runtime exception-pending flag; it MUST
+///   re-read each iteration and never be CSE'd / LICM-hoisted out of a loop or
+///   eliminated when its result looks unused — else the `loop_break_if_exception`
+///   it feeds could be deleted, re-opening the iterator-consumer infinite-loop /
+///   OOM bug. (Hence side_effecting = true.)
+/// - `ObjectNewBound` is side-effecting (a class-instance allocation may run a
+///   finalizer/GC hook, like `Alloc`); `ObjectNewBoundStack` is intentionally NOT
+///   (escape analysis only converts to it when the result provably does not
+///   escape, and the lowered Cranelift StackSlot has no finalizer).
+/// - Module reads (`ModuleCacheGet`, `ModuleGetAttr`, …) and mutations are
+///   preserved even when their synthetic result is unused; a specific op instance
+///   may opt out via a validated `effect_proof` (see `op_is_side_effecting`).
+///
+/// Because the generated match has no wildcard arm, a newly added `OpCode`
+/// variant fails to compile until classified — the structural kill for the
+/// `matches!`-default-false trap.
 #[inline]
 fn opcode_is_side_effecting(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        // Calls — may have arbitrary side effects.
-        OpCode::Call
-        | OpCode::CallMethod
-        | OpCode::CallBuiltin
-        // Store/delete mutations.
-        | OpCode::StoreAttr
-        | OpCode::StoreIndex
-        | OpCode::DelAttr
-        | OpCode::DelIndex
-        // Control flow / exception handling.
-        | OpCode::Raise
-        | OpCode::CheckException
-        // ExceptionPending reads the mutable runtime exception-pending flag.
-        // It MUST re-read each iteration and must never be CSE'd / LICM-hoisted
-        // out of a loop or eliminated when its result looks unused — otherwise
-        // the `loop_break_if_exception` it feeds could be deleted, re-opening
-        // the iterator-consumer infinite-loop/OOM bug.
-        | OpCode::ExceptionPending
-        | OpCode::TryStart
-        | OpCode::TryEnd
-        | OpCode::StateBlockStart
-        | OpCode::StateBlockEnd
-        | OpCode::StateSwitch
-        | OpCode::StateTransition
-        | OpCode::StateYield
-        | OpCode::ChanSendYield
-        | OpCode::ChanRecvYield
-        | OpCode::ClosureStore
-        // Generator protocol.
-        | OpCode::Yield
-        | OpCode::YieldFrom
-        // Reference-counting and memory management.
-        | OpCode::IncRef
-        | OpCode::DecRef
-        | OpCode::Free
-        // Allocation may trigger a finalizer / GC hook.
-        | OpCode::Alloc
-        // Class-instance allocation: same finalizer-effect concern as
-        // Alloc. ObjectNewBoundStack is intentionally NOT side-effecting:
-        // escape-analysis only converts to it when the result provably does
-        // not escape, and the lowered Cranelift StackSlot has no finalizer.
-        | OpCode::ObjectNewBound
-        // Import has module-level side effects.
-        | OpCode::Import
-        | OpCode::ImportFrom
-        // Module lookup reads may raise on invalid names / missing attrs /
-        // missing globals. Preserve even when the result is unused unless a
-        // specific op instance carries a validated proof.
-        | OpCode::ModuleCacheGet
-        // Module mutations update runtime cache/module dictionaries and may
-        // raise. Preserve even when their synthetic None result is unused.
-        | OpCode::ModuleCacheSet
-        | OpCode::ModuleCacheDel
-        | OpCode::ModuleGetAttr
-        | OpCode::ModuleImportFrom
-        | OpCode::ModuleGetGlobal
-        | OpCode::ModuleGetName
-        | OpCode::ModuleSetAttr
-        | OpCode::ModuleDelGlobal
-        | OpCode::ModuleDelGlobalIfPresent
-        // IO / diagnostics — emits to stderr.
-        | OpCode::WarnStderr
-        // Deoptimisation must not be silently dropped.
-        | OpCode::Deopt
-    )
+    crate::tir::op_kinds_generated::opcode_is_side_effecting_table(opcode)
 }
 
 #[inline]
@@ -292,77 +224,31 @@ impl OpEffects {
 /// allocation, control flow, runtime-state reads, …) is `IMPURE` — even when it
 /// is not in `opcode_is_side_effecting`, because referential transparency is a
 /// strictly stronger property than "DCE may not drop it".
+/// The purity classification is the single-source-of-truth op-kind registry
+/// (`runtime/molt-backend/src/tir/op_kinds.toml`'s per-OpCode `purity` column,
+/// generated into [`crate::tir::op_kinds_generated`]; see
+/// `docs/design/foundation/25_op_kind_registry.md`). The registry maps each
+/// `OpCode` to the `(consistent, effect_free, nothrow)` triple this returns:
+///   - `"pure"`           => PURE — the type-gated arithmetic/comparison/bitwise/
+///     boolean family (on primitive operands, see the PRECONDITION above), the
+///     box/unbox transforms, `TypeGuard`, the constant materializers (incl.
+///     `ConstBigInt`, effect-free like `ConstStr`), and `BuildSlice`.
+///   - `"pure_may_throw"` => PURE_MAY_THROW — `Div`/`FloorDiv`/`Mod`/`Pow` (may
+///     raise `ZeroDivisionError` / `0 ** -1`; CSE-safe under dominance, NOT
+///     hoistable above a guard).
+///   - `"impure"`         => IMPURE — everything else, INCLUDING `CheckedAdd`,
+///     which is *semantically* pure but is deliberately impure for hoist/CSE
+///     because it is a 2-result op that GVN/LICM have not been verified for.
+///
+/// EXHAUSTIVE over the enum (the generated triple has no wildcard arm), so a new
+/// `OpCode` variant must be classified in the table before it compiles.
 #[inline]
 fn opcode_effects(opcode: OpCode) -> OpEffects {
-    match opcode {
-        // ── Arithmetic / comparison / bitwise / boolean (type-gated family) ──
-        // Pure + nothrow on primitive operands. See the PRECONDITION note above.
-        OpCode::Add
-        | OpCode::Sub
-        | OpCode::Mul
-        | OpCode::InplaceAdd
-        | OpCode::InplaceSub
-        | OpCode::InplaceMul
-        | OpCode::Neg
-        | OpCode::Pos
-        | OpCode::Eq
-        | OpCode::Ne
-        | OpCode::Lt
-        | OpCode::Le
-        | OpCode::Gt
-        | OpCode::Ge
-        | OpCode::Is
-        | OpCode::IsNot
-        | OpCode::BitAnd
-        | OpCode::BitOr
-        | OpCode::BitXor
-        | OpCode::BitNot
-        | OpCode::Shl
-        | OpCode::Shr
-        | OpCode::And
-        | OpCode::Or
-        | OpCode::Not
-        | OpCode::Bool => OpEffects::PURE,
-
-        // Division / modulo / power: pure on primitive operands but may raise
-        // `ZeroDivisionError` (int `/ 0`, `% 0`) or `0 ** -1`. Safe to CSE under
-        // dominance, NOT safe to hoist above a guard.
-        OpCode::Div | OpCode::FloorDiv | OpCode::Mod | OpCode::Pow => OpEffects::PURE_MAY_THROW,
-
-        // CheckedAdd is semantically pure (deterministic raw-i64 sum +
-        // overflow flag, no memory, never throws) but is deliberately
-        // classified IMPURE for hoist/CSE purposes: it is a 2-result op, and
-        // neither GVN's value-numbering (keyed on a single result) nor LICM's
-        // hoist machinery has been verified for multi-result ops. DCE may
-        // still drop it when both results are dead (it is in neither
-        // `opcode_is_side_effecting` nor `opcode_may_throw`), which is
-        // correct. Revisit only with explicit multi-result GVN/LICM support.
-        OpCode::CheckedAdd => OpEffects::IMPURE,
-
-        // ── Type assertion: a no-op value-carrier checked elsewhere. Pure. ──
-        OpCode::TypeGuard => OpEffects::PURE,
-
-        // ── Box/unbox: pure value-representation transforms. ──
-        OpCode::BoxVal | OpCode::UnboxVal => OpEffects::PURE,
-
-        // ── Constant materialization: pure, deterministic, nothrow. ──
-        // ConstBigInt allocates an immutable heap int from compiler-emitted
-        // decimal text — deterministic and effect-free like ConstStr (which
-        // allocates a str); the runtime's invalid-literal raise is
-        // unreachable for lexed int literals, so nothrow within its domain.
-        OpCode::ConstInt
-        | OpCode::ConstBigInt
-        | OpCode::ConstFloat
-        | OpCode::ConstStr
-        | OpCode::ConstBool
-        | OpCode::ConstNone
-        | OpCode::ConstBytes => OpEffects::PURE,
-
-        // ── Slice construction from already-computed primitive bounds: pure. ──
-        OpCode::BuildSlice => OpEffects::PURE,
-
-        // Everything else is not a pure computation for hoist/CSE purposes.
-        _ => OpEffects::IMPURE,
+    use crate::tir::op_kinds_generated::OpcodePurity;
+    match crate::tir::op_kinds_generated::opcode_purity_table(opcode) {
+        OpcodePurity::Pure => OpEffects::PURE,
+        OpcodePurity::PureMayThrow => OpEffects::PURE_MAY_THROW,
+        OpcodePurity::Impure => OpEffects::IMPURE,
     }
 }
 
