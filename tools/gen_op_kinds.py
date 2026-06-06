@@ -214,7 +214,9 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     for row in raising:
         kind = row.get("kind")
         if not isinstance(kind, str) or not kind:
-            raise OpKindTableError(f"[[frontend_raising_kind]] row missing 'kind': {row}")
+            raise OpKindTableError(
+                f"[[frontend_raising_kind]] row missing 'kind': {row}"
+            )
         if kind in seen_raising:
             raise OpKindTableError(f"duplicate frontend_raising_kind: {kind}")
         seen_raising.add(kind)
@@ -247,9 +249,7 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     # -- [[frontend_check_exception_skip]] ----------------------------------
     skip = data.get("frontend_check_exception_skip", [])
     if not isinstance(skip, list) or not skip:
-        raise OpKindTableError(
-            "table has no [[frontend_check_exception_skip]] rows"
-        )
+        raise OpKindTableError("table has no [[frontend_check_exception_skip]] rows")
     seen_skip: set[str] = set()
     for row in skip:
         kind = row.get("kind")
@@ -591,10 +591,18 @@ def render_py(data: dict) -> str:
 
     # -- frontend op.kind tables (F2a) --------------------------------------
     raising = data.get("frontend_raising_kind", [])
-    out.append("# Frontend `op.kind`s that can raise at runtime — emit() attaches the\n")
-    out.append("# expression-level col_offset for traceback caret annotations. Each row\n")
-    out.append("# is either an opcode-mapped may_throw kind (cross-checked against the\n")
-    out.append("# [[opcode]] oracle at generation) or a documented frontend-specific kind.\n")
+    out.append(
+        "# Frontend `op.kind`s that can raise at runtime — emit() attaches the\n"
+    )
+    out.append(
+        "# expression-level col_offset for traceback caret annotations. Each row\n"
+    )
+    out.append(
+        "# is either an opcode-mapped may_throw kind (cross-checked against the\n"
+    )
+    out.append(
+        "# [[opcode]] oracle at generation) or a documented frontend-specific kind.\n"
+    )
     out.append("RAISING_KIND_NAMES: frozenset[str] = frozenset(\n")
     out.append("    {\n")
     for row in raising:
@@ -604,9 +612,13 @@ def render_py(data: dict) -> str:
 
     skip = data.get("frontend_check_exception_skip", [])
     out.append("# Frontend `op.kind`s after which emit() does NOT auto-insert a\n")
-    out.append("# CHECK_EXCEPTION (control-flow / structural kinds, plus the two may_throw\n")
+    out.append(
+        "# CHECK_EXCEPTION (control-flow / structural kinds, plus the two may_throw\n"
+    )
     out.append("# kinds whose exceptional edge is handled structurally — RAISE,\n")
-    out.append("# STATE_TRANSITION). NOT the complement of may_throw; see op_kinds.toml.\n")
+    out.append(
+        "# STATE_TRANSITION). NOT the complement of may_throw; see op_kinds.toml.\n"
+    )
     out.append("CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(\n")
     out.append("    {\n")
     for row in skip:
@@ -615,16 +627,26 @@ def render_py(data: dict) -> str:
     out.append(")\n\n")
 
     binary = data.get("binary_op", [])
-    out.append("# `ast.operator` subclass __name__ -> the binary-form frontend op.kind\n")
-    out.append("# (visit_BinOp). EXHAUSTIVE over ast.operator (generation-time checked).\n")
+    out.append(
+        "# `ast.operator` subclass __name__ -> the binary-form frontend op.kind\n"
+    )
+    out.append(
+        "# (visit_BinOp). EXHAUSTIVE over ast.operator (generation-time checked).\n"
+    )
     out.append("BINOP_OP_KIND: dict[str, str] = {\n")
     for row in binary:
         out.append(f'    "{row["ast_op"]}": "{row["binop_kind"]}",\n')
     out.append("}\n\n")
 
-    out.append("# `ast.operator` subclass __name__ -> the augmented-assignment op.kind\n")
-    out.append("# (visit_AugAssign). The in-place kind routes through the in-place dunder\n")
-    out.append("# (__iadd__/__ifloordiv__/...) before the binary fallback, matching CPython.\n")
+    out.append(
+        "# `ast.operator` subclass __name__ -> the augmented-assignment op.kind\n"
+    )
+    out.append(
+        "# (visit_AugAssign). The in-place kind routes through the in-place dunder\n"
+    )
+    out.append(
+        "# (__iadd__/__ifloordiv__/...) before the binary fallback, matching CPython.\n"
+    )
     out.append("AUGASSIGN_OP_KIND: dict[str, str] = {\n")
     for row in binary:
         out.append(f'    "{row["ast_op"]}": "{row["augassign_kind"]}",\n')
