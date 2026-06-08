@@ -604,9 +604,24 @@ def test_classify_green_single_pass_quiescent_stable() -> None:
     assert cls == ps.CLASS_GREEN
 
 
-def test_classify_green_demoted_to_noisy_under_load() -> None:
+def test_classify_green_survives_load_contamination_is_conservative() -> None:
+    # ASYMMETRY OF CONTAMINATION: load can only make molt look SLOWER, never
+    # faster. So a clear warm WIN measured under contamination is still a real
+    # GREEN (the quiet number would be even better) — NOT a RED_NOISY. Only
+    # instability demotes a green. (A 10x cell must not be mislabeled RED just
+    # because an idle daemon was running.)
     c = _warm_cell(3.00, stable=True)
     cls, reason = ps.classify_cell(c, quiescent=False)
+    assert cls == ps.CLASS_GREEN
+    assert "conservative" in reason
+
+
+def test_classify_green_above_demoted_to_noisy_only_when_unstable() -> None:
+    # A point-above cell that is UNSTABLE (volatile samples) is not a confirmed
+    # win -> RED_NOISY (green unconfirmed). Instability, not load, is what blocks
+    # a green.
+    c = _warm_cell(3.00, stable=False)
+    cls, reason = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_RED_NOISY
     assert "green unconfirmed" in reason
 
@@ -701,6 +716,23 @@ def test_apply_classification_contaminated_demotes_all_reds() -> None:
     ps.apply_classification([red], quiescent=False)
     assert red.classification == ps.CLASS_RED_NOISY
     assert red.measured_quiescent is False
+
+
+def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
+    # On a NON-quiescent board, a warm RED is demoted to RED_NOISY (load can
+    # manufacture a false red) but a clear warm GREEN STAYS GREEN_STABLE (load
+    # can only have made the win look smaller — it is a conservative green). This
+    # is the board-level twin of the asymmetry rule, exercised the way
+    # --rebuild-summary re-applies it from a stored non-quiescent board.
+    red = _warm_cell(0.60, stable=True, repeat_stability="STABLE_BELOW",
+                     repeat_ci=(0.58, 0.62), repeat_passes=5)
+    green = _warm_cell(10.5, stable=True, repeat_stability="STABLE_ABOVE",
+                       repeat_ci=(9.9, 10.9), repeat_passes=3)
+    green.benchmark = "tests/benchmarks/bench_sum.py"
+    ps.apply_classification([red, green], quiescent=False)
+    assert red.classification == ps.CLASS_RED_NOISY
+    assert green.classification == ps.CLASS_GREEN
+    assert green.measured_quiescent is False  # recorded, but not gating the green
 
 
 # --- Quiescence gather (synthetic; monkeypatched probes) --------------------

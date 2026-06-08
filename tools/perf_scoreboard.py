@@ -1318,28 +1318,36 @@ def classify_cell(
 
     # --- WARM GREEN / DIMENSIONAL branch (CI-governed when present) ----------
     if warm_above:
-        if quiescent and cell.stable:
-            return (
-                CLASS_GREEN,
-                f"warm point {warm}x above 1.00, stable + quiescent"
-                + (
+        # ASYMMETRY OF CONTAMINATION: a competing build steals cycles from the
+        # TIMED molt process, so it can only make molt look SLOWER — never
+        # artificially FASTER. Therefore a warm-ABOVE cell under contamination is
+        # a CONSERVATIVE green (the quiet number would be >= this); the win is
+        # real. Only cell INSTABILITY (CV/robustness) can undermine a green —
+        # NOT non-quiescence. (Contrast the warm-BELOW branch, where load CAN
+        # manufacture a false red, so quiescence is mandatory there.) Calling a
+        # 10x cell RED_NOISY merely because an idle daemon was running is wrong.
+        if cell.stable:
+            note = f"warm point {warm}x above 1.00, stable"
+            if has_ci:
+                note += (
                     f", repeat CI [{cell.repeat_ci_lo}, {cell.repeat_ci_hi}] clears "
                     "above 1.00"
-                    if has_ci
-                    else ""
-                ),
-            )
-        # warm>1 but not trustworthy as a clean green -> NOISY (not a target,
-        # not a confirmed win). A straddle was already caught above.
-        causes = []
-        if not quiescent:
-            causes.append("machine NOT quiescent")
-        if not cell.stable:
-            causes.append("cell unstable")
+                )
+            if not quiescent:
+                note += (
+                    " (measured non-quiescent — contamination is conservative for "
+                    "a green: the quiet number can only be faster; board authority "
+                    "still gated)"
+                )
+            else:
+                note += " + quiescent"
+            return CLASS_GREEN, note
+        # warm>1 but the cell is UNSTABLE -> not a confirmed win (a straddle was
+        # already caught above; this is point-above with a volatile sample).
         return (
             CLASS_RED_NOISY,
-            f"warm point {warm}x above 1.00 BUT " + "; ".join(causes)
-            + " — green unconfirmed",
+            f"warm point {warm}x above 1.00 BUT cell unstable (CV/robustness) — "
+            "green unconfirmed",
         )
 
     # --- DIMENSIONAL_WIN: warm gate flat, another dimension improved --------
@@ -3236,6 +3244,14 @@ def _rebuild_summary(
     _finalize_with_board_context(
         cells, prior, allow_nonauthoritative=allow_nonauthoritative
     )
+    # If the stored board carried the 5-state classification, RE-DERIVE it from
+    # the CURRENT classify logic too (reading the measured quiescence from the
+    # stored provenance) — so a rebuild picks up a classifier refinement without
+    # re-running any benchmark. Only do so when the board was classified (any
+    # cell has a classification); else leave the 2-D verdict path untouched.
+    if any(c.classification is not None for c in cells):
+        stored_q = bool(prior.get("provenance", {}).get("quiescent"))
+        apply_classification(cells, quiescent=stored_q, baseline_doc=None)
     method = prior.get("methodology", {})
     # Re-derive the deferred list from cpython-incompatible cells.
     deferred = list(prior.get("benchmarks_deferred", []))
