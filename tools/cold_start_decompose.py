@@ -23,13 +23,24 @@ Components (process launch -> first user instruction):
                             essential floor; the delta to a json-importing app
                             isolates per-module init.
 
-Method (council Lane C exit condition):
+Method (council Lane C exit condition) — TWO path modes (this matters):
   * minimal print()-only molt binary  = the pure init floor (no user compute).
   * no-op C binary                    = pure dyld + process launch.
   * MOLT_TRACE_RUNTIME_INIT=1         = the molt_runtime_init phase ladder.
   * DYLD_PRINT_STATISTICS=1           = macOS dyld's own timing (cross-check).
-  * fresh-path copies                 = defeat macOS's same-path dyld/codesign
-                                        caching that hides the real cold tax.
+  * SAME-PATH (repeated launches of one path): the REALISTIC repeated cold —
+    macOS caches the code-signature validation after the first run, so this is
+    the operating point an INSTALLED binary sees. Components attribute this tax.
+  * FRESH-PATH (a fresh copy per sample): the WORST-CASE FIRST-EVER launch —
+    a freshly-materialized UNSIGNED binary pays macOS codesign/Gatekeeper
+    validation on every copy. (no-op C fresh − no-op C same-path) ISOLATES that
+    one-time cost; it is reported separately, NOT summed into the realistic tax.
+
+    A measured caveat (this host): the fresh-path codesign cost is ~86ms — large
+    enough that a fresh-path-ONLY method (e.g. output_startup_size_audit's) over-
+    attributes it to "dyld". The realistic same-path dyld floor is ~2ms. This
+    tool reports both so the #62 target is the size-driven page-in lever molt
+    controls, not a one-time install cost it does not.
 
 Profiles: native release-fast AND release-output (the shipped artifact — the
 council Y1 target is release-output startup_tax < 100ms).
@@ -409,6 +420,19 @@ def _build_molt_probe(
 @dataclass
 class ProfileBreakdown:
     profile: str
+    # FRESH-PATH = a freshly-materialized copy per sample. Defeats the page
+    # cache BUT pays macOS first-launch code-signature/Gatekeeper validation of
+    # an unsigned binary every time — the WORST-CASE first-ever launch.
+    minimal_total_fresh_ms: float | None = None
+    noop_c_fresh_ms: float | None = None
+    # SAME-PATH = repeated launches of one stable path. Signature validation is
+    # cached after the first run, so this is the REALISTIC repeated-cold launch
+    # of an installed binary (the operating point a deployed molt binary sees).
+    minimal_total_samepath_ms: float | None = None
+    noop_c_samepath_ms: float | None = None
+    json_total_samepath_ms: float | None = None
+    # Legacy aliases (= the realistic same-path numbers; the scoreboard's COLD
+    # column is a single first-run, closest to same-path-first).
     minimal_total_ms: float | None = None
     json_total_ms: float | None = None
     noop_c_ms: float | None = None
@@ -449,47 +473,82 @@ def decompose_profile(
         JSON_PY, build_profile=build_flag, stem="json", log=log
     )
 
-    # --- Total cold times (fresh-path) -------------------------------------
-    minimal_stat = _measure_binary(
+    # --- FRESH-PATH totals (worst-case first launch; incl macOS codesign) --
+    minimal_fresh = _measure_binary(
         minimal,
         env=env,
         samples=samples,
         warmup=warmup,
         rss_mb=rss_mb,
         timeout_s=timeout_s,
-        label="minimal-cold",
+        label="minimal-fresh",
+        fresh_each=True,
     )
-    bd.minimal_total_ms = (
-        round(minimal_stat.median_s * 1000, 3) if minimal_stat.median_s else None
+    bd.minimal_total_fresh_ms = (
+        round(minimal_fresh.median_s * 1000, 3) if minimal_fresh.median_s else None
     )
+
+    # --- SAME-PATH totals (realistic repeated cold; signature cached) ------
+    minimal_same = _measure_binary(
+        minimal,
+        env=env,
+        samples=samples,
+        warmup=warmup,
+        rss_mb=rss_mb,
+        timeout_s=timeout_s,
+        label="minimal-samepath",
+        fresh_each=False,
+    )
+    bd.minimal_total_samepath_ms = (
+        round(minimal_same.median_s * 1000, 3) if minimal_same.median_s else None
+    )
+    bd.minimal_total_ms = bd.minimal_total_samepath_ms  # realistic alias
+
     if json_bin is not None:
-        json_stat = _measure_binary(
+        json_same = _measure_binary(
             json_bin,
             env=env,
             samples=samples,
             warmup=warmup,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
-            label="json-cold",
+            label="json-samepath",
+            fresh_each=False,
         )
-        bd.json_total_ms = (
-            round(json_stat.median_s * 1000, 3) if json_stat.median_s else None
+        bd.json_total_samepath_ms = (
+            round(json_same.median_s * 1000, 3) if json_same.median_s else None
         )
+        bd.json_total_ms = bd.json_total_samepath_ms
 
-    # --- dyld / process launch (no-op C + DYLD_PRINT_STATISTICS) -----------
+    # --- dyld / process launch baselines (no-op C, both path modes) --------
     if noop_c is not None:
-        noop_stat = _measure_binary(
+        noop_fresh = _measure_binary(
             noop_c,
             env=env,
             samples=samples,
             warmup=warmup,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
-            label="noop-c",
+            label="noop-c-fresh",
+            fresh_each=True,
         )
-        bd.noop_c_ms = (
-            round(noop_stat.median_s * 1000, 3) if noop_stat.median_s else None
+        bd.noop_c_fresh_ms = (
+            round(noop_fresh.median_s * 1000, 3) if noop_fresh.median_s else None
         )
+        noop_same = _measure_binary(
+            noop_c,
+            env=env,
+            samples=samples,
+            warmup=warmup,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label="noop-c-samepath",
+            fresh_each=False,
+        )
+        bd.noop_c_samepath_ms = (
+            round(noop_same.median_s * 1000, 3) if noop_same.median_s else None
+        )
+        bd.noop_c_ms = bd.noop_c_samepath_ms  # realistic alias
     bd.dyld_stat_ms = _measure_dyld_ms(
         minimal, env=env, samples=samples, timeout_s=timeout_s
     )
@@ -511,20 +570,41 @@ def decompose_profile(
 
 
 def _attribute_components(bd: ProfileBreakdown) -> dict[str, float]:
-    """Attribute the minimal-app cold total to named startup components.
+    """Attribute the REALISTIC (same-path) cold total to named components.
 
-    process-launch/dyld   = no-op C cold time (pure exec+dyld), cross-checked
-                            against dyld's own DYLD_PRINT_STATISTICS total.
-    molt-runtime-init     = the summed runtime_init phase ladder.
-    binary-page-in+rest   = residual (minimal total − dyld − runtime-init):
-                            faulting the linked binary's pages + mimalloc init +
-                            entry-module setup + teardown.
-    module-init (json)    = json_total − minimal_total (per-module eager init).
+    Two distinct macOS costs were conflated by a naive fresh-path-only method:
+
+    macos-codesign-first-launch = (no-op C fresh − no-op C same-path). PURE
+                            macOS first-launch overhead (code-signature /
+                            Gatekeeper validation of a freshly-materialized
+                            UNSIGNED binary). Paid ONCE per binary identity, NOT
+                            on every launch of an installed/signed binary —
+                            isolated on the no-op C so it carries NO molt or
+                            binary-size signal. Reported separately, NOT summed
+                            into the realistic same-path tax.
+    process-launch/dyld   = no-op C SAME-PATH time (pure exec + dyld fixups,
+                            signature cached). The true repeated-launch floor.
+    molt-runtime-init     = the summed molt_runtime_init phase ladder.
+    binary-page-in+entry+teardown = residual (minimal same-path − dyld −
+                            runtime-init): faulting the linked binary's pages +
+                            mimalloc init + entry-module setup + teardown. Scales
+                            with binary SIZE — the #62 lever for an installed
+                            binary.
+    module-init (json)    = json same-path − minimal same-path (per-module init).
     """
     comp: dict[str, float] = {}
-    total = bd.minimal_total_ms
-    dyld = bd.noop_c_ms if bd.noop_c_ms is not None else bd.dyld_stat_ms
+    total = bd.minimal_total_samepath_ms
+    dyld = (
+        bd.noop_c_samepath_ms if bd.noop_c_samepath_ms is not None else bd.dyld_stat_ms
+    )
     rinit = bd.runtime_init_total_ms
+
+    # The one-time codesign/Gatekeeper cost, isolated on the no-op C so it
+    # carries no binary-size signal. Reported but NOT part of the same-path tax.
+    if bd.noop_c_fresh_ms is not None and bd.noop_c_samepath_ms is not None:
+        comp["macos-codesign-first-launch (one-time/install)"] = round(
+            max(bd.noop_c_fresh_ms - bd.noop_c_samepath_ms, 0.0), 3
+        )
     if dyld is not None:
         comp["process-launch/dyld"] = round(dyld, 3)
     if rinit is not None:
@@ -536,15 +616,34 @@ def _attribute_components(bd: ProfileBreakdown) -> dict[str, float]:
         if rinit is not None:
             residual -= rinit
         comp["binary-page-in+entry+teardown"] = round(max(residual, 0.0), 3)
-    if bd.json_total_ms is not None and bd.minimal_total_ms is not None:
+    if (
+        bd.json_total_samepath_ms is not None
+        and bd.minimal_total_samepath_ms is not None
+    ):
         comp["module-init (per json import)"] = round(
-            max(bd.json_total_ms - bd.minimal_total_ms, 0.0), 3
+            max(bd.json_total_samepath_ms - bd.minimal_total_samepath_ms, 0.0), 3
         )
     return comp
 
 
+# Components that are NOT part of the realistic repeated-launch tax (excluded
+# from the "highest leverage for an installed binary" pick).
+_NON_RECURRING_COMPONENTS = frozenset(
+    {
+        "module-init (per json import)",
+        "macos-codesign-first-launch (one-time/install)",
+    }
+)
+
+
 def _highest_leverage(breakdowns: list[ProfileBreakdown]) -> str:
-    """The single component to attack (the #62 fix target)."""
+    """The single component to attack for an INSTALLED binary (the #62 target).
+
+    Excludes the one-time codesign cost (paid at install, not per launch) and
+    the per-import module-init delta — the realistic repeated-launch tax is
+    dyld + binary-page-in, and binary-page-in is the size-driven lever molt
+    actually controls.
+    """
     # Prefer release-output (the shipped artifact, council Y1 target).
     bd = next(
         (b for b in breakdowns if b.profile == "release-output" and b.components_ms),
@@ -555,12 +654,15 @@ def _highest_leverage(breakdowns: list[ProfileBreakdown]) -> str:
     items = [
         (k, v)
         for k, v in bd.components_ms.items()
-        if k != "module-init (per json import)"
+        if k not in _NON_RECURRING_COMPONENTS
     ]
     if not items:
         return "no attributable components"
     k, v = max(items, key=lambda kv: kv[1])
-    return f"{k} = {v:.2f}ms ({bd.profile}) — the #62 attack target"
+    return (
+        f"{k} = {v:.2f}ms ({bd.profile}) — the #62 attack target "
+        "(size-driven; converges with the binary-size/tree-shaking arc)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -608,11 +710,13 @@ def main(argv: list[str]) -> int:
         "git_rev": bench._git_rev() or "unknown",
         "platform": sys.platform,
         "method": {
-            "fresh_path_copies": "defeat macOS same-path dyld/codesign cache",
+            "fresh_path": "fresh binary copy per sample — worst-case FIRST launch (incl macOS codesign/Gatekeeper of an unsigned binary)",
+            "same_path": "repeated launches of one path — REALISTIC repeated cold (signature cached); the operating point of an installed binary",
             "minimal_probe": "print()-only molt binary = pure init floor",
-            "noop_c": "process-launch + dyld baseline",
+            "noop_c": "process-launch + dyld baseline; (fresh - same) isolates the one-time codesign cost",
             "runtime_init_trace": "MOLT_TRACE_RUNTIME_INIT=1 per-phase microseconds",
             "dyld_statistics": "DYLD_PRINT_STATISTICS=1 dyld total time",
+            "note": "the scoreboard COLD column is a single first-run; components attribute the SAME-PATH realistic tax, with codesign reported separately as one-time.",
         },
         "highest_leverage_component": _highest_leverage(breakdowns),
         "profiles": [asdict(b) for b in breakdowns],
@@ -639,14 +743,17 @@ def _print_report(doc: dict) -> None:
             f"\n[{b['profile']}]  minimal_binary={_fmt(b.get('minimal_binary_kib'))}KiB"
         )
         print(
-            f"  cold totals: minimal={_fmt(b.get('minimal_total_ms'))}ms  "
-            f"json={_fmt(b.get('json_total_ms'))}ms  "
-            f"noop_C={_fmt(b.get('noop_c_ms'))}ms  "
-            f"dyld_stat={_fmt(b.get('dyld_stat_ms'))}ms"
+            f"  SAME-PATH (realistic cold): minimal={_fmt(b.get('minimal_total_samepath_ms'))}ms  "
+            f"json={_fmt(b.get('json_total_samepath_ms'))}ms  "
+            f"noop_C={_fmt(b.get('noop_c_samepath_ms'))}ms"
+        )
+        print(
+            f"  FRESH-PATH (1st launch, +codesign): minimal={_fmt(b.get('minimal_total_fresh_ms'))}ms  "
+            f"noop_C={_fmt(b.get('noop_c_fresh_ms'))}ms"
         )
         comps = b.get("components_ms", {})
         if comps:
-            print("  startup_tax_ms by component:")
+            print("  startup_tax_ms by component (REALISTIC same-path):")
             for k, v in sorted(comps.items(), key=lambda kv: -kv[1]):
                 print(f"    {v:>8.3f} ms  {k}")
         ri = b.get("runtime_init_phases_ms", {})
