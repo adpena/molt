@@ -2101,6 +2101,10 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // stack arm (rewritten by escape analysis) uses it to size
             // the Cranelift StackSlot.
             value: attr_int(&op.attrs, "value"),
+            // Preserve the finalizer fact across the round-trip so a
+            // re-lowering still sees that this instance's class defines
+            // `__del__` and must not be stack-promoted / RC-stripped.
+            defines_del: attr_bool(&op.attrs, "defines_del"),
             ..OpIR::default()
         }),
         OpCode::ObjectNewBoundStack => Some(OpIR {
@@ -4589,6 +4593,7 @@ mod tests {
                 arena_eligible: None,
                 effect_proof: None,
                 class_name: None,
+                defines_del: None,
             },
             OpIR {
                 kind: "loop_end".into(),
@@ -4612,6 +4617,7 @@ mod tests {
                 arena_eligible: None,
                 effect_proof: None,
                 class_name: None,
+                defines_del: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4635,6 +4641,7 @@ mod tests {
                 arena_eligible: None,
                 effect_proof: None,
                 class_name: None,
+                defines_del: None,
             },
         ];
 
@@ -4671,6 +4678,7 @@ mod tests {
                 arena_eligible: None,
                 effect_proof: None,
                 class_name: None,
+                defines_del: None,
             },
             OpIR {
                 kind: "jump".into(),
@@ -4694,6 +4702,7 @@ mod tests {
                 arena_eligible: None,
                 effect_proof: None,
                 class_name: None,
+                defines_del: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4717,6 +4726,7 @@ mod tests {
                 arena_eligible: None,
                 effect_proof: None,
                 class_name: None,
+                defines_del: None,
             },
         ];
 

@@ -753,6 +753,72 @@ fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     dict_required
 }
 
+/// Returns `true` when an op is an `ObjectNewBound` allocation whose class
+/// defines a `__del__` finalizer (the frontend stamps `defines_del=true` on the
+/// op after resolving `__del__` through the class MRO, excluding `object`).
+///
+/// Such an instance has a finalizer that CPython runs at the LAST reference
+/// drop. Stack-promoting it (→ `ObjectNewBoundStack`, which the runtime stamps
+/// `HEADER_FLAG_IMMORTAL`) or stripping its `IncRef`/`DecRef` would make the
+/// refcount-zero transition never occur, so `dec_ref_ptr` would never reach
+/// `maybe_run_object_finalizer` and `__del__` would silently never run. This is
+/// the shared mechanism behind the standing LLVM/WASM `__del__` parity hole: on
+/// every lane the escape pass classified a non-escaping finalizer-bearing
+/// instance as promotable and stripped its release.
+fn object_new_bound_defines_del(op: &TirOp) -> bool {
+    op.opcode == OpCode::ObjectNewBound
+        && matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
+}
+
+/// The set of rewritable allocation ROOTS (`ObjectNewBound` results) whose class
+/// defines a `__del__` finalizer — transitively through pure SSA-move copies.
+/// Such an instance MUST stay heap-allocated with a live refcount so the
+/// finalizer-aware `dec_ref_ptr` dispatches `__del__` at the last drop; it must
+/// be excluded from BOTH the stack-promotion rewrite and the `IncRef`/`DecRef`
+/// strip in [`apply`].
+///
+/// Mirrors [`dict_requiring_alloc_roots`]: the requirement is seeded at the
+/// finalizer-bearing alloc and propagated FORWARD across pure-move copies (the
+/// same `is_pure_move_copy` alias relation `rewritable_alloc_roots` uses), so it
+/// reaches every value that names the same heap object — and in particular the
+/// alloc result that `apply` rewrites and whose RC ops it would otherwise strip.
+fn finalizer_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
+    let mut del_required: HashSet<ValueId> = HashSet::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if object_new_bound_defines_del(op) {
+                for &result in &op.results {
+                    del_required.insert(result);
+                }
+            }
+        }
+    }
+    if del_required.is_empty() {
+        return del_required;
+    }
+    // Forward propagation across pure-move copies to a fixpoint: a move-alias of
+    // a finalizer-bearing instance names the same heap object and inherits the
+    // requirement.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode != OpCode::Copy || !is_pure_move_copy(&op.attrs) {
+                    continue;
+                }
+                let (Some(&src), Some(&dst)) = (op.operands.first(), op.results.first()) else {
+                    continue;
+                };
+                if del_required.contains(&src) && del_required.insert(dst) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    del_required
+}
+
 /// Apply escape analysis results: rewrite non-escaping `Alloc` ops to
 /// `StackAlloc`, and remove `IncRef`/`DecRef` on non-escaping values.
 ///
@@ -790,6 +856,14 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
     // structurally-correct precondition for the dict-materialization path.
     let dict_required = dict_requiring_alloc_roots(func);
 
+    // Instances whose class defines a `__del__` finalizer must stay heap-allocated
+    // with a live refcount: stack-promoting them (→ IMMORTAL) or stripping their
+    // RC would make the refcount-zero transition never happen, so `dec_ref_ptr`
+    // would never dispatch `__del__`. Exclude them from BOTH the stack rewrite and
+    // the RC strip below — the single shared fix for the LLVM/WASM/native `__del__`
+    // parity hole. The non-finalizer common case is untouched (perf preserved).
+    let del_required = finalizer_alloc_roots(func);
+
     // Collect non-escaping (NoEscape ∪ ArgEscape) values that are rewritable
     // allocation roots — those that do not escape the function and are therefore
     // safe to stack-promote / drop RC on. `ArgEscape` (borrowed-but-not-captured)
@@ -800,6 +874,7 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
             *state != EscapeState::GlobalEscape
                 && rewritable_roots.contains(vid)
                 && !dict_required.contains(vid)
+                && !del_required.contains(vid)
         })
         .map(|(&vid, _)| vid)
         .collect();

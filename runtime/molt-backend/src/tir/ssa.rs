@@ -1184,6 +1184,15 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.effect_proof {
             attrs.insert("effect_proof".into(), AttrValue::Str(v.clone()));
         }
+        // Finalizer fact for `object_new_bound`: the instance's class defines
+        // `__del__` (frontend-resolved through the MRO, excluding `object`). The
+        // escape pass reads this to keep the instance heap-allocated with a live
+        // refcount — never stack-promoting it to an IMMORTAL object and never
+        // stripping its IncRef/DecRef — so the finalizer-aware `dec_ref_ptr`
+        // dispatches `__del__` at the last reference drop.
+        if op.defines_del == Some(true) {
+            attrs.insert("defines_del".into(), AttrValue::Bool(true));
+        }
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }
