@@ -421,3 +421,452 @@ def test_robust_stable_tolerates_single_fast_cpython_outlier() -> None:
     assert molt.stable is True
     assert cpy.stable is False
     assert ps._robust_cell_stable(molt, cpy) is True
+
+
+# ===========================================================================
+# #69 measurement-hygiene additions: quiescence guard, repeat CI, 5-state
+# classification, and cycle attribution — ALL exercised with SYNTHETIC inputs
+# (no molt build, no live machine probe). The council requires the
+# classification + quiescence LOGIC be unit-tested independently of a real run.
+# ===========================================================================
+
+
+def _warm_cell(
+    warm_speedup: float,
+    *,
+    stable: bool = True,
+    repeat_stability: str | None = None,
+    repeat_ci: tuple[float, float] | None = None,
+    repeat_passes: int | None = None,
+) -> ps.Cell:
+    """A finalized-shape cell with a chosen warm_speedup for classify tests.
+
+    We set warm_speedup directly (the classifier reads it) plus the repeat-CI
+    fields so we can drive every branch of classify_cell without a real run.
+    """
+    c = ps.Cell(
+        benchmark="tests/benchmarks/bench_x.py",
+        target="native",
+        backend="native",
+        profile="release-fast",
+    )
+    c.build_ok = c.molt_ok = c.cpython_ok = True
+    c.stable = stable
+    c.warm_speedup = warm_speedup
+    c.verdict = ps.VERDICT_FAIL_ENGINE if warm_speedup <= 1.0 else ps.VERDICT_GREEN
+    if repeat_stability is not None:
+        c.repeat_stability = repeat_stability
+    if repeat_ci is not None:
+        c.repeat_ci_lo, c.repeat_ci_hi = repeat_ci
+    if repeat_passes is not None:
+        c.repeat_passes = repeat_passes
+    return c
+
+
+# --- Repeat-pass CI ---------------------------------------------------------
+
+
+def test_warm_ci_single_pass_has_no_interval() -> None:
+    # One sample -> median only; no fabricated CI (council: never invent a tight
+    # CI from a single pass).
+    median, var, lo, hi = ps._warm_speedup_ci([0.66])
+    assert median == 0.66
+    assert var is None and lo is None and hi is None
+
+
+def test_warm_ci_tight_red_cluster_is_below_one() -> None:
+    # Five tightly-clustered sub-1.0 passes -> CI sits entirely below 1.00.
+    median, var, lo, hi = ps._warm_speedup_ci([0.60, 0.61, 0.59, 0.60, 0.62])
+    assert 0.59 <= median <= 0.62
+    assert hi is not None and hi < 1.00
+    assert ps._repeat_stability(lo, hi) == "STABLE_BELOW"
+
+
+def test_warm_ci_straddling_cluster_crosses_one() -> None:
+    # Wide spread bracketing 1.0 -> the CI straddles -> a TIE, not a target.
+    median, var, lo, hi = ps._warm_speedup_ci([0.80, 1.30, 0.70, 1.20, 0.95])
+    assert lo is not None and hi is not None
+    assert lo < 1.00 < hi
+    assert ps._repeat_stability(lo, hi) == "STRADDLES"
+
+
+def test_warm_ci_tight_green_cluster_is_above_one() -> None:
+    median, var, lo, hi = ps._warm_speedup_ci([2.00, 2.05, 1.98, 2.02, 2.01])
+    assert lo is not None and lo > 1.00
+    assert ps._repeat_stability(lo, hi) == "STABLE_ABOVE"
+
+
+def test_repeat_stability_unconfirmed_when_no_ci() -> None:
+    assert ps._repeat_stability(None, None) == "UNCONFIRMED"
+
+
+def test_warm_ci_empty_is_all_none() -> None:
+    assert ps._warm_speedup_ci([]) == (None, None, None, None)
+
+
+# --- 5-state classification: RED_STABLE / RED_NOISY -------------------------
+
+
+def test_classify_red_stable_requires_quiescent_stable_and_ci_below() -> None:
+    # The TRUE warm-red: quiescent + stable + repeat CI entirely below 1.0.
+    c = _warm_cell(
+        0.60, stable=True, repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.58, 0.62), repeat_passes=5,
+    )
+    cls, reason = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_RED_STABLE
+    assert "TRUE compiler target" in reason
+
+
+def test_classify_red_noisy_when_not_quiescent() -> None:
+    # Same numbers but the machine was NOT quiet -> demoted to RED_NOISY, and the
+    # reason NAMES contamination (this is exactly the "0.66 under load" artifact).
+    c = _warm_cell(
+        0.66, stable=True, repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.62, 0.70), repeat_passes=5,
+    )
+    cls, reason = ps.classify_cell(c, quiescent=False)
+    assert cls == ps.CLASS_RED_NOISY
+    assert "NOT quiescent" in reason
+
+
+def test_classify_red_noisy_when_unstable() -> None:
+    c = _warm_cell(
+        0.60, stable=False, repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.58, 0.62), repeat_passes=5,
+    )
+    cls, reason = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_RED_NOISY
+    assert "unstable" in reason
+
+
+def test_classify_red_noisy_single_pass_no_ci_is_not_yet_target() -> None:
+    # A sub-1.0 cell on a quiet stable machine but with NO repeat CI is NOT yet
+    # RED_STABLE — it is RED_NOISY pending --repeat confirmation (Rule: a target
+    # needs a confidence interval, not a point estimate).
+    c = _warm_cell(0.60, stable=True)  # no repeat fields
+    cls, reason = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_RED_NOISY
+    assert "no repeat CI" in reason
+
+
+def test_classify_ci_governs_over_point_estimate() -> None:
+    # A noisy single-pass point estimate of 0.98 (< 1.0) but a repeat CI that
+    # clears ABOVE 1.0 is governed by the CI, not the point estimate: the cell is
+    # a real GREEN. This proves the repeat CI — not a lone point sample — decides
+    # the side of the floor (the council's whole reason for --repeat).
+    c = _warm_cell(
+        0.98, stable=True, repeat_stability="STABLE_ABOVE",
+        repeat_ci=(1.01, 1.10), repeat_passes=5,
+    )
+    cls, _ = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_GREEN
+
+
+# --- 5-state classification: TIE -------------------------------------------
+
+
+def test_classify_tie_when_ci_straddles() -> None:
+    c = _warm_cell(
+        0.95, stable=True, repeat_stability="STRADDLES",
+        repeat_ci=(0.85, 1.15), repeat_passes=5,
+    )
+    cls, reason = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_TIE
+    assert "straddles 1.00" in reason
+
+
+def test_classify_tie_when_warm_exactly_one_single_pass() -> None:
+    c = _warm_cell(1.00, stable=True)
+    cls, reason = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_TIE
+    assert "statistically CPython" in reason
+
+
+# --- 5-state classification: GREEN -----------------------------------------
+
+
+def test_classify_green_stable_quiescent() -> None:
+    c = _warm_cell(
+        2.50, stable=True, repeat_stability="STABLE_ABOVE",
+        repeat_ci=(2.40, 2.60), repeat_passes=5,
+    )
+    cls, _ = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_GREEN
+
+
+def test_classify_green_single_pass_quiescent_stable() -> None:
+    # A clear warm win on a quiet stable machine is GREEN even without a repeat
+    # CI (a win does not need the same statistical bar a target-red does, but it
+    # still must be quiescent + stable).
+    c = _warm_cell(3.00, stable=True)
+    cls, _ = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_GREEN
+
+
+def test_classify_green_demoted_to_noisy_under_load() -> None:
+    c = _warm_cell(3.00, stable=True)
+    cls, reason = ps.classify_cell(c, quiescent=False)
+    assert cls == ps.CLASS_RED_NOISY
+    assert "green unconfirmed" in reason
+
+
+# --- 5-state classification: DIMENSIONAL_WIN -------------------------------
+
+
+def test_dimensional_win_on_tie_with_material_rss_drop() -> None:
+    # A warm TIE (==1.00) that nonetheless dropped RSS materially vs a baseline is
+    # a DIMENSIONAL_WIN per Rule 4 (landed without a warm flip, better elsewhere).
+    c = _warm_cell(1.00, stable=True)
+    c.molt_peak_rss_mib = 80.0
+    baseline = {"molt_peak_rss_mib": 120.0}  # 33% RSS reduction
+    cls, reason = ps.classify_cell(c, quiescent=True, baseline_cell=baseline)
+    assert cls == ps.CLASS_DIMENSIONAL_WIN
+    assert "RSS" in reason
+
+
+def test_dimensional_win_on_straddle_with_binary_shrink() -> None:
+    c = _warm_cell(
+        0.97, stable=True, repeat_stability="STRADDLES",
+        repeat_ci=(0.90, 1.05), repeat_passes=5,
+    )
+    c.binary_size_kib = 1800.0
+    baseline = {"binary_size_kib": 2400.0}  # 25% smaller
+    cls, reason = ps.classify_cell(c, quiescent=True, baseline_cell=baseline)
+    assert cls == ps.CLASS_DIMENSIONAL_WIN
+    assert "binary" in reason
+
+
+def test_dimensional_win_requires_material_delta() -> None:
+    # A sub-threshold (2%) improvement is NOT a dimensional win -> stays TIE.
+    c = _warm_cell(1.00, stable=True)
+    c.molt_peak_rss_mib = 98.0
+    baseline = {"molt_peak_rss_mib": 100.0}  # only 2% < 5% gate
+    cls, _ = ps.classify_cell(c, quiescent=True, baseline_cell=baseline)
+    assert cls == ps.CLASS_TIE
+
+
+def test_dimensional_win_needs_a_baseline() -> None:
+    c = _warm_cell(1.00, stable=True)
+    c.molt_peak_rss_mib = 50.0
+    cls, _ = ps.classify_cell(c, quiescent=True, baseline_cell=None)
+    assert cls == ps.CLASS_TIE
+
+
+def test_dimensional_improvement_higher_is_better_for_cold() -> None:
+    c = _warm_cell(1.00, stable=True)
+    c.cold_speedup = 1.50
+    baseline = {"cold_speedup": 1.00}  # +50% cold improvement
+    reason = ps._dimensional_improvement(c, baseline)
+    assert reason is not None and "cold" in reason
+
+
+# --- 5-state classification: INFRA passthrough -----------------------------
+
+
+def test_classify_infra_passthrough_for_build_failed() -> None:
+    c = _warm_cell(0.0, stable=False)
+    c.verdict = ps.VERDICT_BUILD_FAILED
+    cls, _ = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_INFRA
+
+
+def test_classify_infra_when_no_warm_number() -> None:
+    c = _warm_cell(1.0, stable=True)
+    c.warm_speedup = None
+    c.verdict = ps.VERDICT_GREEN
+    cls, _ = ps.classify_cell(c, quiescent=True)
+    assert cls == ps.CLASS_INFRA
+
+
+# --- apply_classification across a board ------------------------------------
+
+
+def test_apply_classification_sets_state_on_every_cell() -> None:
+    red = _warm_cell(0.60, stable=True, repeat_stability="STABLE_BELOW",
+                     repeat_ci=(0.58, 0.62), repeat_passes=5)
+    green = _warm_cell(2.0, stable=True, repeat_stability="STABLE_ABOVE",
+                       repeat_ci=(1.9, 2.1), repeat_passes=5)
+    green.benchmark = "tests/benchmarks/bench_y.py"
+    cells = [red, green]
+    ps.apply_classification(cells, quiescent=True)
+    assert red.classification == ps.CLASS_RED_STABLE
+    assert green.classification == ps.CLASS_GREEN
+    assert red.measured_quiescent is True and green.measured_quiescent is True
+
+
+def test_apply_classification_contaminated_demotes_all_reds() -> None:
+    red = _warm_cell(0.60, stable=True, repeat_stability="STABLE_BELOW",
+                     repeat_ci=(0.58, 0.62), repeat_passes=5)
+    ps.apply_classification([red], quiescent=False)
+    assert red.classification == ps.CLASS_RED_NOISY
+    assert red.measured_quiescent is False
+
+
+# --- Quiescence gather (synthetic; monkeypatched probes) --------------------
+
+
+def test_gather_quiescence_quiet_when_idle(monkeypatch) -> None:
+    monkeypatch.setattr(ps, "_list_build_processes", lambda: [])
+    monkeypatch.setattr(ps, "_loadavg_1m", lambda: 2.5)
+    monkeypatch.setattr(ps, "_ncpu", lambda: 18)
+    monkeypatch.setattr(ps, "_runnable_thread_count", lambda: 1)
+    monkeypatch.setattr(ps, "_thermal_ok", lambda: (True, "ok"))
+    q = ps.gather_quiescence()
+    assert q["quiet"] is True
+    assert q["reasons"] == []
+    # The council-mandated NEW provenance fields are present.
+    assert q["active_molt_processes"] == []
+    assert q["active_cargo_or_rustc_processes"] == []
+    assert q["loadavg_1m"] == 2.5
+    assert q["ncpu"] == 18
+    assert q["runnable_signal"] == 1
+
+
+def test_gather_quiescence_not_quiet_when_build_active(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ps, "_list_build_processes",
+        lambda: [{"pid": 4242, "cmd": "cargo build -p molt-backend"}],
+    )
+    monkeypatch.setattr(ps, "_loadavg_1m", lambda: 2.0)
+    monkeypatch.setattr(ps, "_ncpu", lambda: 18)
+    monkeypatch.setattr(ps, "_runnable_thread_count", lambda: 1)
+    monkeypatch.setattr(ps, "_thermal_ok", lambda: (True, "ok"))
+    q = ps.gather_quiescence()
+    assert q["quiet"] is False
+    assert any("active build process" in r for r in q["reasons"])
+    assert q["active_cargo_or_rustc_processes"]
+
+
+def test_gather_quiescence_not_quiet_when_load_over_threshold(monkeypatch) -> None:
+    # load 12 > 18*0.5=9 -> not quiet, even with no build process visible.
+    monkeypatch.setattr(ps, "_list_build_processes", lambda: [])
+    monkeypatch.setattr(ps, "_loadavg_1m", lambda: 12.0)
+    monkeypatch.setattr(ps, "_ncpu", lambda: 18)
+    monkeypatch.setattr(ps, "_runnable_thread_count", lambda: 1)
+    monkeypatch.setattr(ps, "_thermal_ok", lambda: (True, "ok"))
+    q = ps.gather_quiescence()
+    assert q["quiet"] is False
+    assert any("load" in r for r in q["reasons"])
+
+
+def test_gather_quiescence_probe_failure_cannot_certify(monkeypatch) -> None:
+    # If pgrep is unavailable we must NOT certify quiet (fail-closed authority).
+    monkeypatch.setattr(
+        ps, "_list_build_processes",
+        lambda: [{"pid": -1, "cmd": "pgrep-unavailable", "probe_failed": True}],
+    )
+    monkeypatch.setattr(ps, "_loadavg_1m", lambda: 1.0)
+    monkeypatch.setattr(ps, "_ncpu", lambda: 18)
+    monkeypatch.setattr(ps, "_runnable_thread_count", lambda: 0)
+    monkeypatch.setattr(ps, "_thermal_ok", lambda: (True, "ok"))
+    q = ps.gather_quiescence()
+    assert q["quiet"] is False
+    assert any("probe" in r for r in q["reasons"])
+
+
+def test_gather_quiescence_runnable_storm_flags_contention(monkeypatch) -> None:
+    # Many runnable threads (build storm load not yet caught by EWMA) -> not quiet.
+    monkeypatch.setattr(ps, "_list_build_processes", lambda: [])
+    monkeypatch.setattr(ps, "_loadavg_1m", lambda: 2.0)
+    monkeypatch.setattr(ps, "_ncpu", lambda: 18)
+    monkeypatch.setattr(ps, "_runnable_thread_count", lambda: 30)
+    monkeypatch.setattr(ps, "_thermal_ok", lambda: (True, "ok"))
+    q = ps.gather_quiescence()
+    assert q["quiet"] is False
+    assert any("runnable" in r for r in q["reasons"])
+
+
+def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
+    # --require-quiescent + a non-quiet machine => provenance.authoritative False
+    # even on a clean origin/main tree.
+    monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
+    monkeypatch.setattr(
+        ps, "_benchmark_tool_identity",
+        lambda: {"ondisk_blob_sha": "b", "modified_vs_head": "false",
+                 "last_commit_sha": "c"},
+    )
+    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
+    noisy = {
+        "quiet": False, "reasons": ["1 active build process(es): 1:cargo"],
+        "active_molt_processes": [], "active_cargo_or_rustc_processes": [{"pid": 1}],
+        "loadavg_1m": 12.0, "ncpu": 18, "runnable_signal": 5,
+        "loadavg_threshold": 9.0, "thermal_ok": True, "thermal_note": None,
+    }
+    prov = ps.gather_provenance(None, quiescence=noisy, require_quiescent=True)
+    assert prov["authoritative"] is False
+    assert "quiescent" in prov["authoritative_reason"].lower()
+    # Without --require-quiescent the SAME noisy machine does not block authority
+    # (the machine state is still recorded, just not gating).
+    prov2 = ps.gather_provenance(None, quiescence=noisy, require_quiescent=False)
+    assert prov2["authoritative"] is True
+    assert prov2["quiescent"] is False
+
+
+# --- Cycle attribution (Rule 1: cycles, not alloc-count) --------------------
+
+
+def test_parse_sample_heaviest_reads_self_time_leaderboard(tmp_path) -> None:
+    sample_out = (
+        "Analysis of sampling molt-backend (pid 123):\n"
+        "Sort by top of stack, same collapsed:\n"
+        "    4200   molt_dict_lookup  (in bench_x)  [0x1000]\n"
+        "    1900   molt_str_slice  (in bench_x)  [0x2000]\n"
+        "     300   malloc  (in libsystem_malloc.dylib)  [0x3000]\n"
+        "\n"
+        "Binary Images:\n"
+    )
+    f = tmp_path / "sample.txt"
+    f.write_text(sample_out, encoding="utf-8")
+    top = ps._parse_sample_heaviest(f, top_n=25)
+    assert len(top) == 3
+    assert top[0]["symbol"] == "molt_dict_lookup"
+    assert top[0]["self_samples"] == 4200
+    assert top[0]["lib"] == "bench_x"
+    assert top[2]["symbol"] == "malloc"
+
+
+def test_parse_sample_heaviest_missing_section_is_empty(tmp_path) -> None:
+    f = tmp_path / "nosort.txt"
+    f.write_text("no leaderboard here\nBinary Images:\n", encoding="utf-8")
+    assert ps._parse_sample_heaviest(f, top_n=25) == []
+
+
+def test_capture_cycle_profile_documents_unavailable_sampler(monkeypatch) -> None:
+    # When /usr/bin/sample is absent we return a DOCUMENTED note, never a fake
+    # signal and never a crash (Rule 1's fallback).
+    monkeypatch.setattr(ps, "_resolve_sampler", lambda: None)
+    out = ps.capture_cycle_profile(
+        ["/tmp/nonexistent-bin"], env={}, rss_mb=512, timeout_s=5,
+    )
+    assert out["available"] is False
+    assert out["top_symbols"] == []
+    assert "unavailable" in out["note"]
+
+
+# --- print-provenance smoke (the function that was missing) -----------------
+
+
+def test_print_provenance_emits_all_new_fields(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
+    monkeypatch.setattr(
+        ps, "_benchmark_tool_identity",
+        lambda: {"ondisk_blob_sha": "toolsha", "modified_vs_head": "false",
+                 "last_commit_sha": "c"},
+    )
+    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
+    q = {
+        "quiet": True, "reasons": [],
+        "active_molt_processes": [], "active_cargo_or_rustc_processes": [],
+        "loadavg_1m": 2.5, "ncpu": 18, "runnable_signal": 1,
+        "loadavg_threshold": 9.0, "thermal_ok": True, "thermal_note": "ok",
+    }
+    prov = ps.gather_provenance(None, quiescence=q, require_quiescent=True)
+    ps._print_provenance(prov)
+    out = capsys.readouterr().out
+    for field in (
+        "origin_sha", "candidate_sha", "dirty_tree", "stdlib_cache_key",
+        "backend_binary_identity", "active_molt_processes",
+        "active_cargo_or_rustc_processes", "loadavg_1m", "ncpu", "runnable_signal",
+    ):
+        assert field in out

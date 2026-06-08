@@ -116,6 +116,57 @@ VERDICT_UNSTABLE = "UNSTABLE"  # CV too high to trust either direction
 VERDICT_RUN_BLOCKED = "RUN_BLOCKED"  # wasm run-path gap (build/link only)
 VERDICT_CPY_INCOMPAT = "CPY_INCOMPATIBLE"  # no CPython floor to compare against
 
+# --- The council's 5-state CLASSIFICATION vocabulary (#69) ------------------
+# This is the ORTHOGONAL, measurement-hygiene-aware classification that replaces
+# the single warm verdict when --classify is set. Where the 2-D ``verdict``
+# above answers "is this warm/cold/stale/infra", these 5 states answer the
+# council's actual question: "is this a TRUE compiler target, or a measurement
+# artifact?" The decisive new inputs are (a) machine QUIESCENCE and (b) the
+# repeat-pass CONFIDENCE INTERVAL — a warm-red is only a real target if it is
+# stable AND quiescent AND its CI sits clear below 1.00.
+CLASS_RED_STABLE = "RED_STABLE"  # warm<1.00, CI below 1.0, quiescent — TRUE target
+CLASS_RED_NOISY = "RED_NOISY"  # warm<1.00 BUT contaminated/unstable/CI-straddles
+CLASS_TIE = "TIE"  # CI crosses 1.00 — neither a win nor a loss
+CLASS_GREEN = "GREEN_STABLE"  # stable warm>1.00 (kept distinct from 2-D GREEN)
+CLASS_DIMENSIONAL_WIN = "DIMENSIONAL_WIN"  # warm gate flat, but alloc/RSS/size/cold/backend improved
+# Infra states pass through unchanged (no warm number to classify).
+CLASS_INFRA = "INFRA"  # BUILD_FAILED / RUN_ERROR / RUN_BLOCKED / CPY_INCOMPAT / STALE
+
+# The full set, for schema validation / legends.
+CLASSIFY_STATES = frozenset(
+    {
+        CLASS_RED_STABLE,
+        CLASS_RED_NOISY,
+        CLASS_TIE,
+        CLASS_GREEN,
+        CLASS_DIMENSIONAL_WIN,
+        CLASS_INFRA,
+    }
+)
+
+# --- Quiescence-guard thresholds (#69 Rule 2) -------------------------------
+# A run is AUTHORITATIVE only on a quiet machine. The dominant contamination
+# mode the council caught: a "0.66 red" that was a loaded-machine artifact (a
+# parallel multi-agent build stole cycles from the timed process). We refuse-or-
+# downgrade authority when ANY of these hold. Codex is NEVER counted (project
+# policy: never count/kill codex) — it is filtered out of the build detector.
+#
+# Load threshold = ncpu * QUIESCENT_LOAD_FRACTION. On an 18-core host that is
+# load > 9.0; the timing host idles ~3, a single parallel cargo build pushes it
+# well past 9. The fraction is deliberately permissive (0.5) so a quiet machine
+# with normal desktop background load still measures, while an active build is
+# always caught (a build also trips the process check directly).
+QUIESCENT_LOAD_FRACTION = 0.5
+# Process-name patterns that mean "build/test work is competing for cycles".
+# Matched against the FULL command line (pgrep -fl). Codex is excluded by name.
+_BUILD_PROC_PATTERNS = ("cargo", "rustc", "molt-backend", "molt build")
+_CODEX_EXCLUDE = "codex"  # never counted/killed (project policy)
+# Dimensional-win materiality gate: a non-warm-flip improvement must beat the
+# baseline by at least this fraction on a dimension (alloc/RSS/size/cold) to be
+# called a DIMENSIONAL_WIN rather than noise. 5% is the smallest delta that
+# survives run-to-run measurement jitter on these dimensions.
+DIMENSIONAL_WIN_MIN_FRACTION = 0.05
+
 # Notes that are DERIVED from a verdict (vs measurement notes). A re-derive
 # (rebuild-summary/merge) clears these so a stale verdict-note can't leak.
 _VERDICT_DERIVED_NOTES = frozenset(
@@ -409,6 +460,509 @@ def _robust_cell_stable(molt: PhaseStats, cpy: PhaseStats) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Quiescence guard (#69 Rule 2) — make a bad measurement IMPOSSIBLE
+# ---------------------------------------------------------------------------
+#
+# BEFORE timing, detect contamination and refuse-or-downgrade authority. The
+# council's hard finding: the scoreboard picks the WRONG subsystem under load (a
+# "0.66 red" was a loaded-machine artifact). This guard is the mechanical kill
+# for that class — a board measured on a busy machine is stamped
+# ``authoritative=false`` with the EXACT failing check named, and EVERY warm-red
+# verdict it produces is EXPLORATORY, never a compiler target.
+
+
+def _list_build_processes() -> list[dict]:
+    """Active cargo/rustc/molt-backend/molt-build processes, EXCLUDING codex.
+
+    Uses ``pgrep -fl`` (full command line). We exclude this very tool's own PID
+    and any line containing ``codex`` (project policy: never count/kill codex).
+    A pgrep that finds nothing exits 1 with empty stdout — that is the quiet
+    case, not an error.
+    """
+    self_pid = os.getpid()
+    parent_pid = os.getppid()
+    pattern = "|".join(_BUILD_PROC_PATTERNS)
+    try:
+        res = subprocess.run(
+            ["pgrep", "-fl", pattern],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # If we cannot probe, we cannot certify quiet — report a sentinel so the
+        # caller downgrades authority rather than silently trusting the run.
+        return [{"pid": -1, "cmd": "pgrep-unavailable", "probe_failed": True}]
+    out: list[dict] = []
+    for line in (res.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        head, _, cmd = line.partition(" ")
+        if not head.isdigit():
+            continue
+        pid = int(head)
+        cmdl = cmd.lower()
+        # Never count codex (project policy) or our own process tree (this tool
+        # runs the benchmark builds itself; the pattern would otherwise match a
+        # ``molt build`` WE launched — but those run serially BEFORE timing, and
+        # the guard is invoked at the start, so excluding our own tree is safe).
+        if _CODEX_EXCLUDE in cmdl:
+            continue
+        if pid in (self_pid, parent_pid):
+            continue
+        out.append({"pid": pid, "cmd": cmd})
+    return out
+
+
+def _loadavg_1m() -> float | None:
+    """1-minute load average via ``sysctl -n vm.loadavg`` (macOS)."""
+    try:
+        res = subprocess.run(
+            ["sysctl", "-n", "vm.loadavg"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # Output form: "{ 3.28 3.08 3.22 }"
+    parts = (res.stdout or "").replace("{", "").replace("}", "").split()
+    try:
+        return float(parts[0]) if parts else None
+    except (ValueError, IndexError):
+        return None
+
+
+def _ncpu() -> int | None:
+    try:
+        res = subprocess.run(
+            ["sysctl", "-n", "hw.ncpu"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = (res.stdout or "").strip()
+    return int(out) if out.isdigit() else None
+
+
+def _runnable_thread_count() -> int | None:
+    """Count of processes in the RUNNABLE ('R') scheduler state.
+
+    A second contamination signal independent of the 1-minute load EWMA: load
+    lags by design (a ~minute time constant), so a build that JUST started reads
+    low load but already shows runnable threads. ``ps -A -o stat=`` lists every
+    process's state code; a leading 'R' is runnable/running.
+    """
+    try:
+        res = subprocess.run(
+            ["ps", "-A", "-o", "stat="], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    n = 0
+    for line in (res.stdout or "").splitlines():
+        if line.strip().startswith("R"):
+            n += 1
+    return n
+
+
+def _thermal_ok() -> tuple[bool | None, str | None]:
+    """Best-effort thermal/frequency stability via ``pmset -g therm`` (macOS).
+
+    Returns (ok, note). ok=None when pmset is unavailable (skip per the council:
+    'best-effort, skip if unavailable'). ok=False iff a thermal/CPU power
+    *warning level* is recorded (throttling in progress would skew timings).
+    """
+    try:
+        res = subprocess.run(
+            ["pmset", "-g", "therm"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, "pmset unavailable"
+    text = (res.stdout or "") + (res.stderr or "")
+    if not text.strip():
+        return None, "pmset returned nothing"
+    low = text.lower()
+    # macOS prints "No thermal warning level has been recorded" when cool, and a
+    # numeric "CPU_Speed_Limit = N" (< 100) when throttled.
+    throttled = False
+    detail = []
+    for line in text.splitlines():
+        ls = line.strip()
+        if "speed_limit" in ls.lower():
+            # e.g. "CPU_Speed_Limit \t = 80"
+            digits = "".join(ch for ch in ls.split("=")[-1] if ch.isdigit())
+            if digits and int(digits) < 100:
+                throttled = True
+                detail.append(ls)
+        if "thermal warning" in ls.lower() and "no thermal warning" not in ls.lower():
+            throttled = True
+            detail.append(ls)
+    if throttled:
+        return False, "; ".join(detail) or "thermal/CPU-speed limit active"
+    if "no thermal warning" in low or "no performance warning" in low:
+        return True, "no thermal/performance warning recorded"
+    return True, "pmset reported no throttle"
+
+
+def gather_quiescence() -> dict:
+    """Measure machine quiescence BEFORE timing (#69 Rule 2).
+
+    Returns a dict with the council-mandated provenance fields plus a ``quiet``
+    bool and a ``reasons`` list naming EACH failing check. A run is quiet iff:
+      (a) no active cargo/rustc/molt-backend/molt-build process (codex excluded),
+      (b) 1-min load average <= ncpu * QUIESCENT_LOAD_FRACTION,
+      (c) runnable-thread count does not itself indicate a build storm,
+      (d) no thermal/CPU-speed throttle (best-effort; skipped if unavailable).
+    This is the contamination detector; the authority decision (refuse vs
+    downgrade vs EXPLORATORY) is made by the caller from ``quiet`` + the flags.
+    """
+    procs = _list_build_processes()
+    real_procs = [p for p in procs if not p.get("probe_failed")]
+    probe_failed = any(p.get("probe_failed") for p in procs)
+    load = _loadavg_1m()
+    ncpu = _ncpu()
+    runnable = _runnable_thread_count()
+    thermal_ok, thermal_note = _thermal_ok()
+
+    reasons: list[str] = []
+    if real_procs:
+        names = ", ".join(
+            f"{p['pid']}:{p['cmd'].split()[0] if p['cmd'] else '?'}" for p in real_procs[:6]
+        )
+        reasons.append(
+            f"{len(real_procs)} active build process(es) (cargo/rustc/molt-backend/"
+            f"molt build): {names}"
+        )
+    if probe_failed:
+        reasons.append("process probe (pgrep) unavailable — cannot certify quiet")
+    load_threshold = (ncpu * QUIESCENT_LOAD_FRACTION) if ncpu else None
+    if load is not None and load_threshold is not None and load > load_threshold:
+        reasons.append(
+            f"1-min load {load:.2f} > threshold {load_threshold:.2f} "
+            f"(ncpu={ncpu} * {QUIESCENT_LOAD_FRACTION})"
+        )
+    elif load is None:
+        reasons.append("load average unavailable — cannot certify quiet")
+    # Runnable-thread storm: if many threads are runnable the scheduler is
+    # contended even if the 1-min EWMA has not caught up. Use the same fraction
+    # of ncpu as a sanity ceiling (a quiet desktop shows 0-2 runnable).
+    if (
+        runnable is not None
+        and ncpu is not None
+        and runnable > max(2, int(ncpu * QUIESCENT_LOAD_FRACTION))
+    ):
+        reasons.append(
+            f"runnable-thread count {runnable} > {max(2, int(ncpu * QUIESCENT_LOAD_FRACTION))} "
+            "(scheduler contended — possible build storm load has not yet caught)"
+        )
+    if thermal_ok is False:
+        reasons.append(f"thermal/CPU-speed throttle active: {thermal_note}")
+
+    quiet = not reasons
+    return {
+        "quiet": quiet,
+        "reasons": reasons,
+        # The council-mandated NEW provenance fields:
+        "active_molt_processes": [
+            p for p in real_procs if "molt" in (p.get("cmd", "").lower())
+        ],
+        "active_cargo_or_rustc_processes": [
+            p
+            for p in real_procs
+            if "cargo" in p.get("cmd", "").lower() or "rustc" in p.get("cmd", "").lower()
+        ],
+        "active_build_processes": real_procs,
+        "loadavg_1m": load,
+        "ncpu": ncpu,
+        "loadavg_threshold": load_threshold,
+        "runnable_signal": runnable,
+        "thermal_ok": thermal_ok,
+        "thermal_note": thermal_note,
+        "probe_failed": probe_failed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Repeat-pass confidence interval (#69 --repeat N) — STABLE iff CI clears 1.00
+# ---------------------------------------------------------------------------
+#
+# A single warm_speedup is a point estimate. The council requires N independent
+# measurement PASSES and a CONFIDENCE INTERVAL: a verdict is STABLE only if the
+# CI does not straddle 1.00 across passes. This is the mechanical kill for the
+# "rediscovered a flaky red" class — a red whose CI crosses 1.00 is a TIE, not a
+# target.
+
+
+def _warm_speedup_ci(
+    speedups: list[float],
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """(median, variance, ci_lo, ci_hi) of per-pass warm_speedups.
+
+    The CI is a Student-t 95% interval on the mean of the passes when n>=2 (the
+    small-sample correct choice; z would understate the interval at n=5). With a
+    single pass there is no spread to bound — ci is (None, None) and the caller
+    must treat the pass as not-yet-confirmed (we never fabricate a tight CI from
+    one sample). Variance is the sample variance (n-1).
+    """
+    vals = [s for s in speedups if isinstance(s, (int, float))]
+    if not vals:
+        return None, None, None, None
+    median = statistics.median(vals)
+    if len(vals) < 2:
+        return round(median, 4), None, None, None
+    mean = statistics.mean(vals)
+    var = statistics.variance(vals)
+    stdev = var ** 0.5
+    sem = stdev / (len(vals) ** 0.5)
+    # 95% two-sided Student-t critical values for small n (df = n-1). Table is
+    # exact for the n we use (2..10); beyond that we clamp to the n=10 value
+    # (1.833) which is conservative-enough and avoids a scipy dependency.
+    t_table = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447,
+               7: 2.365, 8: 2.306, 9: 2.262}
+    df = len(vals) - 1
+    tcrit = t_table.get(df, 2.262 if df >= 9 else 12.706)
+    half = tcrit * sem
+    return round(median, 4), round(var, 6), round(mean - half, 4), round(mean + half, 4)
+
+
+def _repeat_stability(ci_lo: float | None, ci_hi: float | None) -> str:
+    """Classify the repeat CI vs the 1.00 floor.
+
+    Returns one of: 'STABLE_BELOW' (CI entirely < 1.0 — a real red),
+    'STABLE_ABOVE' (CI entirely > 1.0 — a real green), 'STRADDLES' (CI crosses
+    1.0 — a TIE), or 'UNCONFIRMED' (a single pass; no CI to judge).
+    """
+    if ci_lo is None or ci_hi is None:
+        return "UNCONFIRMED"
+    if ci_hi < RED_THRESHOLD:
+        return "STABLE_BELOW"
+    if ci_lo > RED_THRESHOLD:
+        return "STABLE_ABOVE"
+    return "STRADDLES"
+
+
+# ---------------------------------------------------------------------------
+# Cycle attribution (#69 Rule 1 + --emit-cycle-profile) — CYCLES, not allocs
+# ---------------------------------------------------------------------------
+#
+# Rule 1: alloc-attribution alone CANNOT justify a warm-time opt. A warm red
+# needs CYCLE attribution. For each warm red we capture a CYCLE profile (macOS
+# ``/usr/bin/sample``) of the running molt binary and attach the top symbols.
+# This is the signal the NEXT optimization is steered by — never the alloc count.
+
+
+def _resolve_sampler() -> str | None:
+    """Path to the macOS ``sample`` CPU profiler, or None if unavailable."""
+    import shutil
+
+    for cand in ("/usr/bin/sample", shutil.which("sample") or ""):
+        if cand and Path(cand).exists():
+            return cand
+    return None
+
+
+def capture_cycle_profile(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    rss_mb: int,
+    timeout_s: float,
+    sample_seconds: int = 3,
+    top_n: int = 25,
+) -> dict:
+    """Run ``cmd`` under safe_run and CPU-sample it with ``/usr/bin/sample``.
+
+    Launches the binary in the background under the safe_run watchdog (RSS cap +
+    timeout — a profiled binary is still a raw binary and MUST be guarded), polls
+    for its PID, attaches ``sample`` for ``sample_seconds``, and parses the
+    heaviest self-time symbols. Returns ``{available, top_symbols, note}``. If
+    the sampler is unavailable OR the process is too short to attach, returns a
+    documented ``available=False`` note rather than failing — the cell still
+    records that cycle attribution could not be captured (never a fake signal).
+    """
+    sampler = _resolve_sampler()
+    if sampler is None:
+        return {
+            "available": False,
+            "top_symbols": [],
+            "note": "cycle profiler unavailable (/usr/bin/sample not found)",
+        }
+    # Launch the target under safe_run in the background so we can attach to the
+    # *child* binary. safe_run forwards the child's lifetime; we sample the
+    # grandchild (the actual molt binary) by name.
+    import tempfile
+
+    out_file = Path(
+        tempfile.mktemp(prefix="perfscore-sample-", suffix=".txt", dir="/tmp")
+    )
+    target_name = Path(cmd[0]).name
+    safe_cmd = [
+        sys.executable,
+        str(SAFE_RUN),
+        "--rss-mb",
+        str(rss_mb),
+        "--timeout",
+        str(timeout_s),
+        "--",
+        *cmd,
+    ]
+    try:
+        proc = subprocess.Popen(
+            safe_cmd,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return {
+            "available": False,
+            "top_symbols": [],
+            "note": f"could not launch target for profiling: {exc!r}",
+        }
+    # Find the molt binary PID (the grandchild of safe_run). Poll briefly.
+    target_pid = _find_descendant_pid(proc.pid, target_name, deadline_s=2.0)
+    if target_pid is None:
+        # The process may already have exited (very short benchmark) — that is a
+        # documented limitation of attach-profiling, not a failure to fake over.
+        try:
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return {
+            "available": False,
+            "top_symbols": [],
+            "note": (
+                "benchmark too short to attach a CPU sampler (process exited "
+                "before attach); cycle attribution unavailable for sub-attach "
+                "runtimes — lengthen the benchmark or use a counter-based profiler"
+            ),
+        }
+    try:
+        srv = subprocess.run(
+            [sampler, str(target_pid), str(sample_seconds), "-mayDie", "-f", str(out_file)],
+            capture_output=True,
+            text=True,
+            timeout=sample_seconds + 30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _terminate(proc)
+        return {
+            "available": False,
+            "top_symbols": [],
+            "note": f"sample attach failed: {exc!r}",
+        }
+    finally:
+        _terminate(proc)
+    symbols = _parse_sample_heaviest(out_file, top_n=top_n)
+    try:
+        out_file.unlink()
+    except OSError:
+        pass
+    if not symbols:
+        return {
+            "available": False,
+            "top_symbols": [],
+            "note": f"sampler produced no parseable symbols (rc={srv.returncode})",
+        }
+    return {
+        "available": True,
+        "top_symbols": symbols,
+        "note": f"/usr/bin/sample {sample_seconds}s self-time (CYCLES, not alloc-count)",
+    }
+
+
+def _find_descendant_pid(root_pid: int, name: str, *, deadline_s: float) -> int | None:
+    """Find a descendant process of ``root_pid`` whose command matches ``name``.
+
+    safe_run execs the target as a child; we want the target's PID to attach the
+    sampler. Polls ``ps`` for a process whose command contains ``name`` and whose
+    PID is not the safe_run wrapper itself.
+    """
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
+        try:
+            res = subprocess.run(
+                ["ps", "-A", "-o", "pid=,comm="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in (res.stdout or "").splitlines():
+            line = line.strip()
+            pid_str, _, comm = line.partition(" ")
+            if not pid_str.isdigit():
+                continue
+            pid = int(pid_str)
+            if pid == root_pid:
+                continue
+            if name in comm:
+                return pid
+        time.sleep(0.02)
+    return None
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _parse_sample_heaviest(out_file: Path, *, top_n: int) -> list[dict]:
+    """Parse ``/usr/bin/sample``'s output for the heaviest self-time symbols.
+
+    ``sample`` emits a 'Sort by top of stack' section listing
+    ``<count>  <symbol>  (in <lib>)`` lines — the self-time leaders. We read that
+    section (the cycle-attribution signal) and return the top ``top_n`` as
+    ``{symbol, self_samples, lib}``.
+    """
+    try:
+        text = out_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = text.splitlines()
+    # Locate the self-time leaderboard.
+    start = None
+    for i, line in enumerate(lines):
+        if "Sort by top of stack" in line:
+            start = i + 1
+            break
+    if start is None:
+        return []
+    out: list[dict] = []
+    for line in lines[start:]:
+        s = line.strip()
+        if not s:
+            if out:
+                break
+            continue
+        # Form: "1234   symbol_name  (in libfoo.dylib)  [address]"
+        head, _, rest = s.partition(" ")
+        if not head.isdigit():
+            continue
+        count = int(head)
+        rest = rest.strip()
+        lib = None
+        if "(in " in rest:
+            sym, _, tail = rest.partition("(in ")
+            lib = tail.rstrip(")").split(")")[0].strip()
+            symbol = sym.strip()
+        else:
+            symbol = rest
+        out.append({"symbol": symbol, "self_samples": count, "lib": lib})
+        if len(out) >= top_n:
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
 # One scoreboard cell: benchmark x target x backend x profile
 # ---------------------------------------------------------------------------
 
@@ -493,6 +1047,30 @@ class Cell:
     molt_stats: dict | None = None
     cpython_stats: dict | None = None
     log_artifact: str | None = None
+
+    # --- Measurement-hygiene classification (#69 --classify) --------------
+    # The council's 5-state classification (orthogonal to ``verdict``): the
+    # answer to "TRUE compiler target or measurement artifact?". Set only when
+    # --classify is requested; None otherwise so the 2-D verdict path is
+    # unchanged for callers that do not opt in.
+    classification: str | None = None  # one of CLASSIFY_STATES
+    classification_reason: str | None = None
+    measured_quiescent: bool | None = None
+
+    # --- Repeat-pass CI (#69 --repeat N) ----------------------------------
+    # Per-pass warm_speedups + the Student-t 95% CI; a verdict is STABLE only if
+    # the CI does not straddle 1.00. Empty/None when --repeat is not used.
+    repeat_passes: int | None = None
+    repeat_warm_speedups: list[float] | None = None
+    repeat_median_warm: float | None = None
+    repeat_variance: float | None = None
+    repeat_ci_lo: float | None = None
+    repeat_ci_hi: float | None = None
+    repeat_stability: str | None = None  # STABLE_BELOW|STABLE_ABOVE|STRADDLES|UNCONFIRMED
+
+    # --- Cycle attribution (#69 Rule 1 + --emit-cycle-profile) ------------
+    # The CYCLE profile (NOT alloc-count) for warm reds — the next-opt signal.
+    cycle_profile: dict | None = None
 
     def finalize(
         self,
@@ -634,6 +1212,222 @@ def _safe_ratio(numerator: float | None, denominator: float | None) -> float | N
     return round(numerator / denominator, 4)
 
 
+# ---------------------------------------------------------------------------
+# The council's 5-state CLASSIFIER (#69 --classify) — target vs artifact
+# ---------------------------------------------------------------------------
+#
+# Replaces the single warm verdict with the 5 states the council specified. The
+# decisive new inputs are machine QUIESCENCE and the repeat-pass CI. The cardinal
+# rule: a warm-red is RED_STABLE (a TRUE compiler target) ONLY when it is stable,
+# measured quiescent, AND its CI sits clear below 1.00. Any contamination /
+# instability / CI-straddle demotes it to RED_NOISY or TIE — the mechanical kill
+# for the "0.66 loaded-machine red" class. FAIL_ENGINE maps to RED_STABLE ONLY
+# when quiescent+stable; under contamination it is RED_NOISY.
+
+
+def classify_cell(
+    cell: "Cell",
+    *,
+    quiescent: bool,
+    baseline_cell: dict | None = None,
+) -> tuple[str, str]:
+    """Return (classification, reason) — the 5-state measurement-hygiene verdict.
+
+    ``quiescent`` is the machine-quiescence result for the WHOLE board (a single
+    run cannot be partly quiet). ``baseline_cell`` (optional) enables
+    DIMENSIONAL_WIN detection: when the warm gate did not flip but a non-warm
+    dimension (alloc/RSS/binary-size/cold/compile) improved materially vs the
+    baseline. Pure function of the cell's finalized facts + these two inputs;
+    unit-tested with synthetic cells (no molt build).
+    """
+    # Infra states have no warm number to classify — pass them through.
+    if cell.verdict in (
+        VERDICT_BUILD_FAILED,
+        VERDICT_RUN_ERROR,
+        VERDICT_RUN_BLOCKED,
+        VERDICT_CPY_INCOMPAT,
+        VERDICT_FAIL_STALE,
+    ):
+        return CLASS_INFRA, f"infrastructure verdict {cell.verdict} (no warm number)"
+
+    warm = cell.warm_speedup
+    if warm is None:
+        return CLASS_INFRA, "no warm_speedup measured"
+
+    # Determine the CI posture if a repeat sweep ran; else fall back to the
+    # single-pass robust-stability flag (cell.stable).
+    rep = cell.repeat_stability
+    has_ci = rep in ("STABLE_BELOW", "STABLE_ABOVE", "STRADDLES")
+
+    # --- TIE: the CI genuinely crosses 1.00 (neither win nor loss) ----------
+    # A straddling CI is the council's TIE — even on a quiet machine, the data do
+    # not place the cell on one side of the floor. A warm==1.00 single-pass cell
+    # (the borderline FAIL_ENGINE ties) is ALSO a TIE under classification: it is
+    # not a representational loss, it is statistically CPython. BUT (Rule 4) a
+    # warm-tie cell that improved a NON-warm dimension materially vs a baseline is
+    # a DIMENSIONAL_WIN, not a bare TIE — the "landed without a warm flip but
+    # better elsewhere" lane. So consult the dimensional check before TIE.
+    if has_ci and rep == "STRADDLES":
+        dim = _dimensional_improvement(cell, baseline_cell)
+        if dim is not None:
+            return CLASS_DIMENSIONAL_WIN, dim
+        return (
+            CLASS_TIE,
+            f"repeat CI [{cell.repeat_ci_lo}, {cell.repeat_ci_hi}] straddles 1.00 "
+            f"(n={cell.repeat_passes}) — neither a win nor a loss",
+        )
+    if not has_ci and abs(warm - RED_THRESHOLD) < 1e-9:
+        dim = _dimensional_improvement(cell, baseline_cell)
+        if dim is not None:
+            return CLASS_DIMENSIONAL_WIN, dim
+        return (
+            CLASS_TIE,
+            "warm_speedup == 1.00 — statistically CPython (a tie, not a loss); "
+            "run --repeat to bound the CI",
+        )
+
+    # When a repeat CI exists it is AUTHORITATIVE over the lone point estimate —
+    # that is the council's entire reason for --repeat (a flaky point sample must
+    # not decide the side of the floor). A STABLE_BELOW CI is a red even if one
+    # pass read > 1.0; a STABLE_ABOVE CI is a green even if one pass read < 1.0.
+    # Only without a CI does the point estimate decide. (STRADDLES was already
+    # routed to TIE above, so here has_ci implies STABLE_BELOW xor STABLE_ABOVE.)
+    if has_ci:
+        warm_below = rep == "STABLE_BELOW"
+        warm_above = rep == "STABLE_ABOVE"
+    else:
+        warm_below = warm < RED_THRESHOLD
+        warm_above = warm > RED_THRESHOLD
+
+    # --- WARM RED branch (CI-governed when present) -------------------------
+    if warm_below:
+        # RED_STABLE iff: quiescent AND robustly stable AND a repeat CI EXISTS
+        # and sits entirely below 1.0. A single-pass red (no CI) is NOT yet
+        # RED_STABLE — it is RED_NOISY until --repeat confirms it (a point
+        # estimate is not a confidence interval).
+        if quiescent and cell.stable and has_ci:
+            return (
+                CLASS_RED_STABLE,
+                f"repeat CI [{cell.repeat_ci_lo}, {cell.repeat_ci_hi}] clears below "
+                f"1.00 (point {warm}x), quiescent + stable — TRUE compiler target",
+            )
+        # Demote to RED_NOISY and NAME why it is not yet a target.
+        causes = []
+        if not quiescent:
+            causes.append("machine NOT quiescent (contaminated)")
+        if not cell.stable:
+            causes.append("cell unstable (CV/robustness)")
+        if not has_ci:
+            causes.append("no repeat CI (single pass — run --repeat N to confirm)")
+        return (
+            CLASS_RED_NOISY,
+            f"warm point {warm}x below 1.00 BUT " + "; ".join(causes),
+        )
+
+    # --- WARM GREEN / DIMENSIONAL branch (CI-governed when present) ----------
+    if warm_above:
+        if quiescent and cell.stable:
+            return (
+                CLASS_GREEN,
+                f"warm point {warm}x above 1.00, stable + quiescent"
+                + (
+                    f", repeat CI [{cell.repeat_ci_lo}, {cell.repeat_ci_hi}] clears "
+                    "above 1.00"
+                    if has_ci
+                    else ""
+                ),
+            )
+        # warm>1 but not trustworthy as a clean green -> NOISY (not a target,
+        # not a confirmed win). A straddle was already caught above.
+        causes = []
+        if not quiescent:
+            causes.append("machine NOT quiescent")
+        if not cell.stable:
+            causes.append("cell unstable")
+        return (
+            CLASS_RED_NOISY,
+            f"warm point {warm}x above 1.00 BUT " + "; ".join(causes)
+            + " — green unconfirmed",
+        )
+
+    # --- DIMENSIONAL_WIN: warm gate flat, another dimension improved --------
+    # Reached only when warm is neither clearly below nor clearly above (e.g. a
+    # tie that a baseline shows improved on alloc/RSS/size/cold). Needs a
+    # baseline; without one we cannot assert a dimensional improvement.
+    dim = _dimensional_improvement(cell, baseline_cell)
+    if dim is not None:
+        return CLASS_DIMENSIONAL_WIN, dim
+    return (
+        CLASS_TIE,
+        "warm at the 1.00 floor and no material dimensional improvement vs baseline",
+    )
+
+
+def _dimensional_improvement(cell: "Cell", baseline_cell: dict | None) -> str | None:
+    """Detect a material non-warm improvement vs a baseline cell (DIMENSIONAL_WIN).
+
+    Compares RSS, binary size, cold_speedup, and compile time against the
+    baseline. Returns a human reason naming the improved dimension(s) if ANY beat
+    the baseline by >= DIMENSIONAL_WIN_MIN_FRACTION; else None. A warm flip is
+    NOT a dimensional win (that is GREEN); this is the "landed without a warm
+    flip but materially better elsewhere" lane (Rule 4).
+    """
+    if not baseline_cell:
+        return None
+    wins: list[str] = []
+
+    def _improved_lower(new: float | None, old: float | None, label: str) -> None:
+        # Lower-is-better dimensions (RSS, size, compile time).
+        if new is None or old is None or old <= 0:
+            return
+        frac = (old - new) / old
+        if frac >= DIMENSIONAL_WIN_MIN_FRACTION:
+            wins.append(f"{label} {old:.1f}->{new:.1f} (-{frac * 100:.0f}%)")
+
+    def _improved_higher(new: float | None, old: float | None, label: str) -> None:
+        # Higher-is-better dimensions (cold_speedup).
+        if new is None or old is None or old <= 0:
+            return
+        frac = (new - old) / old
+        if frac >= DIMENSIONAL_WIN_MIN_FRACTION:
+            wins.append(f"{label} {old:.2f}->{new:.2f} (+{frac * 100:.0f}%)")
+
+    _improved_lower(cell.molt_peak_rss_mib, baseline_cell.get("molt_peak_rss_mib"), "RSS")
+    _improved_lower(cell.binary_size_kib, baseline_cell.get("binary_size_kib"), "binary")
+    _improved_lower(cell.compile_time_s, baseline_cell.get("compile_time_s"), "compile")
+    _improved_higher(cell.cold_speedup, baseline_cell.get("cold_speedup"), "cold")
+    if not wins:
+        return None
+    return "warm gate flat, but DIMENSIONAL win: " + "; ".join(wins)
+
+
+def apply_classification(
+    cells: list["Cell"],
+    *,
+    quiescent: bool,
+    baseline_doc: dict | None = None,
+) -> None:
+    """Set ``classification`` on every cell from quiescence + repeat CI + baseline.
+
+    The single entry point the run/rebuild paths call when --classify is on.
+    ``baseline_doc`` (a prior board) enables DIMENSIONAL_WIN; absent, dimensional
+    wins are not asserted (they collapse to TIE — conservative by design).
+    """
+    baseline_cells: dict[str, dict] = {}
+    if baseline_doc:
+        baseline_cells = {_cell_key(c): c for c in _flatten_cells(baseline_doc)}
+    for cell in cells:
+        bkey = f"{cell.benchmark} [{cell.backend}/{cell.profile}]"
+        cls, reason = classify_cell(
+            cell,
+            quiescent=quiescent,
+            baseline_cell=baseline_cells.get(bkey),
+        )
+        cell.classification = cls
+        cell.classification_reason = reason
+        cell.measured_quiescent = quiescent
+
+
 # --- Triage hints (council "what FACT is missing from IR?" doctrine) --------
 # These are NAME-pattern heuristics that point a perf agent at the most likely
 # missing IR fact per the council triage doctrine. They are HINTS for the
@@ -763,8 +1557,17 @@ def measure_cell(
     authoritative: bool = True,
     pypy_bin: str | None = None,
     codon_runner: "CodonRunner | None" = None,
+    repeat: int = 1,
+    emit_cycle_profile: bool = False,
 ) -> Cell:
-    """Build + time one (benchmark, target, backend, profile) cell."""
+    """Build + time one (benchmark, target, backend, profile) cell.
+
+    ``repeat`` (>=1) runs N independent warm measurement PASSES (each a full
+    warmup+samples block for molt AND CPython) and attaches a per-pass
+    warm_speedup CI; a verdict is STABLE only if the CI does not straddle 1.00.
+    ``emit_cycle_profile`` captures a CPU CYCLE profile (``/usr/bin/sample``) for
+    a warm-red cell — the Rule-1 attribution signal (cycles, not alloc-count).
+    """
     benchmark = bench_suites.canonical_benchmark_key(script_path)
     cell = Cell(
         benchmark=benchmark, target=spec.target, backend=spec.backend, profile=profile
@@ -842,53 +1645,107 @@ def measure_cell(
         capture_stdout=True,
     )
 
-    # --- WARM samples (warmup then >= `samples` measured) -------------------
-    for _ in range(warmup):
-        _safe_run_json(
-            [str(binary.path), *run_args],
-            env=molt_run_env,
-            rss_mb=rss_mb,
-            timeout_s=timeout_s,
-            label=f"molt-warmup:{benchmark}",
-        )
-    molt_runs = [
-        _safe_run_json(
-            [str(binary.path), *run_args],
-            env=molt_run_env,
-            rss_mb=rss_mb,
-            timeout_s=timeout_s,
-            label=f"molt-warm:{benchmark}",
-        )
-        for _ in range(samples)
-    ]
+    # --- WARM samples — N independent PASSES (council --repeat N) -----------
+    # Each pass is a full warmup+samples block for molt AND CPython, yielding one
+    # warm_speedup point estimate. The CANONICAL cell stats come from the pass
+    # with the most molt samples (pass 1 in the common case); ALL passes feed the
+    # confidence interval. A verdict is STABLE only if that CI clears 1.00.
+    n_passes = max(1, repeat)
+    per_pass_speedups: list[float] = []
+    pass_results: list[tuple[PhaseStats, PhaseStats]] = []
+    for pass_idx in range(n_passes):
+        for _ in range(warmup):
+            _safe_run_json(
+                [str(binary.path), *run_args],
+                env=molt_run_env,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=f"molt-warmup:{benchmark}",
+            )
+        molt_runs = [
+            _safe_run_json(
+                [str(binary.path), *run_args],
+                env=molt_run_env,
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=f"molt-warm:{benchmark}:p{pass_idx}",
+            )
+            for _ in range(samples)
+        ]
+        for _ in range(warmup):
+            _safe_run_json(
+                [cpython_bin, str(script_path), *run_args],
+                env=_cpython_run_env(),
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=f"cpython-warmup:{benchmark}",
+            )
+        cpy_runs = [
+            _safe_run_json(
+                [cpython_bin, str(script_path), *run_args],
+                env=_cpython_run_env(),
+                rss_mb=rss_mb,
+                timeout_s=timeout_s,
+                label=f"cpython-warm:{benchmark}:p{pass_idx}",
+            )
+            for _ in range(samples)
+        ]
+        m_stats = PhaseStats.from_runs(molt_runs)
+        c_stats = PhaseStats.from_runs(cpy_runs)
+        pass_results.append((m_stats, c_stats))
+        sp = _safe_ratio(c_stats.median_s, m_stats.median_s)
+        if sp is not None:
+            per_pass_speedups.append(sp)
 
-    for _ in range(warmup):
-        _safe_run_json(
-            [cpython_bin, str(script_path), *run_args],
-            env=_cpython_run_env(),
+    # Canonical stats = the pass with the most molt samples (ties -> first).
+    molt_stats, cpy_stats = max(
+        pass_results, key=lambda pr: (pr[0].n, -pass_results.index(pr))
+    )
+
+    # --- CYCLE attribution for warm reds (Rule 1 — cycles, NOT alloc-count) --
+    # Capture WHILE the binary still exists. A warm red is warm_speedup <= 1.00
+    # i.e. cpython_warm <= molt_warm (the FAIL_ENGINE condition). We profile the
+    # running molt binary so the next optimization is steered by CPU self-time,
+    # never by an alloc count.
+    warm_sp_now = _safe_ratio(cpy_stats.median_s, molt_stats.median_s)
+    is_warm_red_now = (
+        warm_sp_now is not None
+        and warm_sp_now <= RED_THRESHOLD
+        and molt_stats.n > 0
+        and cpy_stats.n > 0
+    )
+    if emit_cycle_profile and is_warm_red_now:
+        log_lines.append("capturing CYCLE profile (warm red — Rule 1 attribution)")
+        cell.cycle_profile = capture_cycle_profile(
+            [str(binary.path), *run_args],
+            env=molt_run_env,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
-            label=f"cpython-warmup:{benchmark}",
         )
-    cpy_runs = [
-        _safe_run_json(
-            [cpython_bin, str(script_path), *run_args],
-            env=_cpython_run_env(),
-            rss_mb=rss_mb,
-            timeout_s=timeout_s,
-            label=f"cpython-warm:{benchmark}",
+        avail = cell.cycle_profile.get("available")
+        top = cell.cycle_profile.get("top_symbols") or []
+        log_lines.append(
+            f"cycle_profile available={avail} top={top[0]['symbol'] if top else '-'} "
+            f"note={cell.cycle_profile.get('note')}"
         )
-        for _ in range(samples)
-    ]
 
     _release_binary(binary)
 
-    molt_stats = PhaseStats.from_runs(molt_runs)
-    cpy_stats = PhaseStats.from_runs(cpy_runs)
     cell.molt_stats = asdict(molt_stats)
     cell.cpython_stats = asdict(cpy_stats)
     cell.molt_ok = molt_stats.n > 0 and cold_molt.ok
     cell.cpython_ok = cpy_stats.n > 0 and cold_cpy.ok
+
+    # --- Repeat-pass CI (STABLE only if the CI does not straddle 1.00) -------
+    if n_passes > 1 or per_pass_speedups:
+        median_sp, var_sp, ci_lo, ci_hi = _warm_speedup_ci(per_pass_speedups)
+        cell.repeat_passes = n_passes
+        cell.repeat_warm_speedups = [round(s, 4) for s in per_pass_speedups]
+        cell.repeat_median_warm = median_sp
+        cell.repeat_variance = var_sp
+        cell.repeat_ci_lo = ci_lo
+        cell.repeat_ci_hi = ci_hi
+        cell.repeat_stability = _repeat_stability(ci_lo, ci_hi)
 
     cell.cold_molt_s = round(cold_molt.elapsed_s, 6) if cold_molt.elapsed_s else None
     cell.cold_cpython_s = round(cold_cpy.elapsed_s, 6) if cold_cpy.elapsed_s else None
@@ -1452,12 +2309,22 @@ def _stdlib_cache_key_signal() -> str | None:
 
 def gather_provenance(
     specs_profiles: list[tuple["BackendSpec", str]] | None = None,
+    *,
+    quiescence: dict | None = None,
+    require_quiescent: bool = False,
 ) -> dict:
-    """Collect the full provenance metadata for a board (council ruling A).
+    """Collect the full provenance metadata for a board (council ruling A + #69).
 
     ``authoritative`` is False whenever the local HEAD diverges from origin/main
-    OR the tree is dirty OR the scoreboard tool itself is modified-vs-HEAD —
-    any of which means the numbers are not the canonical origin/main contract.
+    OR the tree is dirty OR the scoreboard tool itself is modified-vs-HEAD — any
+    of which means the numbers are not the canonical origin/main contract. When
+    ``require_quiescent`` is set, a NON-QUIET machine ALSO forces
+    ``authoritative=false`` (#69 Rule 2): a board measured under competing
+    build/load is non-authoritative for warm verdicts. The quiescence block is
+    ALWAYS recorded (even without --require-quiescent) so a reader can see the
+    machine state; the new top-level fields ``active_molt_processes`` /
+    ``active_cargo_or_rustc_processes`` / ``loadavg_1m`` / ``ncpu`` /
+    ``runnable_signal`` are surfaced for ``--print-provenance``.
     """
     local_head = _git_output(["rev-parse", "HEAD"])
     origin = _origin_main_sha()
@@ -1471,7 +2338,10 @@ def gather_provenance(
     tool_modified = tool.get("modified_vs_head") == "true"
 
     diverges = bool(local_head and origin and local_head != origin)
-    authoritative = not (diverges or dirty or tool_modified)
+    quiet = bool(quiescence.get("quiet")) if quiescence else None
+    # The quiescence component of authority only BITES when --require-quiescent.
+    quiet_blocks = bool(require_quiescent and quiescence is not None and not quiet)
+    authoritative = not (diverges or dirty or tool_modified or quiet_blocks)
 
     backend_identities: dict[str, str | None] = {}
     if specs_profiles:
@@ -1479,7 +2349,7 @@ def gather_provenance(
             ident = _backend_binary_identity_for(spec, profile)
             backend_identities[f"{spec.backend}/{profile}"] = ident
 
-    return {
+    prov = {
         "origin_sha": origin,
         "local_head_sha": local_head,
         "merge_base_sha": merge_base,
@@ -1491,12 +2361,37 @@ def gather_provenance(
         "backend_binary_identity": backend_identities,
         "stdlib_cache_key": _stdlib_cache_key_signal(),
         "authoritative": authoritative,
-        "authoritative_reason": _authoritative_reason(diverges, dirty, tool_modified),
+        "authoritative_reason": _authoritative_reason(
+            diverges, dirty, tool_modified, quiet_blocks=quiet_blocks, quiescence=quiescence
+        ),
+        # --- #69 quiescence-guard provenance --------------------------------
+        "require_quiescent": require_quiescent,
+        "quiescent": quiet,
+        "quiescence": quiescence or {},
     }
+    if quiescence:
+        # Promote the council-mandated NEW fields to the top level of the
+        # provenance block (where --print-provenance reads them).
+        for k in (
+            "active_molt_processes",
+            "active_cargo_or_rustc_processes",
+            "loadavg_1m",
+            "ncpu",
+            "runnable_signal",
+        ):
+            prov[k] = quiescence.get(k)
+    return prov
 
 
-def _authoritative_reason(diverges: bool, dirty: bool, tool_modified: bool) -> str:
-    if not (diverges or dirty or tool_modified):
+def _authoritative_reason(
+    diverges: bool,
+    dirty: bool,
+    tool_modified: bool,
+    *,
+    quiet_blocks: bool = False,
+    quiescence: dict | None = None,
+) -> str:
+    if not (diverges or dirty or tool_modified or quiet_blocks):
         return "tree == origin/main, clean, tool unmodified"
     parts = []
     if diverges:
@@ -1505,6 +2400,9 @@ def _authoritative_reason(diverges: bool, dirty: bool, tool_modified: bool) -> s
         parts.append("working tree is dirty")
     if tool_modified:
         parts.append("perf_scoreboard.py modified vs HEAD")
+    if quiet_blocks:
+        why = "; ".join((quiescence or {}).get("reasons", [])) or "machine not quiet"
+        parts.append(f"machine NOT quiescent (--require-quiescent): {why}")
     return "; ".join(parts)
 
 
@@ -1568,10 +2466,19 @@ def build_scoreboard_doc(
     def keys_with(verdict: str) -> list[str]:
         return sorted(_cell_key(asdict(c)) for c in cells if c.verdict == verdict)
 
+    def keys_with_class(cls: str) -> list[str]:
+        return sorted(
+            _cell_key(asdict(c)) for c in cells if c.classification == cls
+        )
+
     # The gate-failing set (the hard reds). FAIL_STALE is conditional (depends
     # on --allow-nonauthoritative), so it is reported separately, not summed in.
     gate_failing = [c for c in cells if c.verdict in GATE_FAILING_VERDICTS]
     stale_cells = [c for c in cells if c.verdict == VERDICT_FAIL_STALE]
+    # The 5-state classification is active iff any cell carries a classification
+    # (--classify was used). When inactive the breakdown is empty (no-op for the
+    # 2-D-only callers).
+    classify_active = any(c.classification is not None for c in cells)
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "cpython_floor_scoreboard",
@@ -1599,6 +2506,14 @@ def build_scoreboard_doc(
             "RUN_ERROR": "CPython ran but molt did not",
             "RUN_BLOCKED": "wasm run-path gap (build/link only)",
             "CPY_INCOMPATIBLE": "no CPython floor — excluded from gate",
+        },
+        "classify_legend": {
+            CLASS_RED_STABLE: "warm<1.00, repeat CI clears below 1.00, quiescent+stable — TRUE compiler target",
+            CLASS_RED_NOISY: "warm<1.00 BUT contaminated/unstable/CI-straddles — NOT yet a target",
+            CLASS_TIE: "repeat CI crosses 1.00 (or warm==1.00) — neither win nor loss",
+            CLASS_GREEN: "stable warm>1.00, quiescent — a won class",
+            CLASS_DIMENSIONAL_WIN: "warm gate flat but alloc/RSS/size/cold improved >= 5% vs baseline (Rule 4)",
+            CLASS_INFRA: "build/run/blocked/cpy-incompat/stale — no warm number to classify",
         },
         "methodology": {
             "samples_per_phase": samples,
@@ -1674,6 +2589,28 @@ def build_scoreboard_doc(
                 "build_failed_or_error": keys_with(VERDICT_BUILD_FAILED)
                 + keys_with(VERDICT_RUN_ERROR),
                 "cpython_incompatible": keys_with(VERDICT_CPY_INCOMPAT),
+            },
+            # --- #69 5-state classification breakdown (--classify) ----------
+            # The measurement-hygiene-aware verdict: TRUE target vs artifact.
+            # Empty unless --classify ran. RED_STABLE is the TRUE warm-red set.
+            "classify_active": classify_active,
+            "cells_red_stable": sum(
+                1 for c in cells if c.classification == CLASS_RED_STABLE
+            ),
+            "cells_red_noisy": sum(
+                1 for c in cells if c.classification == CLASS_RED_NOISY
+            ),
+            "cells_tie": sum(1 for c in cells if c.classification == CLASS_TIE),
+            "cells_dimensional_win": sum(
+                1 for c in cells if c.classification == CLASS_DIMENSIONAL_WIN
+            ),
+            "classification_breakdown": {
+                CLASS_RED_STABLE: keys_with_class(CLASS_RED_STABLE),
+                CLASS_RED_NOISY: keys_with_class(CLASS_RED_NOISY),
+                CLASS_TIE: keys_with_class(CLASS_TIE),
+                CLASS_GREEN: keys_with_class(CLASS_GREEN),
+                CLASS_DIMENSIONAL_WIN: keys_with_class(CLASS_DIMENSIONAL_WIN),
+                CLASS_INFRA: keys_with_class(CLASS_INFRA),
             },
         },
         "benchmarks_run": benchmarks_run,
@@ -1806,12 +2743,29 @@ def print_summary(doc: dict) -> None:
         f"pypy={doc['host'].get('pypy') or '-'}  "
         f"codon={doc['host'].get('codon') or '-'}"
     )
+    # --- Quiescence line (#69 Rule 2) --------------------------------------
+    q = prov.get("quiescence") or {}
+    if q:
+        if q.get("quiet"):
+            print(
+                f"  QUIESCENT: load={q.get('loadavg_1m')} (<= {q.get('loadavg_threshold')}"
+                f", ncpu={q.get('ncpu')})  runnable={q.get('runnable_signal')}  "
+                f"builds=0  thermal={'ok' if q.get('thermal_ok') else q.get('thermal_ok')}"
+            )
+        else:
+            print(
+                f"  *** NOT QUIESCENT: {'; '.join(q.get('reasons', []))} ***"
+            )
+            if prov.get("require_quiescent"):
+                print(
+                    "      NON-AUTHORITATIVE: machine not quiet; do not optimize "
+                    "from this red list (EXPLORATORY only)"
+                )
     if authoritative:
-        print("  AUTHORITATIVE: tree == origin/main, clean, tool unmodified")
+        print("  AUTHORITATIVE: tree == origin/main, clean, tool unmodified, machine quiescent")
     else:
         print(
-            "  *** WARNING: local tree diverges from origin; benchmark is "
-            "non-authoritative ***"
+            "  *** WARNING: benchmark is NON-AUTHORITATIVE ***"
         )
         print(f"      reason: {prov.get('authoritative_reason', 'unknown')}")
     print("=" * 100)
@@ -1954,6 +2908,71 @@ def print_summary(doc: dict) -> None:
             f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
             f"[{c['backend']}/{c['profile']}]"
         )
+
+    # --- 5-STATE CLASSIFICATION (#69 --classify) ---------------------------
+    summary = doc.get("summary", {})
+    if summary.get("classify_active"):
+        by_class: dict[str, list[dict]] = {}
+        for c in cells:
+            cls = c.get("classification")
+            if cls:
+                by_class.setdefault(cls, []).append(c)
+        cb = summary.get("classification_breakdown", {})
+        print(
+            f"\n5-STATE CLASSIFICATION (#69): RED_STABLE={len(cb.get(CLASS_RED_STABLE, []))}  "
+            f"RED_NOISY={len(cb.get(CLASS_RED_NOISY, []))}  TIE={len(cb.get(CLASS_TIE, []))}  "
+            f"GREEN={len(cb.get(CLASS_GREEN, []))}  "
+            f"DIMENSIONAL_WIN={len(cb.get(CLASS_DIMENSIONAL_WIN, []))}  "
+            f"INFRA={len(cb.get(CLASS_INFRA, []))}"
+        )
+        red_stable = sorted(
+            by_class.get(CLASS_RED_STABLE, []),
+            key=lambda c: c.get("warm_speedup") or 0.0,
+        )
+        print(
+            f"\n  TRUE WARM REDS — RED_STABLE ({len(red_stable)}) "
+            "[quiescent + stable + CI below 1.00 — the ONLY optimize-from set]:"
+        )
+        for c in red_stable:
+            cp = c.get("cycle_profile") or {}
+            top = cp.get("top_symbols") or []
+            cyc = (
+                f" -> CYCLES top: {top[0]['symbol']}"
+                if top
+                else (f" -> {cp.get('note')}" if cp.get("note") else "")
+            )
+            print(
+                f"    {_fmt(c.get('warm_speedup'))}x  "
+                f"CI=[{_fmt(c.get('repeat_ci_lo'))},{_fmt(c.get('repeat_ci_hi'))}]  "
+                f"{c['benchmark']} [{c['backend']}/{c['profile']}]{cyc}"
+            )
+        noisy = by_class.get(CLASS_RED_NOISY, [])
+        if noisy:
+            print(
+                f"\n  RED_NOISY ({len(noisy)}) — warm<1.00 but contaminated/"
+                "unstable/CI-straddles — DO NOT optimize (re-measure quiet):"
+            )
+            for c in sorted(noisy, key=lambda c: c.get("warm_speedup") or 0.0)[:20]:
+                print(
+                    f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
+                    f"[{c['backend']}/{c['profile']}]  ({c.get('classification_reason')})"
+                )
+        ties = by_class.get(CLASS_TIE, [])
+        if ties:
+            print(f"\n  TIE ({len(ties)}) — CI crosses 1.00 (neither win nor loss):")
+            for c in sorted(ties, key=lambda c: c["benchmark"])[:20]:
+                print(
+                    f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
+                    f"[{c['backend']}/{c['profile']}]"
+                )
+        dims = by_class.get(CLASS_DIMENSIONAL_WIN, [])
+        if dims:
+            print(f"\n  DIMENSIONAL_WIN ({len(dims)}) — Rule 4 (no warm flip, dimension improved):")
+            for c in dims:
+                print(
+                    f"    {c['benchmark']} [{c['backend']}/{c['profile']}]  "
+                    f"({c.get('classification_reason')})"
+                )
 
     # --- FASTEST NEXT UNLOCK -----------------------------------------------
     unlock = _fastest_next_unlock(warm_reds, cold_reds)
@@ -2401,6 +3420,57 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP)
     parser.add_argument("--rss-mb", type=int, default=DEFAULT_RUN_RSS_MB)
     parser.add_argument("--timeout", type=float, default=DEFAULT_RUN_TIMEOUT_S)
+    # --- #69 measurement-hygiene flags ------------------------------------
+    parser.add_argument(
+        "--require-quiescent",
+        action="store_true",
+        help=(
+            "BEFORE measuring, detect contamination (active cargo/rustc/molt "
+            "builds [codex excluded], 1-min load > ncpu*0.5, runnable-thread "
+            "storm, thermal throttle). A non-quiet machine stamps the board "
+            "authoritative=false and prints NON-AUTHORITATIVE; the run still "
+            "produces EXPLORATORY numbers, never authoritative warm verdicts."
+        ),
+    )
+    parser.add_argument(
+        "--print-provenance",
+        action="store_true",
+        help=(
+            "emit the full provenance block (origin/candidate SHA, dirty, daemon, "
+            "stdlib cache key, backend binary identity, cold/warm, repeat/variance "
+            "+ the NEW quiescence fields active_molt_processes / "
+            "active_cargo_or_rustc_processes / loadavg_1m / ncpu / runnable_signal)"
+        ),
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help=(
+            "N independent measurement PASSES per cell; compute median + variance "
+            "+ a 95%% CI. A verdict is STABLE only if the CI does not straddle "
+            "1.00 across passes (default 1 = single pass, no CI)."
+        ),
+    )
+    parser.add_argument(
+        "--classify",
+        action="store_true",
+        help=(
+            "replace the single warm verdict with the council's 5 states: "
+            "RED_STABLE / RED_NOISY / TIE / GREEN_STABLE / DIMENSIONAL_WIN "
+            "(+ INFRA). RED_STABLE (quiescent+stable+CI-below-1.0) is the TRUE "
+            "warm-red set. DIMENSIONAL_WIN needs --baseline."
+        ),
+    )
+    parser.add_argument(
+        "--emit-cycle-profile",
+        action="store_true",
+        help=(
+            "for warm reds, capture a CYCLE profile (/usr/bin/sample self-time) "
+            "and attach the top symbols — the Rule-1 attribution signal (CYCLES, "
+            "not alloc-count). Falls back to a documented note if unavailable."
+        ),
+    )
     parser.add_argument(
         "--out",
         default=None,
@@ -2513,9 +3583,37 @@ def main(argv: list[str]) -> int:
         file=sys.stderr,
     )
 
-    # --- Provenance + authoritative gate (council ruling A + B) ------------
+    # --- Quiescence guard (#69 Rule 2) — measure BEFORE timing -------------
+    # Detect contamination first so a non-quiet machine is stamped
+    # authoritative=false (when --require-quiescent) BEFORE any number is taken.
+    quiescence = gather_quiescence()
+    if not quiescence["quiet"]:
+        print(
+            "[scoreboard] machine NOT quiescent — "
+            + "; ".join(quiescence["reasons"]),
+            file=sys.stderr,
+        )
+        if ns.require_quiescent:
+            print(
+                "[scoreboard] *** NON-AUTHORITATIVE: machine not quiet; do not "
+                "optimize from this red list (EXPLORATORY only) ***",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            f"[scoreboard] machine quiescent (load={quiescence['loadavg_1m']} "
+            f"ncpu={quiescence['ncpu']} runnable={quiescence['runnable_signal']} "
+            f"builds=0)",
+            file=sys.stderr,
+        )
+
+    # --- Provenance + authoritative gate (council ruling A + B + #69) ------
     specs_profiles = [(BACKENDS_BY_NAME[b], p) for b in backends for p in profiles]
-    provenance = gather_provenance(specs_profiles)
+    provenance = gather_provenance(
+        specs_profiles,
+        quiescence=quiescence,
+        require_quiescent=ns.require_quiescent,
+    )
     # provenance.authoritative records the TRUTH (tree==origin, clean, tool
     # unmodified). `--allow-nonauthoritative` does NOT change that truth — it
     # lets the cells classify on their REAL numbers (not FAIL_STALE) for local
@@ -2618,6 +3716,8 @@ def main(argv: list[str]) -> int:
                         authoritative=effective_authoritative,
                         pypy_bin=pypy_bin,
                         codon_runner=codon_runner,
+                        repeat=ns.repeat,
+                        emit_cycle_profile=ns.emit_cycle_profile,
                     )
                     cells.append(cell)
                     if key not in benchmarks_run:
@@ -2663,6 +3763,26 @@ def main(argv: list[str]) -> int:
     if codon_runner is not None:
         codon_runner.close()
 
+    # --- 5-state classification (#69 --classify) ---------------------------
+    # Set after the whole sweep so the WHOLE-board quiescence + each cell's
+    # repeat CI are both available. DIMENSIONAL_WIN needs the baseline board.
+    if ns.classify:
+        baseline_doc = None
+        if ns.baseline is not None:
+            bpath = (
+                _latest_baseline(exclude=out_path)
+                if ns.baseline == "__latest__"
+                else Path(ns.baseline)
+            )
+            if bpath is not None and bpath.exists():
+                try:
+                    baseline_doc = json.loads(bpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    baseline_doc = None
+        apply_classification(
+            cells, quiescent=bool(quiescence["quiet"]), baseline_doc=baseline_doc
+        )
+
     doc = build_scoreboard_doc(
         cells,
         benchmarks_run=benchmarks_run,
@@ -2674,6 +3794,8 @@ def main(argv: list[str]) -> int:
         pypy_version=pypy_version,
         codon_version=codon_version,
     )
+    if ns.print_provenance:
+        _print_provenance(provenance)
     # Attach the regressions-from-last-green list so print_summary can surface
     # it in the classified output (council ruling A section).
     doc["_out_path"] = str(out_path)
@@ -2733,6 +3855,76 @@ def main(argv: list[str]) -> int:
         strict_cold=ns.strict_cold,
         allow_nonauthoritative=ns.allow_nonauthoritative,
     )
+
+
+def _proc_summary(procs: object) -> str:
+    """One-line summary of a build-process list (pid:exe pairs)."""
+    if not isinstance(procs, list) or not procs:
+        return "0"
+    parts = []
+    for p in procs[:6]:
+        if isinstance(p, dict):
+            cmd = (p.get("cmd") or "").split()
+            parts.append(f"{p.get('pid')}:{cmd[0] if cmd else '?'}")
+    suffix = ", ".join(parts)
+    extra = f" (+{len(procs) - 6} more)" if len(procs) > 6 else ""
+    return f"{len(procs)} [{suffix}{extra}]"
+
+
+def _print_provenance(provenance: dict) -> None:
+    """Emit the FULL provenance block (#69 --print-provenance).
+
+    Prints every field a reader needs to certify (or reject) a board's
+    authority: the origin/candidate SHAs, dirty/daemon/cache identity, the
+    cold/warm + repeat/variance posture, AND the council's NEW quiescence
+    fields (``active_molt_processes``, ``active_cargo_or_rustc_processes``,
+    ``loadavg_1m``, ``ncpu``, ``runnable_signal``). This is the human-auditable
+    twin of the JSON provenance block; it does not re-measure anything.
+    """
+    p = provenance
+    q = p.get("quiescence") or {}
+    print("\n" + "=" * 100)
+    print("PROVENANCE (full) — #69 measurement-hygiene block")
+    print("=" * 100)
+    # --- Tree / artifact identity (council ruling A) -----------------------
+    print("  [tree identity]")
+    print(f"    origin_sha (origin/main)     = {p.get('origin_sha')}")
+    print(f"    candidate_sha (local HEAD)   = {p.get('local_head_sha')}")
+    print(f"    merge_base_sha               = {p.get('merge_base_sha')}")
+    print(f"    dirty_tree                   = {p.get('dirty_tree')}")
+    print(f"    diverges_from_origin         = {p.get('diverges_from_origin')}")
+    print(f"    benchmark_tool_sha (on-disk) = {p.get('benchmark_tool_sha')}")
+    print(f"    benchmark_tool_last_commit   = {p.get('benchmark_tool_last_commit')}")
+    print(f"    benchmark_tool_modified      = {p.get('benchmark_tool_modified')}")
+    print("  [backend_binary_identity (daemon / stale-cache guard)]")
+    bbi = p.get("backend_binary_identity") or {}
+    if bbi:
+        for lane, ident in sorted(bbi.items()):
+            print(f"    {lane:<24} = {ident}")
+    else:
+        print("    (none recorded)")
+    print(f"    stdlib_cache_key             = {p.get('stdlib_cache_key')}")
+    # --- Quiescence (#69 Rule 2) — the NEW fields, named explicitly ---------
+    print("  [quiescence (#69 Rule 2)]")
+    print(f"    require_quiescent            = {p.get('require_quiescent')}")
+    print(f"    quiescent                    = {p.get('quiescent')}")
+    print(f"    active_molt_processes        = {_proc_summary(p.get('active_molt_processes'))}")
+    print(
+        "    active_cargo_or_rustc_processes = "
+        f"{_proc_summary(p.get('active_cargo_or_rustc_processes'))}"
+    )
+    print(f"    loadavg_1m                   = {p.get('loadavg_1m')}")
+    print(f"    loadavg_threshold            = {q.get('loadavg_threshold')}")
+    print(f"    ncpu                         = {p.get('ncpu')}")
+    print(f"    runnable_signal              = {p.get('runnable_signal')}")
+    print(f"    thermal_ok                   = {q.get('thermal_ok')}  ({q.get('thermal_note')})")
+    if q.get("reasons"):
+        print(f"    NON-QUIET reasons            = {'; '.join(q.get('reasons', []))}")
+    # --- Authority verdict --------------------------------------------------
+    print("  [authority]")
+    print(f"    authoritative                = {p.get('authoritative')}")
+    print(f"    authoritative_reason         = {p.get('authoritative_reason')}")
+    print("=" * 100)
 
 
 def _attach_regressions(doc: dict) -> None:
