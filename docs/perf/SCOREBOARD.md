@@ -1,15 +1,92 @@
 # CPython Floor-Scoreboard — the release-blocking performance gate
 
 `tools/perf_scoreboard.py` operationalizes the **Performance Constitution**
-(`CLAUDE.md`, commit `538f4386e`). It is the machine-readable artifact the
-constitution mandates: a single scoreboard keyed **benchmark × target × backend
-× profile** reporting the absolute molt-vs-CPython speedup, with any cell below
-`1.00×` flagged **RED** (a contract violation) and a CI-gateable nonzero exit.
+(`CLAUDE.md`, commit `538f4386e`) and the **council two-dimensional gating
+ruling** (`project_council_decisions_20260608`, section A). It is the
+machine-readable artifact the constitution mandates: a single scoreboard keyed
+**benchmark × target × backend × profile** reporting the molt-vs-CPython speedup
+split into a **warm (execution-engine) axis** and a **cold (startup-tax) axis**,
+with a CI-gateable nonzero exit and full **provenance** so a board is never
+silently measured against a stale tree.
 
 This tool **measures and surfaces**; it does not fix slow benchmarks. Fixing a
 RED benchmark is a separate optimization arc — and per the constitution's
 *"fix the representation, not the pass"* posture, the first question for each RED
 is never *"which peephole recovers it"* but *"which FACT is missing from IR?"*.
+
+## Two-dimensional gating (council ruling A) — warm ≠ cold
+
+The single legacy `red` bool blended two structurally different failures. The
+board now emits one **verdict** per cell:
+
+| verdict | condition | meaning / lane |
+|---------|-----------|----------------|
+| `GREEN` | warm fast, cold fast, tax within budget | won |
+| `FAIL_ENGINE` | `warm_speedup = cpython_warm/molt_warm ≤ 1.00` | **execution-engine red — RELEASE BLOCKER.** Needs an IR FACT. |
+| `FAIL_COLD_BUDGET` | `startup_tax_ms > budget_ms` | startup regression. Routes to the cold-start/runtime/artifact lane. |
+| `WARN_COLD_FLOOR` | `cold_speedup ≤ 1.00` BUT `warm_speedup > 1.00` and the loss is the fixed startup tax (within budget) | **not a hard red.** Warns; fails the gate only with `--strict-cold`. |
+| `FAIL_STALE` | board tree ≠ fresh origin/main (non-authoritative) | overrides all. Fails the gate unless `--allow-nonauthoritative`. |
+| `UNSTABLE` | CV above threshold | untrustworthy in either direction — gated. |
+| `BUILD_FAILED` / `RUN_ERROR` | molt build failed / CPython ran but molt did not | gated. |
+| `RUN_BLOCKED` / `CPY_INCOMPATIBLE` | wasm build/link-only / no CPython floor | not gated. |
+
+Where:
+- `warm_speedup = cpython_warm / molt_warm` (steady-state — the engine axis).
+- `cold_speedup = cpython_cold / molt_cold` (end-to-end cold path).
+- `startup_tax_ms = (molt_cold_total − molt_warm_total) × 1000` — the **fixed
+  startup cost** molt pays cold that the warm steady state does not. This (NOT
+  `cold_speedup`) is what the cold-start budget gates against.
+
+**The gate fails (nonzero exit) iff any** `FAIL_ENGINE`, `FAIL_COLD_BUDGET`,
+`BUILD_FAILED`, `RUN_ERROR`, or `UNSTABLE`. `WARN_COLD_FLOOR` does **not** fail
+the gate (it is a fixed tax within budget) unless `--strict-cold`. `FAIL_STALE`
+fails unless `--allow-nonauthoritative` (local-debug opt-out). Never blend
+cold+warm into one bucket — warm reds need IR facts; cold reds need
+startup/runtime/artifact work.
+
+The cold-start budget lives in `bench/scoreboard/cold_start_budget.json`, keyed
+`<backend>/<profile>` → `budget_ms`. **v0 = the measured baseline** per the
+council ladder ("v0 = current measured baseline; near-term = no regression from
+baseline; release-output native Y1 = startup_tax < 100ms"). A missing budget
+means `FAIL_COLD_BUDGET` cannot fire (we never invent a budget); the measured
+tax is still recorded so the ceiling can be seeded.
+
+## Provenance — the anti-stale-lore enforcement (council ruling A + B)
+
+Every board carries the exact tree + tool + artifact identity it was measured
+against, under the top-level `provenance` block:
+
+```jsonc
+"provenance": {
+  "origin_sha":              "<origin/main tip>",
+  "local_head_sha":          "<HEAD the board was measured at>",
+  "merge_base_sha":          "<merge-base(HEAD, origin/main)>",
+  "dirty_tree":              false,
+  "diverges_from_origin":    false,
+  "benchmark_tool_sha":      "<git blob of perf_scoreboard.py on disk>",
+  "benchmark_tool_modified": false,            // tool differs from its committed blob?
+  "backend_binary_identity": { "native/release-fast": "<path|mtime_ns|size>" },
+  "stdlib_cache_key":        "<runtime/codegen source-tree fingerprint>",
+  "authoritative":           true,
+  "authoritative_reason":    "tree == origin/main, clean, tool unmodified"
+}
+```
+
+`authoritative` is **false** whenever the local HEAD diverges from origin/main,
+OR the tree is dirty, OR the scoreboard tool itself is modified-vs-HEAD. A
+non-authoritative board PRINTS *"WARNING: local tree diverges from origin;
+benchmark is non-authoritative unless explicitly requested"* and stamps every
+cell `FAIL_STALE`. `backend_binary_identity` reuses `cli.py._backend_binary_identity`
+(`path|mtime_ns|size`) — the same signal the stdlib/TIR caches salt with — so a
+reader can detect the stale-cache confound class directly.
+
+> Authoring note: a Lane-C run that **adds a commit to the scoreboard tool on top
+> of origin/main** is technically non-authoritative by the strict
+> `local_head ≠ origin_sha` rule, even though the COMPILER behavior measured is
+> exactly origin/main's. Such a run uses `--allow-nonauthoritative`; the board's
+> `provenance` records `local_head_sha` (the tooling commit) and `origin_sha`
+> (the compiler tree) so a reader sees the only diff is the tool, and the
+> compiler perf numbers ARE origin/main's.
 
 ## What it reuses (no new timing loop)
 
@@ -63,9 +140,24 @@ uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --backend nativ
 
 ### Exit code (the gate)
 
-Exit is **nonzero iff any cell is RED or unstable-unmeasurable**. A
-build-failed or error cell is also gated as RED. `run-blocked` (WASM) is *not*
-red (it is a documented target limitation). `--no-gate` always exits 0.
+Exit is **nonzero iff any cell is `FAIL_ENGINE`, `FAIL_COLD_BUDGET`,
+`BUILD_FAILED`, `RUN_ERROR`, or `UNSTABLE`**. `WARN_COLD_FLOOR` does NOT fail
+the gate (fixed tax within budget) unless `--strict-cold`. `FAIL_STALE` fails
+unless `--allow-nonauthoritative`. `RUN_BLOCKED` (WASM) and `CPY_INCOMPATIBLE`
+are not gated. `--no-gate` always exits 0.
+
+```bash
+# Add the PyPy + Codon comparator lanes (auto-detect, or pass an explicit path).
+uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --backend native \
+    --pypy --codon
+
+# Local debugging on a divergent tree (e.g. an in-flight scoreboard-tool commit):
+#   classifies real numbers, board stays authoritative=false, gate won't FAIL_STALE.
+uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --allow-nonauthoritative
+
+# Make cold-floor warnings hard-fail too:
+uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --strict-cold
+```
 
 ### Recoverability
 
@@ -95,27 +187,40 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
 ```jsonc
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "kind": "cpython_floor_scoreboard",
   "generated_at": "<iso8601 utc>",
   "git_rev": "<full sha>",
+  "provenance": { /* see the Provenance section above */ },
   "host": {
     "platform": "darwin",
     "python_runner": "3.12.x",        // interpreter the TOOL ran under
-    "cpython_baseline": "3.14.5"      // the CPython ORACLE (system python3)
+    "cpython_baseline": "3.14.5",     // the CPython ORACLE (system python3)
+    "pypy": "3.10.14 (… PyPy 7.3.17)",// null if --pypy not used
+    "codon": "codon 0.19.6"           // null if --codon not used
   },
-  "direction": "speedup = cpython_time / molt_time; >1.0 = molt faster; <1.0 = RED",
+  "direction": "speedup = cpython_time / molt_time; >1.0 = molt faster",
   "red_threshold": 1.00,
   "unstable_cv_threshold": 0.20,
+  "verdict_legend": { "GREEN": "…", "FAIL_ENGINE": "…", … },
   "methodology": { "samples_per_phase": 5, "warmup_runs": 2,
-                   "cold_and_warm": true, "run_guard": "…", "build": "…" },
-  "reserved_columns": {                // present-but-nullable; follow-up arc
-    "pypy_ratio":  "nullable — PyPy not installed",
-    "codon_ratio": "nullable — Codon not installed"
+                   "cold_and_warm": true,
+                   "warm_speedup": "cpython_warm / molt_warm",
+                   "cold_speedup": "cpython_cold / molt_cold",
+                   "startup_tax_ms": "(molt_cold_total - molt_warm_total) * 1000" },
+  "reserved_columns": { "pypy_ratio": "…", "codon_ratio": "…" },
+  "summary": {
+    "cells_total", "cells_green",
+    // the two-dimensional verdict counts (the gate axes) ---
+    "cells_fail_engine", "cells_fail_cold_budget", "cells_warn_cold_floor",
+    "cells_fail_stale", "cells_unstable", "cells_build_failed",
+    "cells_run_blocked", "cells_error", "cells_cpython_incompatible",
+    "any_red", "gate_fails",
+    // every cell keyed by its verdict (route warm vs cold reds) ---
+    "verdict_breakdown": { "FAIL_ENGINE": [...], "FAIL_COLD_BUDGET": [...],
+                           "WARN_COLD_FLOOR": [...], "GREEN": [...], … },
+    "red_breakdown": { … legacy alias … }
   },
-  "summary": { "cells_total", "cells_green", "cells_red", "cells_unstable",
-               "cells_build_failed", "cells_run_blocked", "cells_error",
-               "any_red" },
   "benchmarks_run":      [ "tests/benchmarks/…", … ],
   "benchmarks_deferred": [ { "benchmark": "…", "reason": "…" }, … ],
 
@@ -124,27 +229,29 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
       // --- build facts ---
       "build_ok": true, "binary_size_kib": 4256.3, "compile_time_s": 3.08,
       // --- run facts ---
-      "run_blocked": false, "run_blocked_reason": null,
-      "molt_ok": true, "cpython_ok": true,
-      // COLD (first cold-cache run) ---
+      "run_blocked": false, "molt_ok": true, "cpython_ok": true,
+      // COLD / WARM (cpython/molt; legacy ratio names) ---
       "cold_molt_s": 0.253, "cold_cpython_s": 0.068, "cold_ratio": 0.27,
-      // WARM (steady-state median) ---
       "warm_molt_s": 0.069, "warm_cpython_s": 0.070, "warm_ratio": 1.01,
-      // HEADLINE speedup = warm cpython / warm molt ---
       "cpython_ratio": 1.01,
-      // peak RSS (worse of cold/warm) per runtime ---
+      // --- TWO-DIMENSIONAL verdict (council ruling A) ---
+      "warm_speedup": 1.01,            // = cpython_warm / molt_warm (engine axis)
+      "cold_speedup": 0.27,            // = cpython_cold / molt_cold
+      "startup_tax_ms": 184.0,         // = (cold_molt - warm_molt) * 1000
+      "cold_budget_ms": 250.0,         // the budget this cell was gated against
+      "verdict": "WARN_COLD_FLOOR",    // GREEN|FAIL_ENGINE|FAIL_COLD_BUDGET|WARN_COLD_FLOOR|…
+      "suspected_missing_fact": "…",   // triage hint for a warm red
+      "suspected_startup_component": "…", // triage hint for a cold red
+      // peak RSS + stability + legacy status ---
       "molt_peak_rss_mib": 8.0, "cpython_peak_rss_mib": 15.0,
-      // stability + status ---
-      "stable": true, "red": true,
-      "status": "red",   // green | red | unstable | run-blocked | build-failed | error
-      "note": null,
-      // reserved (follow-up toolchain arc) ---
-      "pypy_ratio": null, "codon_ratio": null,
+      "stable": true, "red": false, "status": "warn-cold", "note": null,
+      // --- PyPy / Codon comparator lanes (null unless --pypy/--codon) ---
+      "pypy_ratio": 0.51, "pypy_warm_s": 0.035,       // pypy_warm/molt_warm
+      "codon_ratio": 0.30, "codon_warm_s": 0.018,     // codon_warm/molt_warm
+      "codon_equivalent": true, "codon_note": "equivalent (codon -release AOT)",
       // provenance ---
       "output_parity": true,
-      "molt_stats":    { "samples_s", "median_s", "mean_s", "stdev_s", "cv",
-                         "min_s", "max_s", "peak_rss_mib", "stable", "n" },
-      "cpython_stats": { … same shape … },
+      "molt_stats": { … }, "cpython_stats": { … },
       "log_artifact": "bench/scoreboard/logs_<gitrev>/<bench>__<backend>__<profile>.log"
     } } } }
   }
@@ -152,7 +259,9 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 ```
 
 **Direction is labelled unambiguously**: `speedup = cpython_time / molt_time`.
-`> 1.0` ⇒ molt faster (GREEN); `< 1.0` ⇒ molt slower (RED contract violation).
+`> 1.0` ⇒ molt faster. The **warm** axis (`warm_speedup`) is the
+execution-engine contract; the **cold** axis is the startup-tax budget — they
+are never blended.
 
 ## Baseline red-list (this host, native + llvm / release-fast)
 
@@ -301,37 +410,53 @@ of the missing IR fact (per the constitution's representation lens):
   suite — the core suite is the repo's canonical perf set; widening to all 103
   is a deliberate next step, not a silent drop.
 
-## PyPy / Codon follow-up toolchain plan
+## PyPy / Codon comparator lanes (council Lane C — INSTALLED)
 
-The schema already carries nullable `pypy_ratio` / `codon_ratio` per cell.
-Neither runtime is installed on this host; the follow-up arc:
+Both reference runtimes are now installed on this host and wired as opt-in
+lanes (`--pypy`, `--codon`; auto-detect or explicit path). Versions are
+recorded in `host.pypy` / `host.codon` and the provenance.
 
-1. **Install + pin the reference runtimes** (their own toolchain step, isolated
-   from the molt build env):
-   - **PyPy**: `pypy3.11` (or latest), pinned by version; record
-     `pypy_version` in `host`. PyPy is the *dynamic-runtime reference* (~3× over
-     CPython 3.11 via JIT) for pure-Python dynamic workloads.
-   - **Codon**: `codon` from exaloop, pinned; record `codon_version`. Codon is
-     the *AOT/native north star* (10–100×+, C/C++-class) for the statically
-     compilable, **non-drop-in-semantics** subset.
-2. **Add two runtime lanes** mirroring the CPython path: time PyPy and Codon
-   through `safe_run.py --json` with the *same* sample/warmup/cold+warm
-   discipline. Compute `pypy_ratio = pypy_time / molt_time` and
-   `codon_ratio = codon_time / molt_time` (same direction: > 1.0 = molt faster).
-3. **Semantic-equivalence gate for Codon**: Codon is *not* drop-in CPython.
-   Mark any benchmark whose Codon semantics diverge as `"non-equivalent"` rather
-   than a win/loss (the constitution forbids scoring non-equivalent models).
-   Maintain a per-benchmark `codon_equivalent: bool` allow-list; only
-   equivalent benchmarks contribute a `codon_ratio`.
-4. **Two more constitution scoreboards** (separate gates, kept green):
-   - **PyPy board**: where PyPy wins, the cell must *name the missing molt
-     compiler fact* (IC tiering, class-version guard, borrow inference, generator
-     fusion, shape propagation, trace-like loop specialization) — not just a
-     number. This is a measure-and-name board, not a hard CI gate (PyPy parity
-     is an aspiration, not the floor).
-   - **Codon board**: approach/exceed on numeric/loop/data-structure/NumPy-like
-     kernels where semantics match; non-equivalent rows excluded.
-5. **Backend × Profile boards** (constitution scoreboards 4 + 5): the per-cell
-   data already supports slicing native/LLVM/WASM/Luau and
-   dev/release-fast/release-output into their own tables — add the report views
-   once the LLVM + WASM + Luau lanes and the second profile are all populated.
+- **PyPy 7.3.17 (Python 3.10.14)** — `/opt/homebrew/bin/pypy3.10` (`brew install
+  pypy3.10`). The *dynamic-runtime comparator* (JIT). `pypy_ratio =
+  pypy_warm / molt_warm` (> 1.0 = molt faster). PyPy is **measure-and-name, NOT
+  a hard gate**: where PyPy wins, the cell carries the molt fact to name (IC
+  tiering, class-version guard, borrow inference, generator fusion, trace-like
+  loop specialization). PyPy's strength is long-running JIT warmup — a different
+  operating point than molt's AOT, so a PyPy win on a hot loop is expected and
+  informative, not a contract violation.
+- **Codon 0.19.6** — `~/.codon/bin/codon` (exaloop release tarball). The
+  *AOT/native north star* (C/C++-class). `codon_ratio = codon_warm / molt_warm`.
+  Codon is **equivalence-gated**: it is NOT drop-in CPython (no full object
+  model, restricted dynamism), so only benchmarks on
+  `CODON_EQUIVALENT_BENCHMARKS` (numeric/loop kernels with no CPython-object-model
+  dependence) are scored; every other benchmark is recorded `codon_equivalent:
+  false` / `"non-equivalent"` and **never scored win/loss**. A Codon *compile
+  failure* on an allowlisted benchmark is likewise recorded, never scored (a
+  missing comparison ≠ a molt win). Codon-compiled binaries link
+  `libomp`/`libcodonrt` via `@loader_path`; the runner sets `DYLD_LIBRARY_PATH`
+  (+ `CODON_LIBRARY`) to `~/.codon/lib/codon` so they run under `safe_run`.
+
+Both lanes use the identical ≥5-sample cold+warm discipline through
+`safe_run.py --json` as the CPython path.
+
+### First deltas (native / release-fast, this host)
+
+| benchmark | molt warm | warm vs CPython | pypy_ratio | codon_ratio | note |
+|-----------|-----------|-----------------|------------|-------------|------|
+| `bench_fib` | (recursive int) | 1.23–1.25× | **0.51×** | **0.30×** | PyPy JIT 2× molt; Codon AOT ~3.3× molt — recursive-int is a class where both mature compilers lead; missing molt fact = call-site devirt + unboxed-int recursion. |
+| `bench_class_hierarchy` | (method dispatch) | **9.41×** | 0.67× | — (non-equiv) | molt beats CPython AND PyPy; Codon not scored (object-model). |
+
+> The recursive-int gap to Codon/PyPy on `bench_fib` is the first
+> measure-and-name signal: molt is *above CPython* but *below the AOT/JIT
+> comparators* — a Lane-B representation diagnosis target (call-target devirt +
+> unboxed-int recursion), NOT a CPython-floor red.
+
+### Remaining toolchain arc
+
+- **Backend × Profile boards** (constitution scoreboards 4 + 5): the per-cell
+  data already supports slicing native/LLVM/WASM/Luau and
+  dev/release-fast/release-output into their own tables — add the report views
+  once the LLVM + WASM + Luau lanes and the second profile are all populated.
+- **Widen `CODON_EQUIVALENT_BENCHMARKS`** as more numeric/loop kernels are
+  verified semantically drop-in (conservative by design — a false "equivalent"
+  is worse than a missing comparison).
