@@ -116,6 +116,14 @@ VERDICT_UNSTABLE = "UNSTABLE"  # CV too high to trust either direction
 VERDICT_RUN_BLOCKED = "RUN_BLOCKED"  # wasm run-path gap (build/link only)
 VERDICT_CPY_INCOMPAT = "CPY_INCOMPATIBLE"  # no CPython floor to compare against
 
+# Notes that are DERIVED from a verdict (vs measurement notes). A re-derive
+# (rebuild-summary/merge) clears these so a stale verdict-note can't leak.
+_VERDICT_DERIVED_NOTES = frozenset(
+    {
+        "non-authoritative tree (local != origin/main or dirty)",
+    }
+)
+
 # Verdicts that FAIL the gate (nonzero exit). WARN_COLD_FLOOR does NOT fail
 # unless --strict-cold; FAIL_STALE fails unless --allow-nonauthoritative.
 GATE_FAILING_VERDICTS = frozenset(
@@ -363,31 +371,38 @@ def _robust_cell_stable(molt: PhaseStats, cpy: PhaseStats) -> bool:
     """Is the cell's warm verdict trustworthy despite CPython-side outliers?
 
     molt is the artifact under test and MUST be stable. CPython is the reference
-    floor; a single CPython GC/scheduler spike must not throw out a cell where
-    molt wins decisively and is itself stable. The cell is stable iff:
+    floor; a single CPython GC/scheduler spike (or one anomalously-fast
+    cold-cache sample) must not throw out a cell where molt wins decisively and
+    is itself stable. The cell is stable iff:
       * molt is stable (low CV), AND
       * EITHER CPython is also stable,
-        OR the warm verdict is robust to CPython's FULL sample spread — i.e.
-        the warm_speedup (cpython/molt, on the molt median) keeps the same
-        side of the 1.00 floor whether computed with CPython's fastest
-        (cpy.min_s) or slowest (cpy.max_s) sample. If both bounds agree on
-        GREEN-or-RED, a CPython outlier cannot flip the verdict.
+        OR the warm verdict is robust to CPython's spread WITH the single most
+        extreme sample on each side TRIMMED — i.e. the warm_speedup
+        (cpython/molt, on the molt median) keeps the same side of the 1.00 floor
+        whether computed with CPython's 2nd-fastest or 2nd-slowest sample. The
+        trim makes the bound robust to exactly one outlier (the dominant failure
+        mode: one GC spike OR one fast cold-cache run) rather than using the raw
+        min/max, which a lone outlier drags to the flip point. This is a
+        median-of-bounds robustness test per pyperf discipline, never a per-test
+        special case.
     """
     if not molt.stable:
         return False
     if cpy.stable:
         return True
-    if (
-        molt.median_s is None
-        or cpy.min_s is None
-        or cpy.max_s is None
-        or molt.median_s <= 0
-    ):
+    if molt.median_s is None or molt.median_s <= 0:
         return False
-    # warm_speedup = cpython / molt. Using CPython's min and max bounds, does
-    # the verdict (>1 vs <=1) stay consistent?
-    lo = cpy.min_s / molt.median_s
-    hi = cpy.max_s / molt.median_s
+    samples = sorted(cpy.samples_s or [])
+    if len(samples) < 3:
+        # Too few to trim an outlier robustly; fall back to raw min/max.
+        lo_s, hi_s = (samples[0], samples[-1]) if samples else (None, None)
+    else:
+        # Trim the single most-extreme sample on each side.
+        lo_s, hi_s = samples[1], samples[-2]
+    if lo_s is None or hi_s is None:
+        return False
+    lo = lo_s / molt.median_s
+    hi = hi_s / molt.median_s
     both_win = lo > RED_THRESHOLD and hi > RED_THRESHOLD
     both_lose = lo <= RED_THRESHOLD and hi <= RED_THRESHOLD
     return both_win or both_lose
@@ -1493,6 +1508,35 @@ def _authoritative_reason(diverges: bool, dirty: bool, tool_modified: bool) -> s
     return "; ".join(parts)
 
 
+def _refresh_artifact_provenance(provenance: dict, cells: list[Cell]) -> None:
+    """Fill in None artifact identities the CURRENT resolver can now compute.
+
+    A stored board may carry ``backend_binary_identity[lane] = None`` (e.g.
+    measured before a resolver fix, or the binary was not yet built). On a
+    re-derive we upgrade any such None to the now-resolvable identity, keyed by
+    the (backend, profile) lanes actually present in the board. The measured
+    origin/local/merge-base SHAs are NOT touched. ``stdlib_cache_key`` is
+    refreshed only if it is currently null.
+    """
+    existing = provenance.get("backend_binary_identity")
+    if not isinstance(existing, dict):
+        existing = {}
+    lanes = {(c.backend, c.profile) for c in cells}
+    for backend, profile in lanes:
+        key = f"{backend}/{profile}"
+        if existing.get(key) is None:
+            spec = BACKENDS_BY_NAME.get(backend)
+            if spec is not None:
+                ident = _backend_binary_identity_for(spec, profile)
+                if ident is not None:
+                    existing[key] = ident
+    provenance["backend_binary_identity"] = existing
+    if provenance.get("stdlib_cache_key") is None:
+        sig = _stdlib_cache_key_signal()
+        if sig is not None:
+            provenance["stdlib_cache_key"] = sig
+
+
 def build_scoreboard_doc(
     cells: list[Cell],
     *,
@@ -2066,24 +2110,37 @@ def _gate_exit_code(
     return 0
 
 
-def _finalize_with_board_context(cells: list[Cell], doc_like: dict) -> None:
+def _finalize_with_board_context(
+    cells: list[Cell], doc_like: dict, *, allow_nonauthoritative: bool = False
+) -> None:
     """Re-finalize stored cells using budgets + the board's own authoritative flag.
 
     For rebuild/merge we re-run the classifier so a stored board reflects the
     CURRENT verdict logic. The cold-start budget comes from the live budget
     file; the authoritative flag comes from the stored provenance (a stored
-    board does not re-derive authoritativeness — it was already stamped). We
-    also RE-DERIVE ``stable`` from the stored per-runtime stats so a board
-    measured by an older tool picks up the current robust-stability rule (the
-    CPython-outlier tolerance) without re-running any benchmark.
+    board does not re-derive authoritativeness — it was already stamped).
+    ``allow_nonauthoritative`` mirrors the run path: a non-authoritative board's
+    cells classify on their REAL numbers (not FAIL_STALE) so a reader can
+    re-derive verdicts for local analysis; the board's stored
+    ``authoritative=false`` is untouched. We also RE-DERIVE ``stable`` from the
+    stored per-runtime stats so a board measured by an older tool picks up the
+    current robust-stability rule without re-running any benchmark.
     """
     budgets = _load_cold_start_budgets()
-    authoritative = doc_like.get("provenance", {}).get("authoritative", True)
+    stored_auth = doc_like.get("provenance", {}).get("authoritative", True)
+    effective_auth = stored_auth or allow_nonauthoritative
     for cell in cells:
+        # Drop any verdict-DERIVED note (FAIL_STALE / robustness) before
+        # re-deriving so a stale note from a prior finalize (e.g. a board that
+        # was once stamped FAIL_STALE) does not leak into the new verdict.
+        if cell.note in _VERDICT_DERIVED_NOTES or (
+            cell.note and cell.note.startswith("non-authoritative tree")
+        ):
+            cell.note = None
         _rederive_stability(cell)
         cell.finalize(
             budget_ms=_budget_ms_for(budgets, cell.backend, cell.profile),
-            authoritative=authoritative,
+            authoritative=effective_auth,
         )
 
 
@@ -2165,7 +2222,9 @@ def _rebuild_summary(
     # Re-run the classifier on the stored measurements so the verdict reflects
     # the CURRENT finalize() logic (the 2-D verdict + budget), not whatever the
     # board was stamped with at measurement time.
-    _finalize_with_board_context(cells, prior)
+    _finalize_with_board_context(
+        cells, prior, allow_nonauthoritative=allow_nonauthoritative
+    )
     method = prior.get("methodology", {})
     # Re-derive the deferred list from cpython-incompatible cells.
     deferred = list(prior.get("benchmarks_deferred", []))
@@ -2181,6 +2240,13 @@ def _rebuild_summary(
                     }
                 )
     host = prior.get("host", {})
+    provenance = dict(prior.get("provenance", {}))
+    # Refresh ONLY the artifact identities (backend binary, stdlib cache key) —
+    # these are resolvable now (e.g. after a resolver fix) without changing the
+    # measured origin/local/merge-base SHAs. A None identity in a stored board
+    # that the current resolver CAN fill is upgraded; the measured tree identity
+    # is preserved.
+    _refresh_artifact_provenance(provenance, cells)
     doc = build_scoreboard_doc(
         cells,
         benchmarks_run=prior.get("benchmarks_run", []),
@@ -2188,7 +2254,7 @@ def _rebuild_summary(
         cpython_version=host.get("cpython_baseline", "unknown"),
         samples=method.get("samples_per_phase", DEFAULT_SAMPLES),
         warmup=method.get("warmup_runs", DEFAULT_WARMUP),
-        provenance=prior.get("provenance", {}),
+        provenance=provenance,
         pypy_version=host.get("pypy"),
         codon_version=host.get("codon"),
     )
@@ -2251,7 +2317,11 @@ def _merge_boards(
             if b not in benchmarks_run:
                 benchmarks_run.append(b)
     cells = list(by_key.values())
-    _finalize_with_board_context(cells, {"provenance": provenance})
+    _finalize_with_board_context(
+        cells,
+        {"provenance": provenance},
+        allow_nonauthoritative=allow_nonauthoritative,
+    )
     for cell in cells:
         if cell.status == "cpython-incompatible":
             dkey = f"{cell.benchmark} [{cell.backend}/{cell.profile}]"

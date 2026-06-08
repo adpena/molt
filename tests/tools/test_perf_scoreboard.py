@@ -401,9 +401,23 @@ def test_robust_stable_cpython_outlier_but_verdict_robust() -> None:
     assert ps._robust_cell_stable(molt, cpy) is True
 
 
-def test_robust_stable_cpython_outlier_straddles_floor_is_unstable() -> None:
-    # molt ~= CPython (near 1.0) with a CPython outlier that straddles the
-    # floor: the verdict COULD flip, so the cell is correctly UNSTABLE.
+def test_robust_stable_cpython_straddles_floor_is_unstable() -> None:
+    # molt ~= CPython (near 1.0) and CPython's distribution genuinely straddles
+    # molt's median even after trimming one outlier each side: the verdict could
+    # flip, so the cell is correctly UNSTABLE. cpy sorted=[.085,.092,.100,.108,.140]
+    # trimmed bounds [.092,.108] -> 0.92x and 1.08x straddle 1.0.
     molt = _phase([0.100, 0.101, 0.100, 0.102, 0.100])
-    cpy = _phase([0.090, 0.095, 0.092, 0.140, 0.088])  # min/median<molt, max>molt
+    cpy = _phase([0.085, 0.092, 0.100, 0.108, 0.140])
     assert ps._robust_cell_stable(molt, cpy) is False
+
+
+def test_robust_stable_tolerates_single_fast_cpython_outlier() -> None:
+    # The json_roundtrip case: molt rock-stable, CPython median 1.7x slower but
+    # ONE anomalously-fast sample (0.019) equals molt's median. The raw-min/max
+    # rule would call it UNSTABLE (min/median == 1.0); trimming that one outlier
+    # leaves the 2nd-fastest clearly > molt -> STABLE (a real molt win).
+    molt = _phase([0.018, 0.019, 0.019, 0.019, 0.019])  # median 0.019
+    cpy = _phase([0.019, 0.033, 0.036, 0.045, 0.032])  # one fast outlier 0.019
+    assert molt.stable is True
+    assert cpy.stable is False
+    assert ps._robust_cell_stable(molt, cpy) is True
