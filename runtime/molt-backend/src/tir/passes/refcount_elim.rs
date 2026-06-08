@@ -649,6 +649,23 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
     {
         let heap_exposed = build_heap_exposed_set(func);
 
+        // FinalizerSensitive gate (design 27): a value whose class defines a
+        // `__del__` finalizer must keep its finalizer-aware `DecRef` — it must
+        // NEVER be promoted to `OpCode::Free`, a direct dealloc that does NOT
+        // route through `maybe_run_object_finalizer`, so a `Free` here would
+        // silently skip `__del__` (the same parity-hole class round-12 closed for
+        // stack-promotion / RC-strip in `escape_analysis`). We query the ONE
+        // shared finalizer fact rather than re-deriving it: this makes the
+        // "finalizer never runs" state unrepresentable across EVERY fast-path
+        // optimization, not empirically-unreached in this one. Today this is a
+        // defense-in-depth guard — Step 6's `alloc_vals` keys on `Alloc`/
+        // `StackAlloc` (generic, finalizer-free allocations), whereas finalizer
+        // roots are `ObjectNewBound`, so the sets are disjoint by construction;
+        // the guard makes that invariant explicit and keeps it true if a finalizer
+        // alloc ever reaches this set (e.g. a future `ObjectNewBound → Alloc`
+        // canonicalization or a `defines_del`-carrying `Alloc`).
+        let finalizer_roots = super::escape_analysis::finalizer_alloc_roots(func);
+
         // Collect values produced by Alloc/StackAlloc.
         let mut alloc_vals: HashSet<ValueId> = HashSet::new();
         for block in func.blocks.values() {
@@ -683,11 +700,15 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                         OpCode::DecRef => {
                             let balance = inc_balance.entry(val).or_insert(0);
                             // Unique ownership: value is from an alloc, no extra
-                            // IncRefs were issued (balance == 0), and the value
-                            // has no heap exposure.
+                            // IncRefs were issued (balance == 0), the value has no
+                            // heap exposure, and it is NOT a `__del__`-bearing
+                            // finalizer root (which must keep its finalizer-aware
+                            // DecRef; promoting it to a direct `Free` would skip
+                            // `__del__`).
                             if *balance == 0
                                 && alloc_vals.contains(&val)
                                 && !heap_exposed.contains(&val)
+                                && !finalizer_roots.contains(&val)
                             {
                                 // Promote DecRef → Free: direct deallocation.
                                 op.opcode = OpCode::Free;
@@ -1372,5 +1393,138 @@ mod tests {
         let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
         // elem has heap exposure via BuildList, Call is barrier.
         assert_eq!(stats.ops_removed, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 6 (DecRef→Free) FinalizerSensitive guard (task #57 / council E).
+    //
+    // A `__del__`-bearing instance must keep its finalizer-aware `DecRef`: an
+    // `OpCode::Free` is a direct dealloc that does NOT route through
+    // `maybe_run_object_finalizer`, so promoting it would silently skip `__del__`.
+    // Step 6 keys on `alloc_vals` (Alloc/StackAlloc results); finalizer roots are
+    // `ObjectNewBound` results — disjoint by construction — so the guard is
+    // defense-in-depth (provable-correct-by-construction). These tests pin both
+    // halves of that proof: the shared finalizer fact recognizes the root, and a
+    // finalizer-bearing DecRef is never rewritten to Free.
+    // -----------------------------------------------------------------------
+
+    fn make_op_with_attr(
+        opcode: OpCode,
+        operands: Vec<ValueId>,
+        results: Vec<ValueId>,
+        key: &str,
+        value: crate::tir::ops::AttrValue,
+    ) -> TirOp {
+        let mut op = make_op(opcode, operands, results);
+        op.attrs.insert(key.to_string(), value);
+        op
+    }
+
+    /// The shared finalizer fact (`escape_analysis::finalizer_alloc_roots`, the
+    /// SAME source of truth Step 6 queries) recognizes a `defines_del`
+    /// `ObjectNewBound` result, and does NOT flag a `defines_del`-free one.
+    #[test]
+    fn finalizer_alloc_roots_recognizes_defines_del_object() {
+        use crate::tir::ops::AttrValue;
+        let mut func = make_func();
+        let del_obj = func.fresh_value();
+        let plain_obj = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op_with_attr(
+            OpCode::ObjectNewBound,
+            vec![],
+            vec![del_obj],
+            "defines_del",
+            AttrValue::Bool(true),
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::ObjectNewBound, vec![], vec![plain_obj]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let roots = crate::tir::passes::escape_analysis::finalizer_alloc_roots(&func);
+        assert!(
+            roots.contains(&del_obj),
+            "the __del__-bearing ObjectNewBound result must be a finalizer root"
+        );
+        assert!(
+            !roots.contains(&plain_obj),
+            "a finalizer-free ObjectNewBound result must NOT be a finalizer root"
+        );
+    }
+
+    /// A finalizer-bearing instance's `DecRef` is NEVER promoted to `Free` by
+    /// Step 6: it must keep its finalizer-aware release so `dec_ref_ptr` dispatches
+    /// `__del__`. (Heap-exposed here via a `Call` barrier so Step 5 does not strip
+    /// the DecRef before Step 6 — pinning that even a Step-6-reachable finalizer
+    /// DecRef stays a DecRef.)
+    #[test]
+    fn step6_never_promotes_finalizer_decref_to_free() {
+        use crate::tir::ops::AttrValue;
+        let mut func = make_func();
+        let del_obj = func.fresh_value();
+        let callee = func.fresh_value();
+        let call_result = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op_with_attr(
+            OpCode::ObjectNewBound,
+            vec![],
+            vec![del_obj],
+            "defines_del",
+            AttrValue::Bool(true),
+        ));
+        // Heap-expose `del_obj` (Call may capture) so Step 5 keeps its DecRef.
+        entry
+            .ops
+            .push(make_op(OpCode::Call, vec![callee, del_obj], vec![call_result]));
+        entry.ops.push(make_op(OpCode::DecRef, vec![del_obj], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+        let ops = &func.blocks[&func.entry_block].ops;
+        assert!(
+            ops.iter().any(|op| op.opcode == OpCode::DecRef
+                && op.operands.first() == Some(&del_obj)),
+            "finalizer DecRef must survive as a DecRef"
+        );
+        assert!(
+            !ops.iter().any(|op| op.opcode == OpCode::Free),
+            "a finalizer-bearing DecRef must NEVER be promoted to Free"
+        );
+    }
+
+    /// Probe: confirm Step 6 does not fire on a plain unique-owned `Alloc` value
+    /// either, because Step 5 (deferred-RC) deletes every non-heap-exposed
+    /// IncRef/DecRef BEFORE Step 6 runs, and Step 6's promotion requires exactly
+    /// the same `!heap_exposed` predicate. This documents that Step 6 is currently
+    /// unreachable in `run` mode (and skipped in `post_drop`), so the finalizer
+    /// guard is correct-by-construction defense-in-depth: there is NO surviving
+    /// DecRef for it to promote, finalizer-bearing or not.
+    #[test]
+    fn step6_unreachable_plain_alloc_decref_removed_by_step5() {
+        let mut func = make_func();
+        let v = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(OpCode::Alloc, vec![], vec![v]));
+        entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+        let ops = &func.blocks[&func.entry_block].ops;
+        // Step 5 strips the non-heap-exposed DecRef; nothing reaches Step 6, so no
+        // Free is ever produced.
+        assert!(
+            !ops.iter().any(|op| op.opcode == OpCode::Free),
+            "Step 5 removes the DecRef before Step 6 can promote it to Free"
+        );
+        assert!(
+            !ops.iter().any(|op| op.opcode == OpCode::DecRef),
+            "the unique-owned non-heap-exposed DecRef is removed by Step 5"
+        );
     }
 }
