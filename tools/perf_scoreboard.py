@@ -770,16 +770,24 @@ def capture_cycle_profile(
     timeout_s: float,
     sample_seconds: int = 3,
     top_n: int = 25,
+    repeat_runs: int = 40,
 ) -> dict:
     """Run ``cmd`` under safe_run and CPU-sample it with ``/usr/bin/sample``.
 
-    Launches the binary in the background under the safe_run watchdog (RSS cap +
-    timeout — a profiled binary is still a raw binary and MUST be guarded), polls
-    for its PID, attaches ``sample`` for ``sample_seconds``, and parses the
-    heaviest self-time symbols. Returns ``{available, top_symbols, note}``. If
-    the sampler is unavailable OR the process is too short to attach, returns a
-    documented ``available=False`` note rather than failing — the cell still
-    records that cycle attribution could not be captured (never a fake signal).
+    Two robustness measures defeat the attach race that loses short benchmarks:
+
+      1. ``sample -wait <name>`` is started FIRST and BLOCKS until a process of
+         that name launches, then samples it from t=0 — no poll-for-PID race
+         (the prior approach lost any benchmark that exited before the poll).
+      2. The molt binary is run ``repeat_runs`` times BACK-TO-BACK in one process
+         group under safe_run, so even a 30 ms benchmark presents a multi-second
+         CPU window for the 1 ms-interval sampler to accumulate a stable
+         self-time leaderboard. The benchmark's own work is unchanged — this is a
+         longer PROFILING run of the same code, not a different workload.
+
+    Returns ``{available, top_symbols, note}``. If the sampler is unavailable or
+    the process never presents enough CPU to sample, returns a documented
+    ``available=False`` note — never a fabricated signal (Rule 1).
     """
     sampler = _resolve_sampler()
     if sampler is None:
@@ -788,25 +796,45 @@ def capture_cycle_profile(
             "top_symbols": [],
             "note": "cycle profiler unavailable (/usr/bin/sample not found)",
         }
-    # Launch the target under safe_run in the background so we can attach to the
-    # *child* binary. safe_run forwards the child's lifetime; we sample the
-    # grandchild (the actual molt binary) by name.
     import tempfile
 
     out_file = Path(
         tempfile.mktemp(prefix="perfscore-sample-", suffix=".txt", dir="/tmp")
     )
     target_name = Path(cmd[0]).name
+    # Run the binary repeat_runs times back-to-back inside ONE safe_run-guarded
+    # process group so the sampler has a multi-second window. A non-zero exit on
+    # any iteration stops the loop (set -e) — we still sample whatever ran.
+    quoted = " ".join(_shquote(a) for a in cmd)
+    loop_cmd = f"for i in $(seq 1 {repeat_runs}); do {quoted} >/dev/null 2>&1 || break; done"
     safe_cmd = [
         sys.executable,
         str(SAFE_RUN),
         "--rss-mb",
         str(rss_mb),
         "--timeout",
-        str(timeout_s),
+        str(max(timeout_s, sample_seconds + 10)),
         "--",
-        *cmd,
+        "/bin/sh",
+        "-c",
+        loop_cmd,
     ]
+    # Start the sampler FIRST in -wait mode (race-free): it blocks until a process
+    # named target_name appears, then samples it. We launch it as a background
+    # Popen, then start the workload; sample catches the workload at launch.
+    try:
+        sampler_proc = subprocess.Popen(
+            [sampler, target_name, str(sample_seconds), "-wait", "-mayDie",
+             "-f", str(out_file)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        return {
+            "available": False,
+            "top_symbols": [],
+            "note": f"could not start sampler in -wait mode: {exc!r}",
+        }
     try:
         proc = subprocess.Popen(
             safe_cmd,
@@ -815,45 +843,21 @@ def capture_cycle_profile(
             stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
+        _terminate(sampler_proc)
         return {
             "available": False,
             "top_symbols": [],
             "note": f"could not launch target for profiling: {exc!r}",
         }
-    # Find the molt binary PID (the grandchild of safe_run). Poll briefly.
-    target_pid = _find_descendant_pid(proc.pid, target_name, deadline_s=2.0)
-    if target_pid is None:
-        # The process may already have exited (very short benchmark) — that is a
-        # documented limitation of attach-profiling, not a failure to fake over.
-        try:
-            proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        return {
-            "available": False,
-            "top_symbols": [],
-            "note": (
-                "benchmark too short to attach a CPU sampler (process exited "
-                "before attach); cycle attribution unavailable for sub-attach "
-                "runtimes — lengthen the benchmark or use a counter-based profiler"
-            ),
-        }
+    # Let the sampler run its window, then reap both. The sampler exits on its own
+    # after sample_seconds (or when the target dies under -mayDie); the workload
+    # loop exits when its runs complete or safe_run caps it.
     try:
-        srv = subprocess.run(
-            [sampler, str(target_pid), str(sample_seconds), "-mayDie", "-f", str(out_file)],
-            capture_output=True,
-            text=True,
-            timeout=sample_seconds + 30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        _terminate(proc)
-        return {
-            "available": False,
-            "top_symbols": [],
-            "note": f"sample attach failed: {exc!r}",
-        }
-    finally:
-        _terminate(proc)
+        sampler_proc.wait(timeout=sample_seconds + 30)
+    except subprocess.TimeoutExpired:
+        _terminate(sampler_proc)
+    srv_rc = sampler_proc.returncode
+    _terminate(proc)
     symbols = _parse_sample_heaviest(out_file, top_n=top_n)
     try:
         out_file.unlink()
@@ -863,45 +867,27 @@ def capture_cycle_profile(
         return {
             "available": False,
             "top_symbols": [],
-            "note": f"sampler produced no parseable symbols (rc={srv.returncode})",
+            "note": (
+                f"sampler produced no parseable symbols (rc={srv_rc}); benchmark "
+                "may present too little CPU even across "
+                f"{repeat_runs} back-to-back runs — cycle attribution unavailable"
+            ),
         }
     return {
         "available": True,
         "top_symbols": symbols,
-        "note": f"/usr/bin/sample {sample_seconds}s self-time (CYCLES, not alloc-count)",
+        "note": (
+            f"/usr/bin/sample {sample_seconds}s self-time over {repeat_runs} "
+            "back-to-back runs (CYCLES, not alloc-count)"
+        ),
     }
 
 
-def _find_descendant_pid(root_pid: int, name: str, *, deadline_s: float) -> int | None:
-    """Find a descendant process of ``root_pid`` whose command matches ``name``.
+def _shquote(arg: str) -> str:
+    """Minimal POSIX shell quote for embedding an argv element in `sh -c`."""
+    import shlex
 
-    safe_run execs the target as a child; we want the target's PID to attach the
-    sampler. Polls ``ps`` for a process whose command contains ``name`` and whose
-    PID is not the safe_run wrapper itself.
-    """
-    deadline = time.monotonic() + deadline_s
-    while time.monotonic() < deadline:
-        try:
-            res = subprocess.run(
-                ["ps", "-A", "-o", "pid=,comm="],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        for line in (res.stdout or "").splitlines():
-            line = line.strip()
-            pid_str, _, comm = line.partition(" ")
-            if not pid_str.isdigit():
-                continue
-            pid = int(pid_str)
-            if pid == root_pid:
-                continue
-            if name in comm:
-                return pid
-        time.sleep(0.02)
-    return None
+    return shlex.quote(arg)
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -943,16 +929,22 @@ def _parse_sample_heaviest(out_file: Path, *, top_n: int) -> list[dict]:
             if out:
                 break
             continue
-        # Form: "1234   symbol_name  (in libfoo.dylib)  [address]"
-        head, _, rest = s.partition(" ")
-        if not head.isdigit():
+        if s.startswith("Binary Images"):
+            break
+        # macOS `sample` self-time leaderboard form (count is the TRAILING token):
+        #   "<symbol>  (in <lib>)        <count>"
+        #   "<symbol>        <count>"            (no lib)
+        # Split the trailing integer off the end; everything before is the
+        # symbol (+ optional "(in lib)").
+        toks = s.rsplit(None, 1)
+        if len(toks) != 2 or not toks[1].isdigit():
             continue
-        count = int(head)
-        rest = rest.strip()
+        count = int(toks[1])
+        rest = toks[0].strip()
         lib = None
         if "(in " in rest:
             sym, _, tail = rest.partition("(in ")
-            lib = tail.rstrip(")").split(")")[0].strip()
+            lib = tail.split(")")[0].strip()
             symbol = sym.strip()
         else:
             symbol = rest
