@@ -1471,22 +1471,51 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 /// (and consume) their own builder internally — so they consume none of their
 /// TIR operands. Only `call_bind`/`call_indirect` carry the builder as an
 /// operand.
+///
+/// REGISTRY-DRIVEN (design 27 §2.3): the consume signature is no longer a
+/// hardcoded `matches!` of the CallArgs-builder spellings here — it is a
+/// `[[consuming_kind]]` row in `op_kinds.toml`, generated into
+/// [`kind_consumed_operand_table`]. The single declarative authority means a
+/// FUTURE consuming op (a streaming builder, a move-into-collection intrinsic)
+/// gets correct drop treatment by adding ONE row, never by editing this pass —
+/// retiring the per-pass operand-consume hand list (the C6 double-free class).
+/// `kind_consumed_operand_table` resolves the `"last"` selector against the op's
+/// operand count, exactly reproducing the prior `op.operands.last()` semantics
+/// (`arity.checked_sub(1)` is `None` for a 0-operand op, matching `.last()`).
 fn op_consumed_operand_root(
     op: &TirOp,
     canon: &dyn Fn(ValueId) -> ValueId,
 ) -> Option<ValueId> {
-    if op.opcode != OpCode::Call {
-        return None;
+    // The consume fact is the UNION of the two generated authorities (the full
+    // operand-ownership model, design 27 §2.1/§2.3), evaluated per operand
+    // position:
+    //   1. the per-OpCode floor `opcode_operand_ownership_table(opcode, idx)` —
+    //      `Consumed` for an OpCode that consumes by construction (none today;
+    //      `all_borrowed` across the enum — molt's callee-borrows-args ABI), and
+    //   2. the per-SPELLING refinement `kind_consumed_operand_table(kind, arity)`
+    //      keyed on the Copy-lifted `_original_kind` (finer than the OpCode:
+    //      `call_bind`/`call_indirect` and the borrowing `call`/`call_func`/…
+    //      spellings all share OpCode::Call; only the two CallArgs-builder forms
+    //      consume their builder operand).
+    // At most one operand is consumed in molt's lowering today, so the first
+    // consumed position is returned (the CallArgs builder = the last operand).
+    use crate::tir::op_kinds_generated::{
+        kind_consumed_operand_table, opcode_operand_ownership_table, OperandOwnership,
+    };
+    let kind = match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(k)) => Some(k.as_str()),
+        _ => None,
+    };
+    let spelling_consumed = kind
+        .and_then(|k| kind_consumed_operand_table(k, op.operands.len()));
+    for idx in 0..op.operands.len() {
+        let consumed = spelling_consumed == Some(idx)
+            || opcode_operand_ownership_table(op.opcode, idx) == OperandOwnership::Consumed;
+        if consumed {
+            return op.operands.get(idx).copied().map(&canon);
+        }
     }
-    let consumes_callargs = matches!(
-        op.attrs.get("_original_kind"),
-        Some(AttrValue::Str(k)) if k == "call_bind" || k == "call_indirect"
-    );
-    if !consumes_callargs {
-        return None;
-    }
-    // The CallArgs builder is the last operand (operand index 1: [callee, builder]).
-    op.operands.last().copied().map(&canon)
+    None
 }
 
 /// True if the alias root `v` is consumed directly by the terminator (a Return

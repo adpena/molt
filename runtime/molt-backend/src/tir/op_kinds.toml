@@ -11,15 +11,24 @@
 # checked-in generated files, so any drift is a test failure. Do NOT edit the
 # generated files by hand; edit this table and regenerate.
 #
-# THREE INDEPENDENT MAPPINGS over the shared kind vocabulary, kept distinct
-# because they group differently (load-bearing: e.g. `range_new` is a mapper
-# alias of the CallBuiltin group BUT an individual member of the fresh-value
-# classifier set):
+# INDEPENDENT MAPPINGS over the shared kind vocabulary, kept distinct because
+# they group differently (load-bearing: e.g. `range_new` is a mapper alias of
+# the CallBuiltin group BUT an individual member of the fresh-value classifier
+# set):
 #   - classifier_* (below) — three FLAT sets of individual kinds (the flat
 #                  matches! arms in alias_analysis.rs) + the fresh-value prefix.
-#   - [[opcode]]   — per-OpCode effect oracle (exhaustive over the enum).
+#                  These are the RESULT-side ownership lattice (Owned/Borrowed/
+#                  Raw/MaybeUninit, design 27 §1.1).
+#   - [[opcode]]   — per-OpCode effect oracle (may_throw/side_effecting/purity)
+#                  PLUS the per-OpCode operand-ownership default
+#                  (`operand_ownership`, the OPERAND-side borrowed|consumed axis,
+#                  design 27 §2.1). Both are exhaustive over the enum.
 #   - [[kind]]     — the kind_to_opcode mapper: OpCode-equivalence groups
 #                  (canonical + aliases, the |-grouped arms).
+#   - [[consuming_kind]] — per-SPELLING operand-consume overrides (design 27
+#                  §2.3): the Copy-lifted `_original_kind` spellings that free an
+#                  operand internally (the CallArgs builder), finer than the
+#                  OpCode. Consumed by drop_insertion.rs's op_consumed_operand_root.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -141,60 +150,70 @@ name = "Add"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Sub"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Mul"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "CheckedAdd"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "InplaceAdd"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "InplaceSub"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "InplaceMul"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Div"
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "FloorDiv"
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Mod"
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Pow"
@@ -204,102 +223,119 @@ name = "Pow"
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Neg"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Pos"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Eq"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Ne"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Lt"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Le"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Gt"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Ge"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Is"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "IsNot"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "In"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "NotIn"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BitAnd"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BitOr"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BitXor"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BitNot"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Shl"
@@ -311,6 +347,7 @@ name = "Shl"
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Shr"
@@ -318,282 +355,329 @@ name = "Shr"
 may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "And"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Or"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Not"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Bool"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Alloc"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StackAlloc"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ObjectNewBound"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ObjectNewBoundStack"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Free"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "LoadAttr"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StoreAttr"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "DelAttr"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Index"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StoreIndex"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "DelIndex"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Call"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "CallMethod"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "CallBuiltin"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "OrdAt"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BoxVal"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "UnboxVal"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "TypeGuard"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "IncRef"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "DecRef"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BuildList"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BuildDict"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BuildTuple"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BuildSet"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "BuildSlice"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "GetIter"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "IterNext"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "IterNextUnboxed"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ForIter"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "AllocTask"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StateSwitch"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StateTransition"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StateYield"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ChanSendYield"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ChanRecvYield"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ClosureLoad"
 may_throw = true
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ClosureStore"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Yield"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "YieldFrom"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Raise"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "CheckException"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ExceptionPending"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 # Reads a function object's `__defaults__`/`__kwdefaults__` mutation version
 # stamp (a mutable runtime slot). Like `ExceptionPending`, the value can change
@@ -607,186 +691,217 @@ name = "FunctionDefaultsVersion"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "TryStart"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "TryEnd"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StateBlockStart"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "StateBlockEnd"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ConstInt"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ConstBigInt"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ConstFloat"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ConstStr"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ConstBool"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ConstNone"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ConstBytes"
 may_throw = false
 side_effecting = false
 purity = "pure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Copy"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Import"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ImportFrom"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleCacheGet"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleCacheSet"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleCacheDel"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleGetAttr"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleImportFrom"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleGetGlobal"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleGetName"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleSetAttr"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleDelGlobal"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ModuleDelGlobalIfPresent"
 may_throw = true
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "WarnStderr"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ScfIf"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ScfFor"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ScfWhile"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "ScfYield"
 may_throw = false
 side_effecting = false
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 [[opcode]]
 name = "Deopt"
 may_throw = false
 side_effecting = true
 purity = "impure"
+operand_ownership = "all_borrowed"
 
 # ===========================================================================
 # kind_to_opcode mapper (ssa.rs). OpCode-equivalence groups: canonical = the
@@ -1314,6 +1429,74 @@ mapper_opcode = "ModuleDelGlobalIfPresent"
 canonical = "warn_stderr"
 aliases = []
 mapper_opcode = "WarnStderr"
+
+# ===========================================================================
+# Operand-ownership overrides per WIRE-KIND SPELLING (molt task #57 follow-up;
+# the borrow-signature column of design 27 §2.1/§2.3, the Perceus rung-2 seed
+# of the #58 Owned/Borrowed/Raw/Consumed lattice).
+#
+# THE OPERAND-OWNERSHIP MODEL (two granularities — read both):
+#
+#   1. PER-OPCODE DEFAULT (the `operand_ownership` field on every [[opcode]]
+#      row above). molt's compiled-function call convention is "callee borrows
+#      all args, returns owned" (design 20 §1.2/§1.5) — so EVERY OpCode borrows
+#      EVERY operand by default (`operand_ownership = "all_borrowed"`). The
+#      field is EXHAUSTIVE over the enum (a new OpCode fails to render until it
+#      is classified), the structural kill for the "is this operand consumed?"
+#      assumption that was hardcoded across the RC passes.
+#        Domain: "all_borrowed" | "all_consumed" | ["borrowed","consumed",...]
+#        (a per-position list, length = the op's fixed operand arity). The
+#        result-side lattice state (Owned/Borrowed/Raw/MaybeUninit, design 27
+#        §1.1) is the classifier_* sets above — a SEPARATE axis from this
+#        operand-side borrowed|consumed axis.
+#
+#   2. PER-SPELLING OVERRIDE (the [[consuming_kind]] rows below). A handful of
+#      Copy-lifted CALL spellings CONSUME an operand: the runtime entry frees it
+#      internally, so the holder MUST NOT also drop it (a trailing DecRef would
+#      double-free). This is finer than the OpCode: `call`, `call_func`,
+#      `call_guarded`, `call_internal`, `invoke_ffi`, `call_bind`,
+#      `call_indirect` ALL map to OpCode::Call (one [[kind]] row, `call`
+#      canonical + aliases) yet only `call_bind`/`call_indirect` carry a
+#      pre-built CallArgs builder operand that the call frees via PtrDropGuard
+#      (call/bind.rs; molt_call_bind_ic / molt_call_indirect_ic). The consume
+#      fact is therefore keyed on the exact `_original_kind` spelling, not the
+#      OpCode.
+#
+# Drives `kind_operand_ownership_table` (consumed by drop_insertion.rs's
+# `op_consumed_operand_root`, which it REPLACES — design 27 §2.3: "Rung 1
+# special-cased this in op_consumed_operand_root; Rung 2 makes it a row"). This
+# retires the hand-coded `matches!(_original_kind, "call_bind" | "call_indirect")`
+# consume list (the C6 CallArgs-double-free bug class). A future consuming op (a
+# streaming builder, a move-into-collection intrinsic) is correctly handled by
+# ADDING a row — never by editing the drop pass.
+#
+#   kind            : the wire-kind SPELLING (canonical OR alias) the
+#                     `_original_kind` attr carries; cross-checked against the
+#                     [[kind]] vocabulary at generation (an unknown spelling is
+#                     a hard error — the structural kill for a typo'd override).
+#   consumed_operand: "last"     — the LAST operand is consumed (preserves the
+#                                   arity-independent `op.operands.last()`
+#                                   semantics op_consumed_operand_root uses;
+#                                   the CallArgs builder is operand [callee,
+#                                   builder] index 1 = last), OR
+#                     <integer>  — a fixed 0-based operand index is consumed.
+# ===========================================================================
+
+[[consuming_kind]]
+# `obj.method(args)` / indirect-call un-fused idiom: lowers (in lower_to_simple)
+# to `b = callargs_new; ...callargs_push_pos(b, a_i)...; r = call_bind(callee, b)`
+# where molt_call_bind_ic FREES `b` internally (PtrDropGuard). The builder is the
+# LAST operand ([callee, builder]); the call takes ownership exactly like a Return
+# transfer — no trailing DecRef, or the TYPE_ID_CALLARGS object double-frees
+# ("invalid object header before dec_ref").
+kind = "call_bind"
+consumed_operand = "last"
+
+[[consuming_kind]]
+# The indirect-call form, same CallArgs-builder PtrDropGuard convention
+# (molt_call_indirect_ic). Builder is the last operand and is consumed.
+kind = "call_indirect"
+consumed_operand = "last"
 
 # ===========================================================================
 # Frontend pre-serialization op.kind tables (molt task #44, F2a — absorb the

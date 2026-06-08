@@ -4,10 +4,11 @@
 // The single source of truth for the cross-component op-"kind"-string vocabulary
 // (docs/design/foundation/25_op_kind_registry.md). These tables back the
 // `kind_to_opcode` mapper (ssa.rs), the `CopyLowering` classifier
-// (alias_analysis.rs), and the per-OpCode effect oracle (effects.rs). A drift
-// between this file and op_kinds.toml is caught by tests/test_gen_op_kinds.py;
-// a new op kind that the frontend can emit but that is absent here is caught by
-// tools/audit_op_kinds.py --check.
+// (alias_analysis.rs), the per-OpCode effect oracle (effects.rs), and the
+// operand-ownership tables (design 27 §2.1/§2.3, consumed by drop_insertion.rs's
+// `op_consumed_operand_root`). A drift between this file and op_kinds.toml is
+// caught by tests/test_gen_op_kinds.py; a new op kind that the frontend can emit
+// but that is absent here is caught by tools/audit_op_kinds.py --check.
 
 use crate::tir::ops::OpCode;
 
@@ -575,5 +576,182 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
         OpCode::ScfWhile => OpcodePurity::Impure,
         OpCode::ScfYield => OpcodePurity::Impure,
         OpCode::Deopt => OpcodePurity::Impure,
+    }
+}
+
+/// Operand-ownership leaf (design 27 §2.1): does an op release this
+/// operand internally (`Consumed` — the holder must NOT also drop it, a
+/// double-free otherwise) or merely borrow it (`Borrowed` — the holder
+/// keeps its obligation and drops at the value's true last use)? molt's
+/// `callee borrows all args` ABI (design 20 §1.2) makes `Borrowed` the
+/// universal default; `Consumed` is the CallArgs-builder / move-into class.
+/// The result-side lattice (Owned/Borrowed/Raw/MaybeUninit) is the
+/// classifier_* tables — a SEPARATE axis from this operand-side leaf.
+///
+/// The variant set models molt's FULL operand-ownership domain so the
+/// design-27 ownership-boundary lattice (#58) and the next consumer
+/// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`
+/// are seeded today; the other three name EXISTING molt facts whose
+/// hand-lists migrate into `operand_ownership` rows in follow-up tranches:
+///   * `Transferred` — ownership moves OUT of the function/block: a
+///     `Return` value or a branch-arg passed into a successor block arg.
+///   * `InteriorBorrowKeepAlive` — the round-6 interior-borrow keepalive:
+///     the operand must stay live because the result holds an INTERIOR
+///     reference into it (drop deferred to the interior ref's last use).
+///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:
+///     valid only on the not-exhausted edge, NEVER unconditionally
+///     droppable (stale stack garbage on the exhaustion edge).
+///   * `NoOperandOwnership` — the op has no ref-bearing operand (raw lanes
+///     / terminator branch-args handled by the terminator, not here).
+// Variants beyond Borrowed/Consumed are seeded as their consumer
+// hand-lists migrate (#58 + the interior-borrow / iter-cond tranches);
+// allow(dead_code) holds the domain-complete schema until then.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OperandOwnership {
+    Borrowed,
+    Consumed,
+    Transferred,
+    InteriorBorrowKeepAlive,
+    ConditionalValidOnlyOnEdge,
+    NoOperandOwnership,
+}
+
+/// Per-OpCode operand-ownership DEFAULT: how `OpCode` treats the operand
+/// at `operand_idx`. EXHAUSTIVE over the enum — a new variant fails to
+/// compile until it is given an `operand_ownership` row in op_kinds.toml.
+/// A uniform opcode (`all_borrowed`/`all_consumed`) ignores the index; a
+/// per-position opcode dispatches on it (positions past the listed arity
+/// fall back to the LAST listed leaf — variadic tails inherit the final
+/// position's treatment). This is the per-OpCode floor; a finer
+/// per-`_original_kind` consume is `kind_consumed_operand_table`.
+#[inline]
+pub(crate) fn opcode_operand_ownership_table(
+    opcode: OpCode,
+    _operand_idx: usize,
+) -> OperandOwnership {
+    match opcode {
+        OpCode::Add => OperandOwnership::Borrowed,
+        OpCode::Sub => OperandOwnership::Borrowed,
+        OpCode::Mul => OperandOwnership::Borrowed,
+        OpCode::CheckedAdd => OperandOwnership::Borrowed,
+        OpCode::InplaceAdd => OperandOwnership::Borrowed,
+        OpCode::InplaceSub => OperandOwnership::Borrowed,
+        OpCode::InplaceMul => OperandOwnership::Borrowed,
+        OpCode::Div => OperandOwnership::Borrowed,
+        OpCode::FloorDiv => OperandOwnership::Borrowed,
+        OpCode::Mod => OperandOwnership::Borrowed,
+        OpCode::Pow => OperandOwnership::Borrowed,
+        OpCode::Neg => OperandOwnership::Borrowed,
+        OpCode::Pos => OperandOwnership::Borrowed,
+        OpCode::Eq => OperandOwnership::Borrowed,
+        OpCode::Ne => OperandOwnership::Borrowed,
+        OpCode::Lt => OperandOwnership::Borrowed,
+        OpCode::Le => OperandOwnership::Borrowed,
+        OpCode::Gt => OperandOwnership::Borrowed,
+        OpCode::Ge => OperandOwnership::Borrowed,
+        OpCode::Is => OperandOwnership::Borrowed,
+        OpCode::IsNot => OperandOwnership::Borrowed,
+        OpCode::In => OperandOwnership::Borrowed,
+        OpCode::NotIn => OperandOwnership::Borrowed,
+        OpCode::BitAnd => OperandOwnership::Borrowed,
+        OpCode::BitOr => OperandOwnership::Borrowed,
+        OpCode::BitXor => OperandOwnership::Borrowed,
+        OpCode::BitNot => OperandOwnership::Borrowed,
+        OpCode::Shl => OperandOwnership::Borrowed,
+        OpCode::Shr => OperandOwnership::Borrowed,
+        OpCode::And => OperandOwnership::Borrowed,
+        OpCode::Or => OperandOwnership::Borrowed,
+        OpCode::Not => OperandOwnership::Borrowed,
+        OpCode::Bool => OperandOwnership::Borrowed,
+        OpCode::Alloc => OperandOwnership::Borrowed,
+        OpCode::StackAlloc => OperandOwnership::Borrowed,
+        OpCode::ObjectNewBound => OperandOwnership::Borrowed,
+        OpCode::ObjectNewBoundStack => OperandOwnership::Borrowed,
+        OpCode::Free => OperandOwnership::Borrowed,
+        OpCode::LoadAttr => OperandOwnership::Borrowed,
+        OpCode::StoreAttr => OperandOwnership::Borrowed,
+        OpCode::DelAttr => OperandOwnership::Borrowed,
+        OpCode::Index => OperandOwnership::Borrowed,
+        OpCode::StoreIndex => OperandOwnership::Borrowed,
+        OpCode::DelIndex => OperandOwnership::Borrowed,
+        OpCode::Call => OperandOwnership::Borrowed,
+        OpCode::CallMethod => OperandOwnership::Borrowed,
+        OpCode::CallBuiltin => OperandOwnership::Borrowed,
+        OpCode::OrdAt => OperandOwnership::Borrowed,
+        OpCode::BoxVal => OperandOwnership::Borrowed,
+        OpCode::UnboxVal => OperandOwnership::Borrowed,
+        OpCode::TypeGuard => OperandOwnership::Borrowed,
+        OpCode::IncRef => OperandOwnership::Borrowed,
+        OpCode::DecRef => OperandOwnership::Borrowed,
+        OpCode::BuildList => OperandOwnership::Borrowed,
+        OpCode::BuildDict => OperandOwnership::Borrowed,
+        OpCode::BuildTuple => OperandOwnership::Borrowed,
+        OpCode::BuildSet => OperandOwnership::Borrowed,
+        OpCode::BuildSlice => OperandOwnership::Borrowed,
+        OpCode::GetIter => OperandOwnership::Borrowed,
+        OpCode::IterNext => OperandOwnership::Borrowed,
+        OpCode::IterNextUnboxed => OperandOwnership::Borrowed,
+        OpCode::ForIter => OperandOwnership::Borrowed,
+        OpCode::AllocTask => OperandOwnership::Borrowed,
+        OpCode::StateSwitch => OperandOwnership::Borrowed,
+        OpCode::StateTransition => OperandOwnership::Borrowed,
+        OpCode::StateYield => OperandOwnership::Borrowed,
+        OpCode::ChanSendYield => OperandOwnership::Borrowed,
+        OpCode::ChanRecvYield => OperandOwnership::Borrowed,
+        OpCode::ClosureLoad => OperandOwnership::Borrowed,
+        OpCode::ClosureStore => OperandOwnership::Borrowed,
+        OpCode::Yield => OperandOwnership::Borrowed,
+        OpCode::YieldFrom => OperandOwnership::Borrowed,
+        OpCode::Raise => OperandOwnership::Borrowed,
+        OpCode::CheckException => OperandOwnership::Borrowed,
+        OpCode::ExceptionPending => OperandOwnership::Borrowed,
+        OpCode::FunctionDefaultsVersion => OperandOwnership::Borrowed,
+        OpCode::TryStart => OperandOwnership::Borrowed,
+        OpCode::TryEnd => OperandOwnership::Borrowed,
+        OpCode::StateBlockStart => OperandOwnership::Borrowed,
+        OpCode::StateBlockEnd => OperandOwnership::Borrowed,
+        OpCode::ConstInt => OperandOwnership::Borrowed,
+        OpCode::ConstBigInt => OperandOwnership::Borrowed,
+        OpCode::ConstFloat => OperandOwnership::Borrowed,
+        OpCode::ConstStr => OperandOwnership::Borrowed,
+        OpCode::ConstBool => OperandOwnership::Borrowed,
+        OpCode::ConstNone => OperandOwnership::Borrowed,
+        OpCode::ConstBytes => OperandOwnership::Borrowed,
+        OpCode::Copy => OperandOwnership::Borrowed,
+        OpCode::Import => OperandOwnership::Borrowed,
+        OpCode::ImportFrom => OperandOwnership::Borrowed,
+        OpCode::ModuleCacheGet => OperandOwnership::Borrowed,
+        OpCode::ModuleCacheSet => OperandOwnership::Borrowed,
+        OpCode::ModuleCacheDel => OperandOwnership::Borrowed,
+        OpCode::ModuleGetAttr => OperandOwnership::Borrowed,
+        OpCode::ModuleImportFrom => OperandOwnership::Borrowed,
+        OpCode::ModuleGetGlobal => OperandOwnership::Borrowed,
+        OpCode::ModuleGetName => OperandOwnership::Borrowed,
+        OpCode::ModuleSetAttr => OperandOwnership::Borrowed,
+        OpCode::ModuleDelGlobal => OperandOwnership::Borrowed,
+        OpCode::ModuleDelGlobalIfPresent => OperandOwnership::Borrowed,
+        OpCode::WarnStderr => OperandOwnership::Borrowed,
+        OpCode::ScfIf => OperandOwnership::Borrowed,
+        OpCode::ScfFor => OperandOwnership::Borrowed,
+        OpCode::ScfWhile => OperandOwnership::Borrowed,
+        OpCode::ScfYield => OperandOwnership::Borrowed,
+        OpCode::Deopt => OperandOwnership::Borrowed,
+    }
+}
+
+/// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op
+/// carrying `_original_kind = kind`, the 0-based index of the operand the
+/// op CONSUMES (frees internally), or `None` if it consumes none. `arity`
+/// is the op's operand count, used to resolve a `"last"` selector. The
+/// drop pass treats a value whose last use is the consumed-operand
+/// position exactly like a `Return` transfer — no trailing `DecRef`.
+/// Replaces the hand-coded `op_consumed_operand_root` match.
+#[inline]
+pub(crate) fn kind_consumed_operand_table(kind: &str, arity: usize) -> Option<usize> {
+    match kind {
+        "call_bind" => arity.checked_sub(1),
+        "call_indirect" => arity.checked_sub(1),
+        _ => None,
     }
 }
