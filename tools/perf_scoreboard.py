@@ -1334,25 +1334,34 @@ def _backend_binary_identity_for(spec: "BackendSpec", profile: str) -> str | Non
 def _resolve_backend_binary_path(spec: "BackendSpec", profile: str) -> Path | None:
     """Best-effort path to the daemon's molt-backend binary for this lane.
 
-    The daemon backend is the cargo artifact under the session target dir. We
-    follow the same layout cli.py uses (target/sessions/<id>/<profile_dir>/),
-    selecting the LLVM-featured binary name when the lane is llvm. Returns None
-    if nothing is found (the identity then degrades to None, never crashes).
+    The daemon backend is the cargo ``molt-backend`` artifact. Its location
+    depends on the active CARGO_TARGET_DIR: it may be the shared
+    ``target/<profile_dir>/`` (solo-dev / when CARGO_TARGET_DIR points at
+    ``target``) or a session dir ``target/sessions/<id>/<profile_dir>/``. We
+    probe, in order: the live ``CARGO_TARGET_DIR``, the perfscore session dir,
+    and the shared ``target/`` root — covering every layout cli.py uses.
+    release-fast/release-output map to the ``release-fast`` cargo profile dir;
+    dev maps to ``debug``. Returns None if nothing is found (the identity then
+    degrades to None, never crashes).
     """
-    target_root = REPO_ROOT / "target" / "sessions" / PERFSCORE_SESSION_ID
-    # release-fast / release-output both map to the "release-fast" cargo
-    # profile dir for the backend (see cli.py _backend_profile); dev maps to
-    # "debug". Mirror the PROFILE_BUILD_FLAG mapping.
     profile_dir = (
         "release-fast" if PROFILE_BUILD_FLAG.get(profile) == "release" else "debug"
     )
-    candidates = [
-        target_root / profile_dir / "molt-backend",
-        target_root / profile_dir / "molt",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
+    roots: list[Path] = []
+    env_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
+    if env_target:
+        roots.append(Path(env_target))
+    roots.append(REPO_ROOT / "target" / "sessions" / PERFSCORE_SESSION_ID)
+    roots.append(REPO_ROOT / "target")
+    seen: set[Path] = set()
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        for name in ("molt-backend", "molt"):
+            cand = root / profile_dir / name
+            if cand.exists():
+                return cand
     return None
 
 

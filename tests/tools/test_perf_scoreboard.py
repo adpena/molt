@@ -315,3 +315,52 @@ def test_codon_equivalence_allowlist_is_conservative() -> None:
     assert "tests/benchmarks/bench_etl_orders.py" not in ps.CODON_EQUIVALENT_BENCHMARKS
     # A numeric kernel IS.
     assert "tests/benchmarks/bench_fib.py" in ps.CODON_EQUIVALENT_BENCHMARKS
+
+
+def test_backend_binary_resolver_probes_target_roots(monkeypatch, tmp_path) -> None:
+    # When CARGO_TARGET_DIR has the binary, the resolver finds it; otherwise it
+    # degrades to None (never crashes). We point every probed root at empty
+    # tmp dirs, then materialize the binary under CARGO_TARGET_DIR.
+    cargo = tmp_path / "cargo"
+    (cargo / "release-fast").mkdir(parents=True)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(cargo))
+    # Repoint the other two probed roots away from the real repo so the test is
+    # hermetic (the real target/ may or may not have a binary).
+    monkeypatch.setattr(ps, "REPO_ROOT", tmp_path / "norepo")
+    assert ps._resolve_backend_binary_path(ps.NATIVE_CRANELIFT, "release-fast") is None
+    binpath = cargo / "release-fast" / "molt-backend"
+    binpath.write_bytes(b"\x7fELF-stub")
+    found = ps._resolve_backend_binary_path(ps.NATIVE_CRANELIFT, "release-fast")
+    assert found == binpath
+
+
+def test_gather_provenance_authoritative_when_clean(monkeypatch) -> None:
+    # With identical origin/local SHAs, a clean tree, and an unmodified tool,
+    # the board is authoritative.
+    monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
+    monkeypatch.setattr(
+        ps,
+        "_benchmark_tool_identity",
+        lambda: {
+            "ondisk_blob_sha": "b",
+            "modified_vs_head": "false",
+            "last_commit_sha": "c",
+        },
+    )
+    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
+    prov = ps.gather_provenance(None)
+    assert prov["authoritative"] is True
+    assert prov["origin_sha"] == prov["local_head_sha"]
+    assert prov["dirty_tree"] is False
+
+
+def _fake_git(args: list[str]) -> str | None:
+    if args[:2] == ["rev-parse", "HEAD"]:
+        return "a" * 40
+    if args == ["rev-parse", "origin/main"]:
+        return "a" * 40
+    if args[:1] == ["merge-base"]:
+        return "a" * 40
+    if args == ["status", "--porcelain"]:
+        return None  # clean
+    return None
