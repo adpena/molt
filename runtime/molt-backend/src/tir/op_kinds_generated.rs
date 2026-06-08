@@ -604,9 +604,10 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 ///   * `NoOperandOwnership` — the op has no ref-bearing operand (raw lanes
 ///     / terminator branch-args handled by the terminator, not here).
 // Variants beyond Borrowed/Consumed are seeded as their consumer
-// hand-lists migrate (#58 + the interior-borrow / iter-cond tranches);
-// allow(dead_code) holds the domain-complete schema until then.
-#[allow(dead_code)]
+// hand-lists migrate (#58 + the interior-borrow / iter-cond tranches).
+// The schema is kept ALIVE (not ornamental) by `ALL` + `from_str`/
+// `as_str` below: every variant is constructed and round-tripped, so a
+// dropped or renamed variant is a compile/test failure, not silent rot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OperandOwnership {
     Borrowed,
@@ -615,6 +616,59 @@ pub(crate) enum OperandOwnership {
     InteriorBorrowKeepAlive,
     ConditionalValidOnlyOnEdge,
     NoOperandOwnership,
+}
+
+// Parse/render path for the operand-ownership vocabulary. `from_str` is
+// the toml-ingest path the next consumer migrations (Transferred /
+// InteriorBorrowKeepAlive / ConditionalValidOnlyOnEdge rows) read; it is
+// not yet wired to a runtime caller, so the impl is allow(dead_code) —
+// SCOPED to this forward-compat API, never the enum or the file. `ALL`
+// + the round-trip test keep every variant constructed and live today.
+#[allow(dead_code)]
+impl OperandOwnership {
+    pub(crate) const ALL: [OperandOwnership; 6] = [
+        OperandOwnership::Borrowed,
+        OperandOwnership::Consumed,
+        OperandOwnership::Transferred,
+        OperandOwnership::InteriorBorrowKeepAlive,
+        OperandOwnership::ConditionalValidOnlyOnEdge,
+        OperandOwnership::NoOperandOwnership,
+    ];
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            OperandOwnership::Borrowed => "borrowed",
+            OperandOwnership::Consumed => "consumed",
+            OperandOwnership::Transferred => "transferred",
+            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",
+            OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",
+            OperandOwnership::NoOperandOwnership => "no_operand_ownership",
+        }
+    }
+    pub(crate) fn from_str(s: &str) -> Option<OperandOwnership> {
+        match s {
+            "borrowed" => Some(OperandOwnership::Borrowed),
+            "consumed" => Some(OperandOwnership::Consumed),
+            "transferred" => Some(OperandOwnership::Transferred),
+            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),
+            "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),
+            "no_operand_ownership" => Some(OperandOwnership::NoOperandOwnership),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod operand_ownership_schema_tests {
+    use super::OperandOwnership;
+    #[test]
+    fn every_variant_round_trips() {
+        // The schema is alive: every declared variant parses + renders +
+        // round-trips. Dropping or renaming a variant breaks this test.
+        for v in OperandOwnership::ALL {
+            assert_eq!(OperandOwnership::from_str(v.as_str()), Some(v));
+        }
+        assert_eq!(OperandOwnership::from_str("bogus"), None);
+    }
 }
 
 /// Per-OpCode operand-ownership DEFAULT: how `OpCode` treats the operand
