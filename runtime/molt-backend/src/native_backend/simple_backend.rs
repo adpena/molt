@@ -2850,6 +2850,14 @@ impl SimpleBackend {
         rewrite_annotate_stubs(&mut ir);
         for func in &mut ir.functions {
             rewrite_copy_aliases(&mut func.ops);
+            // Split-field read deforestation: a non-escaping `s.split(sep)[idx]`
+            // consumed only by `len`/`ord(field[i])`/`== const` (the shape the
+            // split-field-enabled inliner exposes when it splices `parse_int(field)`)
+            // is rewritten to bounds-once reads so the field never materializes —
+            // the csv/etl ETL release-blocker fix. Runs AFTER copy-alias rewrite so
+            // the inlined `len`/`ord_at` consumers reference the field's canonical
+            // SSA name directly (pre-collapse they read an alias of it).
+            crate::passes::deforest_split_field_reads(func);
             canonicalize_direct_raise_edges(func);
             if std::env::var("MOLT_DUMP_REWRITTEN_FUNC").as_deref() == Ok(func.name.as_str()) {
                 let mut dump = String::new();

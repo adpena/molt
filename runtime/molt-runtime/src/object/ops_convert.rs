@@ -1640,6 +1640,73 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
     })
 }
 
+/// Deforested `int(s.split(sep)[idx])`: parse a base-10 int directly from the
+/// split field's bytes WITHOUT materializing the field as a heap `str`.
+///
+/// The frontend's split-field consumer fusion rewrites `int(field)` (where
+/// `field = s.split(sep)[idx]` and `field` is read-only and used exactly once)
+/// to this op, eliminating the per-field `alloc_string` that dominated the
+/// csv/etl ETL profiles for numeric (digit-leading, non-interned) fields. It
+/// also heals the general real-world `int(s.split(sep)[k])` idiom.
+///
+/// Byte-identical to `molt_int_from_obj` on the string the field WOULD have
+/// materialized to (no explicit base): the same `parse_simple_ascii_decimal_i64`
+/// fast path, the same `parse_int_from_str(_, 10)` BigInt fallback (so leading
+/// zeros / sign / `_` separators / bigint overflow all match), and the same
+/// `ValueError("invalid literal for int() with base 10: '<field>'")` on an
+/// invalid literal — where `<field>` is the field text, exactly as CPython
+/// reports. An out-of-range field index raises the same
+/// `IndexError("list index out of range")` the materializing path would.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_split_field_to_int(
+    hay_bits: u64,
+    needle_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let Some((hay_ptr, needle_ptr, target_index)) =
+                crate::object::ops_string::explicit_split_field_args(
+                    _py,
+                    hay_bits,
+                    needle_bits,
+                    index_bits,
+                )
+            else {
+                return MoltObject::none().bits();
+            };
+            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+            let needle_bytes =
+                std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+            let Some((start, end)) = crate::object::ops_string::split_field_bounds_at_index(
+                hay_bytes,
+                needle_bytes,
+                target_index,
+            ) else {
+                return raise_exception::<_>(_py, "IndexError", "list index out of range");
+            };
+            // The field is a sub-slice of a valid UTF-8 `str` split on a UTF-8
+            // separator, so `[start..end]` is itself valid UTF-8 (split never
+            // bisects a multibyte codepoint).
+            let field = std::str::from_utf8_unchecked(&hay_bytes[start..end]);
+            if let Some(i) = parse_simple_ascii_decimal_i64(field) {
+                return int_bits_from_i64(_py, i);
+            }
+            let (parsed, _base_used) = match parse_int_from_str(field, 10) {
+                Ok(val) => val,
+                Err(_) => {
+                    let msg = format!("invalid literal for int() with base 10: '{field}'");
+                    return raise_exception::<_>(_py, "ValueError", &msg);
+                }
+            };
+            if let Some(i) = bigint_to_inline(&parsed) {
+                return MoltObject::from_int(i).bits();
+            }
+            bigint_bits(_py, parsed)
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
