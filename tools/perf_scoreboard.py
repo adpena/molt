@@ -79,8 +79,13 @@ import harness_memory_guard  # noqa: E402
 
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 SCOREBOARD_DIR = REPO_ROOT / "bench" / "scoreboard"
+COLD_START_BUDGET_PATH = SCOREBOARD_DIR / "cold_start_budget.json"
 
-SCHEMA_VERSION = 2
+# Schema 3 adds the two-dimensional verdict (warm vs cold), full provenance
+# metadata (origin/local/merge-base SHAs, tool identity, backend binary
+# identity, stdlib cache key, authoritative flag), and the cold-start budget
+# fields. Boards written by schema-2 tools still load (missing fields default).
+SCHEMA_VERSION = 3
 
 # The constitution's session isolation (must be set before any build command).
 PERFSCORE_SESSION_ID = "perfscore"
@@ -93,6 +98,60 @@ RED_THRESHOLD = 1.00
 # The constitution requires instability detection; an unstable cell cannot be
 # trusted to be GREEN and is gated like a RED.
 UNSTABLE_CV = 0.20
+
+# --- Two-dimensional verdict vocabulary (council ruling A) ------------------
+# warm ≠ cold. A warm-slow cell is an EXECUTION-ENGINE red (needs an IR fact);
+# a cold-slow-but-warm-fast cell is a fixed STARTUP TAX (needs runtime/artifact
+# work) and must NOT be conflated with engine slowness. The single legacy
+# ``red`` bool blended both — these verdicts split them.
+VERDICT_GREEN = "GREEN"
+VERDICT_FAIL_ENGINE = "FAIL_ENGINE"  # warm_speedup <= 1.00  (release blocker)
+VERDICT_FAIL_COLD_BUDGET = "FAIL_COLD_BUDGET"  # startup_tax_ms > budget_ms
+VERDICT_WARN_COLD_FLOOR = "WARN_COLD_FLOOR"  # cold<=1 & warm>1, tax is sole cause
+VERDICT_FAIL_STALE = "FAIL_STALE"  # non-authoritative tree — overrides all
+# Infrastructure verdicts (not engine/cold slowness — routed to their own lane).
+VERDICT_BUILD_FAILED = "BUILD_FAILED"
+VERDICT_RUN_ERROR = "RUN_ERROR"  # cpython ran, molt did not
+VERDICT_UNSTABLE = "UNSTABLE"  # CV too high to trust either direction
+VERDICT_RUN_BLOCKED = "RUN_BLOCKED"  # wasm run-path gap (build/link only)
+VERDICT_CPY_INCOMPAT = "CPY_INCOMPATIBLE"  # no CPython floor to compare against
+
+# Verdicts that FAIL the gate (nonzero exit). WARN_COLD_FLOOR does NOT fail
+# unless --strict-cold; FAIL_STALE fails unless --allow-nonauthoritative.
+GATE_FAILING_VERDICTS = frozenset(
+    {
+        VERDICT_FAIL_ENGINE,
+        VERDICT_FAIL_COLD_BUDGET,
+        VERDICT_BUILD_FAILED,
+        VERDICT_RUN_ERROR,
+        VERDICT_UNSTABLE,
+    }
+)
+
+
+def _load_cold_start_budgets() -> dict:
+    """Load the per (backend, profile) cold-start tax budgets in milliseconds.
+
+    Shape: ``{"budgets": {"native/release-fast": {"budget_ms": N, ...}}}``.
+    A missing file or missing cell entry means "no budget recorded yet" — the
+    FAIL_COLD_BUDGET verdict cannot fire (we never invent a budget), and the
+    board records the measured tax so the budget can be seeded from this run.
+    """
+    if not COLD_START_BUDGET_PATH.exists():
+        return {"budgets": {}}
+    try:
+        return json.loads(COLD_START_BUDGET_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"budgets": {}}
+
+
+def _budget_ms_for(budgets: dict, backend: str, profile: str) -> float | None:
+    entry = budgets.get("budgets", {}).get(f"{backend}/{profile}")
+    if not isinstance(entry, dict):
+        return None
+    val = entry.get("budget_ms")
+    return float(val) if isinstance(val, (int, float)) else None
+
 
 # safe_run RSS cap + wall-clock timeout per run. Generous enough for the heavy
 # benchmarks (class_hierarchy, bytes_find @ 2s CPython) without letting a
@@ -348,9 +407,30 @@ class Cell:
     )
     note: str | None = None
 
-    # Reserved for the follow-up toolchain arc (nullable today).
+    # --- Two-dimensional verdict (council ruling A) ----------------------
+    # warm_speedup = cpython_warm / molt_warm  (the EXECUTION-ENGINE axis).
+    # cold_speedup = cpython_cold / molt_cold  (the END-TO-END cold axis).
+    # startup_tax_ms = (molt_cold_total - molt_warm_total) * 1000  (fixed tax).
+    warm_speedup: float | None = None
+    cold_speedup: float | None = None
+    startup_tax_ms: float | None = None
+    cold_budget_ms: float | None = None  # the budget this cell was gated against
+    verdict: str = "pending"  # one of the VERDICT_* constants
+    # The single most-likely missing fact / startup component, for triage.
+    suspected_missing_fact: str | None = None
+    suspected_startup_component: str | None = None
+
+    # --- PyPy / Codon comparator lanes (council Lane C; nullable) ---------
+    # pypy_ratio = pypy_warm / molt_warm  (>1 = molt faster than PyPy).
+    # codon_ratio = codon_warm / molt_warm (>1 = molt faster than Codon).
     pypy_ratio: float | None = None
+    pypy_warm_s: float | None = None
     codon_ratio: float | None = None
+    codon_warm_s: float | None = None
+    # Codon is AOT but NOT drop-in for every benchmark; a non-equivalent
+    # benchmark is NEVER scored win/loss — only recorded as "non-equivalent".
+    codon_equivalent: bool | None = None
+    codon_note: str | None = None
 
     # When the CPython BASELINE itself cannot run the script (e.g. a
     # molt-internal benchmark that imports molt-only modules, or needs args the
@@ -365,50 +445,136 @@ class Cell:
     cpython_stats: dict | None = None
     log_artifact: str | None = None
 
-    def finalize(self) -> None:
-        """Derive ratios + RED status from the collected facts."""
+    def finalize(
+        self,
+        *,
+        budget_ms: float | None = None,
+        authoritative: bool = True,
+    ) -> None:
+        """Derive ratios + the TWO-DIMENSIONAL verdict from the collected facts.
+
+        ``budget_ms`` is the cold-start tax budget for this (backend, profile)
+        cell (None = no budget recorded yet; FAIL_COLD_BUDGET cannot fire).
+        ``authoritative`` False stamps every cell FAIL_STALE (the tree is not
+        origin/main) — overriding all other verdicts per council ruling A.
+
+        Sets ``verdict`` (the VERDICT_* vocabulary) AND keeps ``status`` + the
+        legacy ``red`` bool in sync so older consumers (diff, JSON readers) keep
+        working. ``status`` mirrors the verdict in lowercase-legacy form.
+        """
+        self.cold_budget_ms = budget_ms
+
+        # FAIL_STALE overrides everything: a non-authoritative tree's numbers
+        # are not the origin/main contract, full stop.
+        if not authoritative:
+            self.verdict = VERDICT_FAIL_STALE
+            self.status = "stale"
+            self.red = True
+            if self.note is None:
+                self.note = "non-authoritative tree (local != origin/main or dirty)"
+            return
+
         if self.run_blocked:
+            self.verdict = VERDICT_RUN_BLOCKED
             self.status = "run-blocked"
             self.red = False
             return
         if not self.build_ok:
+            self.verdict = VERDICT_BUILD_FAILED
             self.status = "build-failed"
             self.red = True
             return
         # CPython baseline can't run -> no valid floor; not gated.
         if not self.cpython_ok:
             self.cpython_incompatible = True
+            self.verdict = VERDICT_CPY_INCOMPAT
             self.status = "cpython-incompatible"
             self.red = False
             if self.note is None:
                 self.note = "CPython baseline could not run this script standalone"
             return
-        # CPython runs but molt does not -> a real molt run failure (RED).
+        # CPython runs but molt does not -> a real molt run failure.
         if not self.molt_ok:
+            self.verdict = VERDICT_RUN_ERROR
             self.status = "error"
             self.red = True
             if self.note is None:
                 self.note = "molt run failed/unmeasurable while CPython ran"
             return
 
+        # Ratios. cold/warm "ratio" == cpython/molt (legacy column names);
+        # the council's "speedup" is the same quantity — we expose both names.
         self.cold_ratio = _safe_ratio(self.cold_cpython_s, self.cold_molt_s)
         self.warm_ratio = _safe_ratio(self.warm_cpython_s, self.warm_molt_s)
         self.cpython_ratio = self.warm_ratio
+        self.warm_speedup = self.warm_ratio
+        self.cold_speedup = self.cold_ratio
 
-        # A cell is RED if either the warm OR cold speedup violates the floor —
-        # the constitution forbids warm-only wins, so a cold-slow benchmark is
-        # still a contract violation.
-        warm_red = self.warm_ratio is not None and self.warm_ratio < RED_THRESHOLD
-        cold_red = self.cold_ratio is not None and self.cold_ratio < RED_THRESHOLD
+        # startup_tax_ms = the fixed cold-start cost molt pays that the warm
+        # steady state does not (cold_total - warm_total). This is the quantity
+        # the cold-start budget gates against — NOT the cold/cpython ratio.
+        if self.cold_molt_s is not None and self.warm_molt_s is not None:
+            self.startup_tax_ms = round(
+                (self.cold_molt_s - self.warm_molt_s) * 1000.0, 2
+            )
 
+        # Unstable cell: cannot be trusted in EITHER direction -> gated.
         if not self.stable:
+            self.verdict = VERDICT_UNSTABLE
             self.status = "unstable"
-            self.red = True  # unstable-unmeasurable is gated like RED
-            return
-        if warm_red or cold_red:
-            self.status = "red"
             self.red = True
             return
+
+        warm_below = (
+            self.warm_speedup is not None and self.warm_speedup <= RED_THRESHOLD
+        )
+        cold_below = (
+            self.cold_speedup is not None and self.cold_speedup <= RED_THRESHOLD
+        )
+        over_budget = (
+            budget_ms is not None
+            and self.startup_tax_ms is not None
+            and self.startup_tax_ms > budget_ms
+        )
+
+        # --- The two-dimensional decision (council ruling A) -------------
+        # 1. FAIL_ENGINE — warm steady-state is at/below CPython. This is the
+        #    execution-engine red, the release blocker. It dominates a cold
+        #    failure (if the engine is slow, fix the engine first).
+        if warm_below:
+            self.verdict = VERDICT_FAIL_ENGINE
+            self.status = "red"
+            self.red = True
+            self.suspected_missing_fact = self.suspected_missing_fact or _suspect_fact(
+                self.benchmark
+            )
+            return
+        # 2. FAIL_COLD_BUDGET — warm is fine but the fixed startup tax exceeds
+        #    the recorded budget for this lane. A startup regression, not an
+        #    engine red; routes to the cold-start lane.
+        if over_budget:
+            self.verdict = VERDICT_FAIL_COLD_BUDGET
+            self.status = "red"
+            self.red = True
+            self.suspected_startup_component = (
+                self.suspected_startup_component
+                or _suspect_startup_component(self.benchmark)
+            )
+            return
+        # 3. WARN_COLD_FLOOR — warm > CPython, but cold <= CPython AND the loss
+        #    is solely the fixed startup tax (within budget). NOT an engine red;
+        #    does not fail the gate unless --strict-cold.
+        if cold_below:
+            self.verdict = VERDICT_WARN_COLD_FLOOR
+            self.status = "warn-cold"
+            self.red = False  # not a hard red — fixed tax, within budget
+            self.suspected_startup_component = (
+                self.suspected_startup_component
+                or _suspect_startup_component(self.benchmark)
+            )
+            return
+        # 4. GREEN — warm fast, cold fast, within budget.
+        self.verdict = VERDICT_GREEN
         self.status = "green"
         self.red = False
 
@@ -417,6 +583,71 @@ def _safe_ratio(numerator: float | None, denominator: float | None) -> float | N
     if numerator is None or denominator is None or denominator <= 0:
         return None
     return round(numerator / denominator, 4)
+
+
+# --- Triage hints (council "what FACT is missing from IR?" doctrine) --------
+# These are NAME-pattern heuristics that point a perf agent at the most likely
+# missing IR fact per the council triage doctrine. They are HINTS for the
+# summary, never gating logic — the real diagnosis is the per-benchmark
+# one-page representation analysis (ruling G).
+_FACT_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("csv", "split", "field", "substr", "slice"),
+        "substring/slice repr (alloc-free field extraction)",
+    ),
+    (
+        ("exception", "raise", "try", "except"),
+        "zero-cost happy-path exception-state + handler-region ownership",
+    ),
+    (
+        ("etl", "orders", "record", "row"),
+        "record/dict value-slot shape + borrow/ownership of stable field flow",
+    ),
+    (
+        ("dict", "set", "map", "counter"),
+        "hash-table value-slot Repr + key identity/borrow",
+    ),
+    (("tuple", "pack", "index"), "tuple element Repr + unboxed-lane stability"),
+    (
+        ("attr", "method", "dispatch", "class"),
+        "class identity/method shape/version guard/call target (devirt)",
+    ),
+    (
+        ("fib", "loop", "sum", "range", "sieve"),
+        "induction/range/overflow/lane-stability (counted-loop facts)",
+    ),
+    (
+        ("generator", "gen", "yield", "async", "await", "coro"),
+        "frame ownership/resumable-state/fusion",
+    ),
+    (
+        ("bytes", "bytearray", "str", "format"),
+        "string/bytes Repr + borrowed-view extraction",
+    ),
+    (("json", "parse", "roundtrip"), "parse buffer ownership + value-slot Repr"),
+)
+
+
+def _suspect_fact(benchmark: str) -> str:
+    name = Path(benchmark).stem.lower()
+    for needles, fact in _FACT_HINTS:
+        if any(n in name for n in needles):
+            return fact
+    return "representation/ownership fact (run the one-page diagnosis)"
+
+
+def _suspect_startup_component(benchmark: str) -> str:
+    """Cold-start tax components are program-INDEPENDENT for the fixed floor.
+
+    The cold tax is dominated by the fixed startup cost (process-launch/dyld +
+    molt-runtime-init + binary page-in), not the program. The per-benchmark
+    delta is binary SIZE (larger linked surface = more page-in) and any extra
+    module-init the program's imports trigger. See docs/perf/COLD_START.md.
+    """
+    name = Path(benchmark).stem.lower()
+    if any(n in name for n in ("json", "csv", "import", "etl", "channel", "async")):
+        return "module-init + binary page-in (program imports extra stdlib surface)"
+    return "fixed startup floor: binary page-in + molt-runtime-init + dyld"
 
 
 def _cell_from_dict(d: dict) -> Cell:
@@ -479,6 +710,10 @@ def measure_cell(
     batch_server: bench._BenchBatchBuildServer | None,
     cpython_bin: str,
     log_dir: Path,
+    budget_ms: float | None = None,
+    authoritative: bool = True,
+    pypy_bin: str | None = None,
+    codon_runner: "CodonRunner | None" = None,
 ) -> Cell:
     """Build + time one (benchmark, target, backend, profile) cell."""
     benchmark = bench_suites.canonical_benchmark_key(script_path)
@@ -515,7 +750,7 @@ def measure_cell(
     if binary is None:
         cell.build_ok = False
         log_lines.append("BUILD FAILED")
-        cell.finalize()
+        cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
         _write_log(log_path, log_lines)
         return cell
 
@@ -532,7 +767,7 @@ def measure_cell(
             "wasm run-path blocked: socket-import instantiation gap (build/link only)"
         )
         log_lines.append(f"RUN-BLOCKED: {cell.run_blocked_reason}")
-        cell.finalize()
+        cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
         _write_log(log_path, log_lines)
         _release_binary(binary)
         return cell
@@ -626,10 +861,47 @@ def measure_cell(
     elif not cell.cpython_ok:
         cell.note = f"cpython run unmeasurable (status={cold_cpy.status})"
 
-    cell.finalize()
+    # --- PyPy comparator lane (informational; never a hard gate) ------------
+    # Only measured once per benchmark (lane-independent: PyPy runs the same
+    # .py). We attach it to every backend cell for the same benchmark so the
+    # column is populated, but it is a CPython-style interpreter comparator,
+    # not a molt-backend fact.
+    if pypy_bin is not None and cell.warm_molt_s:
+        pypy_warm = _measure_interpreter_warm(
+            pypy_bin,
+            str(script_path),
+            run_args,
+            samples=samples,
+            warmup=warmup,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=f"pypy:{benchmark}",
+        )
+        if pypy_warm is not None:
+            cell.pypy_warm_s = round(pypy_warm, 6)
+            cell.pypy_ratio = _safe_ratio(pypy_warm, cell.warm_molt_s)
+            log_lines.append(
+                f"pypy warm_median={cell.pypy_warm_s} ratio={cell.pypy_ratio}"
+            )
+
+    # --- Codon comparator lane (AOT north star; equivalence-gated) ----------
+    if codon_runner is not None and cell.warm_molt_s:
+        codon_runner.measure_into(
+            cell,
+            script_path=script_path,
+            run_args=run_args,
+            samples=samples,
+            warmup=warmup,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            log_lines=log_lines,
+        )
+
+    cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
     log_lines.append(
         f"molt warm_median={cell.warm_molt_s} cpython warm_median={cell.warm_cpython_s} "
-        f"speedup={cell.cpython_ratio} status={cell.status}"
+        f"warm_speedup={cell.warm_speedup} cold_speedup={cell.cold_speedup} "
+        f"startup_tax_ms={cell.startup_tax_ms} verdict={cell.verdict}"
     )
     _write_log(log_path, log_lines)
     return cell
@@ -733,12 +1005,433 @@ def _write_log(path: Path, lines: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scoreboard assembly + JSON schema
+# PyPy / Codon comparator lanes (council Lane C — best-effort, never a gate)
 # ---------------------------------------------------------------------------
+#
+# PyPy: a DYNAMIC comparator (JIT interpreter). Where PyPy beats molt we NAME
+# the missing molt fact; it is NOT a hard gate (PyPy's strength is long-running
+# JIT warmup, a different operating point than molt's AOT).
+#
+# Codon: the AOT NORTH STAR — but Codon is NOT a drop-in for every Python
+# program (no full CPython object model, restricted dynamism). A benchmark is
+# scored against Codon ONLY if it is on the semantic-equivalence allowlist;
+# everything else is recorded "non-equivalent" and NEVER scored win/loss.
+
+
+def _measure_interpreter_warm(
+    interp_bin: str,
+    script: str,
+    run_args: list[str],
+    *,
+    samples: int,
+    warmup: int,
+    rss_mb: int,
+    timeout_s: float,
+    label: str,
+) -> float | None:
+    """Warm steady-state median wall time for a Python-compatible interpreter.
+
+    Same >=samples cold+warm discipline as the CPython path, through safe_run.
+    Returns None if the interpreter cannot run the script (so a comparator that
+    chokes on a benchmark simply leaves the column null, never poisons a cell).
+    """
+    env = _cpython_run_env()
+    for _ in range(warmup):
+        _safe_run_json(
+            [interp_bin, script, *run_args],
+            env=env,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=f"{label}-warmup",
+        )
+    runs = [
+        _safe_run_json(
+            [interp_bin, script, *run_args],
+            env=env,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=label,
+        )
+        for _ in range(samples)
+    ]
+    stats = PhaseStats.from_runs(runs)
+    return stats.median_s if stats.n > 0 else None
+
+
+# Codon semantic-equivalence allowlist. ONLY these benchmarks are drop-in
+# enough that a Codon AOT comparison is meaningful (numeric/loop kernels with
+# no CPython-object-model dependence, no dynamic stdlib). A benchmark NOT in
+# this set is recorded "non-equivalent" and never scored. Conservative by
+# design — false "equivalent" is worse than a missing comparison.
+CODON_EQUIVALENT_BENCHMARKS = frozenset(
+    {
+        "tests/benchmarks/bench_fib.py",
+        "tests/benchmarks/bench_sieve.py",
+        "tests/benchmarks/bench_sum_loop.py",
+        "tests/benchmarks/bench_nbody.py",
+        "tests/benchmarks/bench_mandelbrot.py",
+        "tests/benchmarks/bench_spectral_norm.py",
+        "tests/benchmarks/bench_binary_trees.py",
+        "tests/benchmarks/bench_matrix_mul.py",
+    }
+)
+
+
+class CodonRunner:
+    """Compiles + times a benchmark with Codon when it is on the allowlist.
+
+    Codon is AOT: we compile each allowlisted benchmark to a native binary
+    (``codon build -release``) and time it through safe_run with the same
+    discipline as molt. A compile failure or a not-allowlisted benchmark
+    records the reason and marks the cell ``codon_equivalent`` accordingly —
+    it is NEVER scored win/loss.
+    """
+
+    def __init__(self, codon_bin: str) -> None:
+        self.codon_bin = codon_bin
+        self._tmp_root: Path | None = None
+        # Codon-compiled binaries link libomp/libcodonrt via @loader_path and
+        # need the codon lib dir on DYLD_LIBRARY_PATH to run. Resolve it from
+        # the binary location (.../bin/codon -> .../lib/codon).
+        self.lib_dir = self._resolve_lib_dir(codon_bin)
+
+    @staticmethod
+    def _resolve_lib_dir(codon_bin: str) -> Path | None:
+        root = Path(codon_bin).resolve().parent.parent  # .../bin/codon -> root
+        cand = root / "lib" / "codon"
+        return cand if cand.exists() else None
+
+    def _run_env(self) -> dict[str, str]:
+        env = _cpython_run_env()
+        if self.lib_dir is not None:
+            existing = env.get("DYLD_LIBRARY_PATH", "")
+            env["DYLD_LIBRARY_PATH"] = (
+                f"{self.lib_dir}:{existing}" if existing else str(self.lib_dir)
+            )
+            # macOS hardened-runtime strips DYLD_* across some exec boundaries;
+            # CODON_LIBRARY is also honored by codon-compiled binaries.
+            env.setdefault("CODON_LIBRARY", str(self.lib_dir))
+        return env
+
+    def _ensure_tmp(self) -> Path:
+        if self._tmp_root is None:
+            import tempfile
+
+            self._tmp_root = Path(
+                tempfile.mkdtemp(
+                    prefix="perfscore-codon-", dir=str(bench.BENCH_TMP_ROOT)
+                )
+            )
+        return self._tmp_root
+
+    def measure_into(
+        self,
+        cell: "Cell",
+        *,
+        script_path: Path,
+        run_args: list[str],
+        samples: int,
+        warmup: int,
+        rss_mb: int,
+        timeout_s: float,
+        log_lines: list[str],
+    ) -> None:
+        key = bench_suites.canonical_benchmark_key(script_path)
+        if key not in CODON_EQUIVALENT_BENCHMARKS:
+            cell.codon_equivalent = False
+            cell.codon_note = "non-equivalent (not on Codon drop-in allowlist)"
+            log_lines.append("codon: non-equivalent (not allowlisted) — not scored")
+            return
+        cell.codon_equivalent = True
+        out_bin = self._ensure_tmp() / f"{Path(key).stem}.codon"
+        # Codon does not accept arbitrary argv the way CPython does; allowlisted
+        # kernels are self-contained (no required run_args). If a benchmark
+        # needs args, it should not be on the allowlist.
+        build_cmd = [
+            self.codon_bin,
+            "build",
+            "-release",
+            "-o",
+            str(out_bin),
+            str(script_path),
+        ]
+        try:
+            res = subprocess.run(
+                build_cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env=self._run_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            cell.codon_equivalent = False
+            cell.codon_note = f"codon build error: {exc!r}"
+            log_lines.append(f"codon build EXCEPTION: {exc!r} — not scored")
+            return
+        if res.returncode != 0 or not out_bin.exists():
+            tail = (res.stderr or res.stdout or "").strip()[-400:]
+            # A compile failure does NOT mean molt wins — it means the
+            # comparison is unavailable. Record, do not score.
+            cell.codon_equivalent = False
+            cell.codon_note = f"codon build failed rc={res.returncode}: {tail}"
+            log_lines.append(f"codon build FAILED rc={res.returncode} — not scored")
+            return
+        warm = _measure_codon_warm(
+            str(out_bin),
+            run_args,
+            samples=samples,
+            warmup=warmup,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=f"codon:{key}",
+            env=self._run_env(),
+        )
+        if warm is None:
+            cell.codon_note = "codon run unmeasurable"
+            log_lines.append("codon run unmeasurable — not scored")
+            return
+        cell.codon_warm_s = round(warm, 6)
+        cell.codon_ratio = _safe_ratio(warm, cell.warm_molt_s)
+        cell.codon_note = "equivalent (codon -release AOT)"
+        log_lines.append(
+            f"codon warm_median={cell.codon_warm_s} ratio={cell.codon_ratio}"
+        )
+
+    def close(self) -> None:
+        if self._tmp_root is not None:
+            import shutil
+
+            shutil.rmtree(self._tmp_root, ignore_errors=True)
+            self._tmp_root = None
+
+
+def _measure_codon_warm(
+    codon_bin_path: str,
+    run_args: list[str],
+    *,
+    samples: int,
+    warmup: int,
+    rss_mb: int,
+    timeout_s: float,
+    label: str,
+    env: dict[str, str] | None = None,
+) -> float | None:
+    """Warm median wall time of a compiled Codon binary (safe_run-guarded)."""
+    if env is None:
+        env = _cpython_run_env()
+    for _ in range(warmup):
+        _safe_run_json(
+            [codon_bin_path, *run_args],
+            env=env,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=f"{label}-warmup",
+        )
+    runs = [
+        _safe_run_json(
+            [codon_bin_path, *run_args],
+            env=env,
+            rss_mb=rss_mb,
+            timeout_s=timeout_s,
+            label=label,
+        )
+        for _ in range(samples)
+    ]
+    stats = PhaseStats.from_runs(runs)
+    return stats.median_s if stats.n > 0 else None
+
+
+# ---------------------------------------------------------------------------
+# Provenance — the anti-stale-lore enforcement (council ruling A + B)
+# ---------------------------------------------------------------------------
+#
+# Every emitted board carries the exact tree + tool + artifact identity it was
+# measured against. If the local HEAD diverges from origin/main the board is
+# stamped non-authoritative and the gate refuses (FAIL_STALE) unless the caller
+# explicitly opts into local debugging with --allow-nonauthoritative. This is
+# the mechanical kill for the "rediscovered a stale-tree failure" class.
 
 
 def _git_rev() -> str:
     return bench._git_rev() or "unknown"
+
+
+def _git_output(args: list[str]) -> str | None:
+    try:
+        res = subprocess.run(
+            ["git", *args],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode != 0:
+        return None
+    out = res.stdout.strip()
+    return out or None
+
+
+def _origin_main_sha() -> str | None:
+    """SHA of origin/main as the local remote-tracking ref knows it.
+
+    We do NOT fetch here (that is a network side effect the caller controls);
+    we report the ref the working tree already has. The Lane-C contract is to
+    run inside a worktree freshly checked out at origin/main, so this is the
+    authoritative remote tip for the run.
+    """
+    return _git_output(["rev-parse", "origin/main"])
+
+
+def _benchmark_tool_identity() -> dict[str, str | None]:
+    """Identity of perf_scoreboard.py itself (its own git blob + last commit).
+
+    A board measured by a modified-but-uncommitted tool is as non-authoritative
+    as a board measured against a modified tree; we surface both so the reader
+    can tell whether the SCOREBOARD LOGIC changed, not just the compiler.
+    """
+    rel = str(Path(__file__).resolve().relative_to(REPO_ROOT))
+    blob = _git_output(["hash-object", str(Path(__file__).resolve())])
+    last_commit = _git_output(["log", "-n", "1", "--format=%H", "--", rel])
+    # Does the committed blob differ from the on-disk file?
+    head_blob = _git_output(["rev-parse", f"HEAD:{rel}"])
+    return {
+        "path": rel,
+        "ondisk_blob_sha": blob,
+        "head_blob_sha": head_blob,
+        "last_commit_sha": last_commit,
+        "modified_vs_head": str(blob is not None and blob != head_blob).lower(),
+    }
+
+
+def _backend_binary_identity_for(spec: "BackendSpec", profile: str) -> str | None:
+    """Reuse cli.py's ``_backend_binary_identity`` for the daemon backend binary.
+
+    The backend binary identity (path|mtime_ns|size) is the SAME signal the
+    stdlib/TIR caches salt their namespace with; recording it on the board lets
+    a reader prove the artifact a number was measured against, and detect the
+    stale-cache confound class directly. If cli.py cannot be imported (it is a
+    heavy module) we degrade to None rather than fail the board.
+    """
+    try:
+        import molt.cli as _cli  # noqa: PLC0415 - optional, heavy import
+    except Exception:  # noqa: BLE001
+        return None
+    fn = getattr(_cli, "_backend_binary_identity", None)
+    if fn is None:
+        return None
+    backend_bin = _resolve_backend_binary_path(spec, profile)
+    if backend_bin is None:
+        return None
+    try:
+        return fn(backend_bin)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resolve_backend_binary_path(spec: "BackendSpec", profile: str) -> Path | None:
+    """Best-effort path to the daemon's molt-backend binary for this lane.
+
+    The daemon backend is the cargo artifact under the session target dir. We
+    follow the same layout cli.py uses (target/sessions/<id>/<profile_dir>/),
+    selecting the LLVM-featured binary name when the lane is llvm. Returns None
+    if nothing is found (the identity then degrades to None, never crashes).
+    """
+    target_root = REPO_ROOT / "target" / "sessions" / PERFSCORE_SESSION_ID
+    # release-fast / release-output both map to the "release-fast" cargo
+    # profile dir for the backend (see cli.py _backend_profile); dev maps to
+    # "debug". Mirror the PROFILE_BUILD_FLAG mapping.
+    profile_dir = (
+        "release-fast" if PROFILE_BUILD_FLAG.get(profile) == "release" else "debug"
+    )
+    candidates = [
+        target_root / profile_dir / "molt-backend",
+        target_root / profile_dir / "molt",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _stdlib_cache_key_signal() -> str | None:
+    """A stable signal for the stdlib/runtime cache identity.
+
+    The full per-build ``_shared_stdlib_cache_key`` needs the program IR (only
+    available mid-build), so for board-level provenance we record the runtime
+    backend source-tree fingerprint (``_cache_fingerprint``) which is exactly
+    the ``runtime_backend`` component that key is salted with. A reader can
+    diff this across boards to know whether the runtime/codegen sources moved.
+    """
+    try:
+        import molt.cli as _cli  # noqa: PLC0415
+
+        fn = getattr(_cli, "_cache_fingerprint", None)
+        if fn is not None:
+            return str(fn())
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def gather_provenance(
+    specs_profiles: list[tuple["BackendSpec", str]] | None = None,
+) -> dict:
+    """Collect the full provenance metadata for a board (council ruling A).
+
+    ``authoritative`` is False whenever the local HEAD diverges from origin/main
+    OR the tree is dirty OR the scoreboard tool itself is modified-vs-HEAD —
+    any of which means the numbers are not the canonical origin/main contract.
+    """
+    local_head = _git_output(["rev-parse", "HEAD"])
+    origin = _origin_main_sha()
+    merge_base = (
+        _git_output(["merge-base", "HEAD", "origin/main"])
+        if origin is not None
+        else None
+    )
+    dirty = bool(_git_output(["status", "--porcelain"]))
+    tool = _benchmark_tool_identity()
+    tool_modified = tool.get("modified_vs_head") == "true"
+
+    diverges = bool(local_head and origin and local_head != origin)
+    authoritative = not (diverges or dirty or tool_modified)
+
+    backend_identities: dict[str, str | None] = {}
+    if specs_profiles:
+        for spec, profile in specs_profiles:
+            ident = _backend_binary_identity_for(spec, profile)
+            backend_identities[f"{spec.backend}/{profile}"] = ident
+
+    return {
+        "origin_sha": origin,
+        "local_head_sha": local_head,
+        "merge_base_sha": merge_base,
+        "dirty_tree": dirty,
+        "diverges_from_origin": diverges,
+        "benchmark_tool_sha": tool.get("ondisk_blob_sha"),
+        "benchmark_tool_last_commit": tool.get("last_commit_sha"),
+        "benchmark_tool_modified": tool_modified,
+        "backend_binary_identity": backend_identities,
+        "stdlib_cache_key": _stdlib_cache_key_signal(),
+        "authoritative": authoritative,
+        "authoritative_reason": _authoritative_reason(diverges, dirty, tool_modified),
+    }
+
+
+def _authoritative_reason(diverges: bool, dirty: bool, tool_modified: bool) -> str:
+    if not (diverges or dirty or tool_modified):
+        return "tree == origin/main, clean, tool unmodified"
+    parts = []
+    if diverges:
+        parts.append("local HEAD diverges from origin/main")
+    if dirty:
+        parts.append("working tree is dirty")
+    if tool_modified:
+        parts.append("perf_scoreboard.py modified vs HEAD")
+    return "; ".join(parts)
 
 
 def build_scoreboard_doc(
@@ -749,10 +1442,15 @@ def build_scoreboard_doc(
     cpython_version: str,
     samples: int,
     warmup: int,
+    provenance: dict | None = None,
+    pypy_version: str | None = None,
+    codon_version: str | None = None,
 ) -> dict:
-    """Assemble the nested machine-readable scoreboard.
+    """Assemble the nested machine-readable scoreboard (schema 3).
 
     Shape: ``benchmark -> target -> backend -> profile -> {cell fields}``.
+    Adds the two-dimensional verdict breakdown + the provenance block; keeps
+    every legacy field so schema-2 readers still work.
     """
     git_rev = _git_rev()
     nested: dict = {}
@@ -764,74 +1462,115 @@ def build_scoreboard_doc(
             .setdefault(cell.backend, {})[cell.profile]
         ) = d
 
-    red_cells = [c for c in cells if c.red]
+    def keys_with(verdict: str) -> list[str]:
+        return sorted(_cell_key(asdict(c)) for c in cells if c.verdict == verdict)
+
+    # The gate-failing set (the hard reds). FAIL_STALE is conditional (depends
+    # on --allow-nonauthoritative), so it is reported separately, not summed in.
+    gate_failing = [c for c in cells if c.verdict in GATE_FAILING_VERDICTS]
+    stale_cells = [c for c in cells if c.verdict == VERDICT_FAIL_STALE]
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "cpython_floor_scoreboard",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": git_rev,
+        "provenance": provenance or {},
         "host": {
             "platform": sys.platform,
             "python_runner": sys.version.split()[0],
             "cpython_baseline": cpython_version,
+            "pypy": pypy_version,
+            "codon": codon_version,
         },
-        "direction": "speedup = cpython_time / molt_time; >1.0 = molt faster; <1.0 = RED",
+        "direction": "speedup = cpython_time / molt_time; >1.0 = molt faster; <=1.0 = engine/cold red",
         "red_threshold": RED_THRESHOLD,
         "unstable_cv_threshold": UNSTABLE_CV,
+        "verdict_legend": {
+            "GREEN": "warm fast, cold fast, within cold-start budget",
+            "FAIL_ENGINE": "warm_speedup <= 1.00 — execution-engine red, RELEASE BLOCKER",
+            "FAIL_COLD_BUDGET": "startup_tax_ms > budget_ms — startup regression",
+            "WARN_COLD_FLOOR": "cold <= 1.00 but warm > 1.00 & tax within budget — not a hard red",
+            "FAIL_STALE": "non-authoritative tree — overrides all (gate fails unless --allow-nonauthoritative)",
+            "UNSTABLE": "CV above threshold — untrustworthy in either direction",
+            "BUILD_FAILED": "molt build failed",
+            "RUN_ERROR": "CPython ran but molt did not",
+            "RUN_BLOCKED": "wasm run-path gap (build/link only)",
+            "CPY_INCOMPATIBLE": "no CPython floor — excluded from gate",
+        },
         "methodology": {
             "samples_per_phase": samples,
             "warmup_runs": warmup,
             "cold_and_warm": True,
             "run_guard": "tools/safe_run.py --json (rss cap + timeout + peak rss)",
             "build": "tools/bench.py daemon batch build (memory-guarded)",
+            "warm_speedup": "cpython_warm / molt_warm",
+            "cold_speedup": "cpython_cold / molt_cold",
+            "startup_tax_ms": "(molt_cold_total - molt_warm_total) * 1000",
         },
         "reserved_columns": {
-            "pypy_ratio": "nullable — PyPy not installed; follow-up toolchain arc",
-            "codon_ratio": "nullable — Codon not installed; follow-up toolchain arc",
+            "pypy_ratio": (
+                f"PyPy {pypy_version}: pypy_warm/molt_warm (>1 = molt faster)"
+                if pypy_version
+                else "nullable — PyPy not installed"
+            ),
+            "codon_ratio": (
+                f"Codon {codon_version}: codon_warm/molt_warm, equivalence-gated"
+                if codon_version
+                else "nullable — Codon not installed"
+            ),
         },
         "summary": {
             "cells_total": len(cells),
-            "cells_green": sum(1 for c in cells if c.status == "green"),
-            "cells_red": sum(1 for c in cells if c.status == "red"),
-            "cells_unstable": sum(1 for c in cells if c.status == "unstable"),
-            "cells_build_failed": sum(1 for c in cells if c.status == "build-failed"),
-            "cells_run_blocked": sum(1 for c in cells if c.status == "run-blocked"),
-            "cells_error": sum(1 for c in cells if c.status == "error"),
-            "cells_cpython_incompatible": sum(
-                1 for c in cells if c.status == "cpython-incompatible"
+            "cells_green": sum(1 for c in cells if c.verdict == VERDICT_GREEN),
+            # cells_red = the legacy "anything gated" count (back-compat).
+            "cells_red": sum(1 for c in cells if c.red),
+            "cells_unstable": sum(1 for c in cells if c.verdict == VERDICT_UNSTABLE),
+            "cells_build_failed": sum(
+                1 for c in cells if c.verdict == VERDICT_BUILD_FAILED
             ),
-            "any_red": bool(red_cells),
-            # Triage split: warm-red = genuinely slow steady-state (a real
-            # representation gap, constitution triage #1); cold-only-red = warm
-            # is >= floor but cold-start tax sinks the cold path (the separate
-            # binary-size / cold-start column). Both are RED per "no warm-only
-            # wins", but they route to different fix lanes.
+            "cells_run_blocked": sum(
+                1 for c in cells if c.verdict == VERDICT_RUN_BLOCKED
+            ),
+            "cells_error": sum(1 for c in cells if c.verdict == VERDICT_RUN_ERROR),
+            "cells_cpython_incompatible": sum(
+                1 for c in cells if c.verdict == VERDICT_CPY_INCOMPAT
+            ),
+            # The two-dimensional verdict counts (the council's gate axes).
+            "cells_fail_engine": sum(
+                1 for c in cells if c.verdict == VERDICT_FAIL_ENGINE
+            ),
+            "cells_fail_cold_budget": sum(
+                1 for c in cells if c.verdict == VERDICT_FAIL_COLD_BUDGET
+            ),
+            "cells_warn_cold_floor": sum(
+                1 for c in cells if c.verdict == VERDICT_WARN_COLD_FLOOR
+            ),
+            "cells_fail_stale": len(stale_cells),
+            "any_red": bool(gate_failing),
+            "gate_fails": bool(gate_failing),
+            # The two-dimensional breakdown (council ruling A) — every cell
+            # keyed by its verdict so a reader routes warm reds to the IR-fact
+            # lane and cold reds to the startup lane WITHOUT re-deriving them.
+            "verdict_breakdown": {
+                "FAIL_ENGINE": keys_with(VERDICT_FAIL_ENGINE),
+                "FAIL_COLD_BUDGET": keys_with(VERDICT_FAIL_COLD_BUDGET),
+                "WARN_COLD_FLOOR": keys_with(VERDICT_WARN_COLD_FLOOR),
+                "FAIL_STALE": keys_with(VERDICT_FAIL_STALE),
+                "UNSTABLE": keys_with(VERDICT_UNSTABLE),
+                "BUILD_FAILED": keys_with(VERDICT_BUILD_FAILED),
+                "RUN_ERROR": keys_with(VERDICT_RUN_ERROR),
+                "CPY_INCOMPATIBLE": keys_with(VERDICT_CPY_INCOMPAT),
+                "GREEN": keys_with(VERDICT_GREEN),
+            },
+            # Legacy alias kept for any downstream that still reads it.
             "red_breakdown": {
-                "warm_red": sorted(
-                    _cell_key(asdict(c))
-                    for c in red_cells
-                    if c.warm_ratio is not None and c.warm_ratio < RED_THRESHOLD
-                ),
-                "cold_only_red": sorted(
-                    _cell_key(asdict(c))
-                    for c in red_cells
-                    if c.status == "red"
-                    and (c.warm_ratio is not None and c.warm_ratio >= RED_THRESHOLD)
-                    and (c.cold_ratio is not None and c.cold_ratio < RED_THRESHOLD)
-                ),
-                "unstable": sorted(
-                    _cell_key(asdict(c)) for c in cells if c.status == "unstable"
-                ),
-                "build_failed_or_error": sorted(
-                    _cell_key(asdict(c))
-                    for c in cells
-                    if c.status in ("build-failed", "error")
-                ),
-                "cpython_incompatible": sorted(
-                    _cell_key(asdict(c))
-                    for c in cells
-                    if c.status == "cpython-incompatible"
-                ),
+                "warm_red": keys_with(VERDICT_FAIL_ENGINE),
+                "cold_only_red": keys_with(VERDICT_FAIL_COLD_BUDGET)
+                + keys_with(VERDICT_WARN_COLD_FLOOR),
+                "unstable": keys_with(VERDICT_UNSTABLE),
+                "build_failed_or_error": keys_with(VERDICT_BUILD_FAILED)
+                + keys_with(VERDICT_RUN_ERROR),
+                "cpython_incompatible": keys_with(VERDICT_CPY_INCOMPAT),
             },
         },
         "benchmarks_run": benchmarks_run,
@@ -848,9 +1587,11 @@ def _validate_schema(doc: dict) -> list[str]:
         "kind",
         "generated_at",
         "git_rev",
+        "provenance",
         "host",
         "direction",
         "red_threshold",
+        "verdict_legend",
         "methodology",
         "reserved_columns",
         "summary",
@@ -861,12 +1602,40 @@ def _validate_schema(doc: dict) -> list[str]:
     missing = required_top - set(doc)
     if missing:
         problems.append(f"missing top-level keys: {sorted(missing)}")
+    # Provenance block must carry the council-mandated identity fields.
+    required_prov = {
+        "origin_sha",
+        "local_head_sha",
+        "merge_base_sha",
+        "dirty_tree",
+        "benchmark_tool_sha",
+        "backend_binary_identity",
+        "stdlib_cache_key",
+        "authoritative",
+    }
+    pmiss = required_prov - set(doc.get("provenance", {}))
+    if pmiss:
+        problems.append(f"provenance missing fields: {sorted(pmiss)}")
+    # Summary must carry the two-dimensional verdict counts + breakdown.
+    required_summary = {
+        "cells_fail_engine",
+        "cells_fail_cold_budget",
+        "cells_warn_cold_floor",
+        "cells_fail_stale",
+        "verdict_breakdown",
+        "gate_fails",
+    }
+    smiss = required_summary - set(doc.get("summary", {}))
+    if smiss:
+        problems.append(f"summary missing 2-D fields: {sorted(smiss)}")
     # JSON round-trips.
     try:
         json.loads(json.dumps(doc))
     except (TypeError, ValueError) as exc:
         problems.append(f"doc is not JSON-serializable: {exc}")
-    # Reserved nullable columns must be present in every cell.
+    # Every cell must carry the verdict + 2-D measurement fields. pypy/codon
+    # are now POPULATED when those toolchains are installed (no longer asserted
+    # null) — only their presence as keys is required.
     required_cell = {
         "benchmark",
         "target",
@@ -875,6 +1644,10 @@ def _validate_schema(doc: dict) -> list[str]:
         "cpython_ratio",
         "cold_ratio",
         "warm_ratio",
+        "warm_speedup",
+        "cold_speedup",
+        "startup_tax_ms",
+        "verdict",
         "binary_size_kib",
         "molt_peak_rss_mib",
         "compile_time_s",
@@ -883,6 +1656,7 @@ def _validate_schema(doc: dict) -> list[str]:
         "status",
         "pypy_ratio",
         "codon_ratio",
+        "codon_equivalent",
         "log_artifact",
     }
     cells = _flatten_cells(doc)
@@ -895,9 +1669,9 @@ def _validate_schema(doc: dict) -> list[str]:
                 f"cell {c.get('benchmark')} missing fields: {sorted(cmiss)}"
             )
             break
-        if c.get("pypy_ratio") is not None or c.get("codon_ratio") is not None:
+        if c.get("verdict") in (None, "pending"):
             problems.append(
-                "pypy_ratio/codon_ratio should be null until the follow-up arc"
+                f"cell {c.get('benchmark')} has unfinalized verdict {c.get('verdict')!r}"
             )
             break
     return problems
@@ -910,84 +1684,213 @@ def _validate_schema(doc: dict) -> list[str]:
 
 def print_summary(doc: dict) -> None:
     cells = _flatten_cells(doc)
+    by_verdict: dict[str, list[dict]] = {}
+    for c in cells:
+        by_verdict.setdefault(c.get("verdict", "pending"), []).append(c)
 
-    def sort_key(c: dict) -> tuple:
-        order = {
-            "red": 0,
-            "build-failed": 0,
-            "error": 0,
-            "unstable": 1,
-            "run-blocked": 2,
-            "cpython-incompatible": 2,
-            "green": 3,
-        }
-        return (
-            order.get(c["status"], 4),
-            -(c.get("cpython_ratio") or 0.0),
+    # --- Authoritative-tree header (council ruling A + B) -------------------
+    prov = doc.get("provenance", {})
+    authoritative = prov.get("authoritative", True)
+    print("\n" + "=" * 100)
+    print("CPYTHON FLOOR SCOREBOARD — two-dimensional (warm ≠ cold)")
+    print(
+        f"  origin/main = {_short(prov.get('origin_sha'))}   "
+        f"local HEAD = {_short(prov.get('local_head_sha'))}   "
+        f"tool = {_short(prov.get('benchmark_tool_sha'))}"
+    )
+    print(
+        f"  cpython={doc['host']['cpython_baseline']}  "
+        f"pypy={doc['host'].get('pypy') or '-'}  "
+        f"codon={doc['host'].get('codon') or '-'}"
+    )
+    if authoritative:
+        print("  AUTHORITATIVE: tree == origin/main, clean, tool unmodified")
+    else:
+        print(
+            "  *** WARNING: local tree diverges from origin; benchmark is "
+            "non-authoritative ***"
+        )
+        print(f"      reason: {prov.get('authoritative_reason', 'unknown')}")
+    print("=" * 100)
+
+    # --- Full table (verdict-ordered) --------------------------------------
+    rank = {
+        VERDICT_FAIL_STALE: 0,
+        VERDICT_FAIL_ENGINE: 1,
+        VERDICT_BUILD_FAILED: 1,
+        VERDICT_RUN_ERROR: 1,
+        VERDICT_UNSTABLE: 2,
+        VERDICT_FAIL_COLD_BUDGET: 3,
+        VERDICT_WARN_COLD_FLOOR: 4,
+        VERDICT_RUN_BLOCKED: 5,
+        VERDICT_CPY_INCOMPAT: 5,
+        VERDICT_GREEN: 6,
+    }
+    cells.sort(
+        key=lambda c: (
+            rank.get(c.get("verdict"), 7),
+            -(c.get("warm_speedup") or c.get("cpython_ratio") or 0.0),
             c["benchmark"],
         )
-
-    cells.sort(key=sort_key)
-
-    print("\n" + "=" * 100)
-    print(
-        "CPYTHON FLOOR SCOREBOARD  (speedup = cpython/molt; <1.00 = RED contract violation)"
     )
-    print(f"git_rev={doc['git_rev']}  cpython={doc['host']['cpython_baseline']}")
-    print("=" * 100)
-    hdr = f"{'STATUS':<13}{'SPEEDUP':>9}  {'COLD':>7}  {'WARM':>7}  {'SIZEKiB':>8}  {'RSSMiB':>7}  {'CMP_s':>6}  BENCHMARK [backend/profile]"
+    hdr = (
+        f"{'VERDICT':<17}{'WARM':>7}  {'COLD':>7}  {'TAXms':>7}  "
+        f"{'PYPY':>6}  {'CODON':>6}  {'SIZEKiB':>8}  BENCHMARK [backend/profile]"
+    )
     print(hdr)
     print("-" * 100)
     for c in cells:
-        speed = c.get("cpython_ratio")
-        cold = c.get("cold_ratio")
-        warm = c.get("warm_ratio")
-        size = c.get("binary_size_kib")
-        rss = c.get("molt_peak_rss_mib")
-        cmp_s = c.get("compile_time_s")
-        flag = {
-            "red": "RED",
-            "green": "ok",
-            "unstable": "UNSTABLE",
-            "build-failed": "BUILD-FAIL",
-            "run-blocked": "run-blocked",
-            "cpython-incompatible": "cpy-incompat",
-            "error": "ERROR",
-        }.get(c["status"], c["status"])
         print(
-            f"{flag:<13}"
-            f"{_fmt(speed):>9}  "
-            f"{_fmt(cold):>7}  "
-            f"{_fmt(warm):>7}  "
-            f"{_fmt(size, 0):>8}  "
-            f"{_fmt(rss, 0):>7}  "
-            f"{_fmt(cmp_s, 1):>6}  "
+            f"{c.get('verdict', '?'):<17}"
+            f"{_fmt(c.get('warm_speedup')):>7}  "
+            f"{_fmt(c.get('cold_speedup')):>7}  "
+            f"{_fmt(c.get('startup_tax_ms'), 0):>7}  "
+            f"{_fmt(c.get('pypy_ratio')):>6}  "
+            f"{_fmt(c.get('codon_ratio')):>6}  "
+            f"{_fmt(c.get('binary_size_kib'), 0):>8}  "
             f"{c['benchmark']} [{c['backend']}/{c['profile']}]"
         )
     print("-" * 100)
+
     s = doc["summary"]
     print(
-        f"TOTAL={s['cells_total']}  GREEN={s['cells_green']}  RED={s['cells_red']}  "
-        f"UNSTABLE={s['cells_unstable']}  BUILD-FAIL={s['cells_build_failed']}  "
-        f"RUN-BLOCKED={s['cells_run_blocked']}  ERROR={s['cells_error']}  "
-        f"CPY-INCOMPAT={s.get('cells_cpython_incompatible', 0)}"
+        f"TOTAL={s['cells_total']}  GREEN={s['cells_green']}  "
+        f"FAIL_ENGINE={s.get('cells_fail_engine', 0)}  "
+        f"FAIL_COLD_BUDGET={s.get('cells_fail_cold_budget', 0)}  "
+        f"WARN_COLD_FLOOR={s.get('cells_warn_cold_floor', 0)}  "
+        f"UNSTABLE={s['cells_unstable']}  BUILD_FAIL={s['cells_build_failed']}  "
+        f"RUN_ERROR={s['cells_error']}  CPY_INCOMPAT={s.get('cells_cpython_incompatible', 0)}  "
+        f"STALE={s.get('cells_fail_stale', 0)}"
     )
-    rb = s.get("red_breakdown", {})
-    warm_red = rb.get("warm_red", [])
-    cold_only = rb.get("cold_only_red", [])
+
+    # --- WARM EXECUTION REDS (the release blockers — IR-fact lane) ---------
+    warm_reds = by_verdict.get(VERDICT_FAIL_ENGINE, [])
     print(
-        f"  RED split: warm-red (genuine steady-state gap)={len(warm_red)}  "
-        f"cold-only-red (startup tax)={len(cold_only)}"
+        f"\nWARM EXECUTION REDS ({len(warm_reds)}) — execution-engine, RELEASE BLOCKER:"
     )
-    if warm_red:
-        print("  WARM-RED (constitution triage #1 — slow even at steady state):")
-        for k in warm_red:
-            print(f"    {k}")
+    print("  (needs an IR FACT, not a local opt — see council triage doctrine)")
+    for c in sorted(warm_reds, key=lambda c: c.get("warm_speedup") or 0.0):
+        print(
+            f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
+            f"[{c['backend']}/{c['profile']}]  -> {c.get('suspected_missing_fact', '?')}"
+        )
+
+    # --- COLD-START BUDGET REDS (startup/runtime/artifact lane) -------------
+    cold_reds = by_verdict.get(VERDICT_FAIL_COLD_BUDGET, [])
+    print(f"\nCOLD-START BUDGET REDS ({len(cold_reds)}) — startup tax over budget:")
+    for c in sorted(cold_reds, key=lambda c: -(c.get("startup_tax_ms") or 0.0)):
+        print(
+            f"    cold={_fmt(c.get('cold_speedup'))}x  tax={_fmt(c.get('startup_tax_ms'), 0)}ms"
+            f" (budget {_fmt(c.get('cold_budget_ms'), 0)}ms)  {c['benchmark']} "
+            f"[{c['backend']}/{c['profile']}]  -> {c.get('suspected_startup_component', '?')}"
+        )
+
+    # --- WARN_COLD_FLOOR (cold<=1 but warm>1, tax within budget) -----------
+    warn_cold = by_verdict.get(VERDICT_WARN_COLD_FLOOR, [])
+    if warn_cold:
+        print(
+            f"\nCOLD-FLOOR WARNINGS ({len(warn_cold)}) — warm>CPython, cold<=CPython "
+            "by FIXED startup tax (within budget; NOT a gate fail unless --strict-cold):"
+        )
+        for c in sorted(warn_cold, key=lambda c: -(c.get("startup_tax_ms") or 0.0))[
+            :12
+        ]:
+            print(
+                f"    cold={_fmt(c.get('cold_speedup'))}x  warm={_fmt(c.get('warm_speedup'))}x"
+                f"  tax={_fmt(c.get('startup_tax_ms'), 0)}ms  {c['benchmark']} "
+                f"[{c['backend']}/{c['profile']}]"
+            )
+        if len(warn_cold) > 12:
+            print(
+                f"    ... and {len(warn_cold) - 12} more (full list in JSON verdict_breakdown)"
+            )
+
+    # --- BACKEND ERRORS / NON-AUTHORITATIVE --------------------------------
+    errs = (
+        by_verdict.get(VERDICT_BUILD_FAILED, [])
+        + by_verdict.get(VERDICT_RUN_ERROR, [])
+        + by_verdict.get(VERDICT_UNSTABLE, [])
+    )
+    stale = by_verdict.get(VERDICT_FAIL_STALE, [])
+    if errs or stale:
+        print(f"\nBACKEND ERRORS / NON-AUTHORITATIVE ({len(errs) + len(stale)}):")
+        for c in errs:
+            origin_rerun = "yes" if not authoritative else "no"
+            print(
+                f"    {c.get('verdict'):<16} {c['benchmark']} [{c['backend']}/{c['profile']}]"
+                f"  stale?={'yes' if not authoritative else 'no'}  "
+                f"origin_rerun_needed?={origin_rerun}"
+                + (f"  ({c.get('note')})" if c.get("note") else "")
+            )
+        for c in stale[:5]:
+            print(
+                f"    FAIL_STALE       {c['benchmark']} [{c['backend']}/{c['profile']}]"
+                "  stale?=yes  origin_rerun_needed?=yes"
+            )
+        if len(stale) > 5:
+            print(
+                f"    ... and {len(stale) - 5} more stale cells (whole board non-authoritative)"
+            )
+
+    # --- REGRESSIONS FROM LAST GREEN (filled by the baseline-diff caller) ---
+    regressions = doc.get("_regressions_from_last_green")
+    if regressions:
+        print(f"\nREGRESSIONS FROM LAST GREEN ({len(regressions)}):")
+        for m in regressions:
+            print(f"    {m}")
+
+    # --- GREENS WORTH PROTECTING (>2x — do not reopen a won class) ----------
+    greens = by_verdict.get(VERDICT_GREEN, [])
+    protected = sorted(
+        (c for c in greens if (c.get("warm_speedup") or 0.0) > 2.0),
+        key=lambda c: -(c.get("warm_speedup") or 0.0),
+    )
+    print(f"\nGREENS WORTH PROTECTING ({len(protected)}) — won classes, do NOT reopen:")
+    for c in protected:
+        print(
+            f"    {_fmt(c.get('warm_speedup'))}x  {c['benchmark']} "
+            f"[{c['backend']}/{c['profile']}]"
+        )
+
+    # --- FASTEST NEXT UNLOCK -----------------------------------------------
+    unlock = _fastest_next_unlock(warm_reds, cold_reds)
+    print(f"\nFASTEST NEXT UNLOCK: {unlock}")
+
     if doc["benchmarks_deferred"]:
-        print(f"DEFERRED ({len(doc['benchmarks_deferred'])}):")
-        for d in doc["benchmarks_deferred"]:
+        print(f"\nDEFERRED / CPY-INCOMPATIBLE ({len(doc['benchmarks_deferred'])}):")
+        for d in doc["benchmarks_deferred"][:8]:
             print(f"  - {d['benchmark']}: {d['reason']}")
+        if len(doc["benchmarks_deferred"]) > 8:
+            print(f"  ... and {len(doc['benchmarks_deferred']) - 8} more")
     print("=" * 100 + "\n")
+
+
+def _short(sha: str | None) -> str:
+    if not sha:
+        return "-"
+    return sha[:12]
+
+
+def _fastest_next_unlock(warm_reds: list[dict], cold_reds: list[dict]) -> str:
+    """One structural fact / one file lane / one gate — the highest-leverage next move.
+
+    Prefer the WORST warm red (engine reds outrank cold reds per ruling A); a
+    warm red the most benchmarks share is the fastest class to retire.
+    """
+    if warm_reds:
+        worst = min(warm_reds, key=lambda c: c.get("warm_speedup") or 1e9)
+        return (
+            f"heal {worst['benchmark']} [{worst['backend']}/{worst['profile']}] "
+            f"({_fmt(worst.get('warm_speedup'))}x) — fact: "
+            f"{worst.get('suspected_missing_fact', '?')}"
+        )
+    if cold_reds:
+        worst = max(cold_reds, key=lambda c: c.get("startup_tax_ms") or 0.0)
+        return (
+            f"cold-start: {worst['benchmark']} tax={_fmt(worst.get('startup_tax_ms'), 0)}ms "
+            f"— attack {worst.get('suspected_startup_component', '?')}"
+        )
+    return "no reds — protect the greens; widen the suite for the next class"
 
 
 def _flatten_cells(doc: dict) -> list[dict]:
@@ -1030,20 +1933,26 @@ def diff_against_baseline(
         old = prior_cells.get(key)
         if old is None:
             continue
-        new_ratio = c.get("cpython_ratio")
-        old_ratio = old.get("cpython_ratio")
-        if c.get("red") and not old.get("red"):
+        # Prefer the warm_speedup axis (the engine fact); fall back to the
+        # legacy cpython_ratio for boards measured by the schema-2 tool.
+        new_ratio = c.get("warm_speedup") or c.get("cpython_ratio")
+        old_ratio = old.get("warm_speedup") or old.get("cpython_ratio")
+        # "Newly gating" = a green-or-warn cell that became a hard gate fail.
+        was_green = not old.get("red") or old.get("verdict") == VERDICT_WARN_COLD_FLOOR
+        now_fails = c.get("verdict") in GATE_FAILING_VERDICTS
+        if now_fails and was_green:
             newly_red.append(
-                f"{key}: NEWLY RED  {_fmt(old_ratio)} -> {_fmt(new_ratio)}"
+                f"{key}: NEWLY {c.get('verdict', 'RED')}  "
+                f"{_fmt(old_ratio)} -> {_fmt(new_ratio)}"
             )
         elif (
             new_ratio is not None
             and old_ratio is not None
-            and not c.get("red")
-            and new_ratio < old_ratio * 0.95  # >5% slower but still green
+            and not now_fails
+            and new_ratio < old_ratio * 0.95  # >5% slower but still passing
         ):
             regressed.append(
-                f"{key}: regressed-but-green  {_fmt(old_ratio)} -> {_fmt(new_ratio)} "
+                f"{key}: regressed-but-passing  {_fmt(old_ratio)} -> {_fmt(new_ratio)} "
                 f"({(new_ratio / old_ratio - 1) * 100:+.1f}%)"
             )
     return newly_red, regressed
@@ -1058,6 +1967,49 @@ def _latest_baseline() -> Path | None:
         return None
     candidates = sorted(SCOREBOARD_DIR.glob("cpython_*.json"))
     return candidates[-1] if candidates else None
+
+
+def _gate_exit_code(
+    doc: dict,
+    *,
+    no_gate: bool,
+    strict_cold: bool = False,
+    allow_nonauthoritative: bool = False,
+) -> int:
+    """The two-dimensional gate (council ruling A).
+
+    Nonzero iff any FAIL_ENGINE / FAIL_COLD_BUDGET / BUILD_FAILED / RUN_ERROR /
+    UNSTABLE. WARN_COLD_FLOOR fails ONLY with ``--strict-cold``. FAIL_STALE
+    fails UNLESS ``--allow-nonauthoritative`` (local-debug opt-out). The single
+    source of truth shared by run / merge / rebuild-summary.
+    """
+    if no_gate:
+        return 0
+    s = doc.get("summary", {})
+    if s.get("gate_fails"):
+        return 1
+    if strict_cold and s.get("cells_warn_cold_floor", 0) > 0:
+        return 1
+    if (not allow_nonauthoritative) and s.get("cells_fail_stale", 0) > 0:
+        return 1
+    return 0
+
+
+def _finalize_with_board_context(cells: list[Cell], doc_like: dict) -> None:
+    """Re-finalize stored cells using budgets + the board's own authoritative flag.
+
+    For rebuild/merge we re-run the classifier so a stored board reflects the
+    CURRENT verdict logic. The cold-start budget comes from the live budget
+    file; the authoritative flag comes from the stored provenance (a stored
+    board does not re-derive authoritativeness — it was already stamped).
+    """
+    budgets = _load_cold_start_budgets()
+    authoritative = doc_like.get("provenance", {}).get("authoritative", True)
+    for cell in cells:
+        cell.finalize(
+            budget_ms=_budget_ms_for(budgets, cell.backend, cell.profile),
+            authoritative=authoritative,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1090,11 +2042,17 @@ def _resolve_script(key: str) -> Path:
     raise SystemExit(f"benchmark not found: {key}")
 
 
-def _rebuild_summary(path: Path, *, no_gate: bool) -> int:
+def _rebuild_summary(
+    path: Path,
+    *,
+    no_gate: bool,
+    strict_cold: bool = False,
+    allow_nonauthoritative: bool = False,
+) -> int:
     """Re-derive a stored board's summary/breakdown/gate from its per-cell data.
 
     Loads the authoritative per-cell measurements, re-runs them through the
-    CURRENT ``build_scoreboard_doc`` (so the summary + red_breakdown match the
+    CURRENT ``build_scoreboard_doc`` (so the summary + verdicts match the
     current tool), writes the board back in place, prints the summary, and
     returns the gate exit code. No binaries are rebuilt; no benchmarks re-run.
     """
@@ -1104,11 +2062,10 @@ def _rebuild_summary(path: Path, *, no_gate: bool) -> int:
         print(f"--rebuild-summary: cannot read {path}: {exc}", file=sys.stderr)
         return 2
     cells = [_cell_from_dict(c) for c in _flatten_cells(prior)]
-    # Re-run the classifier on the stored measurements so status/red reflect the
-    # CURRENT finalize() logic (e.g. the cpython-incompatible reclassification),
-    # not whatever the board was stamped with at measurement time.
-    for cell in cells:
-        cell.finalize()
+    # Re-run the classifier on the stored measurements so the verdict reflects
+    # the CURRENT finalize() logic (the 2-D verdict + budget), not whatever the
+    # board was stamped with at measurement time.
+    _finalize_with_board_context(cells, prior)
     method = prior.get("methodology", {})
     # Re-derive the deferred list from cpython-incompatible cells.
     deferred = list(prior.get("benchmarks_deferred", []))
@@ -1123,13 +2080,17 @@ def _rebuild_summary(path: Path, *, no_gate: bool) -> int:
                         or "CPython baseline could not run this script",
                     }
                 )
+    host = prior.get("host", {})
     doc = build_scoreboard_doc(
         cells,
         benchmarks_run=prior.get("benchmarks_run", []),
         benchmarks_deferred=deferred,
-        cpython_version=prior.get("host", {}).get("cpython_baseline", "unknown"),
+        cpython_version=host.get("cpython_baseline", "unknown"),
         samples=method.get("samples_per_phase", DEFAULT_SAMPLES),
         warmup=method.get("warmup_runs", DEFAULT_WARMUP),
+        provenance=prior.get("provenance", {}),
+        pypy_version=host.get("pypy"),
+        codon_version=host.get("codon"),
     )
     # Preserve the original generation timestamp + git_rev of the measurement.
     doc["generated_at"] = prior.get("generated_at", doc["generated_at"])
@@ -1139,12 +2100,22 @@ def _rebuild_summary(path: Path, *, no_gate: bool) -> int:
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     print(f"[rebuild-summary] rewrote {path}", file=sys.stderr)
     print_summary(doc)
-    if no_gate:
-        return 0
-    return 1 if doc["summary"]["any_red"] else 0
+    return _gate_exit_code(
+        doc,
+        no_gate=no_gate,
+        strict_cold=strict_cold,
+        allow_nonauthoritative=allow_nonauthoritative,
+    )
 
 
-def _merge_boards(sources: list[Path], out: Path, *, no_gate: bool) -> int:
+def _merge_boards(
+    sources: list[Path],
+    out: Path,
+    *,
+    no_gate: bool,
+    strict_cold: bool = False,
+    allow_nonauthoritative: bool = False,
+) -> int:
     """Merge per-cell data from multiple scoreboard JSONs into one board.
 
     Used to combine separately-run backend lanes (e.g. native + llvm) into the
@@ -1157,6 +2128,7 @@ def _merge_boards(sources: list[Path], out: Path, *, no_gate: bool) -> int:
     deferred: list[dict] = []
     host: dict = {}
     method: dict = {}
+    provenance: dict = {}
     cpython_version = "unknown"
     git_rev = "unknown"
     generated_at = None
@@ -1168,17 +2140,18 @@ def _merge_boards(sources: list[Path], out: Path, *, no_gate: bool) -> int:
             return 2
         host = doc.get("host", host)
         method = doc.get("methodology", method)
+        provenance = doc.get("provenance", provenance)
         cpython_version = host.get("cpython_baseline", cpython_version)
         git_rev = doc.get("git_rev", git_rev)
         generated_at = doc.get("generated_at", generated_at)
         for d in _flatten_cells(doc):
             cell = _cell_from_dict(d)
-            cell.finalize()
             by_key[(cell.benchmark, cell.target, cell.backend, cell.profile)] = cell
         for b in doc.get("benchmarks_run", []):
             if b not in benchmarks_run:
                 benchmarks_run.append(b)
     cells = list(by_key.values())
+    _finalize_with_board_context(cells, {"provenance": provenance})
     for cell in cells:
         if cell.status == "cpython-incompatible":
             dkey = f"{cell.benchmark} [{cell.backend}/{cell.profile}]"
@@ -1196,6 +2169,9 @@ def _merge_boards(sources: list[Path], out: Path, *, no_gate: bool) -> int:
         cpython_version=cpython_version,
         samples=method.get("samples_per_phase", DEFAULT_SAMPLES),
         warmup=method.get("warmup_runs", DEFAULT_WARMUP),
+        provenance=provenance,
+        pypy_version=host.get("pypy"),
+        codon_version=host.get("codon"),
     )
     doc["git_rev"] = git_rev
     if host:
@@ -1208,9 +2184,12 @@ def _merge_boards(sources: list[Path], out: Path, *, no_gate: bool) -> int:
         f"[merge] {len(sources)} boards -> {out} ({len(cells)} cells)", file=sys.stderr
     )
     print_summary(doc)
-    if no_gate:
-        return 0
-    return 1 if doc["summary"]["any_red"] else 0
+    return _gate_exit_code(
+        doc,
+        no_gate=no_gate,
+        strict_cold=strict_cold,
+        allow_nonauthoritative=allow_nonauthoritative,
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -1275,6 +2254,34 @@ def main(argv: list[str]) -> int:
         help="always exit 0 (measure-only; do not fail CI on RED)",
     )
     parser.add_argument(
+        "--strict-cold",
+        action="store_true",
+        help="make WARN_COLD_FLOOR fail the gate too (default: cold-floor warns only)",
+    )
+    parser.add_argument(
+        "--allow-nonauthoritative",
+        action="store_true",
+        help=(
+            "permit a non-authoritative tree (local != origin/main, or dirty) to "
+            "run + not auto-fail the gate via FAIL_STALE — for LOCAL DEBUGGING. "
+            "The board is still stamped authoritative=false."
+        ),
+    )
+    parser.add_argument(
+        "--pypy",
+        nargs="?",
+        const="__auto__",
+        default=None,
+        help="add a PyPy comparator lane (path, or bare flag to auto-detect pypy3.11/3.10)",
+    )
+    parser.add_argument(
+        "--codon",
+        nargs="?",
+        const="__auto__",
+        default=None,
+        help="add a Codon AOT comparator lane (path, or bare flag to auto-detect ~/.codon)",
+    )
+    parser.add_argument(
         "--rebuild-summary",
         default=None,
         help=(
@@ -1297,13 +2304,24 @@ def main(argv: list[str]) -> int:
     ns = parser.parse_args(argv)
 
     if ns.rebuild_summary is not None:
-        return _rebuild_summary(Path(ns.rebuild_summary), no_gate=ns.no_gate)
+        return _rebuild_summary(
+            Path(ns.rebuild_summary),
+            no_gate=ns.no_gate,
+            strict_cold=ns.strict_cold,
+            allow_nonauthoritative=ns.allow_nonauthoritative,
+        )
 
     if ns.merge is not None:
         merge_out = (
             Path(ns.out) if ns.out else SCOREBOARD_DIR / f"cpython_{_git_rev()}.json"
         )
-        return _merge_boards([Path(p) for p in ns.merge], merge_out, no_gate=ns.no_gate)
+        return _merge_boards(
+            [Path(p) for p in ns.merge],
+            merge_out,
+            no_gate=ns.no_gate,
+            strict_cold=ns.strict_cold,
+            allow_nonauthoritative=ns.allow_nonauthoritative,
+        )
 
     backends = ns.backend or ["native", "llvm"]
     profiles = ns.profile or ["release-fast"]
@@ -1325,6 +2343,59 @@ def main(argv: list[str]) -> int:
         file=sys.stderr,
     )
 
+    # --- Provenance + authoritative gate (council ruling A + B) ------------
+    specs_profiles = [(BACKENDS_BY_NAME[b], p) for b in backends for p in profiles]
+    provenance = gather_provenance(specs_profiles)
+    # provenance.authoritative records the TRUTH (tree==origin, clean, tool
+    # unmodified). `--allow-nonauthoritative` does NOT change that truth — it
+    # lets the cells classify on their REAL numbers (not FAIL_STALE) for local
+    # debugging, while the board still records authoritative=false and the gate
+    # is told not to auto-fail on staleness.
+    authoritative = bool(provenance.get("authoritative", True))
+    effective_authoritative = authoritative or ns.allow_nonauthoritative
+    if not authoritative:
+        print(
+            "[scoreboard] *** WARNING: local tree diverges from origin; benchmark "
+            "is non-authoritative unless explicitly requested ***",
+            file=sys.stderr,
+        )
+        print(
+            f"[scoreboard]     reason: {provenance.get('authoritative_reason')}",
+            file=sys.stderr,
+        )
+        if ns.allow_nonauthoritative:
+            print(
+                "[scoreboard]     --allow-nonauthoritative: classifying real "
+                "numbers; board stays authoritative=false; gate will NOT "
+                "FAIL_STALE.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[scoreboard]     (the gate will FAIL_STALE; pass "
+                "--allow-nonauthoritative to run for local debugging)",
+                file=sys.stderr,
+            )
+
+    # --- PyPy / Codon comparator lanes (council Lane C) --------------------
+    pypy_bin = _resolve_pypy(ns.pypy) if ns.pypy is not None else None
+    pypy_version = _probe_interp_version(pypy_bin) if pypy_bin else None
+    if pypy_bin:
+        print(
+            f"[scoreboard] PyPy comparator: {pypy_bin} ({pypy_version})",
+            file=sys.stderr,
+        )
+    codon_bin = _resolve_codon(ns.codon) if ns.codon is not None else None
+    codon_runner = CodonRunner(codon_bin) if codon_bin else None
+    codon_version = _probe_codon_version(codon_bin) if codon_bin else None
+    if codon_bin:
+        print(
+            f"[scoreboard] Codon comparator: {codon_bin} ({codon_version})",
+            file=sys.stderr,
+        )
+
+    budgets = _load_cold_start_budgets()
+
     git_rev = _git_rev()
     SCOREBOARD_DIR.mkdir(parents=True, exist_ok=True)
     out_path = Path(ns.out) if ns.out else SCOREBOARD_DIR / f"cpython_{git_rev}.json"
@@ -1340,6 +2411,7 @@ def main(argv: list[str]) -> int:
     for backend_name in backends:
         spec = BACKENDS_BY_NAME[backend_name]
         for profile in profiles:
+            cell_budget_ms = _budget_ms_for(budgets, backend_name, profile)
             batch_server = None
             if spec.build_target == "native":
                 try:
@@ -1372,6 +2444,10 @@ def main(argv: list[str]) -> int:
                         batch_server=batch_server,
                         cpython_bin=cpython_bin,
                         log_dir=log_dir,
+                        budget_ms=cell_budget_ms,
+                        authoritative=effective_authoritative,
+                        pypy_bin=pypy_bin,
+                        codon_runner=codon_runner,
                     )
                     cells.append(cell)
                     if key not in benchmarks_run:
@@ -1398,9 +2474,13 @@ def main(argv: list[str]) -> int:
                         cpython_version,
                         ns.samples,
                         ns.warmup,
+                        provenance=provenance,
+                        pypy_version=pypy_version,
+                        codon_version=codon_version,
                     )
                     print(
-                        f"    -> {cell.status}  speedup={_fmt(cell.cpython_ratio)}",
+                        f"    -> {cell.verdict}  warm={_fmt(cell.warm_speedup)} "
+                        f"cold={_fmt(cell.cold_speedup)} tax={_fmt(cell.startup_tax_ms, 0)}ms",
                         file=sys.stderr,
                         flush=True,
                     )
@@ -1410,6 +2490,8 @@ def main(argv: list[str]) -> int:
                         batch_server.close()
                     except Exception:  # noqa: BLE001
                         pass
+    if codon_runner is not None:
+        codon_runner.close()
 
     doc = build_scoreboard_doc(
         cells,
@@ -1418,14 +2500,27 @@ def main(argv: list[str]) -> int:
         cpython_version=cpython_version,
         samples=ns.samples,
         warmup=ns.warmup,
+        provenance=provenance,
+        pypy_version=pypy_version,
+        codon_version=codon_version,
     )
+    # Attach the regressions-from-last-green list so print_summary can surface
+    # it in the classified output (council ruling A section).
+    doc["_out_path"] = str(out_path)
+    _attach_regressions(doc)
+    doc.pop("_out_path", None)
     out_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     if partial_path.exists():
         partial_path.unlink()
     print(f"\nscoreboard JSON -> {out_path}", file=sys.stderr)
 
     if ns.self_test:
+        # The self-test PROVES the pipeline + schema, not the perf/stale gate.
+        # It inherently dirties the tree (the tool under test is modified), so
+        # subjecting it to FAIL_STALE would be circular — it validates the
+        # SCHEMA and returns on that alone.
         problems = _validate_schema(doc)
+        print_summary(doc)
         if problems:
             print("[self-test] SCHEMA VALIDATION FAILED:", file=sys.stderr)
             for p in problems:
@@ -1433,9 +2528,10 @@ def main(argv: list[str]) -> int:
             return 3
         print(
             "[self-test] schema OK: required top-level keys + per-cell fields present, "
-            "gate wired, JSON round-trips.",
+            "2-D verdict + provenance + gate wired, JSON round-trips.",
             file=sys.stderr,
         )
+        return 0
 
     print_summary(doc)
 
@@ -1449,20 +2545,42 @@ def main(argv: list[str]) -> int:
             newly_red, regressed = diff_against_baseline(doc, baseline_path)
             print(f"\n[baseline diff vs {baseline_path.name}]")
             if newly_red:
-                print("  NEWLY RED:")
+                print("  NEWLY GATING:")
                 for m in newly_red:
                     print(f"    {m}")
             if regressed:
-                print("  REGRESSED (still green):")
+                print("  REGRESSED (still passing):")
                 for m in regressed:
                     print(f"    {m}")
             if not newly_red and not regressed:
                 print("  no new reds, no regressions.")
 
-    any_red = doc["summary"]["any_red"]
-    if ns.no_gate:
-        return 0
-    return 1 if any_red else 0
+    return _gate_exit_code(
+        doc,
+        no_gate=ns.no_gate,
+        strict_cold=ns.strict_cold,
+        allow_nonauthoritative=ns.allow_nonauthoritative,
+    )
+
+
+def _attach_regressions(doc: dict) -> None:
+    """Compute REGRESSIONS FROM LAST GREEN vs the latest committed board.
+
+    Surfaced in print_summary's classified output. Best-effort: a missing/older
+    baseline simply leaves the section empty.
+    """
+    baseline = _latest_baseline()
+    if baseline is None or not baseline.exists():
+        return
+    try:
+        # Don't diff a board against itself if --out happens to be the latest.
+        if baseline.resolve() == Path(doc.get("_out_path", "")).resolve():
+            return
+    except (OSError, ValueError):
+        pass
+    _newly, regressed = diff_against_baseline(doc, baseline)
+    if regressed:
+        doc["_regressions_from_last_green"] = regressed
 
 
 def _checkpoint(
@@ -1473,6 +2591,10 @@ def _checkpoint(
     cpython_version: str,
     samples: int,
     warmup: int,
+    *,
+    provenance: dict | None = None,
+    pypy_version: str | None = None,
+    codon_version: str | None = None,
 ) -> None:
     doc = build_scoreboard_doc(
         cells,
@@ -1481,10 +2603,70 @@ def _checkpoint(
         cpython_version=cpython_version,
         samples=samples,
         warmup=warmup,
+        provenance=provenance,
+        pypy_version=pypy_version,
+        codon_version=codon_version,
     )
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _resolve_pypy(arg: str) -> str | None:
+    """Resolve a PyPy interpreter path (explicit, or auto-detect 3.11/3.10)."""
+    import shutil
+
+    if arg and arg != "__auto__":
+        return arg if Path(arg).exists() else shutil.which(arg)
+    for cand in (
+        "/opt/homebrew/bin/pypy3.11",
+        "/opt/homebrew/bin/pypy3.10",
+        "/opt/homebrew/bin/pypy3",
+        shutil.which("pypy3.11") or "",
+        shutil.which("pypy3.10") or "",
+        shutil.which("pypy3") or "",
+    ):
+        if cand and Path(cand).exists():
+            return cand
+    return None
+
+
+def _resolve_codon(arg: str) -> str | None:
+    """Resolve a Codon binary path (explicit, or auto-detect ~/.codon/bin)."""
+    import shutil
+
+    if arg and arg != "__auto__":
+        return arg if Path(arg).exists() else shutil.which(arg)
+    default = Path.home() / ".codon" / "bin" / "codon"
+    if default.exists():
+        return str(default)
+    return shutil.which("codon")
+
+
+def _probe_interp_version(interp_bin: str | None) -> str | None:
+    if not interp_bin:
+        return None
+    try:
+        res = subprocess.run(
+            [interp_bin, "--version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = (res.stdout or res.stderr or "").strip().splitlines()
+    return out[0].replace("Python ", "") if out else None
+
+
+def _probe_codon_version(codon_bin: str | None) -> str | None:
+    if not codon_bin:
+        return None
+    try:
+        res = subprocess.run(
+            [codon_bin, "--version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = (res.stdout or res.stderr or "").strip()
+    return f"codon {out}" if out else None
 
 
 def _resolve_system_cpython(explicit: str | None) -> str:

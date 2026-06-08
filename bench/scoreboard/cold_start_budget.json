@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "cold_start_budget",
+  "doc": "Per (backend, profile) cold-start TAX budget in milliseconds. startup_tax_ms = (molt_cold_total - molt_warm_total) * 1000 is the fixed startup cost molt pays on the cold path that the warm steady-state does not. A cell whose startup_tax_ms EXCEEDS budget_ms is FAIL_COLD_BUDGET (a startup regression, routed to the cold-start lane — NOT an execution-engine red). v0 = the measured baseline from the authoritative origin/main board (council ruling A: 'v0 = current measured baseline; near-term = no regression from baseline'). The budget is a CEILING on the tax, NOT on cold_total. release-output native Y1 target: startup_tax < 100ms AND cold_total <= CPython cold_total.",
+  "budgets": {
+    "native/release-fast": {
+      "budget_ms": null,
+      "basis": "v0 — seed from the authoritative board's measured per-cell startup_tax_ms (p90 across the core suite + headroom). Until seeded, FAIL_COLD_BUDGET cannot fire and the measured tax is recorded so the ceiling can be set.",
+      "measured_p50_ms": null,
+      "measured_p90_ms": null,
+      "measured_max_ms": null
+    },
+    "native/release-output": {
+      "budget_ms": null,
+      "basis": "v0 — release-output is the shipped artifact; council Y1 target is startup_tax < 100ms. Seed from the measured release-output board, then ratchet toward 100ms.",
+      "measured_p50_ms": null,
+      "measured_p90_ms": null,
+      "measured_max_ms": null
+    },
+    "llvm/release-fast": {
+      "budget_ms": null,
+      "basis": "v0 — seed from the authoritative board's measured LLVM startup_tax_ms.",
+      "measured_p50_ms": null,
+      "measured_p90_ms": null,
+      "measured_max_ms": null
+    }
+  }
+}
