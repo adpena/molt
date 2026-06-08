@@ -807,14 +807,17 @@ def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
 
 
 def test_parse_sample_heaviest_reads_self_time_leaderboard(tmp_path) -> None:
+    # Real macOS `sample` format: the self-sample COUNT is the TRAILING token,
+    # "<symbol>  (in <lib>)        <count>" (verified against /usr/bin/sample).
     sample_out = (
-        "Analysis of sampling molt-backend (pid 123):\n"
-        "Sort by top of stack, same collapsed:\n"
-        "    4200   molt_dict_lookup  (in bench_x)  [0x1000]\n"
-        "    1900   molt_str_slice  (in bench_x)  [0x2000]\n"
-        "     300   malloc  (in libsystem_malloc.dylib)  [0x3000]\n"
+        "Analysis of sampling molt-backend (pid 123) every 1 millisecond\n"
+        "Sort by top of stack, same collapsed (when >= 5):\n"
+        "        molt_dict_lookup  (in bench_x)        4200\n"
+        "        molt_str_slice  (in bench_x)        1900\n"
+        "        malloc  (in libsystem_malloc.dylib)        300\n"
         "\n"
         "Binary Images:\n"
+        "       0x1000 - 0x2000 +bench_x ... /tmp/bench_x\n"
     )
     f = tmp_path / "sample.txt"
     f.write_text(sample_out, encoding="utf-8")
@@ -824,6 +827,23 @@ def test_parse_sample_heaviest_reads_self_time_leaderboard(tmp_path) -> None:
     assert top[0]["self_samples"] == 4200
     assert top[0]["lib"] == "bench_x"
     assert top[2]["symbol"] == "malloc"
+    assert top[2]["self_samples"] == 300
+
+
+def test_parse_sample_heaviest_no_lib_form(tmp_path) -> None:
+    # A leaderboard line with no "(in lib)" still parses (count trailing).
+    sample_out = (
+        "Sort by top of stack, same collapsed (when >= 5):\n"
+        "        my_hot_symbol        512\n"
+        "\n"
+    )
+    f = tmp_path / "nolib.txt"
+    f.write_text(sample_out, encoding="utf-8")
+    top = ps._parse_sample_heaviest(f, top_n=25)
+    assert len(top) == 1
+    assert top[0]["symbol"] == "my_hot_symbol"
+    assert top[0]["self_samples"] == 512
+    assert top[0]["lib"] is None
 
 
 def test_parse_sample_heaviest_missing_section_is_empty(tmp_path) -> None:
