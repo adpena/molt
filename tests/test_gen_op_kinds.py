@@ -418,3 +418,236 @@ def test_render_detects_classifier_mutation() -> None:
     mutated = json.loads(json.dumps(data))
     mutated["classifier_fresh_value"].append("zzz_synthetic_kind")
     assert gen.render_rs(mutated) != rendered
+
+
+# ---------------------------------------------------------------------------
+# 4. Operand-ownership tables (design 27 §2.1/§2.3, the Perceus rung-2 seed of
+#    the #58 Owned/Borrowed/Raw/Consumed lattice). The per-OpCode `Borrowed`
+#    default is EXHAUSTIVE over the enum; the per-spelling consume override
+#    ([[consuming_kind]]) replaces drop_insertion.rs's `op_consumed_operand_root`
+#    hand list. These tests pin the render + the fail-loud classification
+#    discipline + the byte-identical CallArgs consume semantics.
+# ---------------------------------------------------------------------------
+
+
+def _re_search(src: str, fn_sig: str) -> str:
+    """Return the body text of a `match` block inside the named generated fn."""
+    assert fn_sig in src, f"generated fn {fn_sig!r} not found"
+    return src.split(fn_sig, 1)[1]
+
+
+def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
+    """Every OpCode gets an `operand_ownership` arm in
+    `opcode_operand_ownership_table` (EXHAUSTIVE over the enum — the kill for a
+    new opcode silently inheriting an unstated borrow/consume assumption), and
+    the current seed is uniformly `Borrowed` (molt's callee-borrows-args ABI,
+    design 20 §1.2 — the behavior-preserving seed of the migration)."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+
+    # The table region for opcode_operand_ownership_table, bounded by the next fn.
+    region = _re_search(rendered, "fn opcode_operand_ownership_table").split(
+        "fn kind_consumed_operand_table"
+    )[0]
+    for row in data["opcode"]:
+        name = row["name"]
+        assert row["operand_ownership"] == "all_borrowed", (
+            f"seed expectation: every opcode is all_borrowed today; {name} is "
+            f"{row['operand_ownership']!r} — a real consume must add a "
+            "[[consuming_kind]] row (per-spelling) or be a deliberate per-OpCode "
+            "classification with the migration re-verified byte-identical"
+        )
+        assert f"OpCode::{name} => OperandOwnership::Borrowed," in region, (
+            f"opcode_operand_ownership_table missing/incorrect arm for {name}"
+        )
+    # The enum carries the FULL operand-ownership domain (schema-ready for the
+    # #58 ownership-boundary lattice — adding a fact is a table edit, not enum
+    # surgery), even though only Borrowed/Consumed are seeded today. Pin every
+    # variant so the schema can't silently regress to a 2-leaf corner.
+    assert (
+        "pub(crate) enum OperandOwnership {\n"
+        "    Borrowed,\n"
+        "    Consumed,\n"
+        "    Transferred,\n"
+        "    InteriorBorrowKeepAlive,\n"
+        "    ConditionalValidOnlyOnEdge,\n"
+        "    NoOperandOwnership,\n"
+        "}"
+    ) in rendered
+
+
+def test_consuming_kind_table_renders_callargs_consume() -> None:
+    """The `[[consuming_kind]]` rows render into `kind_consumed_operand_table`
+    with the EXACT `op_consumed_operand_root` semantics: `call_bind` /
+    `call_indirect` consume the LAST operand (`arity.checked_sub(1)`), every
+    other spelling consumes none (`_ => None`)."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    region = _re_search(rendered, "fn kind_consumed_operand_table")
+
+    consuming = {row["kind"]: row["consumed_operand"] for row in data["consuming_kind"]}
+    # The migration's behavior-preserving seed: exactly the two CallArgs forms.
+    assert consuming == {"call_bind": "last", "call_indirect": "last"}, (
+        "consuming_kind drifted from the op_consumed_operand_root seed "
+        f"(call_bind/call_indirect → last): {consuming}"
+    )
+    for kind, sel in consuming.items():
+        assert sel == "last"
+        assert f'"{kind}" => arity.checked_sub(1),' in region, (
+            f"kind_consumed_operand_table missing the {kind} → last arm"
+        )
+    assert "_ => None," in region
+
+
+def test_consuming_kinds_are_known_mapper_spellings() -> None:
+    """Every `[[consuming_kind]]` spelling must be a real mapper spelling
+    (canonical or alias of a [[kind]] row). A consume override on an unknown
+    spelling silently never fires — the exact C6 double-free it must retire."""
+    gen = _gen()
+    data = gen.load_table()
+    spellings: set[str] = set()
+    for row in data["kind"]:
+        spellings.add(row["canonical"])
+        spellings.update(row.get("aliases", []))
+    for row in data["consuming_kind"]:
+        assert row["kind"] in spellings, (
+            f"consuming_kind {row['kind']!r} is not a [[kind]] mapper spelling"
+        )
+
+
+def test_drop_insertion_delegates_consume_to_generated_table() -> None:
+    """drop_insertion.rs's `op_consumed_operand_root` must DELEGATE to the
+    generated `kind_consumed_operand_table` (no hand-maintained `matches!` of the
+    CallArgs-builder spellings in its body). This is the council's 'migrate one
+    consumer + delete one duplicate list' proof.
+
+    Scoped to the FUNCTION BODY (not the whole file) so a legitimate #[cfg(test)]
+    fixture that constructs a `call_bind` op — the consume-path regression — is
+    not mistaken for the deleted production hand list."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text()
+    assert "op_kinds_generated::" in drop, (
+        "drop_insertion.rs must reference the generated op_kinds tables"
+    )
+    # Extract the `fn op_consumed_operand_root(...) { ... }` body by brace-matching
+    # from the signature to its closing brace.
+    marker = "fn op_consumed_operand_root("
+    assert marker in drop, "op_consumed_operand_root not found"
+    start = drop.index(marker)
+    brace = drop.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(drop)):
+        if drop[i] == "{":
+            depth += 1
+        elif drop[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = drop[start:end]
+    # The duplicate consume hand list must be gone from the function (the only
+    # authority is now the generated table the body delegates to).
+    assert '"call_bind"' not in body and '"call_indirect"' not in body, (
+        "the hand-coded call_bind/call_indirect consume literals must be deleted "
+        "from op_consumed_operand_root (now sourced from [[consuming_kind]])"
+    )
+    assert "kind_consumed_operand_table" in body, (
+        "op_consumed_operand_root's body must call kind_consumed_operand_table"
+    )
+    # Both generated authorities must be wired (the per-OpCode floor is the
+    # council's primary `opcode_operand_ownership_table` deliverable — it must be
+    # load-bearing, not dead code).
+    assert "opcode_operand_ownership_table" in body, (
+        "op_consumed_operand_root must also consult the per-OpCode floor "
+        "opcode_operand_ownership_table (the unified operand-ownership query)"
+    )
+
+
+def test_operand_ownership_mandatory_fail_loud() -> None:
+    """A `[[opcode]]` row WITHOUT `operand_ownership` is a hard generation error
+    (mirroring the may_throw/side_effecting/purity exhaustive discipline) — a new
+    opcode cannot render until its operand ownership is stated. No silent
+    borrow-default that could leak, nor a consume-default that could double-free."""
+    gen = _gen()
+    data = gen.load_table()
+    mutated = json.loads(json.dumps(data))
+    # Drop the field from one opcode row.
+    del mutated["opcode"][0]["operand_ownership"]
+    try:
+        gen._validate_operand_ownership(
+            mutated["opcode"][0]["name"], mutated["opcode"][0].get("operand_ownership")
+        )
+    except gen.OpKindTableError as e:
+        assert "operand_ownership" in str(e)
+    else:
+        raise AssertionError(
+            "a missing operand_ownership must raise OpKindTableError (fail-loud)"
+        )
+
+
+def test_operand_ownership_rejects_bad_value() -> None:
+    """A malformed `operand_ownership` (bad string / bad list leaf) is a hard
+    error — a typo must never silently degrade to a borrow/consume assumption."""
+    gen = _gen()
+    for bad in ("borrowed", "all_owned", "consume", ["borrowed", "moved"], 7):
+        try:
+            gen._validate_operand_ownership("SynthOp", bad)
+        except gen.OpKindTableError:
+            pass
+        else:
+            raise AssertionError(
+                f"operand_ownership={bad!r} must raise OpKindTableError"
+            )
+    # The valid shapes must pass.
+    for good in ("all_borrowed", "all_consumed", ["borrowed", "consumed"]):
+        gen._validate_operand_ownership("SynthOp", good)
+
+
+def test_consuming_kind_rejects_unknown_spelling_fail_loud() -> None:
+    """A `[[consuming_kind]]` naming a spelling absent from the mapper is a hard
+    generation error (the structural kill for a typo'd consume override that
+    would silently never fire)."""
+    gen = _gen()
+    data = gen.load_table()
+    mutated = json.loads(json.dumps(data))
+    mutated["consuming_kind"].append(
+        {"kind": "zzz_not_a_real_kind", "consumed_operand": "last"}
+    )
+    # Rebuild the valid-spellings map exactly as load_table does.
+    owner: dict[str, str] = {}
+    for row in mutated["kind"]:
+        owner[row["canonical"]] = row["canonical"]
+        for a in row.get("aliases", []):
+            owner[a] = row["canonical"]
+    try:
+        gen._validate_consuming_kinds(mutated, owner)
+    except gen.OpKindTableError as e:
+        assert "zzz_not_a_real_kind" in str(e)
+    else:
+        raise AssertionError(
+            "an unknown consuming_kind spelling must raise OpKindTableError"
+        )
+
+
+def test_render_detects_operand_ownership_mutation() -> None:
+    """Mutating an operand-ownership classification must change the render (so the
+    freshness guard catches a forgotten regeneration)."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+
+    mutated = json.loads(json.dumps(data))
+    mutated["opcode"][0]["operand_ownership"] = "all_consumed"
+    assert gen.render_rs(mutated) != rendered, (
+        "flipping an opcode's operand_ownership did not change the render"
+    )
+
+    mutated2 = json.loads(json.dumps(data))
+    mutated2["consuming_kind"].append({"kind": "call", "consumed_operand": 0})
+    assert gen.render_rs(mutated2) != rendered, (
+        "adding a consuming_kind row did not change the render"
+    )
