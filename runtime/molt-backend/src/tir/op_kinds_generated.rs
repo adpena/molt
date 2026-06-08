@@ -168,6 +168,7 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
         "str_from_obj" |
         "string_format" |
         "string_join" |
+        "string_split_field_to_int" |
         "tuple_from_list" |
         "tuple_new"
     )
