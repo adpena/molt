@@ -364,3 +364,46 @@ def _fake_git(args: list[str]) -> str | None:
     if args == ["status", "--porcelain"]:
         return None  # clean
     return None
+
+
+# --- Robust stability (CPython outlier tolerance) ---------------------------
+
+
+def _phase(samples: list[float]) -> ps.PhaseStats:
+    return ps.PhaseStats.from_runs(
+        [ps.RunOutcome(True, s, 8.0, "ok", 0) for s in samples]
+    )
+
+
+def test_robust_stable_molt_unstable_is_never_stable() -> None:
+    # molt is the artifact under test; if molt is unstable the cell is unstable
+    # regardless of CPython.
+    molt = _phase([0.05, 0.20, 0.05, 0.20, 0.05])  # high CV
+    cpy = _phase([0.40, 0.41, 0.40, 0.41, 0.40])
+    assert molt.stable is False
+    assert ps._robust_cell_stable(molt, cpy) is False
+
+
+def test_robust_stable_both_stable() -> None:
+    molt = _phase([0.05, 0.051, 0.05, 0.052, 0.05])
+    cpy = _phase([0.40, 0.41, 0.40, 0.41, 0.40])
+    assert ps._robust_cell_stable(molt, cpy) is True
+
+
+def test_robust_stable_cpython_outlier_but_verdict_robust() -> None:
+    # The class_hierarchy case: molt rock-stable 8x faster, CPython has one GC
+    # spike (cv > 0.20) but even its FASTEST sample keeps molt > 1.0 -> stable.
+    molt = _phase([0.054, 0.053, 0.053, 0.050, 0.053])  # cv ~0.03
+    cpy = _phase([0.417, 0.427, 0.424, 0.415, 0.637])  # cv ~0.23 (outlier)
+    assert molt.stable is True
+    assert cpy.stable is False
+    # CPython's min 0.415 / molt median 0.053 ~= 7.8x > 1.0; max likewise.
+    assert ps._robust_cell_stable(molt, cpy) is True
+
+
+def test_robust_stable_cpython_outlier_straddles_floor_is_unstable() -> None:
+    # molt ~= CPython (near 1.0) with a CPython outlier that straddles the
+    # floor: the verdict COULD flip, so the cell is correctly UNSTABLE.
+    molt = _phase([0.100, 0.101, 0.100, 0.102, 0.100])
+    cpy = _phase([0.090, 0.095, 0.092, 0.140, 0.088])  # min/median<molt, max>molt
+    assert ps._robust_cell_stable(molt, cpy) is False
