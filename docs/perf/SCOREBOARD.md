@@ -88,6 +88,111 @@ reader can detect the stale-cache confound class directly.
 > (the compiler tree) so a reader sees the only diff is the tool, and the
 > compiler perf numbers ARE origin/main's.
 
+## Measurement hygiene (#69) — the standard, and the 5 PERMANENT RULES
+
+The last optimization cycle proved the scoreboard can pick the **wrong**
+subsystem under load: a "0.66 red" was a **loaded-machine artifact** (a parallel
+multi-agent build stole cycles from the timed process), and an alloc-count was
+misattributed to warm time. The council ruling (#69): **measurement hygiene
+OUTRANKS all optimization.** A bad measurement that sends an agent to optimize a
+phantom red is worse than no measurement. These five rules are PERMANENT.
+
+### The 5 PERMANENT RULES
+
+1. **Alloc-attribution alone cannot justify a warm-time optimization.** A
+   warm-red (`warm_speedup < 1.00`) requires **CYCLE attribution** — a CPU
+   self-time profile of the running molt binary (`--emit-cycle-profile`,
+   `/usr/bin/sample`) that names the hot symbols. An allocation count is a
+   *hypothesis generator*, never the justification: the only valid warm-opt
+   signal is cycles spent, because the thing being optimized is wall-clock.
+2. **No run is authoritative while other molt / cargo / rustc work is active.**
+   A board measured while ANY build/test work competes for cores is
+   `authoritative=false` for warm verdicts, full stop. Your OWN benchmark builds
+   are fine — but do them FIRST, then time with nothing else compiling.
+3. **A red that vanishes under quiescence is a measurement-system bug, not a
+   compiler target.** If a cell is `RED_*` under load but `TIE`/`GREEN` on a
+   quiet machine, the defect is in the MEASUREMENT, not the compiler. Fix the
+   measurement (or wait for quiescence) — do NOT open a compiler optimization.
+4. **A `DIMENSIONAL_WIN` may land without a warm flip, but MUST be reported as
+   dimensional, not a speed heal.** A change that does not move `warm_speedup`
+   above 1.00 but materially improves alloc / RSS / binary-size / cold / backend
+   vs a baseline is real and may land — but it is recorded as a *dimensional*
+   win. It never gets to claim it "fixed" a warm red it did not move.
+5. **Stale lore loses to the board; the board loses to quiescence + provenance.**
+   A claim in a doc/memory loses to what the board measures. But the board
+   itself is only believed when its provenance says the tree was origin/main,
+   clean, and the machine was quiescent. Provenance + quiescence are the root of
+   trust; everything downstream (lore, then board) is subordinate.
+
+### The 5-state classification (`--classify`)
+
+The single warm verdict (`FAIL_ENGINE` vs `GREEN`) cannot answer the council's
+real question: *is this a TRUE compiler target, or a measurement artifact?* With
+`--classify`, each cell gets one of five states. The decisive new inputs are
+**machine QUIESCENCE** and the **repeat-pass CONFIDENCE INTERVAL** (`--repeat
+N`): a warm-red is a real target only if it is stable AND quiescent AND its CI
+sits clear below 1.00.
+
+| classification | condition | meaning |
+|----------------|-----------|---------|
+| `RED_STABLE` | `warm < 1.00`, repeat CI entirely below 1.00, machine quiescent, cell robustly stable | **the TRUE warm-red set** — a real compiler target. Steer the next opt by its CYCLE profile. |
+| `RED_NOISY` | warm point below 1.00 BUT contaminated (not quiescent) / unstable / no repeat CI / CI does not clear | **NOT a target yet.** The reason names why (this is exactly the "0.66 under load" artifact). Re-measure quiet with `--repeat`. |
+| `TIE` | repeat CI straddles 1.00, OR `warm == 1.00` single-pass | statistically CPython — neither a win nor a loss. Wants facts to cross decisively, but is not a release-blocking red. |
+| `GREEN_STABLE` | `warm > 1.00`, stable + quiescent (CI clears above 1.00 when repeated) | a confirmed win. |
+| `DIMENSIONAL_WIN` | warm gate flat (tie) BUT a non-warm dimension (alloc/RSS/size/cold) improved ≥ 5% vs `--baseline` | Rule 4: landed without a warm flip, better elsewhere. Needs a baseline to detect. |
+| `INFRA` | `BUILD_FAILED` / `RUN_ERROR` / `RUN_BLOCKED` / `CPY_INCOMPATIBLE` / `FAIL_STALE` | no warm number to classify — passes through. |
+
+The repeat CI is **authoritative over a lone point estimate** (the whole reason
+for `--repeat`): a 0.98 point sample whose 5-pass CI clears *above* 1.00 is a
+`GREEN_STABLE`, not a red; a 1.05 point sample whose CI sits *below* 1.00 is a
+red. `FAIL_ENGINE` maps to `RED_STABLE` **only** when quiescent + stable + CI
+below; under contamination the same cell is `RED_NOISY`.
+
+**Asymmetry of contamination (why quiescence gates reds but not greens).** A
+competing build steals cycles from the *timed* molt process, so it can only make
+molt look **slower**, never artificially faster. Quiescence is therefore
+**mandatory for a warm-RED** (load can manufacture a false red → a non-quiescent
+red is `RED_NOISY`, never `RED_STABLE`) but **not required for a warm-GREEN**: a
+cell measured *faster* than CPython under load is a *conservative* `GREEN_STABLE`
+(the quiet number can only be better). Only cell **instability** demotes a green.
+This is why the non-quiescent LLVM board still shows `bench_sum` 10.56× as GREEN,
+not RED_NOISY — calling a 10× cell "red" because an idle daemon was running would
+be the measurement-system bug Rule 3 warns against. Board-level *authority* is
+still gated by quiescence; the per-cell green/red *direction* is not.
+
+### The quiescence guard (`--require-quiescent`) — checks + thresholds
+
+BEFORE any number is taken, `gather_quiescence()` detects contamination. The run
+still produces EXPLORATORY numbers on a noisy machine, but the board is stamped
+`authoritative=false` and stdout prints *"NON-AUTHORITATIVE: machine not quiet;
+do not optimize from this red list"* naming WHICH check failed:
+
+| check | signal | threshold / rule |
+|-------|--------|------------------|
+| active build processes | `pgrep -fl 'cargo\|rustc\|molt-backend\|molt build'` | **any** match (other than this tool's own tree) ⇒ not quiet. **`codex` is excluded by name** — never counted, never killed (project policy). |
+| 1-min load average | `sysctl -n vm.loadavg` vs `sysctl -n hw.ncpu` | `load > ncpu × 0.5` ⇒ not quiet (18-core host ⇒ load > 9.0). Permissive enough that a quiet desktop still measures; an active build always trips this AND the process check. |
+| runnable-thread storm | runnable thread count | `> max(2, ncpu × 0.5)` ⇒ contended (catches a build storm before the 1-min EWMA does). |
+| thermal / frequency throttle | `pmset -g therm` (best-effort) | throttle active ⇒ not quiet. Skipped if the probe is unavailable (never invents a result). |
+| probe failure | `pgrep` unavailable | **fail-closed**: if we cannot probe, we cannot certify quiet ⇒ not quiet. |
+| stale tree / dirty / tool-modified | git + tool blob | folded into `provenance.authoritative` (the existing stale-lore guard). |
+
+`--print-provenance` dumps the full block including the new fields
+`active_molt_processes`, `active_cargo_or_rustc_processes`, `loadavg_1m`,
+`ncpu`, `runnable_signal` alongside the origin/candidate SHAs,
+`backend_binary_identity`, and `stdlib_cache_key`.
+
+### The cycle-attribution mechanism (`--emit-cycle-profile`) — Rule 1
+
+For every warm-red (`RED_STABLE`/`RED_NOISY`), the tool launches the molt binary
+under the `safe_run` watchdog (a profiled binary is still a raw binary and MUST
+be RSS/timeout-guarded), finds the binary's PID, attaches `/usr/bin/sample` for
+~3 s, and parses the *"Sort by top of stack"* self-time leaderboard into the
+cell's `cycle_profile.top_symbols` (`{symbol, self_samples, lib}`). This is the
+attribution signal the NEXT optimization is steered by — **CYCLES, not
+alloc-count** (Rule 1). If the sampler is unavailable or the process is too short
+to attach, the cell records a documented `available=false` note — never a fake
+signal.
+
 ## What it reuses (no new timing loop)
 
 - **Build**: `tools/bench.py` — the canonical molt-vs-CPython harness. It owns
@@ -263,14 +368,181 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 execution-engine contract; the **cold** axis is the startup-tax budget — they
 are never blended.
 
-## Authoritative board (origin/main, native + llvm / release-fast)
+## Contamination policy (when a board is believed)
 
-> Measured on the FRESH origin/main worktree (compiler tree `2c10e20a5…`; the
-> board is committed as `bench/scoreboard/cpython_b54dd9b896…json`, 112 cells =
-> 56 native + 56 llvm). The tooling commit sits on top of origin so the board is
-> stamped `authoritative=false` with `--allow-nonauthoritative`; the
-> `provenance` records `origin_sha` (compiler) ≠ `local_head_sha` (tooling) so
-> the COMPILER perf numbers ARE origin/main's. This section is the human summary.
+- A board is **authoritative for warm verdicts** only when `provenance` says the
+  tree was origin/main + clean + tool-unmodified AND (`--require-quiescent`) the
+  machine was quiescent. Anything else is **EXPLORATORY**: the numbers may be
+  read for direction, but **no warm-red on a non-authoritative board may send an
+  agent to optimize** (Rule 3 — re-measure quiet first).
+- `WARN_COLD_FLOOR` and the *cold* axis tolerate mild load better than the warm
+  axis (the tax is dominated by page-in/codesign, not stolen cycles), but warm
+  classification is the one #69 protects — treat any non-quiescent warm number as
+  `RED_NOISY` regardless of its point value.
+- Your OWN benchmark builds do not contaminate (they run serially BEFORE timing);
+  a *parallel session's* build does. If a parallel session is compiling, WAIT in
+  an until-loop for quiescence, or stamp the board non-authoritative and say so.
+
+## Known NON-AUTHORITATIVE historical runs (do NOT optimize warm from these)
+
+| board | what it is | warm-verdict status |
+|-------|-----------|---------------------|
+| `bench/scoreboard/cpython_b54dd9b896…json` | the prior 112-cell board (56 native + 56 llvm, compiler tree `2c10e20a5…`) | **NON-AUTHORITATIVE for warm verdicts** — measured under **multi-agent load** (a parallel build was active). Its 30 `FAIL_ENGINE` cells are reclassified below as `RED_NOISY` (no repeat-CI + contaminated) / `TIE` (`warm==1.00`); the TRUE warm-red set comes from the QUIET board. Its *build-fact* columns (binary size, compile-time, build-ok, the #47 healed/not-healed analysis) and the *cold/WARN_COLD_FLOOR* axis remain usable. |
+| `bench/scoreboard/cpython_79903045…json` | the older "stale" board | superseded; build-failure baseline for the #47 healed-comparison only. |
+
+## Authoritative QUIET board (origin/main compiler, native / release-fast)
+
+> **First authoritative quiet board (#69).** Native measured on the fresh
+> origin/main worktree (`origin_sha 1fa7448a2706`) with `--require-quiescent
+> --repeat 5 --classify --emit-cycle-profile` on a QUIESCENT machine
+> (`load 4.75 < threshold 9.0`, ncpu 18, runnable 3, **zero competing builds**;
+> the quiescence guard certified `quiescent=true`). LLVM measured with `--repeat
+> 3` (the slower divergence lane). The tooling commit sits on top of origin (so
+> the board is `authoritative=false` by the strict `local_head ≠ origin_sha`
+> rule and was run with `--allow-nonauthoritative`), but the **machine was
+> certified quiet** and the COMPILER measured is exactly origin/main's —
+> `provenance` records `origin_sha` vs `local_head_sha`. Boards:
+> `bench/scoreboard/quiet_native.json` + `quiet_llvm.json`.
+
+**NATIVE — 56 cells: 42 `GREEN_STABLE`, 2 `RED_STABLE`, 7 `TIE`, 5 `INFRA`
+(4 BUILD_FAILED + 1 CPY_INCOMPAT).** The headline: under quiescence + 5-pass CI,
+the **TRUE native warm-red set is just 2 cells** — of the prior board's "11
+native FAIL_ENGINE", only 2 survive as `RED_STABLE`; the other 9 were
+contamination artifacts (5 are actually `GREEN_STABLE` ~1.9×, 4 are `TIE`).
+
+#### The TRUE native warm reds (`RED_STABLE` — the only real compiler targets)
+
+| benchmark | warm | 95% CI | suspected fact | cycle attribution (Rule 1) |
+|-----------|------|--------|----------------|----------------------------|
+| `bench_exception_heavy` | **0.68×** | `[0.670, 0.699]` | zero-cost happy-path exception-state + handler-region ownership | LAUNCH/PAGE-IN-bound at this scale (see below) |
+| `bench_etl_orders` | **0.81×** | `[0.628, 0.777]` | record/dict value-slot shape + borrow/ownership of stable field flow | LAUNCH/PAGE-IN-bound at this scale (see below) |
+
+> Note the contamination correction: `bench_etl_orders` reads **0.81×** quiet,
+> not the contaminated board's **0.60×** — load inflated its redness. It is still
+> a real `RED_STABLE`, but the magnitude was a load artifact.
+
+#### Protected native greens (confirmed on the quiet board)
+
+The won classes stay green and strengthen under quiescence: `bench_bytes_find`
+**10.88×** `[10.26, 11.22]`, `bench_sum` **10.25×**, `bench_class_hierarchy`
+**5.66×** `[5.15, 6.53]`, `bench_struct` **4.81×** `[4.47, 5.95]`,
+`bench_matrix_math` 2.94×, plus 37 more — 42 `GREEN_STABLE` total. These do NOT
+reopen.
+
+#### etl_orders / exception_heavy cycle attribution (#68 — confirm or refute)
+
+The council asked the cycle profile to point at *dataclass field-access + dict
+value-slot* (etl_orders) to confirm #68 and **refute split-alloc**. The result is
+**NEITHER a clean confirm nor refute at release-fast scale**, for a concrete
+measured reason: the leaf self-time of a single etl_orders/exception_heavy run is
+**~85% `_dyld_start`** (process launch + first-touch page-in of molt's
+statically-linked binary) with **~0% in the molt user-binary text**. molt's AOT
+steady-state compute is *faster than the per-process page-in cost* at these
+benchmarks' calibrated scale, so single-process CPU sampling measures
+launch/page-in, not the steady-state hot loop (this is the same finding as
+`COLD_START.md` — molt compute is not the bottleneck at this scale). The in-binary
+frames that DO appear are **unsymbolicated (`???`)** because release-fast strips
+molt user-function symbols. Therefore:
+- **#68 "dataclass field-access + dict value-slot" is NOT confirmed and NOT
+  refuted by release-fast cycle sampling.** It needs either (a) a workload that
+  loops the hot region *inside one warmed process* (so page-in amortizes and the
+  steady-state hot path dominates the leaf self-time), or (b) a symbolicated
+  build (so the in-binary frames name the dataclass/dict access). The warm
+  *timing* red (0.68× / 0.81×, page-faulted via warmup) is real; the cycle
+  *attribution* to a specific Repr/slot is the open follow-up.
+- The cycle-attribution MECHANISM itself is verified working end-to-end
+  (`/usr/bin/sample -wait` start-first + back-to-back loop + the corrected
+  trailing-count leaderboard parser; proven on a `dd` control with real
+  symbols). The limitation is the benchmark scale, not the tool.
+
+### Reclassification of the prior 30 FAIL_ENGINE cells (contaminated → true state)
+
+The prior `cpython_b54dd9b896…` board's 30 `FAIL_ENGINE` cells, re-derived under
+quiescence + repeat CI. **Native** (11 prior FAIL_ENGINE) is from the
+authoritative quiet board; **LLVM** (19 prior FAIL_ENGINE) is from the
+`--repeat 3` quiet LLVM board.
+
+#### Native (the authoritative reclassification)
+
+| benchmark [native] | prior warm | quiet class | quiet warm | quiet 95% CI |
+|--------------------|-----------:|-------------|-----------:|--------------|
+| `bench_etl_orders` | 0.60× | **RED_STABLE** | 0.81× | `[0.628, 0.777]` |
+| `bench_csv_parse_wide` | 0.66× | **TIE** | 1.00× | `[0.963, 1.021]` |
+| `bench_exception_heavy` | 0.73× | **RED_STABLE** | 0.68× | `[0.670, 0.699]` |
+| `bench_fib` | 1.00× | **GREEN_STABLE** | 1.21× | `[1.051, 1.281]` |
+| `bench_dict_ops` | 1.00× | **GREEN_STABLE** | 1.94× | `[1.920, 2.005]` |
+| `bench_dict_views` | 1.00× | **GREEN_STABLE** | 1.94× | `[1.886, 2.089]` |
+| `bench_list_ops` | 1.00× | **GREEN_STABLE** | 1.94× | `[1.890, 2.013]` |
+| `bench_tuple_pack` | 1.00× | **TIE** | 1.03× | `[0.919, 1.414]` |
+| `bench_generator_iter` | 1.00× | **TIE** | 1.00× | `[0.973, 1.027]` |
+| `bench_memoryview_tobytes` | 1.00× | **GREEN_STABLE** | 1.94× | `[1.225, 2.250]` |
+| `bench_startup` | 1.00× | **TIE** | 1.94× | `[0.738, 2.013]` |
+
+**Native verdict: 11 prior FAIL_ENGINE → 2 RED_STABLE + 4 TIE + 5 GREEN_STABLE.**
+`bench_csv_parse_wide` is **confirmed a TIE** (the council's suspicion — its
+"0.66 red" was contamination). Only `bench_etl_orders` and
+`bench_exception_heavy` survive as real warm reds. The 5 GREEN_STABLE cells
+(`bench_fib`, `bench_dict_ops`, `bench_dict_views`, `bench_list_ops`,
+`bench_memoryview_tobytes`) read `warm==1.00` under load but are ~1.9× wins on a
+quiet machine — a textbook demonstration of Rule 3 (a red that vanishes under
+quiescence is a measurement-system bug, not a compiler target). The 4 TIEs are
+`bench_csv_parse_wide`, `bench_tuple_pack`, `bench_generator_iter`, and
+`bench_startup` (whose wide CI `[0.738, 2.013]` — cold-path noise — keeps it a
+TIE despite a 1.94× point estimate, not a GREEN).
+
+#### LLVM (EXPLORATORY — measured non-quiescent)
+
+> ⚠️ The LLVM quiet board (`quiet_llvm.json`, `--repeat 3`) was measured while
+> two **idle** `molt-backend` daemons (one this session's, one a parallel
+> session's `wt_opsem`) were running. Both were at **0.0 % CPU** and host load
+> was **2.83** (genuinely quiet by load), but the quiescence guard is fail-closed
+> on *any* `molt-backend` process, so it correctly stamped `quiescent=false`.
+> Consequence: **no LLVM cell can be `RED_STABLE`** (that state requires a
+> certified-quiet machine) — every warm-red is `RED_NOISY` pending a
+> fully-daemon-free re-run. This is the guard doing its job, not a tool defect.
+
+| benchmark [llvm] | prior warm | exploratory class | quiet warm | 95% CI |
+|------------------|-----------:|-------------------|-----------:|--------|
+| `bench_fib` | 0.30× | **RED_NOISY** | 0.35× | `[0.253, 0.394]` |
+| `bench_exception_heavy` | 0.47× | **RED_NOISY** | 0.43× | `[0.416, 0.447]` |
+| `bench_tuple_pack` | 0.52× | **RED_NOISY** | 0.52× | `[0.508, 0.531]` |
+| `bench_csv_parse_wide` | 0.64× | **RED_NOISY** | 0.61× | `[0.585, 0.631]` |
+| `bench_tuple_index` | 0.65× | **RED_NOISY** | 0.65× | `[0.621, 0.694]` |
+| `bench_csv_parse` | 0.68× | **RED_NOISY** | 0.67× | `[0.674, 0.674]` |
+| `bench_str_count` | 0.68× | **RED_NOISY** | 0.68× | `[0.670, 0.712]` |
+| `bench_str_endswith` | 0.67× | **RED_NOISY** | 0.67× | `[0.656, 0.692]` |
+| `bench_str_find` | 0.67× | **RED_NOISY** | 0.70× | `[0.670, 0.712]` |
+| `bench_str_startswith` | 0.65× | **RED_NOISY** | 0.70× | `[0.611, 0.738]` |
+| `bench_descriptor_property` | 0.67× | **RED_NOISY** | 0.70× | `[0.632, 0.735]` |
+| `bench_dict_comprehension` | 0.66× | **RED_NOISY** | 0.75× | `[0.719, 0.789]` |
+| `bench_attr_access` | 0.97× | **TIE** | 1.03× | `[0.964, 1.057]` |
+| `bench_str_replace` | 0.97× | **TIE** | 1.00× | `[0.927, 1.118]` |
+| `bench_try_except` | 1.00× | **TIE** | 1.03× | `[0.918, 1.103]` |
+| `bench_generator_iter` | 1.00× | **TIE** | 1.03× | `[0.993, 1.097]` |
+| `bench_str_find_unicode_warm` | 1.00× | **TIE** | 1.88× | `[0.422, 2.838]` |
+| `bench_str_count_unicode` | 1.00× | **TIE** | 1.03× | `[0.782, 1.528]` |
+| `bench_str_count_unicode_warm` | 1.00× | **TIE** | 0.98× | `[0.633, 1.753]` |
+
+**LLVM verdict: 19 prior FAIL_ENGINE → 12 RED_NOISY + 7 TIE (0 RED_STABLE,
+non-quiescent).** The 12 RED_NOISY reds are *consistent* between the contaminated
+board and the exploratory-quiet board (fib 0.35×, exception_heavy 0.43×, the
+str/tuple/csv family 0.5–0.75×) — they are real LLVM warm gaps (LLVM is the
+known-weaker divergence lane: a native win does NOT excuse an LLVM red), but they
+need a daemon-free quiescent re-run to be promoted from RED_NOISY to RED_STABLE.
+The 7 prior `warm==1.00` ties resolve to TIE (straddling CIs).
+
+> Whole-board LLVM classification (56 cells): **22 GREEN_STABLE, 12 RED_NOISY,
+> 9 TIE, 13 INFRA** (10 BUILD_FAILED + 2 RUN_ERROR-class + 1 CPY_INCOMPAT). The
+> GREEN_STABLE count reflects the contamination-asymmetry rule: a warm WIN under
+> load is a *conservative* green (load can only make molt look slower, never
+> faster), so `bench_sum` 10.56×, `bench_class_hierarchy` 3.94×, etc. are GREEN
+> even on the non-quiescent board.
+
+### Prior board (CONTAMINATED) human summary — build facts + cold axis only
+
+> The numbers below are from the **non-authoritative** `cpython_b54dd9b896…`
+> board. Per #69, treat the **warm** column as EXPLORATORY (reclassified above);
+> the build-fact and cold-axis observations stand.
 
 **112 cells: 1 GREEN, 30 FAIL_ENGINE, 0 FAIL_COLD_BUDGET, 56 WARN_COLD_FLOOR,
 6 UNSTABLE, 9 BUILD_FAILED, 7 RUN_ERROR, 3 CPY_INCOMPATIBLE.** Per backend:
@@ -286,20 +558,32 @@ WARN_COLD_FLOOR** (warm > CPython, cold loses only to the fixed startup tax,
 within budget — NOT a hard red). FAIL_COLD_BUDGET = 0 (no cell exceeds the v0
 budget; see `cold_start_budget.json`).
 
-### GREENS WORTH PROTECTING (do NOT reopen)
+### PROTECTED GREENS (do NOT reopen — confirmed won classes)
 
-| benchmark | backend | warm | cold | note |
-|-----------|---------|------|------|------|
-| `bench_class_hierarchy` | native | **8.00×** | **1.76×** | both phases beat CPython. Was spuriously UNSTABLE on the raw board — a single CPython GC outlier `[.417 .427 .424 .415 .637]` (cv 0.23) vs molt's rock-stable `[.054 .053 .053 .050 .053]` (cv 0.03); the **robust-stability rule** (trim one CPython outlier each side, check the verdict holds) correctly rescues it. |
+These are the **protected greens**: warm-decisive wins on the engine axis that
+must not be reopened by any optimization arc. They stay green across the
+contaminated and the quiet boards.
+
+| benchmark | backend | warm | note |
+|-----------|---------|------|------|
+| `bench_class_hierarchy` | native | **8.00×** | method dispatch / class identity — both phases beat CPython. Was spuriously UNSTABLE on the raw board (a single CPython GC outlier `[.417 .427 .424 .415 .637]` cv 0.23 vs molt's rock-stable `[.054…]` cv 0.03); the **robust-stability rule** (trim one CPython outlier each side, check the verdict holds) rescues it. |
+| `bench_struct` | native / llvm | **4.78× / 2.53×** | struct field layout / unboxed lane — won on both backends. |
+| `bench_bytes_find` | native | **9.85×** | bytes search / borrowed-view — the largest native warm margin. |
 
 Other warm-decisive wins that are WARN_COLD_FLOOR (warm-green, cold-tax only —
-NOT reopened): `bench_bytes_find` (9.85× warm), `bench_str_*` family, `bench_sum_list`
-(2.94×), `bench_struct` (4.78× native / 2.53× llvm), `bench_set_ops` (2.06×),
-`bench_max_list` (2.00×). These are won classes on the engine axis.
+NOT reopened): `bench_str_*` family, `bench_sum_list` (2.94×), `bench_set_ops`
+(2.06×), `bench_max_list` (2.00×). These are won classes on the engine axis.
 
-### NATIVE warm reds (FAIL_ENGINE — the real representation gaps)
+### NATIVE warm reds — CONTAMINATED / EXPLORATORY (reclassified above)
 
-Two sub-groups. The genuine warm reds (warm < 1.0) match the council's named set:
+> ⚠️ The table below is from the **non-authoritative** contaminated board (#69):
+> these warm numbers were measured under multi-agent load and are **EXPLORATORY**.
+> The TRUE warm-red set is the `RED_STABLE` rows in the *Reclassification* table
+> from the quiet `--repeat 5` board. Do NOT open an optimization from this table
+> alone — confirm the cell is `RED_STABLE` on the quiet board first (Rule 3).
+
+The genuine warm reds (warm < 1.0) the contaminated board flagged (council's
+named set), shown with their suspected missing IR fact for triage:
 
 | benchmark | warm | cold | pypy | suspected missing IR fact |
 |-----------|------|------|------|---------------------------|
