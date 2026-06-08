@@ -1329,12 +1329,31 @@ class SerializationMixin(_MixinBase):
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
-                if op.result.type_hint and op.result.type_hint != "Any":
-                    _onb_op["type_hint"] = op.result.type_hint
+                _onb_class = op.result.type_hint
+                if _onb_class and _onb_class != "Any":
+                    _onb_op["type_hint"] = _onb_class
                 _onb_md = op.metadata or {}
                 _onb_size = _onb_md.get("class_size_bytes")
                 if isinstance(_onb_size, int) and _onb_size > 0:
                     _onb_op["value"] = _onb_size
+                # A class that defines `__del__` (directly or anywhere in its MRO
+                # except `object`) has a finalizer that CPython runs at the last
+                # reference drop.  The backend escape pass would otherwise treat a
+                # non-escaping instance as `NoEscape` and (a) strip its IncRef/
+                # DecRef and/or (b) rewrite it to a stack-allocated immortal
+                # object — either of which makes the refcount-zero transition
+                # never occur, so `__del__` would silently never run.  Carry the
+                # finalizer fact so escape analysis keeps such instances
+                # heap-allocated with a live refcount (the finalizer-aware
+                # `dec_ref_ptr` then dispatches `__del__` at the last drop).  The
+                # heap `object_new_bound` fast path (and inlined `__init__`) is
+                # preserved — only the unsound stack/RC-strip is suppressed.
+                if _onb_class and _onb_class != "Any":
+                    _del_info, _del_owner = self._resolve_method_info(
+                        _onb_class, "__del__"
+                    )
+                    if _del_info is not None and _del_owner != "object":
+                        _onb_op["defines_del"] = True
                 json_ops.append(_onb_op)
             elif op.kind == "CLASSMETHOD_NEW":
                 json_ops.append(
