@@ -173,6 +173,25 @@ MEASUREMENT PATH, not optimize blind. Perf work's deliverable is a NEW IR FACT t
 class of slow programs unexpressible — not "faster code." Five-year target = retire one CLASS
 of slowness per month (the compression ladder), not one benchmark.
 
+**Tranche & evidence standard (binding).** A unit of reported work ("tranche") must CHANGE
+PROJECT STATE — landed code/tests/tooling/docs, a verified refusal that deletes a bad plan, or
+(only at a real fork) a decision packet with a recommended default — never "status + a question."
+Build first; ask only when the next step encodes a semantic invariant, needs a public/API/subset
+decision, faces two mutually-exclusive structural designs, would risk a workaround, or is
+contradicted by memory-safety/correctness evidence; otherwise default, implement, measure, test,
+report. Research→artifact→next-move; falsification must leave a durable artifact (test/doc/baton/
+deleted-plan) or it didn't count.
+- **Perf claims are quiescent, repeated, attributed, classified.** No optimizing from a noisy
+  red; no warm-time claim from allocation counters alone (alloc-count is a memory-dimension
+  signal — warm reds need CYCLE attribution); no "one run flipped it"; no stale-local-main
+  authority. Classify every result GREEN / RED_STABLE / RED_NOISY / TIE / DIMENSIONAL_WIN. A
+  DIMENSIONAL_WIN (alloc/RSS/binary/cold/backend improved, warm gate did not flip) is reported
+  honestly as dimensional, NEVER as a speed heal.
+- **Gates:** run the relevant gates for the touched surface, full gates before integration, and
+  explicitly list any omitted gate with its reason. NEVER imply an unrun gate is green.
+- Cold-start is an artifact-footprint/page-in/codesign problem, NOT a runtime-init problem
+  (runtime init measured 0.127ms); it is WARN under the v0 budget, not an execution-engine red.
+
 ## Bootstrap Authority (Non-Negotiable)
 
 - Runtime-known module bootstrap must go through the runtime import boundary (`MODULE_IMPORT`). Do not split bootstrap ownership between frontend special cases and runtime import code.
