@@ -765,24 +765,34 @@ fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
 /// the shared mechanism behind the standing LLVM/WASM `__del__` parity hole: on
 /// every lane the escape pass classified a non-escaping finalizer-bearing
 /// instance as promotable and stripped its release.
-fn object_new_bound_defines_del(op: &TirOp) -> bool {
+pub(crate) fn object_new_bound_defines_del(op: &TirOp) -> bool {
     op.opcode == OpCode::ObjectNewBound
         && matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
 }
 
-/// The set of rewritable allocation ROOTS (`ObjectNewBound` results) whose class
-/// defines a `__del__` finalizer — transitively through pure SSA-move copies.
+/// The set of allocation ROOTS (`ObjectNewBound` results) whose class defines a
+/// `__del__` finalizer — transitively through pure SSA-move copies. This is the
+/// single FinalizerSensitive fact (design 27): the ONE source of truth that every
+/// fast-path / lifetime-shortening optimization must query before touching such a
+/// value's representation or refcount, so the "finalizer never runs" state is made
+/// UNREPRESENTABLE rather than empirically-not-reached.
+///
 /// Such an instance MUST stay heap-allocated with a live refcount so the
 /// finalizer-aware `dec_ref_ptr` dispatches `__del__` at the last drop; it must
-/// be excluded from BOTH the stack-promotion rewrite and the `IncRef`/`DecRef`
-/// strip in [`apply`].
+/// therefore be excluded from:
+///   * the stack-promotion rewrite (`ObjectNewBound → ObjectNewBoundStack`, which
+///     stamps `HEADER_FLAG_IMMORTAL` so the rc-zero transition never occurs) and
+///     the `IncRef`/`DecRef` strip — both in [`apply`]; and
+///   * the `DecRef → Free` unique-ownership promotion in `refcount_elim` Step 6
+///     (`OpCode::Free` is a direct dealloc that does NOT route through
+///     `maybe_run_object_finalizer`, so it would silently skip `__del__`).
 ///
 /// Mirrors [`dict_requiring_alloc_roots`]: the requirement is seeded at the
 /// finalizer-bearing alloc and propagated FORWARD across pure-move copies (the
 /// same `is_pure_move_copy` alias relation `rewritable_alloc_roots` uses), so it
 /// reaches every value that names the same heap object — and in particular the
 /// alloc result that `apply` rewrites and whose RC ops it would otherwise strip.
-fn finalizer_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
+pub(crate) fn finalizer_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     let mut del_required: HashSet<ValueId> = HashSet::new();
     for block in func.blocks.values() {
         for op in &block.ops {
