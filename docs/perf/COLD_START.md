@@ -74,10 +74,39 @@ already lean).
 
 ## The finding (it INVERTS the naive read) + the #62 attack target
 
-**A minimal molt binary launches in the SAME wall-time as a no-op C binary
-(~18 ms same-path).** molt's own runtime init is **0.127 ms** — three orders of
-magnitude below the OS floor. The cold-start tax is therefore **not a molt-init
-problem**:
+### Hypothesis adjudication (council wording — precise, not "not a molt problem")
+
+The earlier "cold-start is not a molt problem" framing was imprecise. The two
+hypotheses are adjudicated separately:
+
+- **FALSIFIED — "runtime-init / module-init dominates the cold tax."** Measured
+  `molt_runtime_init` = **0.127 ms** (the full 12-phase ladder) and per-module
+  eager init ≈ 0 ms. Runtime/module init is three orders of magnitude below the
+  OS floor; it does NOT dominate. Therefore the #62 lever is **NOT** a
+  module-init / runtime-init deferral or snapshot — that hypothesis is dead.
+- **SUPPORTED — "the cold tax is OS / dyld / page-in / codesign / binary-artifact
+  -footprint dominated."** A minimal molt binary launches in the SAME wall-time
+  as a no-op C binary (~18 ms same-path = the dyld/exec OS floor); the only
+  molt-controllable slice is **binary-page-in**, which scales with the linked
+  binary SIZE (4.26 MiB today). Therefore **#62 redirects to the
+  binary-size / tree-shaking / artifact-layout arc**, NOT module-init deferral.
+
+### Status — WARN under the v0 budget, NOT "solved"
+
+Cold-start is **WARN**, not solved. On the board, `FAIL_COLD_BUDGET = 0` (no
+cell exceeds the v0 first-run budget in `cold_start_budget.json`), so the gate is
+GREEN at v0 — but v0 is "no regression from the measured baseline," a floor, not
+the goal. The **five-year goal still demands cold-start dominance** (molt cold
+faster than CPython cold on every benchmark) **and a `< 2 MB` browser/WASM path**;
+neither is met today. The realistic same-path tax meeting the Y1 100 ms target
+(below) is necessary, not sufficient: the open work is shrinking the linked
+binary so the genuinely page-cold first-run tax stays bounded as the stdlib
+grows AND the WASM artifact crosses under 2 MB. Treat cold-start as an open
+WARN-status arc routed to binary-size, not a closed item.
+
+**Supporting detail.** A minimal molt binary launches in the SAME wall-time as a
+no-op C binary (~18 ms same-path). molt's own runtime init is **0.127 ms** —
+three orders of magnitude below the OS floor. The cold-start tax decomposes as:
 
 1. **`process-launch/dyld` ≈ 18 ms is the OS floor** (no-op C is identical) —
    **not molt-controllable**. This already beats CPython's ~18 ms `-c pass`
@@ -109,6 +138,9 @@ cold-start **budget** (`bench/scoreboard/cold_start_budget.json`) is therefore
 set against the board's first-run tax (the council "v0 = measured baseline"),
 while THIS decomposition explains WHERE that tax goes and which slice (page-in)
 is worth attacking. The council Y1 target (release-output `startup_tax < 100ms`)
-is already met at the realistic same-path floor; the open work is keeping the
-first-run (page-cold + freshly-built) tax bounded as the stdlib grows — i.e. the
-binary-size arc.
+is met **at the realistic same-path floor only** — this is necessary but NOT
+sufficient and is **not "solved"** (status = WARN, FAIL_COLD_BUDGET=0 at v0). The
+open work, owned by the binary-size arc, is two-fold: (1) keep the first-run
+(page-cold + freshly-built) tax bounded as the stdlib grows, and (2) reach the
+five-year bar — cold-start *dominance* over CPython on every benchmark plus the
+`< 2 MB` browser/WASM path — neither of which v0 delivers.
