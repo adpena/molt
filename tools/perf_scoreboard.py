@@ -359,6 +359,40 @@ class PhaseStats:
         )
 
 
+def _robust_cell_stable(molt: PhaseStats, cpy: PhaseStats) -> bool:
+    """Is the cell's warm verdict trustworthy despite CPython-side outliers?
+
+    molt is the artifact under test and MUST be stable. CPython is the reference
+    floor; a single CPython GC/scheduler spike must not throw out a cell where
+    molt wins decisively and is itself stable. The cell is stable iff:
+      * molt is stable (low CV), AND
+      * EITHER CPython is also stable,
+        OR the warm verdict is robust to CPython's FULL sample spread — i.e.
+        the warm_speedup (cpython/molt, on the molt median) keeps the same
+        side of the 1.00 floor whether computed with CPython's fastest
+        (cpy.min_s) or slowest (cpy.max_s) sample. If both bounds agree on
+        GREEN-or-RED, a CPython outlier cannot flip the verdict.
+    """
+    if not molt.stable:
+        return False
+    if cpy.stable:
+        return True
+    if (
+        molt.median_s is None
+        or cpy.min_s is None
+        or cpy.max_s is None
+        or molt.median_s <= 0
+    ):
+        return False
+    # warm_speedup = cpython / molt. Using CPython's min and max bounds, does
+    # the verdict (>1 vs <=1) stay consistent?
+    lo = cpy.min_s / molt.median_s
+    hi = cpy.max_s / molt.median_s
+    both_win = lo > RED_THRESHOLD and hi > RED_THRESHOLD
+    both_lose = lo <= RED_THRESHOLD and hi <= RED_THRESHOLD
+    return both_win or both_lose
+
+
 # ---------------------------------------------------------------------------
 # One scoreboard cell: benchmark x target x backend x profile
 # ---------------------------------------------------------------------------
@@ -849,8 +883,17 @@ def measure_cell(
     cell.molt_peak_rss_mib = _max_opt(molt_stats.peak_rss_mib, cold_molt.peak_rss_mib)
     cell.cpython_peak_rss_mib = _max_opt(cpy_stats.peak_rss_mib, cold_cpy.peak_rss_mib)
 
-    # Both phases must be stable for the cell to be trusted GREEN.
-    cell.stable = molt_stats.stable and cpy_stats.stable
+    # Stability: molt is the ARTIFACT UNDER TEST and MUST be stable. CPython is
+    # the reference floor; a single CPython GC/scheduler outlier (common on
+    # multi-100ms benchmarks) must NOT invalidate a cell where molt wins
+    # decisively and is itself stable — otherwise a won class (e.g.
+    # class_hierarchy 8x, molt cv 0.03) gets masked UNSTABLE by one CPython
+    # spike. So the cell is trustworthy iff molt is stable AND either CPython is
+    # stable OR the warm verdict is ROBUST to CPython's full sample spread (the
+    # warm_speedup stays on the same side of the 1.00 floor using BOTH CPython's
+    # fastest and slowest sample). This is median-based + outlier-robust per
+    # pyperf discipline, never a per-test special case.
+    cell.stable = _robust_cell_stable(molt_stats, cpy_stats)
 
     # One-time output parity (informational; not the gate).
     if cold_molt.stdout is not None and cold_cpy.stdout is not None:
@@ -860,6 +903,13 @@ def measure_cell(
         cell.note = f"molt run unmeasurable (status={cold_molt.status})"
     elif not cell.cpython_ok:
         cell.note = f"cpython run unmeasurable (status={cold_cpy.status})"
+    elif cell.stable and not cpy_stats.stable and molt_stats.stable:
+        # Transparency: the cell is trusted despite CPython-side jitter because
+        # molt is stable AND the verdict is robust to CPython's spread.
+        cell.note = (
+            f"cpython unstable (cv={cpy_stats.cv}) but verdict robust to its "
+            f"spread; molt stable (cv={molt_stats.cv})"
+        )
 
     # --- PyPy comparator lane (informational; never a hard gate) ------------
     # Only measured once per benchmark (lane-independent: PyPy runs the same
@@ -2022,15 +2072,44 @@ def _finalize_with_board_context(cells: list[Cell], doc_like: dict) -> None:
     For rebuild/merge we re-run the classifier so a stored board reflects the
     CURRENT verdict logic. The cold-start budget comes from the live budget
     file; the authoritative flag comes from the stored provenance (a stored
-    board does not re-derive authoritativeness — it was already stamped).
+    board does not re-derive authoritativeness — it was already stamped). We
+    also RE-DERIVE ``stable`` from the stored per-runtime stats so a board
+    measured by an older tool picks up the current robust-stability rule (the
+    CPython-outlier tolerance) without re-running any benchmark.
     """
     budgets = _load_cold_start_budgets()
     authoritative = doc_like.get("provenance", {}).get("authoritative", True)
     for cell in cells:
+        _rederive_stability(cell)
         cell.finalize(
             budget_ms=_budget_ms_for(budgets, cell.backend, cell.profile),
             authoritative=authoritative,
         )
+
+
+def _rederive_stability(cell: Cell) -> None:
+    """Recompute ``cell.stable`` from the stored molt/cpython stats dicts.
+
+    ``finalize`` does not recompute stability (it is set at measurement time),
+    so a rebuild-summary/merge must re-derive it to apply the current robust
+    rule. No-op if the stored stats are absent.
+    """
+    if not cell.molt_stats or not cell.cpython_stats:
+        return
+    molt = _phasestats_from_dict(cell.molt_stats)
+    cpy = _phasestats_from_dict(cell.cpython_stats)
+    if molt is None or cpy is None:
+        return
+    cell.stable = _robust_cell_stable(molt, cpy)
+
+
+def _phasestats_from_dict(d: dict) -> PhaseStats | None:
+    import dataclasses
+
+    if not isinstance(d, dict):
+        return None
+    known = {f.name for f in dataclasses.fields(PhaseStats)}
+    return PhaseStats(**{k: v for k, v in d.items() if k in known})
 
 
 # ---------------------------------------------------------------------------
