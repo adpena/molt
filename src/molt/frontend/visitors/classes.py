@@ -127,7 +127,54 @@ class ClassDefVisitorMixin(_MixinBase):
             or class_info.get("decorated")
         ):
             return False
+        # A class that defines `__del__` (directly or anywhere in its MRO except
+        # `object`) has a finalizer that CPython runs at the LAST reference drop.
+        # The constructor fold inlines `__init__` and statically tracks
+        # `self.attr = value`, so a later `obj.attr` read is replaced by the
+        # tracked constant — which ERASES the object's last SSA use. The drop
+        # pass then releases the instance right after its `__init__` field store,
+        # firing `__del__` far earlier than Python's scope-visible drop (and in
+        # the wrong order across multiple instances). Stack promotion (→ IMMORTAL)
+        # and RC-strip in the escape pass compound this. None of those
+        # optimizations is sound for a finalizer-bearing instance, so decline the
+        # fold entirely: route `Demo()` through the normal `type.__call__` path,
+        # where `obj.attr` stays a real load and the drop lands at the Python
+        # scope boundary. `__del__` classes are rare and inherently slow, so the
+        # lost fold is the correct trade for finalizer-dispatch parity.
+        if self._class_defines_finalizer(class_name):
+            return False
         return self._class_layout_stable(class_name)
+
+    def _class_defines_finalizer(self, class_name: str) -> bool:
+        """True iff ``class_name`` resolves a user-defined ``__del__`` through its
+        MRO (excluding ``object``). Used to suppress lifetime-shortening
+        optimizations that would skip or mis-time finalizer dispatch.
+
+        Resolves directly over each MRO class's ``methods`` table rather than via
+        ``_resolve_method_info``: the constructor-fold decision is taken while the
+        class is still in ``class_definition_pending`` (its body is processed but
+        the registration is not finalized), and ``_resolve_method_info``
+        short-circuits to ``(None, None)`` for a pending class — which would hide a
+        ``__del__`` the class plainly defines. The per-class ``methods`` dict is
+        already fully populated at this point, so a direct MRO walk is the sound
+        source of truth here. A class-level assignment that shadows ``__del__``
+        with a non-method value (present in ``class_attrs`` but not ``methods``)
+        does not install a finalizer, matching ``_resolve_method_info``'s
+        override rule."""
+        for name in self._class_mro_names(class_name):
+            if name == "object":
+                continue
+            info = self.classes.get(name)
+            if not info:
+                continue
+            methods = info.get("methods", {})
+            if "__del__" in methods:
+                return True
+            class_attrs = info.get("class_attrs", {})
+            if "__del__" in class_attrs:
+                # A non-method override at this level masks any base __del__.
+                return False
+        return False
 
     def _builtin_min_layout(self, mro_names: list[str]) -> int:
         min_size = 0
@@ -654,7 +701,9 @@ class ClassDefVisitorMixin(_MixinBase):
         # (``current_func_name != "molt_main"``): non-static, routing its
         # methods' typed-field accesses through the instance-based generic path
         # rather than a non-existent module attribute.
-        is_static = self.current_func_name == "molt_main" and self._class_body_depth == 0
+        is_static = (
+            self.current_func_name == "molt_main" and self._class_body_depth == 0
+        )
 
         base_mros = [self._class_mro_names(name) for name in base_names]
         base_mros.append(list(base_names))
@@ -2485,9 +2534,7 @@ class ClassDefVisitorMixin(_MixinBase):
                     if dynamic_namespace is not None:
                         key_val = MoltValue(self.next_var(), type_hint="str")
                         self.emit(
-                            MoltOp(
-                                kind="CONST_STR", args=[item.name], result=key_val
-                            )
+                            MoltOp(kind="CONST_STR", args=[item.name], result=key_val)
                         )
                         self.emit(
                             MoltOp(

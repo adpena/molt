@@ -65,6 +65,16 @@ pub struct OpIR {
     /// integration is active.
     #[serde(default)]
     pub arena_eligible: Option<bool>,
+    /// When true on an `object_new_bound` op, the instance's class defines a
+    /// `__del__` finalizer (directly or via its MRO, excluding `object`). The
+    /// frontend resolves this statically and the backend escape pass must keep
+    /// such an instance heap-allocated with a live refcount — never stack-promote
+    /// it (which stamps it IMMORTAL) and never strip its IncRef/DecRef — so the
+    /// finalizer-aware `dec_ref_ptr` dispatches `__del__` at the last reference
+    /// drop. Without this the refcount-zero transition never occurs and the
+    /// finalizer silently never runs (the standing LLVM/WASM parity hole).
+    #[serde(default)]
+    pub defines_del: Option<bool>,
     pub task_kind: Option<String>,
     pub container_type: Option<String>,
     /// Transitional semantic hint preserved on the transport surface for
@@ -345,6 +355,7 @@ impl OpIR {
             end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
             bce_safe: optional_bool(obj, "bce_safe", ctx)?,
             arena_eligible: optional_bool(obj, "arena_eligible", ctx)?,
+            defines_del: optional_bool(obj, "defines_del", ctx)?,
             effect_proof: optional_string(obj, "effect_proof", ctx)?,
             class_name: optional_string(obj, "class", ctx)?,
         })
