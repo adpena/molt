@@ -77,6 +77,7 @@ classifier_fresh_value = [
     "str_from_obj",
     "string_format",
     "string_join",
+    "string_split_field_to_int",
     "tuple_from_list",
     "tuple_new",
 ]

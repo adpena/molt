@@ -10350,6 +10350,67 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
+                    "string_split_field_start"
+                    | "string_split_field_end"
+                    | "string_split_field_is_ascii"
+                    | "string_split_field_to_int" => {
+                        // Split-field deforestation property/parse ops: 3 i64 args
+                        // (hay, sep, idx) -> i64. The runtime symbol is the op kind
+                        // prefixed with `molt_`.
+                        let args = op.args.as_ref().unwrap();
+                        for a in args.iter().take(3) {
+                            func.instruction(&Instruction::LocalGet(locals[a]));
+                        }
+                        let symbol: &str = match op.kind.as_str() {
+                            "string_split_field_start" => "string_split_field_start",
+                            "string_split_field_end" => "string_split_field_end",
+                            "string_split_field_is_ascii" => "string_split_field_is_ascii",
+                            _ => "string_split_field_to_int",
+                        };
+                        emit_call(func, reloc_enabled, import_ids[symbol]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "string_split_field_len_from_bounds" => {
+                        // (hay, start, end, is_ascii) -> i64.
+                        let args = op.args.as_ref().unwrap();
+                        for a in args.iter().take(4) {
+                            func.instruction(&Instruction::LocalGet(locals[a]));
+                        }
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids["string_split_field_len_from_bounds"],
+                        );
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "string_split_field_ord_at_bounds" => {
+                        // (hay, start, end, is_ascii, idx) -> i64.
+                        let args = op.args.as_ref().unwrap();
+                        for a in args.iter().take(5) {
+                            func.instruction(&Instruction::LocalGet(locals[a]));
+                        }
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids["string_split_field_ord_at_bounds"],
+                        );
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
                     "string_split_max" => {
                         let args = op.args.as_ref().unwrap();
                         let hay = locals[&args[0]];
