@@ -1846,19 +1846,22 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 return;
             }
             MoltRefCount::acquire_fence();
-            // RC drop-insertion substrate (design 20): this is the single actual
-            // deallocation path (the rc=1→0 transition, past the immortal/rooted
-            // early-returns above). Count it so `live = alloc - dealloc` is the
-            // process leak gauge. The byte total uses the header size class; for
-            // oversized objects `total_size_from_header_fields` reads the cold
-            // header's `extended_size` (mirrors the alloc-side `plan.alloc_size`).
-            profile_hit(py, &DEALLOC_COUNT);
-            profile_hit_bytes(
-                py,
-                &DEALLOC_BYTES_TOTAL,
-                total_size_from_header_fields(header_size_class, header_cold_idx) as u64,
-            );
-            profile_dealloc_type(py, type_id);
+            // RC drop-insertion substrate (design 20): the rc=1→0 transition,
+            // past the immortal/rooted early-returns above. This is NOT yet a
+            // confirmed deallocation: `maybe_run_object_finalizer` below may run a
+            // `__del__` that RESURRECTS the object (re-incrementing its refcount),
+            // in which case `dec_ref_ptr` returns WITHOUT freeing. Counting the
+            // dealloc here would over-count destructions and make `live = alloc -
+            // dealloc` UNDER-count live objects — an unsound leak gauge under
+            // resurrection (phantom "no leak"). So the dealloc counters are bumped
+            // only AFTER the finalizer-resurrection check passes (see below); the
+            // byte total is the one value that must be read from the header BEFORE
+            // the finalizer runs (a `__del__` can mutate/realloc the object, and
+            // for oversized objects `total_size_from_header_fields` reads the cold
+            // header's `extended_size`), so snapshot it here into a local and
+            // commit it after the destruction is confirmed.
+            let dealloc_bytes =
+                total_size_from_header_fields(header_size_class, header_cold_idx) as u64;
             if debug_dec_ref_zero() {
                 eprintln!(
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",
@@ -1921,8 +1924,22 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 );
             }
             if maybe_run_object_finalizer(py, ptr) {
+                // `__del__` resurrected the object (its refcount is > 0 again):
+                // this dec_ref did NOT free it. Do NOT count it as a deallocation
+                // — the object is still alive and must remain in `live = alloc -
+                // dealloc`. A later final drop (when the resurrection reference is
+                // released) re-enters this path and counts it then.
                 return;
             }
+            // Past the resurrection check: the object is now actually being
+            // destroyed. Commit the leak-gauge counters so DEALLOC_COUNT means
+            // "objects truly freed", keeping `live = alloc - dealloc` exact
+            // (resurrected objects are correctly NOT counted as dealloc'd until
+            // their real final drop). `type_id` is the cached entry value; the
+            // byte total was snapshotted before the finalizer ran.
+            profile_hit(py, &DEALLOC_COUNT);
+            profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, dealloc_bytes);
+            profile_dealloc_type(py, type_id);
             weakref_clear_for_ptr(py, ptr);
             match type_id {
                 // Hot path: most-frequently-freed types first
