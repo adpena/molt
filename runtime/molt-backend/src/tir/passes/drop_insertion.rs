@@ -723,6 +723,66 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             plan.after_op.entry(idx).or_default().push(v);
         }
 
+        // ── 1b. Dead-result drops (defined-but-never-used owned values) ──────
+        // The §1 scan keys drops on `last_use`, which is built EXCLUSIVELY from
+        // values that appear as an OPERAND somewhere. An owned result that is
+        // produced but NEVER consumed (zero uses — neither as an operand, nor a
+        // branch arg, nor a terminator use) is therefore ABSENT from `last_use`
+        // and would leak: its `+1` is never released, so for a `TYPE_ID_OBJECT`
+        // with a `__del__` the finalizer NEVER runs (CPython runs it at the last
+        // reference drop). The canonical example is a discarded constructor whose
+        // local is dead or `del`'d: `def f(): x = Demo(); del x` lowers to a
+        // `call_bind` whose owned result has no further use. The edge-dying rule
+        // (§3) cannot catch it either — that rule requires the value to be
+        // live-out of a predecessor, but a zero-use value is dead immediately.
+        //
+        // For a value with no uses, the LAST program point at which it is live is
+        // immediately AFTER its defining op, so that is where its drop belongs.
+        // We apply the SAME guards as the §1 last-use path (droppable / not
+        // branch-transferred / not live-out / not terminator-consumed) plus the
+        // conditionally-valid-iterator exclusion (§2.8): the value result of an
+        // `IterNextUnboxed` is uninitialized stack garbage on the exhaustion path
+        // and must never be dropped unconditionally. A result that IS used was
+        // already handled by §1 (its root is in `last_use`); checking `last_use`
+        // membership in ROOT space avoids any double-drop.
+        for (idx, op) in block.ops.iter().enumerate() {
+            for &result in &op.results {
+                let r = canon(result);
+                // Only the value's own root carries the ownership obligation; an
+                // aliased result (`r != result`) is released through its root.
+                if r != result {
+                    continue;
+                }
+                // Already released by the §1 last-use path (some op used it).
+                if last_use.contains_key(&r) {
+                    continue;
+                }
+                if !droppable(r) {
+                    continue;
+                }
+                // Conditionally-valid iterator value result: never drop it (it is
+                // stale garbage on the iterator-exhaustion path).
+                if iter_cond_value_results.contains(&result) {
+                    continue;
+                }
+                // Transferred via branch arg (root space) → successor owns it.
+                if branch_arg_roots.contains(&r) {
+                    continue;
+                }
+                // Live-out of this block → dropped later, not here.
+                if live.is_live_out(bid, r) {
+                    continue;
+                }
+                // Consumed by the terminator (Return value / cond).
+                if terminator_uses_root(&block.terminator, r, &canon) {
+                    continue;
+                }
+                // The owned object is dead the instant it is produced: drop it
+                // immediately after its defining op.
+                plan.after_op.entry(idx).or_default().push(r);
+            }
+        }
+
         // ── 2. Suspension-point IncRef ───────────────────────────────────────
         // For each yield op at index `i`, every heap-carrying value that is
         // (a) DEFINED before the yield (an op result at index < i, or a block
