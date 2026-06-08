@@ -76,6 +76,66 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
 - **All backends** (native/Cranelift, WASM, LLVM) must have parity. No backend-specific workarounds.
 - **Extreme optimization and performance**. Choose the most performant algorithm and data structure. No lazy shortcuts.
 
+## Performance Constitution — speed is a correctness property (release-blocking)
+
+Correctness parity is the FLOOR. Performance dominance is the PRODUCT CONTRACT. A molt
+feature is not complete because it passes CPython differential tests; it is complete only
+when it preserves or improves the performance contract across the relevant targets, profiles,
+and backends. This is a release-blocking contract, not an aspiration.
+
+**The bar:** molt must be faster than CPython on EVERY benchmark in the verified subset, on
+EVERY supported target, backend, and profile; and it must steadily approach, match, or exceed
+PyPy and Codon on the benchmark classes where their execution models apply. Codon is the
+AOT/native north star for the statically compilable subset (10–100×+ over CPython, C/C++-class,
+non-drop-in semantics). PyPy is the dynamic-runtime reference (~3× over CPython 3.11 via JIT)
+for pure-Python dynamic workloads.
+
+**Non-negotiable gates — every correctness landing must answer "what did this do to speed?"**
+- A commit that fixes parity but introduces a permanent benchmark regression is INCOMPLETE.
+  Silent slowdown is a FAILED landing. If a structural fix necessarily slows a path
+  temporarily, the commit must state exactly which perf debt was introduced, why it is
+  unavoidable, which invariant now enables recovery, and which follow-up arc retires it.
+- CPython is the absolute floor: faster on every verified-subset benchmark. Any benchmark
+  below 1.00× vs CPython is RED and is a contract violation, not "later optimization work."
+- PyPy is the dynamic reference: match/beat on JIT-favorable pure-Python workloads, or NAME the
+  missing compiler fact (IC tiering, class-version guard, borrow inference, generator fusion,
+  shape propagation, trace-like loop specialization).
+- Codon is the AOT reference: approach/exceed on numeric/loop/data-structure/NumPy-like/typed
+  kernels where semantics match; mark non-equivalent semantic models as "non-equivalent," never
+  as a win/loss.
+- A backend "degradation" must be a DOCUMENTED target limitation (an explicit portable-IR fact),
+  never a hidden benchmark exception. A profile-specific slowdown is still a bug: dev may
+  optimize compile latency, but release-fast/release-output are held to shipped-perf standards.
+
+**Methodology — pyperformance/pyperf discipline, not vibes.** Every perf claim reports:
+`benchmark → target → backend → profile → CPython ratio → PyPy ratio (when applicable) →
+Codon ratio (when applicable) → binary size → peak RSS → compile time → command/log artifact`.
+Repeated worker runs, calibration, instability detection, statistics, JSON output. No
+"looks faster," no cherry-picked one-off, no warm-cache-only wins (report cold AND warm). No
+benchmark is healed until measured against the full matrix it affects.
+
+**Required machine-readable scoreboards** (kept green, CI-gated): (1) CPython — every benchmark
+× backend/profile, any <1.00× is red; (2) PyPy — pure-Python dynamic, names the missing molt
+mechanism where PyPy wins; (3) Codon — static/AOT subset on matched semantics; (4) Backend —
+native/LLVM/WASM/Luau each its own table, a native win never excuses a WASM regression;
+(5) Profile — dev/release-fast/release-output are separate products, none hides runtime regressions.
+
+**Perf triage priority** (after P0 silent-wrong-answer + memory unsafety): (1) any benchmark
+slower than CPython; (2) any previously-green benchmark that regressed; (3) any backend/profile
+divergence losing a known optimization; (4) any PyPy/Codon gap where molt lacks the needed
+representation fact; (5) binary size / cold start / RSS / compile-time regressions.
+
+**Posture — do not "optimize passes," fix the REPRESENTATION.** When a benchmark is slow the
+first question is never "which peephole recovers it" but "which FACT is missing from IR?": RC
+overhead → ownership/borrow/reuse; dynamic dispatch → class identity/version/target/shape;
+boxing → Repr precision; slow loops → induction/range/overflow/lane stability; slow generators
+→ resumable-frame ownership + fusion eligibility; WASM losing a native opt → the fact belongs in
+portable IR, not native codegen; release-output wins but dev unusable → profile-tier separation.
+
+**Landing report format:** not just "tests green" but "tests green; perf matrix green; no
+CPython-red benchmarks; PyPy/Codon deltas known; regressions zero or explicitly tracked with
+owner and structural fix."
+
 ## Bootstrap Authority (Non-Negotiable)
 
 - Runtime-known module bootstrap must go through the runtime import boundary (`MODULE_IMPORT`). Do not split bootstrap ownership between frontend special cases and runtime import code.
