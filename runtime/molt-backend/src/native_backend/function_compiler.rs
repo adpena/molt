@@ -11211,7 +11211,10 @@ impl SimpleBackend {
                 // handle_text_transform family — extracted to fc::text_transform (M1)
                 "bytearray_fill_range" | "string_format" | "string_join" | "string_split" |
                 "string_split_validate" | "string_split_field" | "string_split_field_len" |
-                "string_split_field_eq" | "string_split_max" | "string_lower" |
+                "string_split_field_eq" | "string_split_field_start" |
+                "string_split_field_end" | "string_split_field_is_ascii" |
+                "string_split_field_len_from_bounds" | "string_split_field_ord_at_bounds" |
+                "string_split_field_to_int" | "string_split_max" | "string_lower" |
                 "string_upper" | "string_capitalize" | "string_strip" | "string_lstrip" |
                 "string_rstrip" | "string_replace" | "bytes_split" | "bytes_split_max" |
                 "bytearray_split" | "bytearray_split_max" | "bytes_replace" |

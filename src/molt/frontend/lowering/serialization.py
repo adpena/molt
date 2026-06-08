@@ -295,21 +295,29 @@ class SerializationMixin(_MixinBase):
         json_ops: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         const_strings: dict[str, str] = {}
+        # Values provably equal to the integer 0 / boolean False at lowering time
+        # (the `has_base` flag of a no-base `int(field)` is a CONST_BOOL False).
+        const_falsey: set[str] = set()
         use_counts: dict[str, int] = {}
         split_fields_by_out: dict[str, tuple[int, list[str]]] = {}
 
         for op_index, op in enumerate(json_ops):
             out = op.get("out")
-            if op.get("kind") == "const_str" and isinstance(out, str):
+            kind = op.get("kind")
+            if kind == "const_str" and isinstance(out, str):
                 s_value = op.get("s_value")
                 if isinstance(s_value, str):
                     const_strings[out] = s_value
+            if kind in ("const", "const_bool") and isinstance(out, str):
+                value = op.get("value")
+                if value in (0, False):
+                    const_falsey.add(out)
             args = op.get("args")
             if isinstance(args, list):
                 for arg in args:
                     if isinstance(arg, str):
                         use_counts[arg] = use_counts.get(arg, 0) + 1
-            if op.get("kind") == "string_split_field" and isinstance(out, str):
+            if kind == "string_split_field" and isinstance(out, str):
                 if isinstance(args, list) and len(args) == 3:
                     str_args = [arg for arg in args if isinstance(arg, str)]
                     if len(str_args) == 3:
@@ -379,6 +387,31 @@ class SerializationMixin(_MixinBase):
                     copy_source_span(op, rewritten)
                     replace_ops[op_index] = rewritten
                     remove_indexes.add(field_op_index)
+                continue
+            # int(s.split(sep)[k]) — parse the int directly from the field bytes,
+            # eliminating the per-field `alloc_string`. `int_from_obj` args are
+            # [value, base, has_base]; fire only when the field is read once here
+            # and `has_base` is provably False (no explicit base ⇒ base 10, which
+            # `string_split_field_to_int` matches byte-for-byte). The explicit-base
+            # form keeps the materializing path (correct, just not specialized).
+            if (
+                kind == "int_from_obj"
+                and len(args) == 3
+                and isinstance(args[0], str)
+                and isinstance(args[2], str)
+                and args[2] in const_falsey
+                and use_counts.get(args[0], 0) == 1
+                and args[0] in split_fields_by_out
+            ):
+                field_op_index, field_args = split_fields_by_out[args[0]]
+                rewritten = {
+                    "kind": "string_split_field_to_int",
+                    "args": field_args,
+                    "out": op.get("out"),
+                }
+                copy_source_span(op, rewritten)
+                replace_ops[op_index] = rewritten
+                remove_indexes.add(field_op_index)
 
         if not remove_indexes and not replace_ops:
             return json_ops
