@@ -1971,10 +1971,22 @@ def _cell_key(c: dict) -> str:
     return f"{c['benchmark']} [{c['backend']}/{c['profile']}]"
 
 
-def _latest_baseline() -> Path | None:
+def _latest_baseline(exclude: Path | None = None) -> Path | None:
+    """The most recent committed board, EXCLUDING in-progress ``.partial.json``
+    checkpoints and an optional explicit path (the board being written now).
+
+    Without the ``.partial`` exclusion a diff would compare a board against its
+    own mid-sweep checkpoint (a near-self-diff that hides every regression).
+    """
     if not SCOREBOARD_DIR.exists():
         return None
-    candidates = sorted(SCOREBOARD_DIR.glob("cpython_*.json"))
+    exclude_resolved = exclude.resolve() if exclude is not None else None
+    candidates = [
+        p
+        for p in sorted(SCOREBOARD_DIR.glob("cpython_*.json"))
+        if not p.name.endswith(".partial.json")
+        and (exclude_resolved is None or p.resolve() != exclude_resolved)
+    ]
     return candidates[-1] if candidates else None
 
 
@@ -2546,7 +2558,9 @@ def main(argv: list[str]) -> int:
 
     if ns.baseline is not None:
         baseline_path = (
-            _latest_baseline() if ns.baseline == "__latest__" else Path(ns.baseline)
+            _latest_baseline(exclude=out_path)
+            if ns.baseline == "__latest__"
+            else Path(ns.baseline)
         )
         if baseline_path is None or not baseline_path.exists():
             print("[baseline] no prior scoreboard to diff against.", file=sys.stderr)
@@ -2576,17 +2590,13 @@ def _attach_regressions(doc: dict) -> None:
     """Compute REGRESSIONS FROM LAST GREEN vs the latest committed board.
 
     Surfaced in print_summary's classified output. Best-effort: a missing/older
-    baseline simply leaves the section empty.
+    baseline simply leaves the section empty. Excludes the board being written
+    now (``_out_path``) AND any ``.partial.json`` so it never near-self-diffs.
     """
-    baseline = _latest_baseline()
+    out_path = doc.get("_out_path")
+    baseline = _latest_baseline(exclude=Path(out_path) if out_path else None)
     if baseline is None or not baseline.exists():
         return
-    try:
-        # Don't diff a board against itself if --out happens to be the latest.
-        if baseline.resolve() == Path(doc.get("_out_path", "")).resolve():
-            return
-    except (OSError, ValueError):
-        pass
     _newly, regressed = diff_against_baseline(doc, baseline)
     if regressed:
         doc["_regressions_from_last_green"] = regressed
