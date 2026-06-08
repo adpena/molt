@@ -263,122 +263,108 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 execution-engine contract; the **cold** axis is the startup-tax budget — they
 are never blended.
 
-## Baseline red-list (this host, native + llvm / release-fast)
+## Authoritative board (origin/main, native + llvm / release-fast)
 
-> Filled from the baseline sweep at the committed `<gitrev>` (git rev
-> `79903045f5…`). See the committed `bench/scoreboard/cpython_<gitrev>.json` for
-> the authoritative machine-readable board (112 cells = 56 native + 56 llvm);
-> this section is the human summary.
+> Measured on the FRESH origin/main worktree (compiler tree `2c10e20a5…`; the
+> board is committed as `bench/scoreboard/cpython_b54dd9b896…json`, 112 cells =
+> 56 native + 56 llvm). The tooling commit sits on top of origin so the board is
+> stamped `authoritative=false` with `--allow-nonauthoritative`; the
+> `provenance` records `origin_sha` (compiler) ≠ `local_head_sha` (tooling) so
+> the COMPILER perf numbers ARE origin/main's. This section is the human summary.
 
-**Merged board — 112 cells: 2 GREEN, 80 RED, 11 UNSTABLE, 8 BUILD-FAIL, 7 ERROR,
-4 CPython-incompatible (deferred).** Per backend:
+**112 cells: 1 GREEN, 30 FAIL_ENGINE, 0 FAIL_COLD_BUDGET, 56 WARN_COLD_FLOOR,
+6 UNSTABLE, 9 BUILD_FAILED, 7 RUN_ERROR, 3 CPY_INCOMPATIBLE.** Per backend:
 
-| backend | cells | GREEN | RED | UNSTABLE | BUILD-FAIL | ERROR | cpy-incompat |
-|---------|-------|-------|-----|----------|------------|-------|--------------|
-| native (Cranelift) | 56 | 1 | 46 | 6 | 0 | 0 | 3 |
-| llvm (inkwell)     | 56 | 1 | 34 | 5 | **8** | **7** | 1 |
+| backend | cells | GREEN | FAIL_ENGINE | WARN_COLD_FLOOR | UNSTABLE | BUILD_FAIL | RUN_ERROR | CPY-INCOMPAT |
+|---------|-------|-------|-------------|-----------------|----------|------------|-----------|--------------|
+| native (Cranelift) | 56 | **1** | 11 | 36 | 3 | 4 | 0 | 1 |
+| llvm (inkwell)     | 56 | 0 | 19 | 20 | 3 | 5 | 7 | 2 |
 
-The two GREEN cells are both `bench_class_hierarchy` (native warm **6.09×** / cold
-1.16×; llvm warm **3.95×** / cold 1.36×) — both phases beat CPython on both
-backends. **LLVM is materially weaker than native**: 8 build-failures + 7 run
-errors (0 on native) and 8 warm-reds (vs 3 on native) — a backend divergence the
-per-backend table exists to surface (a native win does not excuse an LLVM
-regression). The LLVM build-fail/error set clusters on
-bytes/regex/generator/async/memoryview codegen (`bench_bytes_*`,
-`bench_bytearray_*`, `bench_generator_iter`, `bench_async_await`,
-`bench_memoryview_tobytes`, `bench_counter_words`, `bench_gc_pressure`,
-`bench_json_roundtrip`, `bench_import_time`).
+The **2-D split is the headline**: the old "80 RED" collapses into **30
+FAIL_ENGINE** (warm ≤ CPython — the real release blockers) + **56
+WARN_COLD_FLOOR** (warm > CPython, cold loses only to the fixed startup tax,
+within budget — NOT a hard red). FAIL_COLD_BUDGET = 0 (no cell exceeds the v0
+budget; see `cold_start_budget.json`).
 
-### NATIVE / release-fast
+### GREENS WORTH PROTECTING (do NOT reopen)
 
-**56 cells: 1 GREEN, 46 RED, 6 UNSTABLE, 3 CPython-incompatible (deferred).** The
-dominant RED class is
-**cold-start overhead**, not slow steady-state. molt binaries pay a fixed
-~0.15–0.25 s cold cost (binary load + dyld + runtime init) that makes short
-benchmarks RED on the **cold** path while they are multiple-× faster **warm**.
-The constitution's "no warm-only wins" rule correctly flags these. The RED list
-splits into two families (the board's `summary.red_breakdown` keys them):
+| benchmark | backend | warm | cold | note |
+|-----------|---------|------|------|------|
+| `bench_class_hierarchy` | native | **8.00×** | **1.76×** | both phases beat CPython. Was spuriously UNSTABLE on the raw board — a single CPython GC outlier `[.417 .427 .424 .415 .637]` (cv 0.23) vs molt's rock-stable `[.054 .053 .053 .050 .053]` (cv 0.03); the **robust-stability rule** (trim one CPython outlier each side, check the verdict holds) correctly rescues it. |
 
-1. **`warm_red` — genuinely slow steady-state (the real representation gaps).**
-   Only **3** on this host:
+Other warm-decisive wins that are WARN_COLD_FLOOR (warm-green, cold-tax only —
+NOT reopened): `bench_bytes_find` (9.85× warm), `bench_str_*` family, `bench_sum_list`
+(2.94×), `bench_struct` (4.78× native / 2.53× llvm), `bench_set_ops` (2.06×),
+`bench_max_list` (2.00×). These are won classes on the engine axis.
 
-   | benchmark               | warm speedup | cold speedup | one-line missing-fact hypothesis |
-   |-------------------------|--------------|--------------|----------------------------------|
-   | `bench_etl_orders`      | **0.60×**    | 0.14×        | dict-of-records build + attribute writes box per field → missing *Repr-precise record/shape + borrow on the dict value slot* (dispatch/class-identity + boxing) |
-   | `bench_csv_parse_wide`  | **0.68×**    | 0.14×        | per-cell `str` split/alloc dominates → missing *Repr-precise `str` slicing without per-field heap alloc + memchr-class field scan* (boxing/Repr + RC of the row buffer) |
-   | `bench_exception_heavy` | **0.69×**    | 0.32×        | raise/except in a hot loop → missing *zero-cost-happy-path exception lowering + handler-region ownership* (generator/frame + RC, exception-CFG) |
+### NATIVE warm reds (FAIL_ENGINE — the real representation gaps)
 
-2. **`cold_only_red` — startup tax (warm ≥ 1.0×, cold < 1.0×).** **43** cells.
-   The workload is so short that cold-start dominates wall-time. Missing fact =
-   **cold-start / binary-init cost** — the constitution's separate
-   *binary-size / cold-start / RSS* column, tracked structurally by
-   `tools/output_startup_size_audit.py`. Fix = defer module-init via
-   `MODULE_IMPORT` + shrink the startup runtime surface; do **not** "optimize the
-   benchmark loop." (e.g. `bench_sum` warm **8.61×** / cold 0.82×; `bench_dict_ops`
-   warm 1.00× / cold 0.08×.)
+Two sub-groups. The genuine warm reds (warm < 1.0) match the council's named set:
 
-### Stale memory-note hypotheses — REFUTED by measurement
+| benchmark | warm | cold | pypy | suspected missing IR fact |
+|-----------|------|------|------|---------------------------|
+| `bench_etl_orders` | **0.60×** | 0.12× | 0.60× | record/dict value-slot shape + borrow/ownership of stable field flow |
+| `bench_csv_parse_wide` | **0.66×** | 0.14× | 0.68× | substring/slice repr (alloc-free field extraction) |
+| `bench_exception_heavy` | **0.73×** | 0.33× | 0.15× | zero-cost happy-path exception-state + handler-region ownership |
 
-The 5-yr-arc / memory notes named suspected reds. The baseline sweep **refutes
-all three** — these benchmarks were optimized since the note was written:
+The other 8 native FAIL_ENGINE are **warm == 1.00 ties** (a statistical tie with
+CPython at steady state, caught by the `warm_speedup ≤ 1.00` rule per council
+ruling A): `bench_fib`, `bench_dict_ops`, `bench_dict_views`, `bench_list_ops`,
+`bench_tuple_pack`, `bench_generator_iter`, `bench_memoryview_tobytes`,
+`bench_startup`. These are borderline — molt neither beats nor loses to CPython
+warm; they want the same facts (Repr precision, hash-slot Repr, frame ownership)
+to cross decisively above 1.0.
 
-| benchmark              | memory note (stale) | measured warm | measured cold | verdict |
-|------------------------|---------------------|---------------|---------------|---------|
-| `bench_class_hierarchy`| ~0.01× (100× slower)| **6.09× faster** | **1.16× faster** | **GREEN** (fully refuted — both phases beat CPython) |
-| `bench_struct`         | ~0.05× (20× slower) | **4.83× faster** | 0.46× (cold) | warm-green; RED only on cold-start (startup tax) |
-| `bench_bytes_find`     | ~0.06× (16× slower) | **8.72× faster** | 0.70× (cold) | warm-green; RED only on cold-start (startup tax) |
+### LLVM — the divergence lane (materially weaker than native)
 
-The lesson: **memory-note perf hypotheses must be confirmed by a real
-measurement before being treated as reds.** The board is the source of truth.
+**19 FAIL_ENGINE (vs 11 native), 5 BUILD_FAILED, 7 RUN_ERROR (vs 0 native).**
+LLVM codegen is genuinely slower at steady state on the str/tuple/csv/dict family
+(`bench_fib` llvm **0.30×** vs native 1.00×, `bench_tuple_pack` 0.52×,
+`bench_exception_heavy` 0.47×, the whole `bench_str_*` family 0.65–0.68×) — a
+native win does NOT excuse the LLVM red. The remaining 7 LLVM RUN_ERRORs are a
+bytes/bytearray/memoryview LLVM runtime-codegen gap (`bench_bytes_*`,
+`bench_bytearray_*`, `bench_memoryview_tobytes`, `bench_gc_pressure`). Binary
+sizes are smaller on LLVM (~3547 KiB vs ~4256 KiB native) but compile time is
+far higher.
 
-### LLVM / release-fast — the divergence lane
+### LLVM #47 status — PARTIALLY healed on origin (not fully gone)
 
-**56 cells: 1 GREEN, 34 RED (8 warm-red + 26 cold-only-red), 5 UNSTABLE,
-8 BUILD-FAIL, 7 ERROR, 1 CPython-incompatible.** LLVM diverges from native in
-three ways the per-backend table is built to catch:
+Comparing the stale board (`79903045…`) to origin/main, of the **8 LLVM
+build-failures** the council expected gone:
 
-1. **8 BUILD-FAIL — LLVM-backend miscompiles** (0 on native). The clearest is a
-   genuine LLVM module-verification failure on the regex path: *"Incorrect number
-   of arguments passed to called function"* on `re__error___init__` (called with
-   4 args vs its declared signature) — the **frontend closure-ABI `__init__`
-   arity bug class** (cf. MEMORY.md re-import LLVM P0). Others cluster on
-   generator/async/bytes/json codegen. The cell records `status="build-failed"`
-   (gated RED) and the sweep continues rather than crashing.
-2. **7 ERROR — LLVM binaries that built but failed to run** while CPython ran
-   (e.g. `bench_memoryview_tobytes`). These are LLVM-runtime regressions, gated
-   RED.
-3. **8 warm-red (vs 3 on native)** — LLVM codegen is genuinely slower than
-   Cranelift at steady state on: `bench_fib`, `bench_tuple_index`,
-   `bench_tuple_pack`, `bench_dict_comprehension`, `bench_set_ops` (warm 0.51×!),
-   `bench_csv_parse`, `bench_csv_parse_wide`, `bench_exception_heavy`.
+| benchmark [llvm] | stale | origin/main | healed? |
+|------------------|-------|-------------|---------|
+| `bench_generator_iter` | build-failed | **FAIL_ENGINE** (builds+runs) | ✓ |
+| `bench_import_time` | build-failed | **UNSTABLE** (builds+runs) | ✓ |
+| `bench_json_roundtrip` | build-failed | **WARN_COLD_FLOOR** (builds+runs) | ✓ |
+| `bench_etl_orders` | build-failed | BUILD_FAILED | ✗ (llvm-only) |
+| `bench_async_await` | build-failed | BUILD_FAILED | ✗ (also fails native) |
+| `bench_channel_throughput` | build-failed | BUILD_FAILED | ✗ (CPython-incompat + native) |
+| `bench_counter_words` | build-failed | BUILD_FAILED | ✗ (also fails native) |
+| `bench_ptr_registry` | build-failed | BUILD_FAILED | ✗ (CPython-incompat + native) |
 
-A native win does not excuse any of these; each is its own LLVM RED. The
-authoritative per-cell detail is in the committed JSON under each benchmark's
-`llvm` key. (Binary sizes are notably smaller on LLVM — ~3547 KiB vs native's
-~4256 KiB — but compile time is ~20× slower per build.)
+**3 of 8 healed** (the re-import / closure-ABI class that broke
+generator/import/json now builds and runs). The 7 LLVM bytes/bytearray
+RUN_ERRORs are **unchanged** from the stale board. So #47 is *reduced, not
+gone*; the remaining LLVM issues are a **different class** (bytes/bytearray
+runtime codegen + a few cross-backend build-fails), and `bench_etl_orders` is
+the one LLVM-ONLY build-fail. `bench_counter_words`/`bench_async_await` fail on
+**both** backends, so they are not LLVM-specific.
 
-### Per-red missing-fact hypothesis (representation, not passes)
+### PyPy / Codon comparator signal (where molt trails a mature compiler)
 
-For each *steady-state* (warm) RED the board surfaces, the one-line hypothesis
-of the missing IR fact (per the constitution's representation lens):
+`bench_fib`: molt warm 1.00× CPython, but **PyPy 0.51×** (PyPy JIT ~2× molt) and
+**Codon 0.26×** (Codon AOT ~3.9× molt) — a recursive-int kernel is the clearest
+class where mature JIT/AOT compilers lead; the missing molt fact is call-target
+devirt + unboxed-int recursion. `bench_exception_heavy` PyPy 0.15× (PyPy excels
+at exception-heavy loops). `bench_memoryview_tobytes` PyPy 3.89× and
+`bench_generator_iter` PyPy 2.00× — molt LEADS PyPy there. Codon is scored only
+on the equivalence allowlist (fib here); everything else is `non-equivalent`,
+never scored.
 
-- **Cold-start reds (warm-green)** → missing fact = *binary-init / dyld / runtime
-  bootstrap cost*. Lane: cold-start + binary-size (`output_startup_size_audit`),
-  not the hot path. Fix = defer module-init via `MODULE_IMPORT`, shrink the
-  startup runtime surface; do **not** "optimize the benchmark loop."
-- **str/bytes find/replace/count reds** (if warm-red) → missing fact = *SIMD /
-  memchr-class byte-search lowering + Repr-precise `bytes`/`str` storage* (no
-  boxing on the scan). RC/ownership of the haystack across the scan loop.
-- **dict/set-ops reds** (if warm-red) → missing fact = *class-identity / shape
-  guard on the key type + inline-cache tiering for `__hash__`/`__eq__`* so the
-  probe loop devirtualizes.
-- **generator/async reds** (if warm-red) → missing fact = *resumable-frame
-  ownership + generator-fusion eligibility* (per the genleak/fusion arcs).
-- **loop/numeric reds** (if warm-red) → missing fact = *induction-variable /
-  range / overflow / lane-stability* so the loop stays unboxed I64.
-
-> The authoritative, per-benchmark red-list with exact ratios is the committed
-> JSON. Regenerate + diff with `--baseline` on every perf-relevant landing.
+> The authoritative, per-benchmark detail with exact ratios + the 2-D
+> verdict_breakdown is the committed JSON. Regenerate + diff with `--baseline`
+> on every perf-relevant landing.
 
 ## What was measured vs deferred (no silent truncation)
 
