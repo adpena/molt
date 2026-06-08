@@ -136,6 +136,43 @@ portable IR, not native codegen; release-output wins but dev unusable → profil
 CPython-red benchmarks; PyPy/Codon deltas known; regressions zero or explicitly tracked with
 owner and structural fix."
 
+## Council Operating Doctrine (2026-06-08, binding)
+
+**Ratified fork resolutions** (full record: memory project_council_decisions_20260608):
+- **Finalizer ordering goes on a minimal OWNERSHIP LATTICE, never as another DropInsertion
+  special-case.** Build the smallest slice `alias-root → ownership state → Python lifetime
+  boundary → ordered release obligation` (new `ownership_lattice_min.rs`/`ownership_boundaries.rs`),
+  then ship ordering on it. Narrow is allowed; a disguised ad-hoc finalizer patch is not. This
+  is the rung-1→rung-2 bridge — do NOT boil the ocean, do NOT re-patch DropInsertion.
+- **`Free` is demoted.** For Python heap objects it is a backend/runtime LOWERING of a
+  proven-unique DecRef only under `¬MayFinalize ∧ ¬HasWeakrefs ∧ ¬MayResurrect ∧
+  ¬InnerRefOrdering ∧ ProvenUnique`; otherwise the only legal op is finalizer-aware DecRef.
+  Runtime-internal finalizer-free frees get a SEPARATE opcode (`FreeInternal`/`FreeRaw`) — never
+  share with "free Python object."
+- **`MOLT_ASSERT_NO_LEAK` = actual destruction** (not zero-transition).
+- **`FinalizerSensitive` = one ClassInfo/MRO/version-derived cached fact**, consumed by escape +
+  refcount-elim + stack-alloc + Free-eligibility + ownership-lowering. No pass-local finalizer
+  reasoning. Any optimization changing lifetime/placement/release-order/direct-free-eligibility
+  consults the same fact.
+
+**P0 ranking:** a resurrection/finalizer/weakref MEMORY-CORRUPTION bug (e.g. the resurrection-
+at-scale SIGSEGV) OUTRANKS the native RC flip and all performance/feature work — it invalidates
+trust in the memory model. Root-cause structurally; never cap the repro or mark it expected.
+
+**Three-lane model** (non-overlapping files, continuous): A = P0 semantic safety (corruption,
+finalizer ordering, ownership-lattice slice, flip blockers, leak/finalizer/weakref/unwind tests);
+B = performance frontier (CPython-reds, regressions, PyPy/Codon harness, raw/boxed/dispatch/loop/
+generator bottlenecks); C = infra/scoreboards/decomposition that makes A&B faster. A blocks B only
+when memory unsafety makes perf numbers untrustworthy; B blocks new features when any benchmark
+< CPython; C is never decorative.
+
+**Every batch reports the PERF/SPEED STATUS block** (CPython-red benchmarks + suspected missing
+fact; regressions; PyPy/Codon deltas where semantically comparable; fastest next unlock = one
+fact / one file-lane / one gate). If it cannot be filled, the next task is to CREATE THE
+MEASUREMENT PATH, not optimize blind. Perf work's deliverable is a NEW IR FACT that makes a
+class of slow programs unexpressible — not "faster code." Five-year target = retire one CLASS
+of slowness per month (the compression ladder), not one benchmark.
+
 ## Bootstrap Authority (Non-Negotiable)
 
 - Runtime-known module bootstrap must go through the runtime import boundary (`MODULE_IMPORT`). Do not split bootstrap ownership between frontend special cases and runtime import code.
