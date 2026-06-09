@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod blocks;
 pub mod bolt;
 pub mod cache;
+pub mod call_facts;
 pub mod call_graph;
 pub mod cfg;
 pub mod deopt;
@@ -74,6 +75,10 @@ pub(crate) fn is_structural(kind: &str) -> bool {
 
 // Re-export primary types for convenience.
 pub use self::blocks::{BlockId, Terminator, TirBlock};
+pub use self::call_facts::{
+    CallFacts, CallFactsAnalysis, CallFactsTable, CallTargetFact, FactValue, InlineEligibility,
+    InlineWhyNot,
+};
 pub use self::call_graph::{CallEdge, CallGraph};
 pub use self::function::{TirFunction, TirModule};
 pub use self::module_phase::{run_module_pipeline, ModuleAnalysis};

@@ -81,6 +81,16 @@ pub struct ModuleAnalysis {
     /// to SimpleIR; every other function keeps its byte-identical per-function
     /// pipeline output (no redundant second TIR roundtrip).
     pub changed_functions: Vec<String>,
+    /// **CallFacts** side-tables, one per function (keyed by function name), each
+    /// keyed internally by a call op's result `ValueId` (foundation design 47).
+    /// The IR-fact half of doc 46 §4.1 (FactGraph): the typed call target, typed
+    /// return, leaf / no-throw / inline-eligibility facts that backends and the
+    /// `tools/call_fact_coverage.py` census read. Built over the **post-inline**
+    /// module (same rebuild as `call_graph` / `summaries`), so the recorded facts
+    /// describe the program the backends actually lower. Phase 1a attaches these
+    /// (consumed by nothing on the hot path → byte-identical); later phases route
+    /// call lowering / RC elision / devirt through them.
+    pub call_facts: std::collections::BTreeMap<String, super::call_facts::CallFactsTable>,
 }
 
 impl ModuleAnalysis {
@@ -89,6 +99,13 @@ impl ModuleAnalysis {
     /// the native backend's legacy SimpleIR "has no call op" leaf scan.
     pub fn leaf_functions(&self) -> std::collections::BTreeSet<String> {
         self.call_graph.leaf_functions()
+    }
+
+    /// The [`CallFactsTable`](super::call_facts::CallFactsTable) for the function
+    /// named `name`, if it is in the module. Each entry is keyed by a call op's
+    /// result `ValueId` (foundation design 47).
+    pub fn call_facts_for(&self, name: &str) -> Option<&super::call_facts::CallFactsTable> {
+        self.call_facts.get(name)
     }
 }
 
@@ -235,6 +252,17 @@ pub fn run_module_pipeline(
     let call_graph = CallGraph::build(module);
     let summaries = ModuleSummaries::compute(module, &call_graph);
 
+    // CallFacts (foundation design 47): the per-call-site fact records, built
+    // over the SAME post-inline module + call graph + summaries the backends
+    // lower. Pure analysis (read-only — it records facts onto a side-table keyed
+    // by each call op's result `ValueId`, it never mutates a body), so it is
+    // byte-identical: Phase 1a attaches the facts but nothing on the hot path
+    // consumes them yet. `is_inlineable`'s own eligibility classifier fills the
+    // `inlinable` field, so the recorded facts can never disagree with the
+    // inliner (single source of truth, doc 47 §7).
+    let call_facts =
+        super::call_facts::CallFactsTable::build_module(module, &call_graph, &summaries, tti);
+
     // S5-1.5 producer-effect instrument: how many functions now have a
     // MemGVN-forwardable typed-slot load pair (two loads with the same reaching
     // memory version, object root, and field offset). Gated on
@@ -247,6 +275,7 @@ pub fn run_module_pipeline(
         call_graph,
         summaries,
         changed_functions,
+        call_facts,
     }
 }
 

@@ -85,11 +85,17 @@ pub enum AnalysisId {
     /// Backward-dataflow liveness with representation-filtered live sets — the
     /// last-use map the RC drop-insertion pass consumes (design 20, Phase 2).
     Liveness,
+    /// Per-call-site fact records (target / typed-return / leaf / no-throw /
+    /// inlinable), keyed by each call op's result `ValueId` — the CallFacts
+    /// side-table (foundation design 47). The precise table is built
+    /// interprocedurally in the module phase and prepopulated; the cached
+    /// [`Analysis::compute`] path is the fail-closed intraprocedural floor.
+    CallFacts,
 }
 
 impl AnalysisId {
     /// All analyses, for iteration in the debug self-check.
-    pub const ALL: [AnalysisId; 12] = [
+    pub const ALL: [AnalysisId; 13] = [
         AnalysisId::PredMap,
         AnalysisId::ImmediateDoms,
         AnalysisId::DomChildren,
@@ -102,6 +108,7 @@ impl AnalysisId {
         AnalysisId::AliasAnalysis,
         AnalysisId::MemorySSA,
         AnalysisId::Liveness,
+        AnalysisId::CallFacts,
     ];
 }
 
@@ -369,6 +376,7 @@ impl AnalysisManager {
 /// Mirrors each analysis's `CFG_SENSITIVE` const. Kept exhaustive so adding an
 /// `AnalysisId` variant without classifying it fails to compile.
 fn cfg_sensitive(id: AnalysisId) -> bool {
+    use super::call_facts::CallFactsAnalysis;
     use super::passes::alias_analysis::AliasAnalysis;
     use super::passes::liveness::TirLiveness;
     use super::passes::memory_ssa::MemorySSA;
@@ -387,11 +395,13 @@ fn cfg_sensitive(id: AnalysisId) -> bool {
         AnalysisId::AliasAnalysis => AliasAnalysis::CFG_SENSITIVE,
         AnalysisId::MemorySSA => MemorySSA::CFG_SENSITIVE,
         AnalysisId::Liveness => TirLiveness::CFG_SENSITIVE,
+        AnalysisId::CallFacts => CallFactsAnalysis::CFG_SENSITIVE,
     }
 }
 
 /// Ops-sensitivity by id — mirrors each analysis's `OPS_SENSITIVE` const.
 fn ops_sensitive(id: AnalysisId) -> bool {
+    use super::call_facts::CallFactsAnalysis;
     use super::passes::alias_analysis::AliasAnalysis;
     use super::passes::liveness::TirLiveness;
     use super::passes::memory_ssa::MemorySSA;
@@ -410,6 +420,7 @@ fn ops_sensitive(id: AnalysisId) -> bool {
         AnalysisId::AliasAnalysis => AliasAnalysis::OPS_SENSITIVE,
         AnalysisId::MemorySSA => MemorySSA::OPS_SENSITIVE,
         AnalysisId::Liveness => TirLiveness::OPS_SENSITIVE,
+        AnalysisId::CallFacts => CallFactsAnalysis::OPS_SENSITIVE,
     }
 }
 
