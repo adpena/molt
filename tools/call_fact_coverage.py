@@ -100,35 +100,35 @@ CALL_FACTS: list[CallFact] = [
     CallFact(
         key="no_throw",
         label="call proven not to raise",
-        status=TRANSIENT,
-        evidence_file="runtime/molt-backend/src/tir/op_kinds.toml",
-        evidence_symbol="CallBuiltin",
-        how_to_read="op_kinds may_throw is per-OPCODE (all call opcodes = "
-                    "may_throw:true); a per-CALL-SITE no-throw fact is not recorded",
-        missing_primitive="CallFacts.no_throw bit on the call op (callee may_throw "
-                          "∨ builtin-allowlist ∨ proven-no-handler-reachable)",
+        status=ATTACHED,
+        evidence_file="runtime/molt-backend/src/tir/call_facts.rs",
+        evidence_symbol="no_throw",
+        how_to_read="CallFacts.no_throw (Proven iff opcode-static-no-throw ∨ "
+                    "resolved-callee-no-handlers ∨ allowlisted-builtin; else Unknown)",
+        missing_primitive="(attached, CallFacts Phase 1a) — consumer: exception "
+                          "normal-edge fast path (ties doc 45) is the deferred 1b",
     ),
     CallFact(
         key="leaf",
         label="callee makes no further calls (leaf)",
-        status=TRANSIENT,
-        evidence_file="runtime/molt-backend/src/tir/call_graph.rs",
-        evidence_symbol="makes_any_call",
-        how_to_read="CallGraph::leaf_functions() / !makes_any_call(name) — a "
-                    "MODULE fact, never propagated onto the call site",
-        missing_primitive="CallFacts.leaf bit (callee resolved ∧ callee is leaf) — "
-                          "enables frame-elision / no-spill fast paths",
+        status=ATTACHED,
+        evidence_file="runtime/molt-backend/src/tir/call_facts.rs",
+        evidence_symbol="leaf",
+        how_to_read="CallFacts.leaf (Proven/False from !makes_any_call for a "
+                    "resolved callee; Unknown for opaque) — now on the call site",
+        missing_primitive="(attached, CallFacts Phase 1a) — consumer: frame-elision "
+                          "/ no-spill leaf-call lowering is a follow-up",
     ),
     CallFact(
         key="inlinable",
         label="callee eligible to inline",
-        status=TRANSIENT,
-        evidence_file="runtime/molt-backend/src/tir/passes/inliner.rs",
-        evidence_symbol="is_inlineable",
-        how_to_read="inliner::is_inlineable(callee,…) recomputed each inline pass; "
-                    "the decision + the WHY-NOT reason are discarded",
-        missing_primitive="CallFacts.inline_eligibility + a why_not enum "
-                          "(recursive/has_handlers/over_budget/closure/generator)",
+        status=ATTACHED,
+        evidence_file="runtime/molt-backend/src/tir/call_facts.rs",
+        evidence_symbol="inlinable",
+        how_to_read="CallFacts.inlinable (Eligible|WhyNot from classify_inline_"
+                    "eligibility — same gate is_inlineable reduces to; Unknown if opaque)",
+        missing_primitive="(attached, CallFacts Phase 1a) — consumer: inliner reading "
+                          "the side-table instead of recomputing is the deferred 1b",
     ),
     CallFact(
         key="noescape_args",
