@@ -170,6 +170,30 @@ from the op registry: rows = OpCode/Terminator/OwnershipEvent/LifetimeRegion/
 CallableTarget/RuntimeHelper; columns = native/LLVM/WASM/Luau × lowered? / RC-safe?
 / exception-safe? / repr-safe? / known-degradation? / test-coverage?.
 
+**RECON FINDING (2026-06-08) — why this MUST be registry-generated, not scraped.**
+A direct scrape of backend support was attempted and **refused** (verified
+refusal): the four backends dispatch through **four incompatible paradigms**, so
+there is *no shared lowering contract* to scrape uniformly —
+- **LLVM** (`llvm_backend/lowering.rs::lower_op`) — clean `match op.opcode` over
+  the `OpCode` enum.
+- **native** (`native_backend/function_compiler.rs`) — `match op.kind.as_str()`
+  over SimpleIR **kind strings**, a *different vocabulary* (mapped to `OpCode`
+  only via the op_kinds `[[kind]]` mapper).
+- **WASM** (`wasm.rs`) — nested opcode matches, no single dispatch site.
+- **Luau** (`luau.rs`) — a **transform pipeline** (`lower_try_to_pcall`,
+  `lower_iter_to_for`, …) with ~49 fail-loud arms, no opcode match at all.
+
+That heterogeneity *is* the Q7/Q10 answer: backend-parity bugs recur because each
+backend reinvents dispatch instead of implementing one portable lowering
+contract. A heuristic 4-way scrape would be exactly the brittle, drift-prone
+tool the discovery-vs-authority rule forbids. **Authoritative design:** add
+per-backend support as GENERATED columns to `op_kinds.toml` (like `may_throw`);
+`gen_op_kinds.py` renders the matrix; the tool then checks each backend's actual
+dispatch *against* the registry (drift), never *infers* support from it. This is
+a build-requiring registry arc (touches the generator + a careful first
+population) — sequenced for build capacity (after #73) and coordinated with the
+lowering work, NOT rushed as a scrape.
+
 ### 4.8 Pass-delta ledger + profile-tiered compilation
 `tools/pass_delta_dashboard.py`: per pass, the Δ in op-count / boxed values /
 generic calls / RC events / alloc sites / backend-unsupported ops / compile time —
