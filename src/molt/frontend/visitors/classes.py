@@ -115,6 +115,98 @@ class ClassDefVisitorMixin(_MixinBase):
                     return True
         return False
 
+    def _emit_dataclass_application(
+        self,
+        node: ast.ClassDef,
+        class_info: ClassInfo,
+        class_val: MoltValue,
+    ) -> MoltValue:
+        """Emit the compile-time-recognized ``@dataclass`` runtime application.
+
+        The ``@dataclass`` transform is construction-method-agnostic: it operates
+        on a *finished* class object via ``setattr`` / ``cls.x = ...`` and reads
+        ``cls.__annotations__`` (gathered at compile time and published into the
+        class namespace).  It therefore applies identically whether ``class_val``
+        came from the static "outlined ``CLASS_DEF``" path or from the dynamic
+        metaclass-call path the #50 block-execution re-lower uses.  Centralizing
+        the emission here keeps exactly ONE code path that publishes the dataclass
+        transform, so a dataclass whose body needs block execution (control flow /
+        ``del`` / non-Name assign target) still gets its generated dunders.
+
+        When ``class_info`` is not a dataclass this is a no-op and returns
+        ``class_val`` unchanged.  Otherwise it emits the
+        ``dataclasses.dataclass(cls, init=..., repr=..., ...)`` call, rebinds the
+        class name to the (possibly rebuilt — e.g. ``slots=True``) result, and
+        returns that new value.
+        """
+        if not class_info.get("dataclass"):
+            return class_val
+
+        dataclass_params = class_info.get("dataclass_params", {})
+
+        def emit_bool(value: bool) -> MoltValue:
+            res = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
+            return res
+
+        # Route the compile-time-recognized ``@dataclass`` path through the
+        # public ``dataclasses.dataclass`` wrapper rather than the internal
+        # ``_molt_apply_dataclass`` worker.  The wrapper performs the same work
+        # but its calling convention — single positional ``cls`` plus keyword-only
+        # options — matches the natural Python semantics, avoiding an 11-argument
+        # positional-only call into the worker that exposed an SSA/dominator
+        # interaction during module init (frontend bypass would intermittently
+        # corrupt the class binding before module attribute publication).
+        kw_specs = [
+            ("init", emit_bool(dataclass_params.get("init", True))),
+            ("repr", emit_bool(dataclass_params.get("repr", True))),
+            ("eq", emit_bool(dataclass_params.get("eq", True))),
+            ("order", emit_bool(dataclass_params.get("order", False))),
+            ("unsafe_hash", emit_bool(dataclass_params.get("unsafe_hash", False))),
+            ("frozen", emit_bool(dataclass_params.get("frozen", False))),
+            ("match_args", emit_bool(dataclass_params.get("match_args", True))),
+            ("kw_only", emit_bool(dataclass_params.get("kw_only", False))),
+            ("slots", emit_bool(dataclass_params.get("slots", False))),
+            ("weakref_slot", emit_bool(dataclass_params.get("weakref_slot", False))),
+        ]
+        helper_val = self._emit_module_attr_get_on("dataclasses", "dataclass")
+        callargs = MoltValue(self.next_var(), type_hint="callargs")
+        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+        # Single positional argument: the class itself.
+        self.emit(
+            MoltOp(
+                kind="CALLARGS_PUSH_POS",
+                args=[callargs, class_val],
+                result=MoltValue("none"),
+            )
+        )
+        # Keyword-only options matching CPython's dataclass signature.
+        for kw_name, kw_val in kw_specs:
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_KW",
+                    args=[callargs, key_val, kw_val],
+                    result=MoltValue("none"),
+                )
+            )
+        # ``dataclass`` always returns the (possibly rebuilt) class object.
+        # Capture and rebind so that ``slots=True`` — which produces a brand-new
+        # class via ``_add_slots`` — and any future rebuild paths replace the
+        # original binding.  For the non-slots path the function mutates and
+        # returns the same object, so the rebind is a no-op.
+        applied_cls = MoltValue(self.next_var(), type_hint="type")
+        self.emit(
+            MoltOp(
+                kind="CALL_BIND",
+                args=[helper_val, callargs],
+                result=applied_cls,
+            )
+        )
+        self._publish_class_value(node.name, applied_cls)
+        return applied_cls
+
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None:
         if len(node.body) != 1:
             return None
@@ -3362,85 +3454,16 @@ class ClassDefVisitorMixin(_MixinBase):
                 )
             )
             self._publish_class_value(node.name, class_val)
-            if class_info.get("dataclass"):
-                dataclass_params = class_info.get("dataclass_params", {})
-
-                def emit_bool(value: bool) -> MoltValue:
-                    res = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
-                    return res
-
-                # Route the compile-time-recognized ``@dataclass`` path
-                # through the public ``dataclasses.dataclass`` wrapper rather
-                # than the internal ``_molt_apply_dataclass`` worker.  The
-                # wrapper performs the same work but its calling convention
-                # — single positional ``cls`` plus keyword-only options —
-                # matches the natural Python semantics, avoiding an
-                # 11-argument positional-only call into the worker that
-                # exposed an SSA/dominator interaction during module init
-                # (frontend bypass would intermittently corrupt the class
-                # binding before module attribute publication).
-                init_val = emit_bool(dataclass_params.get("init", True))
-                repr_val = emit_bool(dataclass_params.get("repr", True))
-                eq_val = emit_bool(dataclass_params.get("eq", True))
-                order_val = emit_bool(dataclass_params.get("order", False))
-                unsafe_hash_val = emit_bool(dataclass_params.get("unsafe_hash", False))
-                frozen_val = emit_bool(dataclass_params.get("frozen", False))
-                match_args_val = emit_bool(dataclass_params.get("match_args", True))
-                kw_only_val = emit_bool(dataclass_params.get("kw_only", False))
-                slots_val = emit_bool(dataclass_params.get("slots", False))
-                weakref_slot_val = emit_bool(
-                    dataclass_params.get("weakref_slot", False)
-                )
-                helper_val = self._emit_module_attr_get_on("dataclasses", "dataclass")
-                callargs = MoltValue(self.next_var(), type_hint="callargs")
-                self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                # Single positional argument: the class itself.
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_PUSH_POS",
-                        args=[callargs, class_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                # Keyword-only options matching CPython's dataclass signature.
-                for kw_name, kw_val in [
-                    ("init", init_val),
-                    ("repr", repr_val),
-                    ("eq", eq_val),
-                    ("order", order_val),
-                    ("unsafe_hash", unsafe_hash_val),
-                    ("frozen", frozen_val),
-                    ("match_args", match_args_val),
-                    ("kw_only", kw_only_val),
-                    ("slots", slots_val),
-                    ("weakref_slot", weakref_slot_val),
-                ]:
-                    key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
-                    self.emit(
-                        MoltOp(
-                            kind="CALLARGS_PUSH_KW",
-                            args=[callargs, key_val, kw_val],
-                            result=MoltValue("none"),
-                        )
-                    )
-                # ``dataclass`` always returns the (possibly rebuilt) class
-                # object.  Capture and rebind so that ``slots=True`` — which
-                # produces a brand-new class via ``_add_slots`` — and any
-                # future rebuild paths replace the original binding.  For
-                # the non-slots path the function mutates and returns the
-                # same object, so the rebind is a no-op.
-                applied_cls = MoltValue(self.next_var(), type_hint="type")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_BIND",
-                        args=[helper_val, callargs],
-                        result=applied_cls,
-                    )
-                )
-                self._publish_class_value(node.name, applied_cls)
-                class_val = applied_cls
+            # ``@dataclass`` runtime application is construction-method-agnostic:
+            # it operates on the finished ``class_val`` via ``setattr`` /
+            # ``cls.x = ...`` and reads ``cls.__annotations__`` (published into the
+            # namespace at compile time).  Apply it here for the static-outlined
+            # path; the ``dynamic_build`` branch below applies the SAME helper, so
+            # a dataclass whose body needs block execution (P0 #50) still gets its
+            # generated dunders.
+            class_val = self._emit_dataclass_application(
+                node, class_info, class_val
+            )
         else:
             # Dynamic path
             self._publish_class_value(node.name, class_val)
@@ -3522,6 +3545,17 @@ class ClassDefVisitorMixin(_MixinBase):
                     args=[class_val, layout_val],
                     result=MoltValue("none"),
                 )
+            )
+            # ``@dataclass`` runtime application on the dynamic-build path (P0
+            # #50).  A dataclass whose body needs block execution (control flow /
+            # ``del`` / non-Name assign target) is routed through ``dynamic_build``
+            # and built via the metaclass call; the dataclass transform — which
+            # installs ``__init__`` / ``__repr__`` / ``__eq__`` / ``__hash__`` /
+            # frozen guards onto the finished class — must still run.  This is the
+            # SAME helper the static-outlined path calls: one code path publishes
+            # the dataclass transform regardless of how the class object was built.
+            class_val = self._emit_dataclass_application(
+                node, class_info, class_val
             )
         # Fill the ``__class__`` cell threaded into method closures with the
         # freshly built class object.  The ``dynamic_build`` (metaclass) path
