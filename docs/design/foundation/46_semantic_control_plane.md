@@ -123,7 +123,10 @@ coverage`, `perf relevance`. Start narrow: **attach a `CallFacts` record to the
 call op** (direct target, leaf, no-throw, no-alloc, inline-eligibility + why-not,
 arg-noescape mask). That single primitive moves call_fact_coverage from 28.6% to
 measurable, lets backends specialize calls, and is the substrate for #67/#68/#71.
-`tools/fact_graph_dump.py` + `molt factgraph <function>` render it.
+`tools/fact_graph_dump.py` + `molt factgraph <function>` render it. **Full
+implementation spec: `docs/design/foundation/47_call_facts_leaf_coverage.md`**
+(the `CallFacts` struct, `FactValue` confidence lattice, per-field producers, the
+"pop many reds into place" benchmark map, and the 4-phase plan).
 
 ### 4.2 Optimization Causality Engine
 `tools/perf_causality.py` joins #76 hot profiles + the census + (future)
