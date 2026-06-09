@@ -1499,6 +1499,94 @@ kind = "call_indirect"
 consumed_operand = "last"
 
 # ===========================================================================
+# Per-TERMINATOR operand ownership (molt task #58 ladder #72, design 27 §2.4
+# "transfer sites"). The OWNERSHIP-MOVES-OUT axis of the operand-ownership
+# lattice: a `Terminator` does not appear in the `[[opcode]]` enum (it is the
+# `Terminator` enum in blocks.rs, NOT a `TirOp`), so its operand ownership is a
+# DISTINCT table from `opcode_operand_ownership_table`. It is the generated
+# authority drop_insertion.rs reads to decide which terminator operands TRANSFER
+# ownership (the drop pass must NOT emit a trailing `DecRef` at a transfer point —
+# the receiver owns it). This RETIRES the hand-coded transfer carve-out that lived
+# inline in `terminator_branch_args` + the `Return` arm of `terminator_uses_root`.
+#
+# Each `Terminator` variant has TWO operand CATEGORIES, classified independently
+# because they have different ownership:
+#
+#   * direct   — the terminator's own DIRECT operands (not forwarded to a
+#                successor block arg): `Return { values }`, `CondBranch { cond }`,
+#                `Switch { value }`.
+#       - `Return` values are `transferred`: the return ABI moves `+1` to the
+#         caller (design 20 §1.5 "returns owned"). Dropped NOWHERE in the callee.
+#       - `CondBranch`/`Switch` predicates are `borrowed`: the branch TESTS the
+#         value (it is still live AT the terminator, so it is not dropped at the
+#         producing op's straight-line point), but ownership does NOT leave — the
+#         value's drop is merely RELOCATED to the dying successor edge (§3
+#         edge-dying). In molt's lowering the predicate is always an unboxed
+#         bool/i64 discriminant (a raw scalar, `is_raw_scalar` ⇒ NOT droppable),
+#         so this leaf is never reached for a heap value today; classifying it
+#         `borrowed` preserves the EXACT prior `terminator_uses_root` semantics
+#         (read-but-not-transfer) and stays correct if a future shape ever made
+#         the predicate heap-carrying.
+#   * branch_arg — the values FORWARDED to a successor's block arg (phi):
+#                `Branch { args }`, `CondBranch { then_args, else_args }`,
+#                `Switch { cases[].args, default_args }`. ALWAYS `transferred`:
+#                ownership moves INTO the block param on the edge (the C3
+#                forwarded-arg-double-drop class; the successor-side dual is
+#                `incoming_arg_roots` in §3). Dropping it at the source would
+#                double-free the phi's object.
+#
+# Drives `terminator_operand_ownership_table(kind, category)` and the derived
+# `terminator_operand_is_transferred(kind, category)` (op_kinds_generated.rs),
+# consumed by drop_insertion.rs's `terminator_branch_args` (branch_arg category)
+# and `terminator_uses_root` (direct category). A FUTURE terminator transfer fact
+# (a tail-call terminator, a `throw`-with-value transfer) is correctly handled by
+# ADDING a row — never by editing the drop pass.
+#
+#   kind     : the `Terminator` enum variant name (EXHAUSTIVE over the enum — a
+#              new variant fails to render until classified; the structural kill
+#              for an unclassified terminator silently inheriting a borrow/transfer
+#              assumption, mirroring the [[opcode]] exhaustiveness discipline).
+#   direct / branch_arg : the `OperandOwnership` leaf for that category, OR
+#              "none" (NoOperandOwnership) when the variant has no operand in that
+#              category (e.g. `Branch` has no direct operand; `Return` forwards no
+#              branch arg; `Unreachable` has neither).
+# ===========================================================================
+
+[[terminator]]
+# Unconditional branch: no direct operand; its `args` are forwarded into the
+# target's phi (transferred).
+name = "Branch"
+direct = "none"
+branch_arg = "transferred"
+
+[[terminator]]
+# Conditional branch: `cond` is the borrowed predicate; `then_args`/`else_args`
+# are forwarded into the successors' phis (transferred).
+name = "CondBranch"
+direct = "borrowed"
+branch_arg = "transferred"
+
+[[terminator]]
+# Multi-way switch: `value` is the borrowed discriminant; each case's args +
+# `default_args` are forwarded into the successors' phis (transferred).
+name = "Switch"
+direct = "borrowed"
+branch_arg = "transferred"
+
+[[terminator]]
+# Function return: `values` transfer `+1` each to the caller (design 20 §1.5);
+# no branch args.
+name = "Return"
+direct = "transferred"
+branch_arg = "none"
+
+[[terminator]]
+# Unreachable: no operands at all (no direct, no forwarded).
+name = "Unreachable"
+direct = "none"
+branch_arg = "none"
+
+# ===========================================================================
 # Frontend pre-serialization op.kind tables (molt task #44, F2a — absorb the
 # three hand-kept frontend tables that previously lived in
 # src/molt/frontend/__init__.py). These describe the FRONTEND's UPPERCASE

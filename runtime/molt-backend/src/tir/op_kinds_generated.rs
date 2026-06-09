@@ -591,23 +591,28 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 /// The variant set models molt's FULL operand-ownership domain so the
 /// design-27 ownership-boundary lattice (#58) and the next consumer
 /// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`
-/// are seeded today; the other three name EXISTING molt facts whose
-/// hand-lists migrate into `operand_ownership` rows in follow-up tranches:
+/// seed the per-OpCode + per-spelling tables; `Transferred` seeds the
+/// per-TERMINATOR table (design 27 §2.4 transfer sites — ladder #72). The
+/// remaining two name EXISTING molt facts whose hand-lists migrate into
+/// ownership rows in follow-up tranches:
 ///   * `Transferred` — ownership moves OUT of the function/block: a
 ///     `Return` value or a branch-arg passed into a successor block arg.
+///     LIVE: constructed by `terminator_operand_ownership_table` and read
+///     by drop_insertion's `terminator_uses_root` / `terminator_branch_args`.
 ///   * `InteriorBorrowKeepAlive` — the round-6 interior-borrow keepalive:
 ///     the operand must stay live because the result holds an INTERIOR
 ///     reference into it (drop deferred to the interior ref's last use).
 ///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:
 ///     valid only on the not-exhausted edge, NEVER unconditionally
 ///     droppable (stale stack garbage on the exhaustion edge).
-///   * `NoOperandOwnership` — the op has no ref-bearing operand (raw lanes
-///     / terminator branch-args handled by the terminator, not here).
-// Variants beyond Borrowed/Consumed are seeded as their consumer
-// hand-lists migrate (#58 + the interior-borrow / iter-cond tranches).
-// The schema is kept ALIVE (not ornamental) by `ALL` + `from_str`/
-// `as_str` below: every variant is constructed and round-tripped, so a
-// dropped or renamed variant is a compile/test failure, not silent rot.
+///   * `NoOperandOwnership` — no ref-bearing operand in that category (a
+///     raw lane; a terminator category absent on a variant — `Branch` has
+///     no direct operand, `Return` forwards no branch arg).
+// `InteriorBorrowKeepAlive`/`ConditionalValidOnlyOnEdge` are seeded as
+// their consumer hand-lists migrate (the interior-borrow / iter-cond
+// tranches). The schema is kept ALIVE (not ornamental) by `ALL` +
+// `from_str`/`as_str` below: every variant is constructed and round-
+// tripped, so a dropped or renamed variant is a compile/test failure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OperandOwnership {
     Borrowed,
@@ -618,12 +623,14 @@ pub(crate) enum OperandOwnership {
     NoOperandOwnership,
 }
 
-// Parse/render path for the operand-ownership vocabulary. `from_str` is
-// the toml-ingest path the next consumer migrations (Transferred /
-// InteriorBorrowKeepAlive / ConditionalValidOnlyOnEdge rows) read; it is
-// not yet wired to a runtime caller, so the impl is allow(dead_code) —
-// SCOPED to this forward-compat API, never the enum or the file. `ALL`
-// + the round-trip test keep every variant constructed and live today.
+// Parse/render path for the operand-ownership vocabulary. `Transferred`
+// is now LIVE through `terminator_operand_ownership_table` (ladder #72);
+// `from_str` remains the toml-ingest path the REMAINING migrations
+// (InteriorBorrowKeepAlive / ConditionalValidOnlyOnEdge rows) read and is
+// not yet wired to a runtime caller, so `from_str`/`as_str`/`ALL` keep
+// allow(dead_code) — SCOPED to this forward-compat parse API, never the
+// enum (every variant is constructed) nor the file. `ALL` + the round-
+// trip test keep every variant constructed and live today.
 #[allow(dead_code)]
 impl OperandOwnership {
     pub(crate) const ALL: [OperandOwnership; 6] = [
@@ -808,4 +815,79 @@ pub(crate) fn kind_consumed_operand_table(kind: &str, arity: usize) -> Option<us
         "call_indirect" => arity.checked_sub(1),
         _ => None,
     }
+}
+
+/// Zero-cost discriminant of the `Terminator` enum (blocks.rs) the
+/// per-terminator operand-ownership table is keyed on. EXHAUSTIVE over the
+/// enum — a new `Terminator` variant fails to render until it is given a
+/// [[terminator]] row in op_kinds.toml (the transfer-carve-out kill: an
+/// unclassified terminator can't silently inherit a borrow/transfer
+/// assumption). The drop pass maps `&Terminator` -> `TerminatorKind` with
+/// one structural match; this keeps the ownership FACT declarative while
+/// the structural shape (which fields carry args) stays in the pass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TerminatorKind {
+    Branch,
+    CondBranch,
+    Switch,
+    Return,
+    Unreachable,
+}
+
+/// Which operand CATEGORY of a terminator a query is about: the
+/// terminator's own `Direct` operands (a `Return` value, a `CondBranch`/
+/// `Switch` predicate) versus a `BranchArg` forwarded into a successor's
+/// block-arg (phi). The two have different ownership (a `Return` value
+/// transfers to the caller; a predicate is borrowed; a branch-arg transfers
+/// into the phi) so they are classified on separate axes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OperandCategory {
+    Direct,
+    BranchArg,
+}
+
+/// Per-(terminator variant, operand category) ownership leaf (design 27
+/// §2.4). EXHAUSTIVE over both axes — a new `Terminator` variant fails to
+/// compile until classified. `Transferred` = ownership moves OUT (a
+/// `Return` value to the caller; a branch-arg into a successor phi);
+/// `Borrowed` = the predicate is read but not moved (drop relocated to the
+/// dying edge); `NoOperandOwnership` = the variant has no operand in that
+/// category. The consume axis is N/A for a terminator (nothing frees a
+/// terminator operand internally), so `Consumed` never appears here.
+#[inline]
+pub(crate) fn terminator_operand_ownership_table(
+    kind: TerminatorKind,
+    category: OperandCategory,
+) -> OperandOwnership {
+    match (kind, category) {
+        (TerminatorKind::Branch, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Branch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::CondBranch, OperandCategory::Direct) => OperandOwnership::Borrowed,
+        (TerminatorKind::CondBranch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::Switch, OperandCategory::Direct) => OperandOwnership::Borrowed,
+        (TerminatorKind::Switch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::Return, OperandCategory::Direct) => OperandOwnership::Transferred,
+        (TerminatorKind::Return, OperandCategory::BranchArg) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Unreachable, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Unreachable, OperandCategory::BranchArg) => OperandOwnership::NoOperandOwnership,
+    }
+}
+
+/// Derived transfer predicate drop_insertion reads (design 27 §2.4): does
+/// the terminator TRANSFER ownership of an operand in `category`? `true`
+/// iff the leaf is `Transferred` — the drop pass must NOT emit a trailing
+/// `DecRef` at the transfer point (the caller / successor phi owns it).
+/// This single declarative authority REPLACES the hand-coded transfer
+/// carve-out (the `Return` arm of `terminator_uses_root` + the
+/// `terminator_branch_args` membership). A future terminator transfer fact
+/// is a [[terminator]] row edit, never a drop-pass edit.
+#[inline]
+pub(crate) fn terminator_operand_is_transferred(
+    kind: TerminatorKind,
+    category: OperandCategory,
+) -> bool {
+    matches!(
+        terminator_operand_ownership_table(kind, category),
+        OperandOwnership::Transferred
+    )
 }

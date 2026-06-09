@@ -651,3 +651,216 @@ def test_render_detects_operand_ownership_mutation() -> None:
     assert gen.render_rs(mutated2) != rendered, (
         "adding a consuming_kind row did not change the render"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. Per-terminator operand ownership (design 27 §2.4, the ownership-moves-out /
+#    transfer axis; ladder #72). A `Terminator` is NOT an `OpCode` (it is the
+#    `Terminator` enum in blocks.rs), so its operand ownership is a DISTINCT
+#    generated table keyed on `TerminatorKind` + `OperandCategory`. The
+#    `[[terminator]]` section seeds the FIRST real `Transferred` consumer
+#    (`Return` value + branch-arg into a successor phi), and
+#    `terminator_operand_is_transferred` REPLACES the hand-coded transfer
+#    carve-out in drop_insertion.rs (`terminator_branch_args` + the `Return` arm
+#    of `terminator_uses_root`). These tests pin the render, the enum
+#    exhaustiveness, and the consumer migration.
+# ---------------------------------------------------------------------------
+
+
+def test_terminator_table_renders_transferred_and_borrowed() -> None:
+    """The `[[terminator]]` rows render into `terminator_operand_ownership_table`
+    with the design-27 §2.4 transfer set: `Return` value + every branch-arg are
+    `Transferred`; the `CondBranch`/`Switch` predicate is `Borrowed`; absent
+    categories are `NoOperandOwnership`. This is the behavior-preserving seed of
+    the migrated transfer carve-out — and the first construction of the
+    `Transferred` variant by a generated table (not just `from_str`)."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    region = _re_search(rendered, "fn terminator_operand_ownership_table").split(
+        "fn terminator_operand_is_transferred"
+    )[0]
+
+    variant = {
+        "borrowed": "OperandOwnership::Borrowed",
+        "transferred": "OperandOwnership::Transferred",
+        "none": "OperandOwnership::NoOperandOwnership",
+    }
+    # The behavior-preserving seed (matches the prior hand-coded carve-out
+    # exactly): branch-arg forwarders transfer; Return value transfers; the
+    # cond/switch predicate is borrowed; Branch/Return/Unreachable have an absent
+    # category each.
+    expected = {
+        "Branch": {"direct": "none", "branch_arg": "transferred"},
+        "CondBranch": {"direct": "borrowed", "branch_arg": "transferred"},
+        "Switch": {"direct": "borrowed", "branch_arg": "transferred"},
+        "Return": {"direct": "transferred", "branch_arg": "none"},
+        "Unreachable": {"direct": "none", "branch_arg": "none"},
+    }
+    table = {row["name"]: row for row in data["terminator"]}
+    assert {k: {"direct": v["direct"], "branch_arg": v["branch_arg"]} for k, v in table.items()} == expected, (
+        "[[terminator]] drifted from the design-27 §2.4 transfer-site seed "
+        "(the migrated terminator_branch_args + terminator_uses_root carve-out)"
+    )
+    for name, cats in expected.items():
+        assert (
+            f"(TerminatorKind::{name}, OperandCategory::Direct) => {variant[cats['direct']]},"
+            in region
+        ), f"terminator_operand_ownership_table missing Direct arm for {name}"
+        assert (
+            f"(TerminatorKind::{name}, OperandCategory::BranchArg) => {variant[cats['branch_arg']]},"
+            in region
+        ), f"terminator_operand_ownership_table missing BranchArg arm for {name}"
+
+    # `Transferred` is constructed by the generated table — it is GENUINELY LIVE
+    # now, not a `from_str`-only forward-compat variant.
+    assert "OperandOwnership::Transferred" in region, (
+        "the terminator table must construct OperandOwnership::Transferred "
+        "(the ladder-#72 deliverable: the first real Transferred consumer)"
+    )
+    # The derived transfer predicate is rendered and reads the table.
+    derived = _re_search(rendered, "fn terminator_operand_is_transferred")
+    assert (
+        "terminator_operand_ownership_table(kind, category)" in derived
+        and "OperandOwnership::Transferred" in derived
+    ), "terminator_operand_is_transferred must derive from the table + Transferred"
+
+
+def test_terminator_section_exhaustive_over_enum() -> None:
+    """The `[[terminator]]` section must cover EXACTLY the `Terminator` enum
+    variants declared in blocks.rs — the exhaustiveness that kills an
+    unclassified terminator silently inheriting a borrow/transfer assumption in
+    the drop pass (mirroring the OpCode-effect exhaustiveness)."""
+    import re
+
+    gen = _gen()
+    data = gen.load_table()
+    table_names = [row["name"] for row in data["terminator"]]
+    assert len(table_names) == len(set(table_names)), "duplicate terminator rows"
+
+    src = (ROOT / "runtime/molt-backend/src/tir/blocks.rs").read_text()
+    m = re.search(r"pub enum Terminator \{(.*?)\n\}", src, re.S)
+    assert m is not None, "Terminator enum not found in blocks.rs"
+    enum_variants = []
+    for line in m.group(1).splitlines():
+        s = line.strip()
+        if not s or s.startswith(("//", "/*", "*", "#[")):
+            continue
+        vm = re.match(r"([A-Z]\w*)\s*[\{,]", s)
+        if vm:
+            enum_variants.append(vm.group(1))
+
+    assert set(table_names) == set(enum_variants), (
+        "op_kinds.toml [[terminator]] rows must be EXACTLY the Terminator enum "
+        f"variants; table-only={sorted(set(table_names) - set(enum_variants))} "
+        f"enum-only={sorted(set(enum_variants) - set(table_names))}"
+    )
+    # The generator's declarative expectation (_TERMINATOR_VARIANTS) must also
+    # equal the enum — so the two cannot drift behind the section's back.
+    assert set(gen._TERMINATOR_VARIANTS) == set(enum_variants), (
+        "gen_op_kinds._TERMINATOR_VARIANTS drifted from the Terminator enum: "
+        f"gen-only={sorted(set(gen._TERMINATOR_VARIANTS) - set(enum_variants))} "
+        f"enum-only={sorted(set(enum_variants) - set(gen._TERMINATOR_VARIANTS))}"
+    )
+
+
+def test_terminator_validation_fail_loud() -> None:
+    """A `[[terminator]]` row with a bad/missing leaf, or a non-exhaustive
+    section, is a hard generation error (no silent transfer/borrow default)."""
+    gen = _gen()
+    data = gen.load_table()
+
+    # Bad leaf value (consumed is N/A for a terminator; a typo must not degrade).
+    for bad in ("consumed", "all_borrowed", "moved", 7, None):
+        mutated = json.loads(json.dumps(data))
+        mutated["terminator"][0]["direct"] = bad
+        try:
+            gen._validate_terminators(mutated)
+        except gen.OpKindTableError:
+            pass
+        else:
+            raise AssertionError(
+                f"terminator direct={bad!r} must raise OpKindTableError"
+            )
+
+    # Non-exhaustive (drop a variant row) is a hard error.
+    mutated = json.loads(json.dumps(data))
+    mutated["terminator"] = [r for r in mutated["terminator"] if r["name"] != "Return"]
+    try:
+        gen._validate_terminators(mutated)
+    except gen.OpKindTableError as e:
+        assert "EXHAUSTIVE" in str(e) or "Return" in str(e)
+    else:
+        raise AssertionError("a missing Terminator variant must raise (exhaustiveness)")
+
+    # The valid leaves pass.
+    for good in ("borrowed", "transferred", "none"):
+        m2 = json.loads(json.dumps(data))
+        m2["terminator"][0]["direct"] = good
+        m2["terminator"][0]["branch_arg"] = good
+        gen._validate_terminators(m2)
+
+
+def test_render_detects_terminator_mutation() -> None:
+    """Mutating a terminator classification must change the render (so the
+    freshness guard catches a forgotten regeneration)."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+
+    mutated = json.loads(json.dumps(data))
+    for row in mutated["terminator"]:
+        if row["name"] == "Return":
+            row["direct"] = "borrowed"  # flip the Return transfer off
+    assert gen.render_rs(mutated) != rendered, (
+        "flipping Return's direct ownership did not change the render"
+    )
+
+
+def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
+    """drop_insertion.rs's transfer carve-out must DELEGATE to the generated
+    `terminator_operand_is_transferred` authority — the hand-coded `Return`-arm /
+    branch-arg transfer decision is gone from the pass, replaced by a read of the
+    generated table. This is the ladder-#72 'migrate one consumer + delete one
+    duplicate fact' proof (the analogue of the #70 op_consumed_operand_root one).
+
+    Scoped to the two transfer-helper FUNCTION BODIES so the structural shape
+    match (which fields carry args — legitimately in the pass) is not mistaken for
+    a hand-coded transfer fact."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text()
+
+    def _fn_body(src: str, marker: str) -> str:
+        assert marker in src, f"{marker} not found in drop_insertion.rs"
+        start = src.index(marker)
+        brace = src.index("{", start)
+        depth = 0
+        for i in range(brace, len(src)):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[start : i + 1]
+        raise AssertionError(f"unbalanced braces after {marker}")
+
+    # The generated transfer authority is imported + load-bearing.
+    assert "terminator_operand_is_transferred" in drop, (
+        "drop_insertion.rs must read the generated terminator transfer authority"
+    )
+
+    branch_args = _fn_body(drop, "fn terminator_branch_args(")
+    uses_root = _fn_body(drop, "fn terminator_uses_root(")
+
+    # Both transfer helpers consult the generated authority.
+    assert "terminator_operand_is_transferred" in branch_args, (
+        "terminator_branch_args must gate the forwarded args on the generated "
+        "BranchArg transfer fact (not treat them as transfers unconditionally)"
+    )
+    assert "OperandCategory::BranchArg" in branch_args
+    assert "terminator_operand_is_transferred" in uses_root, (
+        "terminator_uses_root's Return arm must read the generated Direct transfer "
+        "fact (the migrated hand-coded carve-out)"
+    )
+    assert "OperandCategory::Direct" in uses_root
