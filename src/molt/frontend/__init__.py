@@ -7354,8 +7354,14 @@ class SimpleTIRGenerator(
             )
 
     def _load_local_value(self, name: str) -> MoltValue | None:
+        # A class-body name resolves through the class namespace; but a name that
+        # the class body has NOT bound (e.g. a parameter of a function inlined
+        # into the body, like an inlined ``__init__``'s args, or an enclosing
+        # local) must fall through to ordinary resolution.  Only short-circuit
+        # when the active class scope actually owns ``name`` — otherwise continue
+        # below so genuine locals/cells/globals still resolve.  (P0 #50.)
         class_scope = self._active_class_ns_scope(name)
-        if class_scope is not None:
+        if class_scope is not None and name in class_scope.names:
             return self._class_ns_load(class_scope, name)
         if name in self.comp_shadow_locals:
             return self.locals.get(name)
