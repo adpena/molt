@@ -85,6 +85,15 @@ The hazard inventory -> countermeasure map (the spec this file implements)
           died-silent verdict instead of an empty log discovered an hour
           later. detached-run NEVER kills: a live same-name daemon is a
           refusal, and --replace only clears DEAD/finished state.
+ 12. Split-root toolchain (a worktree edit silently not compiled in)
+       -> `difftest` builds a program with the frontend (PYTHONPATH) AND the
+          runtime/backend (MOLT_PROJECT_ROOT) derived from ONE --root, so a
+          runtime/backend source edit in a worktree is actually compiled in
+          (otherwise the runtime-staticlib fingerprint is computed against the
+          canonical checkout, never rebuilds, and stale behavior is credited to
+          a fix that never shipped — hazard 6 on the source-tree axis). It then
+          runs the artifact under the safe_run watchdog and diffs stdout+exit
+          BYTE-for-BYTE against a version-pinned CPython oracle, fail-loud.
 
 Non-goals
 ---------
@@ -1822,6 +1831,226 @@ def _main_worktree(git: Git) -> Path | None:
     return None
 
 
+def _difftest_toolchain_env(
+    root: Path, session: str, extra_env: list[str] | None
+) -> dict[str, str]:
+    """Build the env that roots frontend AND runtime/backend at the SAME tree.
+
+    This is the hazard-12 fix in one place (and the unit-testable core): set
+    MOLT_PROJECT_ROOT (runtime/backend build root + fingerprint tree) and
+    prepend <root>/src to PYTHONPATH (frontend import root) so they can never
+    diverge. ``extra_env`` items are ``KEY=VALUE`` passthroughs applied to both
+    build and run (e.g. a trace flag).
+    """
+    env = os.environ.copy()
+    env["MOLT_PROJECT_ROOT"] = str(root)
+    existing_pp = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(root / "src") + (
+        os.pathsep + existing_pp if existing_pp else ""
+    )
+    env["MOLT_SESSION_ID"] = session
+    for kv in extra_env or ():
+        if "=" not in kv:
+            raise DriverError(
+                f"difftest: --env expects KEY=VALUE, got {kv!r}", code=EXIT_USAGE
+            )
+        key, value = kv.split("=", 1)
+        env[key] = value
+    return env
+
+
+def _difftest_capture(
+    cmd: list[str], *, env: dict[str, str], cwd: Path, timeout: int
+) -> tuple[int, bytes, bytes]:
+    """Run `cmd` capturing raw BYTES (not text) so stdout compares are exact.
+
+    Returns (returncode, stdout, stderr). A timeout is a LOUD failure, not a
+    swallowed hang — it raises DriverError so a wedged build/run never reads as
+    a passing diff.
+    """
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DriverError(
+            f"difftest: command timed out after {timeout}s: {' '.join(cmd)}"
+        ) from exc
+    return proc.returncode, proc.stdout or b"", proc.stderr or b""
+
+
+def cmd_difftest(args: argparse.Namespace) -> int:
+    """Build a program through a CONSISTENTLY-ROOTED toolchain and differential-
+    test its native/LLVM/WASM output against pinned CPython.
+
+    Hazard 12 (split-root toolchain): ``PYTHONPATH=<root>/src`` redirects ONLY
+    the Python frontend. The Rust runtime+backend build is anchored to
+    ``MOLT_PROJECT_ROOT`` (and the runtime-staticlib fingerprint is computed
+    against THAT tree). Setting PYTHONPATH without MOLT_PROJECT_ROOT silently
+    builds the frontend from <root> but the runtime/backend from the canonical
+    checkout — so a runtime/backend edit in <root> is NEVER compiled in (its
+    fingerprint never changes → no rebuild → stale behavior credited to a fix
+    that never shipped, the exact stale-binary misattribution of hazard 6 but
+    on the SOURCE-TREE axis). difftest derives BOTH from a single --root so the
+    frontend, runtime, and backend are one coherent tree, and forces a fresh
+    --output per target so a stale artifact can't be re-run.
+    """
+    root = Path(args.root).resolve()
+    if not (root / "src" / "molt" / "cli.py").exists():
+        raise DriverError(
+            f"difftest: --root {root} is not a molt checkout (no src/molt/cli.py)",
+            code=EXIT_USAGE,
+        )
+    program = Path(args.program).resolve()
+    if not program.exists():
+        raise DriverError(f"difftest: program {program} not found", code=EXIT_USAGE)
+    safe_run = root / "tools" / "safe_run.py"
+    if not safe_run.exists():
+        raise DriverError(f"difftest: missing {safe_run}")
+
+    if not args.target:
+        args.target = ["native"]
+    # The interpreter must BOTH run the molt frontend (needs molt's install
+    # deps: packaging, etc.) AND be the CPython oracle. The interpreter running
+    # THIS driver is by construction the dev python that carries those deps, so
+    # difftest uses it for both build and oracle — after VERIFYING it reports
+    # the requested version (hazard 7) and can actually import molt from --root
+    # (a loud refusal, never a mid-build ImportError credited as a test fail).
+    # --oracle-python overrides the interpreter explicitly.
+    cpython = args.oracle_python or sys.executable
+    ok, full = _verify_interpreter_version(cpython, args.python_version)
+    if not ok:
+        raise DriverError(
+            f"difftest: interpreter {cpython} reports {full!r}, not "
+            f"{args.python_version}. Run molt_dev.py under python "
+            f"{args.python_version} (it doubles as the byte-exact CPython "
+            f"oracle), or pass --oracle-python.",
+            code=EXIT_USAGE,
+        )
+    prog_args = list(args.prog_args or [])
+
+    # One coherent toolchain root: frontend (PYTHONPATH) AND runtime/backend
+    # (MOLT_PROJECT_ROOT) both resolve to --root. This is the hazard-12 fix.
+    base_env = _difftest_toolchain_env(root, args.session, args.env)
+
+    _step(f"difftest {program.name} root={root} targets={args.target}")
+    _ok(f"toolchain rooted: MOLT_PROJECT_ROOT + PYTHONPATH -> {root}")
+
+    # Loud refusal if the frontend isn't importable (deps gap), so a missing
+    # dependency is never mistaken for a compiler bug in the diff.
+    probe = subprocess.run(
+        [cpython, "-c", "import molt.cli"],
+        env=base_env,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        last = (probe.stderr.strip().splitlines() or ["<no stderr>"])[-1]
+        raise DriverError(
+            f"difftest: {cpython} cannot import molt from {root} "
+            f"(frontend deps missing?): {last}"
+        )
+    _ok(f"interpreter {cpython} ({full}) imports molt from {root}")
+
+    # CPython oracle (the same verified interpreter; programs need no molt deps).
+    cpy_rc, cpy_out, _ = _difftest_capture(
+        [cpython, str(program), *prog_args],
+        env=base_env,
+        cwd=root,
+        timeout=args.timeout,
+    )
+    _ok(f"CPython {args.python_version} oracle: exit={cpy_rc} ({len(cpy_out)} bytes stdout)")
+
+    failures: list[str] = []
+    for target in args.target:
+        _step(f"target {target}")
+        out_bin = Path(args.out_dir) / f"difftest_{program.stem}_{target}"
+        out_bin.parent.mkdir(parents=True, exist_ok=True)
+        if out_bin.exists():
+            out_bin.unlink()  # never re-run a stale artifact (hazard 6)
+        build_cmd = [
+            cpython,
+            "-m",
+            "molt",
+            "build",
+            "--target",
+            target,
+            "--output",
+            str(out_bin),
+            str(program),
+        ]
+        brc, _bo, be = _difftest_capture(
+            build_cmd, env=base_env, cwd=root, timeout=args.build_timeout
+        )
+        if brc != 0 or not out_bin.exists():
+            tail = be.decode("utf-8", "replace").strip().splitlines()[-6:]
+            _fail(f"{target}: BUILD FAILED (exit {brc})")
+            for line in tail:
+                _say(f"        {line}")
+            failures.append(f"{target}: build")
+            continue
+        run_cmd = [
+            cpython,
+            str(safe_run),
+            "--rss-mb",
+            str(args.rss_mb),
+            "--timeout",
+            str(args.run_timeout),
+            "--",
+            str(out_bin),
+            *prog_args,
+        ]
+        mrc, mout, _me = _difftest_capture(
+            run_cmd, env=base_env, cwd=root, timeout=args.run_timeout + 30
+        )
+        out_match = mout == cpy_out
+        rc_match = mrc == cpy_rc
+        if out_match and rc_match:
+            _ok(f"{target}: PASS (exit={mrc}, stdout byte-identical to CPython)")
+        else:
+            _fail(
+                f"{target}: MISMATCH molt(exit={mrc}) vs CPython(exit={cpy_rc}); "
+                f"stdout_match={out_match} exit_match={rc_match}"
+            )
+            if not out_match:
+                import difflib
+
+                diff = difflib.unified_diff(
+                    cpy_out.decode("utf-8", "replace").splitlines(),
+                    mout.decode("utf-8", "replace").splitlines(),
+                    fromfile="cpython",
+                    tofile=f"molt:{target}",
+                    lineterm="",
+                )
+                for line in list(diff)[:40]:
+                    _say(f"        {line}")
+            failures.append(f"{target}: output")
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "program": str(program),
+                    "root": str(root),
+                    "targets": args.target,
+                    "cpython_exit": cpy_rc,
+                    "failures": failures,
+                    "passed": not failures,
+                }
+            )
+        )
+    if failures:
+        raise DriverError(f"difftest: {len(failures)} target(s) failed: {failures}")
+    _ok(f"difftest PASS on all targets: {args.target}")
+    return EXIT_OK
+
+
 def cmd_cleanup(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     git = Git(repo)
@@ -2082,6 +2311,80 @@ def build_parser() -> argparse.ArgumentParser:
         help="abandon despite unpushed/dirty; MUST name the HEAD sha being abandoned",
     )
     p_cl.set_defaults(func=cmd_cleanup)
+
+    # difftest (hazard 12: split-root toolchain + differential vs pinned CPython)
+    p_df = sub.add_parser(
+        "difftest",
+        help=(
+            "build a program through a CONSISTENTLY-rooted toolchain "
+            "(MOLT_PROJECT_ROOT+PYTHONPATH from one --root) and diff native/LLVM/"
+            "WASM output vs pinned CPython (hazard 12)"
+        ),
+    )
+    p_df.add_argument("program", help="Python program to build + differential-test")
+    p_df.add_argument(
+        "--root",
+        default=str(DEFAULT_REPO),
+        help="toolchain root: frontend AND runtime/backend build from here "
+        "(sets MOLT_PROJECT_ROOT + PYTHONPATH). Default: this driver's repo.",
+    )
+    p_df.add_argument(
+        "--target",
+        action="append",
+        choices=["native", "llvm", "wasm"],
+        help="backend target (repeatable; default: native)",
+    )
+    p_df.add_argument(
+        "--session",
+        default=os.environ.get("MOLT_SESSION_ID", "difftest"),
+        help="MOLT_SESSION_ID for build isolation (default env or 'difftest')",
+    )
+    p_df.add_argument(
+        "--python-version",
+        default="3.14",
+        help="CPython oracle version, pinned+verified (default 3.14)",
+    )
+    p_df.add_argument(
+        "--oracle-python",
+        help="interpreter for build+oracle (default: the python running this "
+        "driver, which carries the molt frontend deps); version-verified",
+    )
+    p_df.add_argument(
+        "--out-dir",
+        default=str(Path(tempfile.gettempdir()) / "molt_difftest"),
+        help="where to write the built binaries",
+    )
+    p_df.add_argument(
+        "--env",
+        action="append",
+        help="extra KEY=VALUE env passed to BOTH build and run (e.g. a trace "
+        "flag); repeatable",
+    )
+    p_df.add_argument(
+        "--rss-mb", type=int, default=1024, help="safe_run RSS cap MiB (default 1024)"
+    )
+    p_df.add_argument(
+        "--run-timeout", type=int, default=15, help="safe_run wall-time s (default 15)"
+    )
+    p_df.add_argument(
+        "--build-timeout",
+        type=int,
+        default=900,
+        help="per-target build timeout s (default 900 — covers a runtime rebuild)",
+    )
+    p_df.add_argument(
+        "--timeout", type=int, default=60, help="CPython oracle timeout s (default 60)"
+    )
+    p_df.add_argument("--json", action="store_true", help="emit JSON verdict to stdout")
+    p_df.add_argument(
+        "--arg",
+        action="append",
+        dest="prog_args",
+        help="argument passed to BOTH the molt binary and CPython (repeatable). "
+        "Explicit (not a trailing REMAINDER) so difftest's own options work in "
+        "any position.",
+    )
+    p_df.set_defaults(func=cmd_difftest)
 
     return ap
 
