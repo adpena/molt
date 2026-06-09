@@ -102,6 +102,55 @@ is neither RAN nor already SCHEDULED) `else { finalize_free_object(...) }`.
 Leak gauge stays exact: dealloc is committed only inside `finalize_free_object`
 (at true free), never at schedule.
 
+## PHASE-2 IMPLEMENTATION RESULT (2026-06-09): deferral works, but the SWALLOW needs a COMPILED landing pad
+Implemented (WIP, local commits on wt_fin; patch preserved in
+`memory/recovery/takeover_20260609/finalizer_region_wip.patch`): `dec_ref_ptr`
+schedules finalizer-sensitive objects (rc 0, SCHEDULED, unfreed) via
+`schedule_object_finalizer`; `gc.collect` + teardown drain via
+`drain_pending_finalizers` → `maybe_run_object_finalizer` → re-entry free; detection
+via class-MRO lookup (never touch the dead instance — fixed a SIGSEGV); the no-prior
+swallow rewritten to write-unraisable + clear all channels; a local
+`exception_stack_baseline` around the `__del__` call.
+
+**What WORKS:** `finalizer_matrix.py` BYTE-IDENTICAL to CPython (all 9 sections incl.
+`raise_in_del survived`); the rewritten swallow is CORRECT when reached
+(`pending_before=true → unraisable → pending_after=false`); `p65_func` now CONTINUES
+past the `del` (deferral proven — body completes, "after del, still alive" prints).
+
+**What does NOT work (and WHY — definitively measured):** `p65_gc`/`p65_func` still
+exit 1; the swallow fires ZERO times for a STANDALONE finalizer. Proven by trace +
+catch_unwind experiment:
+* The object IS scheduled (`SCHED YES type_id=100`=1) and the drain DOES call
+  `maybe_run_object_finalizer`, but `call_callable0(__del__)` does NOT return — it
+  UNWINDS past the swallow.
+* The unwind is molt's CUSTOM native unwind to the nearest COMPILED landing pad:
+  `std::panic::catch_unwind` around the drain caught NOTHING (0 events); a local
+  `exception_stack_baseline_set(depth)` did NOT catch it either. So it is NEITHER a
+  Rust panic NOR baseline-controlled — it bypasses ALL Rust frames (drain, catch).
+* It is COMPOSITION-dependent: the matrix's `raise_in_del` returns value-based ONLY
+  because ~5 non-raising finalizers drained first; a lone/first raising finalizer
+  unwinds.
+
+**=> Both A (catch_unwind) and B (runtime drain) are INSUFFICIENT alone.** The swallow
+needs a COMPILED landing pad above the `__del__` execution; a Rust drain frame has none.
+
+**STRONGEST LEAD for the real fix:** `atexit` swallows callback exceptions VALUE-BASED
+using the SAME `molt_call_bind` (`atexit.rs:344`, then checks `exception_pending` at
+:503 and handles a RETURNED-raised-exception sentinel via
+`callback_returned_raised_exception` at :508/:268). The finalizer's
+`call_callable0 → call_type_via_bind → molt_call_bind` on a BOUND METHOD unwinds where
+atexit's `molt_call_bind` on a FUNCTION returns. NEXT INVESTIGATION: (1) why the
+bound-method dispatch unwinds where the function dispatch returns value-based; (2)
+route `__del__` through atexit's value-based call path (or its returned-exception
+sentinel convention) — likely the actual fix, runtime-only, no catch_unwind, no
+backend landing pad. If that fails, the fix is a backend-emitted compiled try-frame
+around the drain (`molt_exception_stack_enter` + a real compiled landing pad).
+
+**Timing (separate, Phase 2E):** even once the swallow works, deferral moves `__del__`
+to gc/teardown → `fires_once`/`resurrect` ordering regresses (DEL after "end"). Needs
+the selective compiled safe-point drain after finalizer-object DecRefs (NOT every
+DecRef — perf). The WIP is therefore NOT shippable as-is.
+
 ## Phase 6 — one authority, delete the rest
 After green: remove the inline `__del__` call from the `dec_ref_ptr` zero path for
 finalizer-sensitive objects; route gc.collect/atexit finalization through the same
