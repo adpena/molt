@@ -29,6 +29,7 @@ from molt.frontend._types import (
     MethodInfo,
     MoltOp,
     MoltValue,
+    _ClassNsScope,
     _MOLT_CLOSURE_PARAM,
     _function_is_instance_method,
     _next_ic_index,
@@ -75,6 +76,45 @@ def _iter_slots_field_names(value: ast.expr | None) -> list[str]:
 
 
 class ClassDefVisitorMixin(_MixinBase):
+    # Statement node types a class body can hold and have lowered by the
+    # dedicated straight-line arms of ``visit_ClassDef`` (attribute bindings and
+    # method/nested-class definitions).  ANY other top-level body statement —
+    # control flow (For/AsyncFor/If/While/With/AsyncWith/Try/TryStar/Match),
+    # ``del`` (Delete), augmented assignment (AugAssign), import, etc. — requires
+    # executing the body as a normal block over the class namespace mapping
+    # (CPython semantics).  ``Pass`` is inert.  (P0 #50.)
+    _CLASS_BODY_SIMPLE_STMTS = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.Assign,
+        ast.AnnAssign,
+        ast.Expr,
+        ast.Pass,
+    )
+
+    @classmethod
+    def _class_body_needs_block_exec(cls, body: list[ast.stmt]) -> bool:
+        """True when a class body holds control flow / ``del`` (P0 #50).
+
+        Only the *top-level* class-body statements matter: control flow nested
+        inside a method body or a comprehension is the method's/comprehension's
+        own scope, not the class block.  An ``AnnAssign`` / ``Assign`` whose
+        target is not a bare ``Name`` (e.g. ``obj.attr = x`` or ``a, b = t`` —
+        a tuple-unpack the straight-line arms do not handle) also forces block
+        execution so it routes through the full assignment lowering.
+        """
+        for stmt in body:
+            if not isinstance(stmt, cls._CLASS_BODY_SIMPLE_STMTS):
+                return True
+            if isinstance(stmt, ast.Assign):
+                if any(not isinstance(t, ast.Name) for t in stmt.targets):
+                    return True
+            elif isinstance(stmt, ast.AnnAssign):
+                if not isinstance(stmt.target, ast.Name):
+                    return True
+        return False
+
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None:
         if len(node.body) != 1:
             return None
@@ -646,6 +686,17 @@ class ClassDefVisitorMixin(_MixinBase):
                 dynamic_build = True
             if base_info and "__mro_entries__" in base_info.get("methods", {}):
                 dynamic_build = True
+        # A class body that contains anything beyond straight-line attribute
+        # bindings / method-and-nested-class definitions (i.e. control flow —
+        # for/if/while/try/with/match — or ``del``, or any augmented/looped
+        # rebind of a class-scope name) must execute as a NORMAL BLOCK whose
+        # mutable namespace is a real dict (CPython's class-body code object over
+        # ``f_locals``).  Forcing ``dynamic_build`` gives that body a heap-backed
+        # namespace mapping which is the loop-carried-correct store for its
+        # names; the straight-line static fast path is untouched.  (P0 #50.)
+        body_needs_block = self._class_body_needs_block_exec(node.body)
+        if body_needs_block:
+            dynamic_build = True
         if not has_explicit_bases:
             base_names = ["object"]
 
@@ -2537,6 +2588,33 @@ class ClassDefVisitorMixin(_MixinBase):
         saved_locals = self.locals
         self.locals = dict(class_scope)
         self._class_body_depth += 1
+        # Block-execution scope for the class body (P0 #50).  ``_store_local_value``
+        # / ``_load_local_value`` / ``_emit_delete_name`` consult the top of
+        # ``self._class_ns_stack`` so a class-scope name binds into / reads from
+        # the namespace mapping (when ``dynamic_namespace`` exists) instead of the
+        # enclosing function frame.  ``attr_values`` is shared with
+        # ``class_attr_values`` (the build path's view); ``names`` is seeded with
+        # the names already bound (methods + any class attrs harvested above) so
+        # in-body loads of those resolve to the class namespace, while an unbound
+        # Name still falls through to global/builtin resolution (CPython
+        # LOAD_NAME).  The straight-line arms below ALSO bind through
+        # ``_class_ns_store`` (via ``bind_class_name``) so there is exactly one
+        # code path that publishes a class-body name.
+        class_ns_scope = _ClassNsScope(
+            ns=dynamic_namespace,
+            attr_values=class_attr_values,
+            names=set(class_attr_values) | set(methods),
+        )
+        def bind_class_name(name: str, value: MoltValue) -> None:
+            # Single source of truth for "this straight-line arm bound a
+            # class-body attribute": update the SSA fast-path view, mirror into
+            # the namespace dict (when present), and keep the enclosing-frame
+            # ``self.locals`` cache coherent for the rare in-body load that
+            # predates control flow.
+            self._class_ns_store(class_ns_scope, name, value)
+            self.locals[name] = value
+
+        self._class_ns_stack.append(class_ns_scope)
         try:
             for item in node.body:
                 if isinstance(item, ast.ClassDef):
@@ -2556,19 +2634,7 @@ class ClassDefVisitorMixin(_MixinBase):
                             "Nested class lowering produced no bound value for "
                             f"'{item.name}'"
                         )
-                    class_attr_values[item.name] = nested_val
-                    if dynamic_namespace is not None:
-                        key_val = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(
-                            MoltOp(kind="CONST_STR", args=[item.name], result=key_val)
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[dynamic_namespace, key_val, nested_val],
-                                result=MoltValue("none"),
-                            )
-                        )
+                    bind_class_name(item.name, nested_val)
                     continue
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     _, _, kwonly, _, _ = self._split_function_args(item.args)
@@ -2628,6 +2694,13 @@ class ClassDefVisitorMixin(_MixinBase):
                         )
                         class_scope[item.name] = res
                         self.locals[item.name] = res
+                        # A method/descriptor name is a class-body binding too:
+                        # register it so in-body loads (e.g. a later
+                        # ``@name.setter``) resolve via the class namespace
+                        # (P0 #50).  Methods publish into the build via
+                        # ``methods``/``class_attr_values`` below, not via
+                        # ``_class_ns_store``, so only the name set is updated.
+                        class_ns_scope.names.add(item.name)
                         # Keep the canonical method binding in sync so later
                         # class finalization does not overwrite descriptor
                         # updates (e.g. @name.setter / @name.deleter) with the
@@ -2805,6 +2878,10 @@ class ClassDefVisitorMixin(_MixinBase):
                         method_info["attr"] = method_attr
                         class_scope[item.name] = method_attr
                         self.locals[item.name] = method_attr
+                        # Register the method name as a class-body binding so an
+                        # in-body load resolves through the class namespace
+                        # (P0 #50); the build consumes ``methods`` directly.
+                        class_ns_scope.names.add(item.name)
                         if dynamic_namespace is not None:
                             key_val = MoltValue(self.next_var(), type_hint="str")
                             self.emit(
@@ -2832,30 +2909,15 @@ class ClassDefVisitorMixin(_MixinBase):
                     if self.visit(item.value) is None:
                         raise NotImplementedError("Unsupported class body expression")
                     continue
-                if isinstance(item, ast.Assign):
+                if isinstance(item, ast.Assign) and all(
+                    isinstance(t, ast.Name) for t in item.targets
+                ):
                     val = self.visit(item.value)
                     if val is None:
                         raise NotImplementedError("Unsupported class body assignment")
                     for target in item.targets:
-                        if isinstance(target, ast.Name):
-                            class_attr_values[target.id] = val
-                            self.locals[target.id] = val
-                            if dynamic_namespace is not None:
-                                key_val = MoltValue(self.next_var(), type_hint="str")
-                                self.emit(
-                                    MoltOp(
-                                        kind="CONST_STR",
-                                        args=[target.id],
-                                        result=key_val,
-                                    )
-                                )
-                                self.emit(
-                                    MoltOp(
-                                        kind="STORE_INDEX",
-                                        args=[dynamic_namespace, key_val, val],
-                                        result=MoltValue("none"),
-                                    )
-                                )
+                        assert isinstance(target, ast.Name)
+                        bind_class_name(target.id, val)
                     continue
                 if isinstance(item, ast.AnnAssign) and isinstance(
                     item.target, ast.Name
@@ -2877,25 +2939,26 @@ class ClassDefVisitorMixin(_MixinBase):
                     val = self.visit(item.value)
                     if val is None:
                         raise NotImplementedError("Unsupported class body assignment")
-                    class_attr_values[item.target.id] = val
-                    self.locals[item.target.id] = val
-                    if dynamic_namespace is not None:
-                        key_val = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(
-                            MoltOp(
-                                kind="CONST_STR", args=[item.target.id], result=key_val
-                            )
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[dynamic_namespace, key_val, val],
-                                result=MoltValue("none"),
-                            )
-                        )
+                    bind_class_name(item.target.id, val)
+                    continue
+                if isinstance(item, ast.Pass):
+                    continue
+                # Any remaining class-body statement — control flow
+                # (for/if/while/try/with/match), ``del``, augmented assignment,
+                # tuple-unpack assignment, import, etc. — is lowered as an
+                # ORDINARY statement over the class namespace (P0 #50).  Because
+                # ``self._class_ns_stack`` is active, every name STORE/LOAD/DELETE
+                # inside ``self.visit(item)`` funnels through ``_store_local_value``
+                # / ``_load_local_value`` / ``_emit_delete_name`` and routes to the
+                # class namespace mapping, so the statement "just works" exactly as
+                # CPython executes the class-body code object.  ``body_needs_block``
+                # guaranteed a real ``dynamic_namespace`` exists for these.
+                self.visit(item)
         finally:
             self._class_body_depth -= 1
             self.locals = saved_locals
+            popped_scope = self._class_ns_stack.pop()
+            assert popped_scope is class_ns_scope, "class-ns scope stack imbalance"
 
         # __static_attributes__ (CPython 3.13+) — always emitted after class
         # body, even when empty.  Appears after methods in namespace event order.
