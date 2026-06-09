@@ -922,3 +922,263 @@ def test_print_provenance_emits_all_new_fields(capsys, monkeypatch) -> None:
         "active_cargo_or_rustc_processes", "loadavg_1m", "ncpu", "runnable_signal",
     ):
         assert field in out
+
+
+# ===========================================================================
+# #76 warm-hot cycle attribution: inner-repeat + launch-dominance + refusal
+# ===========================================================================
+
+import perf_inner_repeat as ir  # noqa: E402
+
+
+_LOOPABLE_BENCH = (
+    "def main() -> None:\n"
+    "    total = 0\n"
+    "    for i in range(10):\n"
+    "        total += i\n"
+    "    print(total)\n"
+    "\n\n"
+    'if __name__ == "__main__":\n'
+    "    main()\n"
+)
+
+
+# --- inner-repeat transform: the SEMANTICS-PRESERVING wrap ------------------
+
+
+def test_inner_repeat_wraps_canonical_main_shape() -> None:
+    plan = ir.analyze(_LOOPABLE_BENCH, inner_loops=50)
+    assert plan.ok is True
+    assert plan.inner_loops == 50
+    assert plan.entry == "main"
+    # The guard now loops main(); the rest of the program is intact.
+    assert "for _ in range(50):" in plan.source
+    assert "main()" in plan.source
+    assert "def main(" in plan.source
+
+
+def test_inner_repeat_output_is_one_shot_repeated_n_times() -> None:
+    # The transform must be semantics-preserving: running it under CPython prints
+    # the one-shot output exactly N times (proven without any molt build).
+    import subprocess
+    import tempfile
+
+    one = subprocess.run(
+        [sys.executable, "-c", _LOOPABLE_BENCH], capture_output=True, text=True
+    ).stdout
+    plan = ir.analyze(_LOOPABLE_BENCH, inner_loops=4)
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(plan.source)
+        path = f.name
+    try:
+        looped = subprocess.run(
+            [sys.executable, path], capture_output=True, text=True
+        ).stdout
+    finally:
+        Path(path).unlink()
+    assert looped == one * 4
+
+
+def test_inner_repeat_refuses_when_main_mutates_module_state() -> None:
+    # A `global` in main() makes a repeat accumulate into module state -> the
+    # second iteration diverges. Must REFUSE (fail-closed), never wrap.
+    src = (
+        "g = 0\n"
+        "def main() -> None:\n"
+        "    global g\n"
+        "    g += 1\n"
+        "    print(g)\n"
+        '\nif __name__ == "__main__":\n'
+        "    main()\n"
+    )
+    plan = ir.analyze(src, inner_loops=10)
+    assert plan.ok is False
+    assert plan.source is None
+    assert "global" in plan.reason
+
+
+def test_inner_repeat_refuses_unrecognized_guard_body() -> None:
+    # An extra statement in the guard would be multiplied incorrectly by the loop.
+    src = (
+        "def main() -> None:\n    print(1)\n"
+        '\nif __name__ == "__main__":\n'
+        "    print(0)\n    main()\n"
+    )
+    plan = ir.analyze(src, inner_loops=10)
+    assert plan.ok is False
+    assert "not exactly" in plan.reason
+
+
+def test_inner_repeat_refuses_missing_guard() -> None:
+    src = "def main() -> None:\n    print(1)\nmain()\n"
+    plan = ir.analyze(src, inner_loops=10)
+    assert plan.ok is False
+    assert "guard" in plan.reason
+
+
+def test_inner_repeat_refuses_main_with_required_args() -> None:
+    src = (
+        "def main(x) -> None:\n    print(x)\n"
+        '\nif __name__ == "__main__":\n    main()\n'
+    )
+    plan = ir.analyze(src, inner_loops=10)
+    assert plan.ok is False
+    assert "argument" in plan.reason
+
+
+def test_inner_repeat_refuses_n_below_two() -> None:
+    plan = ir.analyze(_LOOPABLE_BENCH, inner_loops=1)
+    assert plan.ok is False
+    assert "< 2" in plan.reason
+
+
+def test_inner_repeat_refuses_syntax_error() -> None:
+    plan = ir.analyze("def main(:\n", inner_loops=10)
+    assert plan.ok is False
+    assert "does not parse" in plan.reason
+
+
+def test_inner_repeat_refuses_two_main_defs() -> None:
+    src = (
+        "def main() -> None:\n    pass\n"
+        "def main() -> None:\n    pass\n"
+        '\nif __name__ == "__main__":\n    main()\n'
+    )
+    plan = ir.analyze(src, inner_loops=10)
+    assert plan.ok is False
+    assert "exactly one" in plan.reason
+
+
+# --- launch-dominance classification + the REFUSAL gate ---------------------
+
+
+def test_is_launch_frame_matches_dyld_start_only() -> None:
+    assert ps._is_launch_frame("_dyld_start", "dyld") is True
+    # A same-named symbol in the program binary is NOT launch (lib differs).
+    assert ps._is_launch_frame("_dyld_start", "bench_x_molt") is False
+    assert ps._is_launch_frame("molt_user_main", "bench_x_molt") is False
+
+
+def test_classify_launch_dominance_one_shot_is_launch_dominated() -> None:
+    # The one-shot shape from #69: _dyld_start swamps the leaderboard -> refuse.
+    syms = [
+        {"symbol": "_dyld_start", "self_samples": 170, "lib": "dyld"},
+        {"symbol": "mach_msg2_trap", "self_samples": 16, "lib": "dyld"},
+        {"symbol": "???", "self_samples": 6, "lib": "bench_x_molt"},
+    ]
+    bd = ps.classify_launch_dominance(syms)
+    assert bd["launch_dominates"] is True
+    assert bd["launch_fraction"] > 0.8
+
+
+def test_classify_launch_dominance_looped_is_not_dominated() -> None:
+    # After inner-repeat: in-binary frames dominate, launch is a sliver -> OK.
+    syms = [
+        {"symbol": "split_field_bounds", "self_samples": 148, "lib": "etl_molt"},
+        {"symbol": "etl__molt_user_main", "self_samples": 140, "lib": "etl_molt"},
+        {"symbol": "_dyld_start", "self_samples": 20, "lib": "dyld"},
+    ]
+    bd = ps.classify_launch_dominance(syms)
+    assert bd["launch_dominates"] is False
+    assert bd["launch_fraction"] < 0.10
+    assert bd["total"] == 308  # 148 + 140 + 20
+    assert bd["in_binary_samples"] == 288  # 148 + 140 (launch excluded)
+
+
+def test_classify_launch_dominance_empty_refuses() -> None:
+    bd = ps.classify_launch_dominance([])
+    assert bd["launch_dominates"] is True  # no signal -> cannot attribute
+    assert bd["total"] == 0
+
+
+def test_classify_launch_dominance_at_threshold_refuses() -> None:
+    # Exactly at the 40% refusal fraction is treated as dominated (>=).
+    syms = [
+        {"symbol": "_dyld_start", "self_samples": 40, "lib": "dyld"},
+        {"symbol": "hot", "self_samples": 60, "lib": "bench_molt"},
+    ]
+    bd = ps.classify_launch_dominance(syms)
+    assert bd["launch_fraction"] == 0.40
+    assert bd["launch_dominates"] is True
+
+
+def test_top_in_binary_frames_filters_to_the_binary() -> None:
+    syms = [
+        {"symbol": "__findenv_locked", "self_samples": 190, "lib": "libsystem_c.dylib"},
+        {"symbol": "hot_a", "self_samples": 100, "lib": "bench_molt"},
+        {"symbol": "_tlv_get_addr", "self_samples": 90, "lib": "libdyld.dylib"},
+        {"symbol": "hot_b", "self_samples": 50, "lib": "bench_molt"},
+    ]
+    top = ps.top_in_binary_frames(syms, binary_lib="bench_molt", top_n=10)
+    assert [t["symbol"] for t in top] == ["hot_a", "hot_b"]
+    # leaderboard_pct is the share of the WHOLE leaderboard (430 total).
+    assert abs(top[0]["leaderboard_pct"] - 100 * 100 / 430) < 0.05
+
+
+# --- capture_hot_only_profile: documented fallbacks (no real build) ----------
+
+
+def test_capture_hot_only_documents_unavailable_sampler(monkeypatch) -> None:
+    monkeypatch.setattr(ps, "_resolve_sampler", lambda: None)
+    out = ps.capture_hot_only_profile(
+        Path("/tmp/nonexistent-bin"),
+        run_args=[],
+        env={},
+        rss_mb=512,
+        inner_loops=40,
+    )
+    assert out["available"] is False
+    assert out["refused"] is True
+    assert "unavailable" in out["refused_reason"]
+    assert out["in_binary_top"] == []
+
+
+def test_capture_hot_only_refuses_on_oom_with_leak_reason(monkeypatch) -> None:
+    # If the inner-repeat amplifies a per-iteration leak past the RSS cap, the
+    # size run OOMs -> refuse with the leak reason (never sample a dying process).
+    monkeypatch.setattr(ps, "_resolve_sampler", lambda: "/usr/bin/sample")
+
+    def _fake_size(cmd, *, env, rss_mb, timeout_s, label):
+        return ps.RunOutcome(
+            ok=False, elapsed_s=2.9, peak_rss_mib=float(rss_mb),
+            status="oom", exit_code=137,
+        )
+
+    monkeypatch.setattr(ps, "_safe_run_json", _fake_size)
+    out = ps.capture_hot_only_profile(
+        Path("/tmp/whatever-bin"),
+        run_args=[],
+        env={},
+        rss_mb=2048,
+        inner_loops=400,
+    )
+    assert out["available"] is False
+    assert out["refused"] is True
+    assert out.get("leak_suspected") is True
+    assert "LEAK" in out["refused_reason"]
+    assert "LOWER --inner-repeat" in out["refused_reason"]
+
+
+def test_capture_hot_only_refuses_when_runtime_too_short(monkeypatch) -> None:
+    # If the looped runtime cannot carve a steady window after warmup, refuse
+    # with "increase --inner-repeat" (never sample a window that overruns exit).
+    monkeypatch.setattr(ps, "_resolve_sampler", lambda: "/usr/bin/sample")
+
+    def _fake_short(cmd, *, env, rss_mb, timeout_s, label):
+        return ps.RunOutcome(
+            ok=True, elapsed_s=0.4, peak_rss_mib=100.0, status="ok", exit_code=0,
+        )
+
+    monkeypatch.setattr(ps, "_safe_run_json", _fake_short)
+    out = ps.capture_hot_only_profile(
+        Path("/tmp/whatever-bin"),
+        run_args=[],
+        env={},
+        rss_mb=2048,
+        inner_loops=3,
+        warmup_s=0.6,
+        window_s=3.0,
+    )
+    assert out["available"] is False
+    assert out["refused"] is True
+    assert "increase --inner-repeat" in out["refused_reason"]
