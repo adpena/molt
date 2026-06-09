@@ -193,6 +193,79 @@ alloc-count** (Rule 1). If the sampler is unavailable or the process is too shor
 to attach, the cell records a documented `available=false` note — never a fake
 signal.
 
+### Warm-hot cycle attribution (`--sample-hot-only`) — #76, the WARM prerequisite
+
+**Why the one-shot `--emit-cycle-profile` above is INVALID for *warm* attribution.**
+A one-shot benchmark binary spends **~85–92 % of its leaf self-time in
+`_dyld_start`** — process launch plus the first-touch page-in of molt's large
+static binary. Measured directly on the #69 quiet board:
+`bench_exception_heavy` = **91.7 % `_dyld_start`**, `bench_etl_orders` =
+**88.5 % `_dyld_start`**, with the in-binary frames showing as `???` (release-fast
+strips the molt user-fn symbols). So the steady-state Python hot path *never*
+dominates the sample leaderboard, and **Rule 1 ("warm-red optimization requires
+cycle attribution") is UNSATISFIABLE** for warm hot paths from a one-shot sample.
+The prior path ran the binary N times *back-to-back as separate processes*, so
+every run re-paid `_dyld_start` — launch still dominated. `--sample-hot-only`
+(#76) is the machinery that makes the warm hot path legible. It defeats the two
+root causes structurally:
+
+1. **Launch/page-in domination → `--inner-repeat N` (looped body).** The
+   benchmark's `main()` is wrapped in `for _ in range(N): main()` **inside ONE
+   process** (`tools/perf_inner_repeat.py`), so `_dyld_start` is paid *once* and
+   amortizes over N iterations of the actual hot path (pyperf's `inner_loops`
+   model — recorded as `inner_loops` in the profile board). The transform is
+   **AST-based and semantics-preserving**: it wraps ONLY the canonical molt-bench
+   shape (a single top-level `def main()` with no required args and no
+   `global`/`nonlocal`, plus an `if __name__ == "__main__":` guard whose body is
+   exactly `main()`), so N iterations produce the one-shot output printed N times
+   and nothing else. Any other shape is **REFUSED** with a typed reason — never a
+   silently non-equivalent variant (zero-workaround policy). Verified under
+   CPython: looped output `== one-shot output × N` for both benchmarks.
+
+2. **Symbol stripping → `--profile-build` (symbolicate).** release-fast strips
+   the molt user-fn symbols at the *final link* (`-Wl,-x -Wl,-S` + a post-link
+   `strip -x`), so `sample` shows `???` for in-binary frames. The fix REUSES
+   molt's existing **`MOLT_KEEP_SYMBOLS=1`** diagnostic build-env hatch
+   (`src/molt/cli.py`), which skips BOTH strips and keeps the local symbol names.
+   It is additive: it changes **no** default product build and adds **only** a
+   symbol table — the CODE is byte-identical to the stripped build, so the
+   profiling binary's *timing* is representative. We do NOT add a redundant cargo
+   profile: the user-fn symbols come from the Cranelift `output.o` + the final
+   link, which a `[profile.*]` would not govern (those symbols are already
+   unstripped pre-link; only the final-link strip removes them).
+
+**How it samples.** For each benchmark the tool (a) times one looped run to learn
+its lifetime, (b) launches the looped+symbolicated process under `safe_run`,
+sleeps a short **warmup** so the first iterations (cold I-cache, first-touch
+page-in) are excluded, then (c) attaches `/usr/bin/sample` to the now-running
+steady state for a window auto-fitted to the remaining lifetime (so the sampler
+always closes before the process exits). `/usr/bin/sample` has no built-in
+warmup-delay flag, so the warmup is realized by *delaying the attach*.
+
+**The REFUSAL rule (fail-closed, same discipline as #69's quiescence guard).**
+After looping + symbols, the tool classifies the leaderboard into launch
+(`_dyld_start` in `dyld`) vs in-binary self-time. If launch/page-in is still
+**≥ 40 %** of leaf self-time, the loop factor was too small — the tool prints
+`CYCLE-ATTRIBUTION INVALID: launch/page-in dominates; increase --inner-repeat`
+and emits **NO** hot-path claim (`available=false, refused=true`). It also
+refuses (with a precise reason) when: the benchmark is not loopable; the looped
+runtime is too short to carve a steady window (→ raise N); or the inner-repeat
+amplified a **per-iteration molt leak** past the RSS cap (the size run OOMs — a
+real compiler-RC finding surfaced as a side effect; → LOWER N to profile a
+bounded window).
+
+**The `inner_loops` provenance field.** Every hot-only profile records
+`inner_loops` (the wrap factor N), `symbolicated` + `symbolicate_mechanism`
+(`MOLT_KEEP_SYMBOLS=1`), `launch_refusal_fraction` (0.40), and per-cell
+`launch_breakdown` (`{total, launch_samples, launch_fraction, in_binary_*,
+launch_dominates}`) + `in_binary_top` (the named cycle facts with their
+`leaderboard_pct`). This is the cycle fact that selects the next optimization.
+
+**#76 is the prerequisite for #68 (etl_orders) and exception_heavy optimization.**
+Before this, warm cycle attribution for those two `RED_STABLE` cells was
+impossible (launch dominated). The attributions this unblocks are recorded in
+[the etl_orders / exception_heavy section below](#etl_orders-exception_heavy-cycle-attribution-68-76-now-attributed).
+
 ## What it reuses (no new timing loop)
 
 - **Build**: `tools/bench.py` — the canonical molt-vs-CPython harness. It owns
@@ -229,7 +302,24 @@ uv run --python 3.12 python3 tools/perf_scoreboard.py \
 uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --backend native --baseline
 
 # Measure-only (do not fail CI on RED): add --no-gate.
+
+# WARM-HOT cycle attribution (#76): looped + symbolicated sample of the warm
+# hot path (NOT a speedup gate). One backend; writes hot_profile_<backend>_<rev>.json.
+# Exits 1 if ANY benchmark is REFUSED (launch still dominated, or not loopable).
+uv run --python 3.12 python3 tools/perf_scoreboard.py --sample-hot-only \
+    --backend native --inner-repeat 40 \
+    --benchmark tests/benchmarks/bench_exception_heavy.py \
+    --benchmark tests/benchmarks/bench_etl_orders.py
 ```
+
+The `--sample-hot-only` path (#76) is documented in full under
+[Warm-hot cycle attribution](#warm-hot-cycle-attribution---sample-hot-only-76-the-warm-prerequisite).
+`--inner-repeat N` sets the in-process repeat factor (default 40 — a multi-second
+process for the curated benchmarks within a sane RSS budget); raise it if the tool
+REFUSES with launch-still-dominates, LOWER it if a benchmark amplifies a
+per-iteration leak past the RSS cap. `--profile-build` (implied by
+`--sample-hot-only`) builds with `MOLT_KEEP_SYMBOLS=1` so molt user-fn symbols are
+retained — additive, never changes a normal build or any speedup number.
 
 - The **CPython oracle is the system `python3` (3.14)**, resolved explicitly via
   `--cpython` (default: `/opt/homebrew/bin/python3`), **never** the `.venv`
@@ -368,6 +458,54 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 execution-engine contract; the **cold** axis is the startup-tax budget — they
 are never blended.
 
+### The hot-only cycle-profile board (`--sample-hot-only`, #76)
+
+A **separate** JSON document (`kind: "hot_only_cycle_profile"`, written to
+`bench/scoreboard/hot_profile_<backend>_<gitrev>.json`) — it is a cycle-attribution
+artifact, **not** a speedup board, and never feeds the release gate.
+
+```jsonc
+{
+  "schema_version": 3,
+  "kind": "hot_only_cycle_profile",
+  "git_rev": "<full sha>",
+  "backend": "native", "target": "native", "profile": "release-fast",
+  "inner_loops": 40,                 // the in-process repeat factor N (provenance)
+  "symbolicated": true,
+  "symbolicate_mechanism": "MOLT_KEEP_SYMBOLS=1 (link-strip + post-link strip skipped)",
+  "launch_refusal_fraction": 0.40,   // launch >= this => REFUSE a hot-path claim
+  "cpython_baseline": "3.14.5",
+  "quiescence": { /* the #69 quiescence block, same shape */ },
+  "methodology": "inner-repeat main() N times in one process; MOLT_KEEP_SYMBOLS=1; …",
+  "cells": [ {
+    "benchmark": "tests/benchmarks/bench_exception_heavy.py",
+    "backend": "native", "profile": "release-fast",
+    "inner_loops": 40,
+    "build": { "inner_loops": 40, "symbolicated": true, "looped": true,
+               "refused": false, "reason": null, "looped_source_path": "…" },
+    "profile_result": {
+      "available": true,             // false + refused=true when launch dominated / leaked
+      "mode": "hot-only",
+      "inner_loops": 40,
+      "launch_breakdown": { "total": 2526, "launch_samples": 0,
+                            "launch_fraction": 0.0, "in_binary_samples": 2526,
+                            "in_binary_fraction": 1.0, "launch_dominates": false },
+      "in_binary_top": [             // the NAMED cycle facts (the deliverable)
+        { "symbol": "bench_exception_heavy__molt_user_main",
+          "self_samples": 543, "leaderboard_pct": 21.5, "lib": "…_molt" },
+        { "symbol": "molt_inc_ref_obj", "self_samples": 300,
+          "leaderboard_pct": 11.9, "lib": "…_molt" }
+        /* … */
+      ],
+      "top_symbols": [ /* the full leaderboard incl. libsystem/dyld frames */ ],
+      "refused": false, "refused_reason": null,
+      "leak_suspected": false,       // true when the size run OOM'd (inner-repeat leak)
+      "note": "/usr/bin/sample 1.7s steady-state (after 0.6s warmup) of ONE looped(…)…"
+    }
+  } ]
+}
+```
+
 ## Contamination policy (when a board is believed)
 
 - A board is **authoritative for warm verdicts** only when `provenance` says the
@@ -429,31 +567,85 @@ The won classes stay green and strengthen under quiescence: `bench_bytes_find`
 `bench_matrix_math` 2.94×, plus 37 more — 42 `GREEN_STABLE` total. These do NOT
 reopen.
 
-#### etl_orders / exception_heavy cycle attribution (#68 — confirm or refute)
+#### etl_orders / exception_heavy cycle attribution (#68 + #76 — NOW ATTRIBUTED)
 
-The council asked the cycle profile to point at *dataclass field-access + dict
-value-slot* (etl_orders) to confirm #68 and **refute split-alloc**. The result is
-**NEITHER a clean confirm nor refute at release-fast scale**, for a concrete
-measured reason: the leaf self-time of a single etl_orders/exception_heavy run is
-**~85% `_dyld_start`** (process launch + first-touch page-in of molt's
-statically-linked binary) with **~0% in the molt user-binary text**. molt's AOT
-steady-state compute is *faster than the per-process page-in cost* at these
-benchmarks' calibrated scale, so single-process CPU sampling measures
-launch/page-in, not the steady-state hot loop (this is the same finding as
-`COLD_START.md` — molt compute is not the bottleneck at this scale). The in-binary
-frames that DO appear are **unsymbolicated (`???`)** because release-fast strips
-molt user-function symbols. Therefore:
-- **#68 "dataclass field-access + dict value-slot" is NOT confirmed and NOT
-  refuted by release-fast cycle sampling.** It needs either (a) a workload that
-  loops the hot region *inside one warmed process* (so page-in amortizes and the
-  steady-state hot path dominates the leaf self-time), or (b) a symbolicated
-  build (so the in-binary frames name the dataclass/dict access). The warm
-  *timing* red (0.68× / 0.81×, page-faulted via warmup) is real; the cycle
-  *attribution* to a specific Repr/slot is the open follow-up.
-- The cycle-attribution MECHANISM itself is verified working end-to-end
-  (`/usr/bin/sample -wait` start-first + back-to-back loop + the corrected
-  trailing-count leaderboard parser; proven on a `dd` control with real
-  symbols). The limitation is the benchmark scale, not the tool.
+The prior board reported this as **NEITHER confirmed nor refuted** because a
+one-shot sample is ~85–92 % `_dyld_start` (launch + page-in) with `???` in-binary
+frames — and correctly named the two fixes needed: (a) loop the hot region inside
+one warmed process so page-in amortizes, and (b) a symbolicated build so the
+in-binary frames are named. **#76 built exactly that machinery
+(`--sample-hot-only`), and the warm hot path is now legible.** Looped
+(`--inner-repeat`) + symbolicated (`MOLT_KEEP_SYMBOLS=1`), `_dyld_start` collapses
+from ~88 % to **0 %** of leaf self-time; the leaderboards are **100 % in-binary**.
+Board: `bench/scoreboard/hot_profile_native.json` (native / release-fast).
+
+**`bench_etl_orders` (warm 0.81× `RED_STABLE`) — HOT, launch 0.0 %, 1577 leaf
+samples.** Top in-binary frames (share of the whole steady-state leaderboard):
+
+| share | frame | meaning |
+|------:|-------|---------|
+| 6.7 % | `ops_string::split_field_bounds_at_index` | the `rows[idx].split("|")` field parse |
+| 5.5 % | `bench_etl_orders__molt_user_main` | the compiled Python `main` loop body |
+| 5.0 % | `core::str::lossy::Utf8Chunks::next` | UTF-8 decode inside the split |
+| 4.5 % | `state::runtime_state` | per-op runtime-state access |
+| 4.4 % + 2.6 % | `GilGuard::new` + `GilGuard::drop` | per-call GIL acquire/release |
+| 4.1 % + 2.7 % | `mi_page_free_list_extend` + `mi_heap_malloc_zero_aligned_at` | allocator (per-row Order + split temps) |
+| 1.5 % | `object::ops_slice::dataclass_new_from_value_slice` | **dataclass construction** (`Order(...)`) |
+| 1.6 % | `numbers::int_subclass_value_bits_raw` / `to_bigint` | int field arithmetic |
+
+→ **The cost is the per-row `str.split("|")` + UTF-8 decode + dataclass
+construction + GIL/alloc churn**, NOT a split-allocation artifact (the falsified
+theory is **refuted** — `dataclass_new_from_value_slice` and the split/decode
+path are what burn cycles, not a duplicate allocation). The #68
+*dataclass-field-read / dict-value-slot* hypothesis is **partially confirmed**:
+dataclass construction is a named hot frame, but the dominant single cost is the
+field-PARSE (`split` + UTF-8 decode), and the GIL/runtime-state/allocator per-op
+overhead is collectively larger than any single attribute access. The dict
+`totals.get/[]=` did **not** surface in the top frames — the dict update is cheap
+relative to per-row parsing and object construction.
+
+**`bench_exception_heavy` (warm 0.68× `RED_STABLE`) — HOT, launch 0.0 %, 2526 leaf
+samples.** Top in-binary frames:
+
+| share | frame | meaning |
+|------:|-------|---------|
+| 21.5 % | `bench_exception_heavy__molt_user_main` | the compiled try/except loop body |
+| 11.9 % + 10.0 % | `molt_inc_ref_obj` + `molt_dec_ref_obj` | **refcount churn on the raised `ValueError(i)` objects** |
+| 6.2 % + 4.6 % | `GilGuard::new` + `GilGuard::drop` | per-op GIL |
+| 2.9 % | `object::alloc_object` | allocating each exception object |
+| 2.8 % | `exceptions::record_exception_with_caller_frame` | exception-state bookkeeping |
+| 2.4 % each | `exception_context_set` / `exception_stack_pop` / `exception_stack_push` | exception stack/context machinery |
+
+→ **The happy-path-exception cost is dominated by REFCOUNT churn (~22 %) on the
+raised exception objects, then GIL (~11 %), then the exception-state bookkeeping
+(push/pop/context/record, ~12 % collectively)** — exactly the
+"happy-path-exception-machinery cost" the council expected, with RC as the single
+largest lever.
+
+**Which warm red to attack first (from the cycle facts).** **`exception_heavy`** —
+it is the more foundational target *and* the data agrees: its hot path is
+~22 % refcount + ~11 % GIL + ~12 % exception bookkeeping, all of which are
+**shared runtime machinery** (inc/dec_ref, GilGuard, the exception stack) that
+every exception-raising program pays. Optimizing the raised-exception-object RC
+path (e.g. avoiding the inc/dec round-trip on a transient `ValueError` that is
+caught one frame up, or a lighter exception-object representation) attacks the
+single largest frame class and generalizes far beyond this benchmark.
+etl_orders' top cost (`str.split` + UTF-8 decode + dataclass construction) is
+more workload-specific; it is the second target.
+
+**Side finding (a real compiler bug surfaced by #76, not Lane C's to fix):** the
+inner-repeat amplified a **per-`main()`-call molt leak** in both benchmarks — each
+iteration leaks its working set (a one-shot run hides it). `bench_etl_orders`
+leaks ~45 MiB/iter (OOMs at high N); `bench_exception_heavy` grows ~70 MiB/30-iter.
+The hot-only profiler bounds N to a safe RSS budget and **refuses with the leak as
+the documented reason** when the size run OOMs; the leak itself is a separate
+RC-correctness item for the compiler owners (cf. the genleak #46 / iter_next_pair
+family).
+
+- The cycle-attribution MECHANISM is verified working end-to-end (inner-repeat
+  transform proven semantics-preserving under CPython; `MOLT_KEEP_SYMBOLS=1`
+  symbolication proven to keep 7593 named text symbols vs 1 stripped; the
+  warmup-then-attach steady-state sampler + the ≥ 40 % launch refusal gate).
 
 ### Reclassification of the prior 30 FAIL_ENGINE cells (contaminated → true state)
 
