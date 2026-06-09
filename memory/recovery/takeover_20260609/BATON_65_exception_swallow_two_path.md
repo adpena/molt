@@ -45,6 +45,42 @@ neutralizing the `__del__` exception REGARDLESS of `exception_pending`. Standalo
 (no prior) relies on the weaker `else if`, AND on this case the finalizer fires on
 the second (teardown) path that never reaches that code at all.
 
+## CONCLUSIVE (2026-06-09, fix-attempt experiment): the swallow boundary is UNREACHABLE — value-based clear CANNOT fix it
+Implemented the prescribed fix verbatim (write-unraisable + `clear_exception` +
+`clear_exception_state`, IMMEDIATELY after `call_callable0(del_bits)`), rebuilt,
+ran p65: `[FIN65-SWALLOW]` fired **0** times, `[FIN65-AFTER-CALL]` **0**, exit **1**,
+no stdout. The code after `call_callable0` NEVER EXECUTES when `__del__` raises.
+=> A value-based "clear channels after the call" fix is IMPOSSIBLE here; that code
+is dead. `call_callable0(__del__)` does not RETURN — the exception propagates by
+UNWINDING to the nearest COMPILED landing pad.
+
+**Why matrix passes / p65 fails (context-dependent, now explained):** molt compiled
+exceptions propagate via the unwinder to a compiled landing pad. p65's finalizer
+fires INLINE inside compiled `run()` (the `del x` drop) → unwinds to `run()`'s pad,
+skipping the Rust `maybe_run_object_finalizer` frame entirely. The matrix's
+`raise_in_del` fires inside `gc.collect()` — a PURE-RUNTIME context with NO compiled
+pad above — so `molt_call_bind` returns value-based and the existing swallow runs.
+(atexit callbacks swallow for the same reason: pure-runtime teardown context.)
+
+**=> VERIFIED REFUSAL of the simple fix; the real fix is one of TWO structural options
+(decision needed):**
+* **(A) catch the unwind at the finalizer boundary** — wrap `call_callable0(del_bits)`
+  in `std::panic::catch_unwind` (the ONLY runtime-level interception), write-unraisable
+  + clear, resume. This is the legitimate CPython `PyErr_WriteUnraisable` semantics
+  (NOT panic-swallowing-as-control-flow), but it DOES conflict with the project's
+  "no catch_unwind" contract line — needs an explicit ruling that finalizer-exception
+  isolation is the sanctioned exception.
+* **(B) defer finalizer execution out of the inline-compiled context** — the finalizer
+  must NOT run synchronously inside compiled `run()`'s drop where its raise unwinds
+  past the Rust frame; run it at a safe pure-runtime point (a deferred finalizer
+  queue drained after the compiled frame, or via the #58 FinalizerRegion lifetime
+  boundary). This is the larger structural fix and ties #65 directly to #58.
+RECOMMENDATION: (B) structurally (FinalizerRegion / deferred drain — same arc as #58),
+with (A) as a tactical bridge IF the contract permits it for legitimate finalizer
+semantics. EITHER WAY this is NOT the runtime-swallow patch the verdict-D framing
+assumed — the swallow site is unreachable by construction in the inline path.
+
+## (superseded by the experiment above) VERDICT D framing
 ## VERDICT (2026-06-09, ONE-CYCLE counters + provenance — STOP the trace loop): D = SWALLOW BOUNDARY
 Counters for p65 `del x`-in-function (MOLT_DEBUG_OBJECT_RC=1 + MOLT_TRACE_FIN65=1,
 FULL output — my earlier "type_id=100 never enters" was a `head -20` TRUNCATION
