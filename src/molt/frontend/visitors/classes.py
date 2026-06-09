@@ -2614,7 +2614,17 @@ class ClassDefVisitorMixin(_MixinBase):
             self._class_ns_store(class_ns_scope, name, value)
             self.locals[name] = value
 
-        self._class_ns_stack.append(class_ns_scope)
+        # The class-ns scope is pushed onto the stack ONLY for bodies that need
+        # block execution (control flow / ``del``).  A straight-line body keeps
+        # the original fast path: its name binds go through ``bind_class_name``
+        # (which updates ``class_attr_values`` / ``self.locals`` and, for a
+        # dynamic class, the namespace dict) but the ``_store_local_value`` /
+        # ``_load_local_value`` / ``_emit_delete_name`` hooks stay INERT (an
+        # empty stack), so emission of field defaults, method defaults, and the
+        # compile-time dataclass path is byte-for-byte unchanged.  (P0 #50.)
+        _push_scope = body_needs_block
+        if _push_scope:
+            self._class_ns_stack.append(class_ns_scope)
         try:
             for item in node.body:
                 if isinstance(item, ast.ClassDef):
@@ -2957,8 +2967,9 @@ class ClassDefVisitorMixin(_MixinBase):
         finally:
             self._class_body_depth -= 1
             self.locals = saved_locals
-            popped_scope = self._class_ns_stack.pop()
-            assert popped_scope is class_ns_scope, "class-ns scope stack imbalance"
+            if _push_scope:
+                popped_scope = self._class_ns_stack.pop()
+                assert popped_scope is class_ns_scope, "class-ns scope stack imbalance"
 
         # __static_attributes__ (CPython 3.13+) — always emitted after class
         # body, even when empty.  Appears after methods in namespace event order.
