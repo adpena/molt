@@ -600,6 +600,13 @@ fn assert_analyses_fresh(func: &TirFunction, am: &mut AnalysisManager, after_pas
             AnalysisId::AliasAnalysis => check!(super::passes::alias_analysis::AliasAnalysis),
             AnalysisId::MemorySSA => check!(super::passes::memory_ssa::MemorySSA),
             AnalysisId::Liveness => check!(super::passes::liveness::TirLiveness),
+            // CallFacts is CFG/ops-sensitive (a deleted block/op can remove a
+            // call site), so the self-check recomputes + compares it like any
+            // other cached analysis. In Phase 1a nothing on the per-function
+            // pipeline calls `am.get::<CallFactsAnalysis>`, so this arm is only
+            // reachable once a consumer caches the (intraprocedural-floor) table;
+            // the recompute is that same floor, so cached == fresh holds.
+            AnalysisId::CallFacts => check!(super::call_facts::CallFactsAnalysis),
         }
     }
 }
