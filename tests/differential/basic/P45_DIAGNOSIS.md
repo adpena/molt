@@ -84,3 +84,30 @@ nested-with-in-loop/loop-in-with/with-in-loop-in-with) all match CPython.
 - Confirmed: back-edge dead in PRE-OPT TIR (construction-time bug, not a pass).
 - Next: raw frontend-SIR dump to localize construction vs frontend, then the
   structural fix + differential tests.
+
+## UPDATE — root cause is the PYTHON MIDEND, not SIR→TIR construction
+
+Frontend `emit` produces the CORRECT op order (verified by tracing
+`SimpleTIRGenerator.emit`):
+`LOOP_INDEX_NEXT → LOOP_CONTINUE → LOOP_END` (emit_range_loop_body, init.py:8590-8598).
+
+With `MOLT_MIDEND_DISABLE=1` the `to_json()` ops are correct:
+`… loop_index_next, loop_continue, loop_end`.
+With the midend ENABLED they are corrupted:
+`… loop_end, loop_index_next` — `loop_continue` DELETED, `loop_end` hoisted
+ABOVE `loop_index_next`. That orphans the back-edge (latch becomes unreachable),
+so the body runs once.
+
+Bisected the midend sub-passes: the corrupting pass is
+**`SimpleTIRGenerator._ensure_structural_cfg_validity`**
+(`src/molt/frontend/__init__.py:24805`). Exact transition it produces:
+```
+before: LOOP_START, LOOP_INDEX_START, LOOP_BREAK_IF_FALSE, LOOP_INDEX_NEXT, LOOP_CONTINUE, LOOP_END
+after:  LOOP_START, LOOP_INDEX_START, LOOP_BREAK_IF_FALSE, LOOP_END,        LOOP_INDEX_NEXT
+```
+i.e. it drops `LOOP_CONTINUE` and moves `LOOP_END` before `LOOP_INDEX_NEXT`.
+
+Fix target: `_ensure_structural_cfg_validity` must preserve the
+`LOOP_INDEX_NEXT → LOOP_CONTINUE → LOOP_END` back-edge tail when a loop body
+ends inside a `with` (nested exception-scope) region. Non-nested loops are not
+hit because their body has no exception-scope structure that confuses this pass.
