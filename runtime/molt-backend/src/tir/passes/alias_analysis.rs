@@ -238,10 +238,26 @@ pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
 // substrate, design 20).
 // ===========================================================================
 
-/// True if `op` is an attribute/element READ whose result may be a BORROW into —
-/// or an opaque HANDLE indexing — its source object's backing store. Such a
-/// result keeps its source object semantically alive: freeing the source (running
-/// its finalizer) can invalidate the result. The source is operand 0.
+/// The operand value `op`'s result interior-borrows (a BORROW into — or an opaque
+/// HANDLE indexing — that operand's backing store), or `None`. Such a result keeps
+/// its source object semantically alive: freeing the source (running its
+/// finalizer) can invalidate the result.
+///
+/// REGISTRY-DRIVEN (design 27 §1.5 / §2.1, op-semantics ladder #73): the borrow-of
+/// fact is no longer a hardcoded `LoadAttr | Index` match here — it is the
+/// per-position `operand_ownership = "interior_borrow_keepalive"` row in
+/// `op_kinds.toml`, generated into
+/// [`crate::tir::op_kinds_generated::opcode_borrows_source_operand`] (which returns
+/// the interior-borrowed operand INDEX, or `None`). The single declarative
+/// authority means a FUTURE op whose result borrows into an operand (a `memoryview`
+/// op, a slice-view intrinsic) gets correct keepalive by setting that operand's
+/// position in op_kinds.toml — never by editing this function — retiring the
+/// per-pass borrow-of hand list (the C4 interior-borrow-lifetime class).
+///
+/// The fact it encodes (byte-identical to the prior match): `LoadAttr` / `Index`
+/// interior-borrow operand 0. `Index`'s key operand and `OrdAt` (an `i64` code
+/// point copied out of the element, not a reference into the container) carry NO
+/// keepalive — they are classified `borrowed` / left off the table.
 ///
 /// This is DISTINCT from the transparent-alias relation (`copy_is_known_local_alias`):
 /// a borrow result is NOT bit-identical to the source and must NOT be unioned into
@@ -266,14 +282,9 @@ pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
 /// > `get_attr`), the wrapper's finalizer destroys the registry entry BEFORE the
 /// > intrinsic call reads `h` → the call sees an empty/destroyed counter (the
 /// > round-6 BLOCKER-1 use-after-free: `len(Counter(...))` returned 0).
-///
-/// `OrdAt` is excluded: its result is an `i64` code point (a pure scalar copied out
-/// of the element), not a reference into the container, so no keepalive is owed.
 fn op_borrow_source(op: &TirOp) -> Option<ValueId> {
-    match op.opcode {
-        OpCode::LoadAttr | OpCode::Index => op.operands.first().copied(),
-        _ => None,
-    }
+    let idx = crate::tir::op_kinds_generated::opcode_borrows_source_operand(op.opcode)?;
+    op.operands.get(idx).copied()
 }
 
 /// The interior-borrow keepalive relation for a function: maps each borrowing-read

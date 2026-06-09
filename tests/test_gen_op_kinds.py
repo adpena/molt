@@ -439,32 +439,61 @@ def _re_search(src: str, fn_sig: str) -> str:
 def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
     """Every OpCode gets an `operand_ownership` arm in
     `opcode_operand_ownership_table` (EXHAUSTIVE over the enum — the kill for a
-    new opcode silently inheriting an unstated borrow/consume assumption), and
-    the current seed is uniformly `Borrowed` (molt's callee-borrows-args ABI,
-    design 20 §1.2 — the behavior-preserving seed of the migration)."""
+    new opcode silently inheriting an unstated borrow/consume assumption). The
+    seed is uniformly `Borrowed` (molt's callee-borrows-args ABI, design 20 §1.2)
+    EXCEPT the two interior-borrowing reads `LoadAttr`/`Index` (op-semantics
+    ladder #73): their source operand is `InteriorBorrowKeepAlive` — the
+    behavior-preserving migration of the `op_borrow_source` keepalive fact."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
 
     # The table region for opcode_operand_ownership_table, bounded by the next fn.
     region = _re_search(rendered, "fn opcode_operand_ownership_table").split(
-        "fn kind_consumed_operand_table"
+        "fn opcode_borrows_source_operand"
     )[0]
+    # The behavior-preserving seed (ladder #73): every opcode is `all_borrowed`
+    # EXCEPT the two interior-borrowing reads. `LoadAttr` interior-borrows its
+    # single operand; `Index` interior-borrows operand 0 (the container) and
+    # merely borrows operand 1 (the key). Any OTHER non-`all_borrowed` opcode is a
+    # drift (a real consume must add a [[consuming_kind]] per-spelling row; a new
+    # interior-borrow op must be re-verified byte-identical here).
+    interior = {
+        "LoadAttr": ["interior_borrow_keepalive"],
+        "Index": ["interior_borrow_keepalive", "borrowed"],
+    }
+    expected_arm = {
+        "LoadAttr": "OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,",
+        "Index": (
+            "OpCode::Index => match operand_idx { "
+            "0 => OperandOwnership::InteriorBorrowKeepAlive, "
+            "_ => OperandOwnership::Borrowed },"
+        ),
+    }
     for row in data["opcode"]:
         name = row["name"]
-        assert row["operand_ownership"] == "all_borrowed", (
-            f"seed expectation: every opcode is all_borrowed today; {name} is "
-            f"{row['operand_ownership']!r} — a real consume must add a "
-            "[[consuming_kind]] row (per-spelling) or be a deliberate per-OpCode "
-            "classification with the migration re-verified byte-identical"
-        )
-        assert f"OpCode::{name} => OperandOwnership::Borrowed," in region, (
-            f"opcode_operand_ownership_table missing/incorrect arm for {name}"
-        )
+        if name in interior:
+            assert row["operand_ownership"] == interior[name], (
+                f"{name} interior-borrow seed drifted: {row['operand_ownership']!r} "
+                f"!= {interior[name]!r} (ladder #73 must stay byte-identical to the "
+                "op_borrow_source LoadAttr|Index→operand-0 fact)"
+            )
+            assert expected_arm[name] in region, (
+                f"opcode_operand_ownership_table missing/incorrect {name} arm"
+            )
+        else:
+            assert row["operand_ownership"] == "all_borrowed", (
+                f"seed expectation: every non-interior-borrow opcode is all_borrowed; "
+                f"{name} is {row['operand_ownership']!r} — a real consume must add a "
+                "[[consuming_kind]] row (per-spelling) or be a deliberate per-OpCode "
+                "classification with the migration re-verified byte-identical"
+            )
+            assert f"OpCode::{name} => OperandOwnership::Borrowed," in region, (
+                f"opcode_operand_ownership_table missing/incorrect arm for {name}"
+            )
     # The enum carries the FULL operand-ownership domain (schema-ready for the
     # #58 ownership-boundary lattice — adding a fact is a table edit, not enum
-    # surgery), even though only Borrowed/Consumed are seeded today. Pin every
-    # variant so the schema can't silently regress to a 2-leaf corner.
+    # surgery). Pin every variant so the schema can't silently regress.
     assert (
         "pub(crate) enum OperandOwnership {\n"
         "    Borrowed,\n"
@@ -591,9 +620,22 @@ def test_operand_ownership_mandatory_fail_loud() -> None:
 
 def test_operand_ownership_rejects_bad_value() -> None:
     """A malformed `operand_ownership` (bad string / bad list leaf) is a hard
-    error — a typo must never silently degrade to a borrow/consume assumption."""
+    error — a typo must never silently degrade to a borrow/consume assumption, or
+    a dropped keepalive (the round-6 interior-borrow UAF). The borrow-of leaf
+    `interior_borrow_keepalive` is LIST-ONLY: it is NOT a valid uniform shorthand
+    (an op that interior-borrows one operand still borrows the rest)."""
     gen = _gen()
-    for bad in ("borrowed", "all_owned", "consume", ["borrowed", "moved"], 7):
+    for bad in (
+        "borrowed",
+        "all_owned",
+        "consume",
+        ["borrowed", "moved"],
+        # interior_borrow_keepalive is reachable only via a per-position list;
+        # neither the bare leaf nor an `all_*` form of it is a valid shorthand.
+        "interior_borrow_keepalive",
+        "all_interior_borrow_keepalive",
+        7,
+    ):
         try:
             gen._validate_operand_ownership("SynthOp", bad)
         except gen.OpKindTableError:
@@ -602,8 +644,15 @@ def test_operand_ownership_rejects_bad_value() -> None:
             raise AssertionError(
                 f"operand_ownership={bad!r} must raise OpKindTableError"
             )
-    # The valid shapes must pass.
-    for good in ("all_borrowed", "all_consumed", ["borrowed", "consumed"]):
+    # The valid shapes must pass, including a per-position list that carries the
+    # interior-borrow leaf alongside a plain borrowed operand (the `Index` shape).
+    for good in (
+        "all_borrowed",
+        "all_consumed",
+        ["borrowed", "consumed"],
+        ["interior_borrow_keepalive"],
+        ["interior_borrow_keepalive", "borrowed"],
+    ):
         gen._validate_operand_ownership("SynthOp", good)
 
 
@@ -633,6 +682,100 @@ def test_consuming_kind_rejects_unknown_spelling_fail_loud() -> None:
         )
 
 
+# --- Interior-borrow keepalive (design 27 §1.5 borrow-of edge; ladder #73) -----
+# The `interior_borrow_keepalive` operand-ownership leaf is the borrow-of fact: a
+# per-position operand whose backing store the op's result interior-borrows (the
+# `LoadAttr`/`Index` source — the round-6 `Counter._handle` UAF). It renders into
+# `opcode_borrows_source_operand`, the single declarative authority `op_borrow_source`
+# (alias_analysis.rs) reads, REPLACING the hand-coded `LoadAttr | Index` match.
+# These tests pin the seed (byte-identical), the render, and the consumer migration.
+
+
+def test_borrows_source_operand_renders_loadattr_and_index() -> None:
+    """The `interior_borrow_keepalive` rows render into
+    `opcode_borrows_source_operand` with the design-27 §1.5 borrow-of seed:
+    `LoadAttr`/`Index` borrow into operand 0, every other op into none. This is
+    the behavior-preserving migration of `op_borrow_source` (the prior hardcoded
+    `LoadAttr | Index => operands.first()`) — and the first construction of
+    `OperandOwnership::InteriorBorrowKeepAlive` by a generated TABLE (not just
+    `from_str`), the ladder-#73 deliverable."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    region = _re_search(rendered, "fn opcode_borrows_source_operand")
+
+    # The toml seed: exactly LoadAttr/Index carry interior_borrow_keepalive at
+    # position 0 (byte-identical to op_borrow_source's LoadAttr|Index→operand-0).
+    borrows = {
+        row["name"]: gen._borrows_source_operand_index(row["operand_ownership"])
+        for row in data["opcode"]
+    }
+    interior = {k: v for k, v in borrows.items() if v is not None}
+    assert interior == {"LoadAttr": 0, "Index": 0}, (
+        "opcode_borrows_source_operand drifted from the op_borrow_source seed "
+        f"(LoadAttr/Index → operand 0): {interior}"
+    )
+    assert "OpCode::LoadAttr => Some(0)," in region
+    assert "OpCode::Index => Some(0)," in region
+    # Exhaustive fall-through: every non-interior-borrow op → None.
+    assert "_ => None," in region
+    # `OrdAt` is a fused i64 read (a scalar copied out, NOT a reference into the
+    # container) — it must NOT be in the table (the round-6 explicit exclusion).
+    assert "OpCode::OrdAt =>" not in region, (
+        "OrdAt produces an i64 code point, not an interior borrow — it owes no "
+        "keepalive and must stay off the borrows-source table"
+    )
+    # `InteriorBorrowKeepAlive` is constructed by the generated operand-ownership
+    # table now — GENUINELY LIVE, not a `from_str`-only forward-compat variant.
+    own_region = _re_search(rendered, "fn opcode_operand_ownership_table").split(
+        "fn opcode_borrows_source_operand"
+    )[0]
+    assert "OperandOwnership::InteriorBorrowKeepAlive" in own_region, (
+        "opcode_operand_ownership_table must construct InteriorBorrowKeepAlive "
+        "(the ladder-#73 deliverable: the first real InteriorBorrowKeepAlive consumer)"
+    )
+
+
+def test_op_borrow_source_delegates_to_generated_table() -> None:
+    """alias_analysis.rs's `op_borrow_source` must DELEGATE to the generated
+    `opcode_borrows_source_operand` (no hand-maintained `OpCode::LoadAttr |
+    OpCode::Index` match in its body). This is the council's 'migrate one consumer
+    + delete one duplicate fact' proof for the interior-borrow keepalive (ladder
+    #73): the borrow-of fact lives in op_kinds.toml, read by the single authority.
+
+    Scoped to the FUNCTION BODY (not the whole file) so the legitimate LoadAttr /
+    Index references elsewhere in alias_analysis.rs (load-purity classification,
+    the borrow-provenance unit-test fixtures) are not mistaken for the deleted
+    hand-coded match."""
+    alias = (
+        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+    ).read_text()
+    marker = "fn op_borrow_source("
+    assert marker in alias, "op_borrow_source not found"
+    start = alias.index(marker)
+    brace = alias.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(alias)):
+        if alias[i] == "{":
+            depth += 1
+        elif alias[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = alias[start:end]
+    # The duplicate borrow-of hand list must be gone from the function (the only
+    # authority is now the generated table the body delegates to).
+    assert "OpCode::LoadAttr" not in body and "OpCode::Index" not in body, (
+        "the hand-coded LoadAttr|Index borrow-of match must be deleted from "
+        "op_borrow_source (now sourced from opcode_borrows_source_operand)"
+    )
+    assert "opcode_borrows_source_operand" in body, (
+        "op_borrow_source's body must call the generated opcode_borrows_source_operand"
+    )
+
+
 def test_render_detects_operand_ownership_mutation() -> None:
     """Mutating an operand-ownership classification must change the render (so the
     freshness guard catches a forgotten regeneration)."""
@@ -650,6 +793,17 @@ def test_render_detects_operand_ownership_mutation() -> None:
     mutated2["consuming_kind"].append({"kind": "call", "consumed_operand": 0})
     assert gen.render_rs(mutated2) != rendered, (
         "adding a consuming_kind row did not change the render"
+    )
+
+    # Flipping the interior-borrow seed (the borrow-of fact) must change the
+    # render too — the freshness guard protects the round-6 keepalive.
+    mutated3 = json.loads(json.dumps(data))
+    for row in mutated3["opcode"]:
+        if row["name"] == "LoadAttr":
+            row["operand_ownership"] = "all_borrowed"
+    assert gen.render_rs(mutated3) != rendered, (
+        "dropping LoadAttr's interior_borrow_keepalive did not change the render "
+        "(would silently re-open the round-6 interior-borrow UAF)"
     )
 
 
