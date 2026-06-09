@@ -55,14 +55,21 @@ OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
 # fallback classification).
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 
-# Operand-ownership: the per-operand borrowed|consumed axis (design 27 §2.1).
-# A uniform shorthand ("all_borrowed" / "all_consumed") or a per-position list of
-# these two leaf values. molt's "callee borrows all args" ABI (design 20 §1.2)
-# makes "all_borrowed" the universal default; "consumed" is the rare op-frees-it
-# case (the CallArgs builder, the C6 double-free class). A value outside this set
-# is a hard error (a typo must never silently degrade to a borrow assumption that
-# leaks, or a consume assumption that double-frees).
-_OPERAND_OWNERSHIP_LEAVES = {"borrowed", "consumed"}
+# Operand-ownership: the per-operand borrowed|consumed|interior_borrow_keepalive
+# axis (design 27 §2.1). A uniform shorthand ("all_borrowed" / "all_consumed") or
+# a per-position list of the leaf values. molt's "callee borrows all args" ABI
+# (design 20 §1.2) makes "all_borrowed" the universal default; "consumed" is the
+# rare op-frees-it case (the CallArgs builder, the C6 double-free class);
+# "interior_borrow_keepalive" is the borrow-of-edge case (design 27 §1.5): the op
+# borrows the operand (frees nothing) AND its result holds an INTERIOR reference
+# into that operand's backing store, so the operand's drop is deferred to the
+# result's last use (the `LoadAttr`/`Index` source — the round-6 `Counter._handle`
+# UAF). It is a refinement of "borrowed" (NOT consumed), reached only via the
+# per-position list (an op that interior-borrows one operand still merely borrows
+# the rest — `Index`'s key). A value outside this set is a hard error (a typo must
+# never silently degrade to a borrow assumption that leaks, a consume assumption
+# that double-frees, or a missing keepalive that re-opens the round-6 UAF).
+_OPERAND_OWNERSHIP_LEAVES = {"borrowed", "consumed", "interior_borrow_keepalive"}
 _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 
 # Per-TERMINATOR operand-category leaves (design 27 §2.4, the ownership-moves-out
@@ -226,10 +233,14 @@ def _validate_operand_ownership(name: str, value: object) -> None:
     """Validate one opcode's ``operand_ownership`` (fail-loud).
 
     Accepts a uniform shorthand (``"all_borrowed"`` / ``"all_consumed"``) or a
-    per-position list of the leaf values (``"borrowed"`` / ``"consumed"``). Any
-    other shape is a hard error — a missing/typo'd classification must never
-    silently degrade to a borrow assumption (leak) or a consume assumption
-    (double-free).
+    per-position list of the leaf values (``"borrowed"`` / ``"consumed"`` /
+    ``"interior_borrow_keepalive"``). ``interior_borrow_keepalive`` is list-only:
+    it marks the operand whose backing store the op's result interior-borrows (the
+    borrow-of edge, design 27 §1.5), and an op that interior-borrows one operand
+    still merely borrows the rest, so it cannot be a uniform shorthand. Any other
+    shape is a hard error — a missing/typo'd classification must never silently
+    degrade to a borrow assumption (leak), a consume assumption (double-free), or
+    a dropped keepalive (the round-6 interior-borrow UAF).
     """
     if value is None:
         raise OpKindTableError(
@@ -696,9 +707,15 @@ def _render_opcode_purity_arms(opcodes: list[dict]) -> str:
 _OPERAND_OWNERSHIP_VARIANT = {
     "borrowed": "OperandOwnership::Borrowed",
     "consumed": "OperandOwnership::Consumed",
+    # The borrow-of-edge leaf (design 27 §1.5 / §2.1, ladder #73): a per-position
+    # opcode operand whose result holds an interior reference into it (the
+    # `LoadAttr`/`Index` source — the round-6 `Counter._handle` keepalive). Read by
+    # `opcode_borrows_source_operand` and `op_borrow_source` in alias_analysis.rs.
+    "interior_borrow_keepalive": "OperandOwnership::InteriorBorrowKeepAlive",
     # Move-out leaves used by the per-TERMINATOR table (design 27 §2.4). The
-    # opcode `operand_ownership` validator restricts opcodes to borrowed|consumed;
-    # these are reachable only via the terminator categories.
+    # opcode `operand_ownership` validator restricts opcodes to
+    # borrowed|consumed|interior_borrow_keepalive; these are reachable only via
+    # the terminator categories.
     "transferred": "OperandOwnership::Transferred",
     "none": "OperandOwnership::NoOperandOwnership",
 }
@@ -745,10 +762,11 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "/// The variant set models molt's FULL operand-ownership domain so the\n"
         "/// design-27 ownership-boundary lattice (#58) and the next consumer\n"
         "/// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`\n"
-        "/// seed the per-OpCode + per-spelling tables; `Transferred` seeds the\n"
-        "/// per-TERMINATOR table (design 27 §2.4 transfer sites — ladder #72). The\n"
-        "/// remaining two name EXISTING molt facts whose hand-lists migrate into\n"
-        "/// ownership rows in follow-up tranches:\n"
+        "/// seed the per-OpCode + per-spelling tables; `InteriorBorrowKeepAlive`\n"
+        "/// seeds the per-position borrow-of column (ladder #73); `Transferred`\n"
+        "/// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder\n"
+        "/// #72). One variant still names an EXISTING molt fact whose hand-list\n"
+        "/// migrates into ownership rows in a follow-up tranche:\n"
         "///   * `Transferred` — ownership moves OUT of the function/block: a\n"
         "///     `Return` value or a branch-arg passed into a successor block arg.\n"
         "///     LIVE: constructed by `terminator_operand_ownership_table` and read\n"
@@ -756,17 +774,23 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "///   * `InteriorBorrowKeepAlive` — the round-6 interior-borrow keepalive:\n"
         "///     the operand must stay live because the result holds an INTERIOR\n"
         "///     reference into it (drop deferred to the interior ref's last use).\n"
+        "///     LIVE: constructed by `opcode_operand_ownership_table` for the\n"
+        "///     `LoadAttr`/`Index` source position and read by\n"
+        "///     `opcode_borrows_source_operand` / `op_borrow_source` to build the\n"
+        "///     `BorrowProvenance` relation (the `Counter._handle` UAF fix).\n"
         "///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:\n"
         "///     valid only on the not-exhausted edge, NEVER unconditionally\n"
-        "///     droppable (stale stack garbage on the exhaustion edge).\n"
+        "///     droppable (stale stack garbage on the exhaustion edge). The LONE\n"
+        "///     remaining `from_str`-only variant (its consumer hand-list —\n"
+        "///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).\n"
         "///   * `NoOperandOwnership` — no ref-bearing operand in that category (a\n"
         "///     raw lane; a terminator category absent on a variant — `Branch` has\n"
         "///     no direct operand, `Return` forwards no branch arg).\n"
-        "// `InteriorBorrowKeepAlive`/`ConditionalValidOnlyOnEdge` are seeded as\n"
-        "// their consumer hand-lists migrate (the interior-borrow / iter-cond\n"
-        "// tranches). The schema is kept ALIVE (not ornamental) by `ALL` +\n"
-        "// `from_str`/`as_str` below: every variant is constructed and round-\n"
-        "// tripped, so a dropped or renamed variant is a compile/test failure.\n"
+        "// `ConditionalValidOnlyOnEdge` is the only variant still seeded solely by\n"
+        "// `from_str` (awaiting the iter-cond consumer migration). The schema is\n"
+        "// kept ALIVE (not ornamental) by `ALL` + `from_str`/`as_str` below: every\n"
+        "// variant is constructed and round-tripped, so a dropped or renamed\n"
+        "// variant is a compile/test failure.\n"
         "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
         "pub(crate) enum OperandOwnership {\n"
         "    Borrowed,\n"
@@ -777,13 +801,15 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "    NoOperandOwnership,\n"
         "}\n\n"
         "// Parse/render path for the operand-ownership vocabulary. `Transferred`\n"
-        "// is now LIVE through `terminator_operand_ownership_table` (ladder #72);\n"
-        "// `from_str` remains the toml-ingest path the REMAINING migrations\n"
-        "// (InteriorBorrowKeepAlive / ConditionalValidOnlyOnEdge rows) read and is\n"
-        "// not yet wired to a runtime caller, so `from_str`/`as_str`/`ALL` keep\n"
-        "// allow(dead_code) — SCOPED to this forward-compat parse API, never the\n"
-        "// enum (every variant is constructed) nor the file. `ALL` + the round-\n"
-        "// trip test keep every variant constructed and live today.\n"
+        "// is LIVE through `terminator_operand_ownership_table` (ladder #72) and\n"
+        "// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /\n"
+        "// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the\n"
+        "// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`\n"
+        "// row, #74) reads and is not yet wired to a runtime caller, so\n"
+        "// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this\n"
+        "// forward-compat parse API, never the enum (every variant is constructed)\n"
+        "// nor the file. `ALL` + the round-trip test keep every variant constructed\n"
+        "// and live today.\n"
         "#[allow(dead_code)]\n"
         "impl OperandOwnership {\n"
         "    pub(crate) const ALL: [OperandOwnership; 6] = [\n"
@@ -851,6 +877,42 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         name = row["name"]
         spec = row["operand_ownership"]
         out.append(f"        OpCode::{name} => {_operand_ownership_arm(spec)},\n")
+    out.append("    }\n}\n\n")
+
+    # Derived borrow-of authority (design 27 §1.5 / §2.1, ladder #73): the
+    # operand index an opcode's result interior-borrows (its
+    # `interior_borrow_keepalive` position), or `None`. This is the single
+    # declarative fact `op_borrow_source` (alias_analysis.rs) reads — the migrated
+    # interior-borrow-keepalive relation, no longer a hardcoded `LoadAttr | Index`
+    # match. EXHAUSTIVE over the enum (every opcode is classified by its
+    # `operand_ownership` row). A future op whose result interior-borrows an
+    # operand gets correct keepalive by setting that position to
+    # `interior_borrow_keepalive` in op_kinds.toml — never by editing the pass.
+    out.append(
+        "/// The operand index whose backing store this op's result interior-borrows\n"
+        "/// (design 27 §1.5 borrow-of edge): the operand position classified\n"
+        "/// `OperandOwnership::InteriorBorrowKeepAlive`, or `None` if the op's result\n"
+        "/// borrows into no operand. Derived from the per-OpCode `operand_ownership`\n"
+        "/// row — the SINGLE declarative authority `op_borrow_source`\n"
+        "/// (alias_analysis.rs) reads to build the `BorrowProvenance` keepalive\n"
+        "/// relation, REPLACING the hand-coded\n"
+        "/// `LoadAttr | Index` match (the round-6 `Counter._handle` UAF fix). The\n"
+        "/// source object's drop is deferred to the borrow result's last use, so a\n"
+        "/// finalizer that owns the backing store cannot run while the borrow lives.\n"
+        "/// EXHAUSTIVE over the enum — a new interior-borrowing op is classified by a\n"
+        "/// table edit, not a pass edit. At most one interior-borrow operand exists in\n"
+        "/// molt's lowering today (the container/object at position 0); the first such\n"
+        "/// position is returned.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_borrows_source_operand(opcode: OpCode) -> Option<usize> {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        idx = _borrows_source_operand_index(row["operand_ownership"])
+        if idx is not None:
+            out.append(f"        OpCode::{name} => Some({idx}),\n")
+    out.append("        _ => None,\n")
     out.append("    }\n}\n\n")
 
     out.append(
@@ -978,6 +1040,21 @@ def _render_terminator_ownership(terminators: list[dict]) -> str:
         "}\n"
     )
     return "".join(out)
+
+
+def _borrows_source_operand_index(spec: object) -> int | None:
+    """The operand index this op's result interior-borrows (design 27 §1.5), or
+    ``None``. The first position whose `operand_ownership` leaf is
+    ``interior_borrow_keepalive``. A uniform spec (``all_borrowed`` /
+    ``all_consumed``) interior-borrows nothing — only the per-position list form
+    can carry the keepalive leaf (the validator forbids it as a uniform shorthand,
+    so a borrow-of op MUST spell out its operand positions)."""
+    if not isinstance(spec, list):
+        return None
+    for i, leaf in enumerate(spec):
+        if leaf == "interior_borrow_keepalive":
+            return i
+    return None
 
 
 def _operand_ownership_arm(spec: object) -> str:
