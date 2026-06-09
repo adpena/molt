@@ -80,6 +80,28 @@ once; pending-exception-before-finalizer preserved/restored; `del x` timing vs a
 following statement; non-finalizer dec_ref/free unchanged (fast path); native +
 LLVM/WASM (shared runtime path).
 
+## CRITICAL implementation invariant (RC accounting — get this wrong → RC corruption)
+`maybe_run_object_finalizer` ASSUMES it is called with the object at **refcount 0**
+(it `inc_ref`s self→1 at entry, runs `__del__`, `fetch_sub`→0 at exit, and treats
+`prev > 1` as RESURRECTION). Therefore the SCHEDULE step must **NOT** `inc_ref`/root
+the object — leave it at refcount 0, just (a) set `HEADER_FLAG_FINALIZER_SCHEDULED`
+(new, bit `1<<18`; FINALIZER_RAN is `1<<16`, INTERNED `1<<17`, CONTAINS_REFS `1<<19`),
+(b) push the raw `ptr` into the queue, (c) **do not free** (skip the dealloc tail),
+(d) return. The object sits at refcount 0, unfreed, SCHEDULED — the moral equivalent
+of CPython's pending-finalizer/trashcan state; nothing references it so no further
+dec underflows. DRAIN reuses `maybe_run_object_finalizer` UNCHANGED (refcount-0
+context preserved → its resurrection math stays correct), then for the non-resurrected
+case performs the SAME free tail that `dec_ref_ptr` runs today (1962→end:
+DEALLOC_COUNT/bytes commit, weakref clear, payload + cold-header free). => EXTRACT
+that free tail of `dec_ref_ptr` into `fn finalize_free_object(py, ptr, type_id,
+size_class, cold_idx, dealloc_bytes)` and call it from BOTH `dec_ref_ptr` (today's
+inline non-finalizer path) AND the drain. Do NOT duplicate it. The `dec_ref_ptr`
+hook at the rc1→0 site becomes: `if schedule_object_finalizer(py, ptr) { return; }`
+(schedule sets SCHEDULED + queues + returns true for a runnable-`__del__` object that
+is neither RAN nor already SCHEDULED) `else { finalize_free_object(...) }`.
+Leak gauge stays exact: dealloc is committed only inside `finalize_free_object`
+(at true free), never at schedule.
+
 ## Phase 6 — one authority, delete the rest
 After green: remove the inline `__del__` call from the `dec_ref_ptr` zero path for
 finalizer-sensitive objects; route gc.collect/atexit finalization through the same
