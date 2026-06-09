@@ -1081,6 +1081,99 @@ pub(crate) unsafe fn class_field_offset(
     }
 }
 
+/// Design A (#86 — single field-ownership authority): release every inline typed
+/// attribute field of a heap `TYPE_ID_OBJECT` instance when it is freed.
+///
+/// An object's inline field slots are the SOLE owner of their pointer references:
+/// `object_field_set_ptr_raw` / `object_field_init_ptr_raw` `inc_ref` the value on
+/// store (and `dec_ref` the displaced old value). The runtime free path is the one
+/// authority that releases them. Folded objects that release their fields via the
+/// compiler drop pass are stack-promoted / immortal and NEVER reach the runtime
+/// free path, so there is no double-free with this release.
+///
+/// Safety facts that make a blind per-slot `dec_ref` correct:
+/// - inline fields are NaN-boxed (`object_field_set_ptr_raw` stores `val_bits`), so
+///   a primitive field (`int`/`float`/`bool`/`None`) `dec_ref`s to a no-op;
+/// - the payload is zero-initialised at alloc, so an unset field reads `0` (no-op);
+/// - only POINTER slots (`as_ptr().is_some()`) are released, and each released slot
+///   is cleared to `0` first so a resurrecting `__del__` re-entry cannot double-dec.
+///
+/// Offsets are deduplicated across the MRO so a field shared by base+subclass
+/// layout is released exactly once. The caller gates on `HEADER_FLAG_HAS_PTRS`, so
+/// primitive-only objects skip this walk entirely (zero hot-path cost).
+pub(crate) unsafe fn dec_ref_object_inline_fields(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    class_ptr: *mut u8,
+) {
+    unsafe {
+        let fields_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.field_offsets_name,
+            b"__molt_field_offsets__",
+        );
+        let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
+            Cow::Borrowed(mro.as_slice())
+        } else {
+            Cow::Owned(class_mro_vec(MoltObject::from_ptr(class_ptr).bits()))
+        };
+        let payload = crate::object::object_payload_size(obj_ptr);
+        let mut seen: Vec<usize> = Vec::new();
+        for class_bits in mro.iter().copied() {
+            let Some(current_ptr) = obj_from_bits(class_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(current_ptr) != TYPE_ID_TYPE {
+                continue;
+            }
+            let dict_bits = class_dict_bits(current_ptr);
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                continue;
+            }
+            let Some(offsets_bits) = dict_get_in_place(_py, dict_ptr, fields_bits) else {
+                continue;
+            };
+            let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+                continue;
+            }
+            // Snapshot the offset-dict keys before the per-key lookups so we do not
+            // alias the dict's `order` Vec across `dict_get_in_place`.
+            let keys: Vec<u64> =
+                crate::builtins::containers::dict_order(offsets_ptr).clone();
+            for key in keys {
+                let Some(offset) = dict_get_in_place(_py, offsets_ptr, key)
+                    .and_then(|b| obj_from_bits(b).as_int())
+                    .and_then(|v| if v >= 0 { Some(v as usize) } else { None })
+                else {
+                    continue;
+                };
+                // Bounds guard: a field slot must lie fully inside the payload (the
+                // trailing `__dict__` slot is released separately by the caller, and
+                // a registered field offset never aliases it).
+                if offset.saturating_add(std::mem::size_of::<u64>()) > payload {
+                    continue;
+                }
+                if seen.contains(&offset) {
+                    continue;
+                }
+                seen.push(offset);
+                let slot = obj_ptr.add(offset) as *mut u64;
+                let val = *slot;
+                if val != 0 && obj_from_bits(val).as_ptr().is_some() {
+                    *slot = 0;
+                    dec_ref_bits(_py, val);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) unsafe fn is_iterator_bits(_py: &PyToken<'_>, bits: u64) -> bool {
     unsafe {
         crate::gil_assert();
