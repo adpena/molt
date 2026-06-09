@@ -2669,6 +2669,26 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         || itertools_drop_instance(py, ptr)
                         || functools_drop_instance(py, ptr)
                         || types_drop_instance(py, ptr);
+                    // Design A (#86 — single field-ownership authority): release the
+                    // instance's inline typed attribute fields. The inline slots are
+                    // the SOLE owner of their pointer refs (`object_field_set_ptr_raw`
+                    // inc_refs on store); the runtime free is the one authority that
+                    // releases them. Without this, every NON-folded object (a class
+                    // with `__del__`, a @dataclass, dynamic/metaclass/decorated
+                    // classes — all of which decline the constructor fold) leaks its
+                    // object-valued attributes and skips their `__del__`. Gated on
+                    // `HAS_PTRS` so primitive-only objects pay nothing. Folded objects
+                    // release their fields via the compiler drop pass and are
+                    // stack-promoted/immortal (they never reach this runtime free
+                    // path), so there is no double-free.
+                    if (header_flags & HEADER_FLAG_HAS_PTRS) != 0 {
+                        let class_bits = object_class_bits(ptr);
+                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+                            crate::builtins::attr::dec_ref_object_inline_fields(
+                                py, ptr, class_ptr,
+                            );
+                        }
+                    }
                     let dict_bits = instance_dict_bits(ptr);
                     if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
                         dec_ref_bits(py, dict_bits);
