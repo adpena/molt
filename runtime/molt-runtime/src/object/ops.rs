@@ -4657,6 +4657,29 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         "'range' object does not support item assignment",
                     );
                 }
+                // Immutable / non-subscript-assignable builtins: `s[i] = x`,
+                // `s[i:j] = ...`. CPython raises TypeError via the missing
+                // sq_ass_item / mp_ass_subscript slot. Previously these fell all
+                // the way through to the silent `none` no-op below (data
+                // unmodified, no error) — a P0 silent-miscompile (e.g. #52:
+                // `s = "hello"; s[0] = "H"` succeeded). The message is
+                // `'<type>' object does not support item assignment` for every
+                // such type and is version-stable across 3.12/3.13/3.14 for both
+                // the index and slice forms.
+                let immutable_assign_type_name = match type_id {
+                    TYPE_ID_STRING => Some("str"),
+                    TYPE_ID_BYTES => Some("bytes"),
+                    TYPE_ID_SET => Some("set"),
+                    TYPE_ID_FROZENSET => Some("frozenset"),
+                    _ => None,
+                };
+                if let Some(name) = immutable_assign_type_name {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!("'{}' object does not support item assignment", name),
+                    );
+                }
                 if type_id == TYPE_ID_BYTEARRAY {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
@@ -5087,18 +5110,24 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
                 }
                 let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_RANGE {
-                    // CPython: `del t[i]` / `del t[i:j]` raise TypeError. Previously
-                    // a silent no-op (no error). Wording asymmetry CPython applies
-                    // to both tuple and range, version-stable on 3.12/3.13/3.14:
-                    // index deletion (sq_ass_item slot) says "doesn't support item
-                    // deletion"; slice deletion (the subscript-del path) says "does
-                    // not support item deletion".
-                    let type_name = if type_id == TYPE_ID_TUPLE {
-                        "tuple"
-                    } else {
-                        "range"
-                    };
+                // CPython: `del t[i]` / `del t[i:j]` raise TypeError for every
+                // immutable / non-subscript-deletable builtin. Previously these
+                // fell through to the silent `none` no-op below (no error) — the
+                // deletion twin of the #52 store-index silent-miscompile. Wording
+                // asymmetry CPython applies uniformly, version-stable on
+                // 3.12/3.13/3.14: index deletion (sq_ass_item slot) says
+                // "doesn't support item deletion"; slice deletion (the
+                // subscript-del path) says "does not support item deletion".
+                let immutable_del_type_name = match type_id {
+                    TYPE_ID_TUPLE => Some("tuple"),
+                    TYPE_ID_RANGE => Some("range"),
+                    TYPE_ID_STRING => Some("str"),
+                    TYPE_ID_BYTES => Some("bytes"),
+                    TYPE_ID_SET => Some("set"),
+                    TYPE_ID_FROZENSET => Some("frozenset"),
+                    _ => None,
+                };
+                if let Some(type_name) = immutable_del_type_name {
                     let is_slice = key
                         .as_ptr()
                         .is_some_and(|p| object_type_id(p) == TYPE_ID_SLICE);
