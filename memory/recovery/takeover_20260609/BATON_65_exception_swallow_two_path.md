@@ -45,6 +45,64 @@ neutralizing the `__del__` exception REGARDLESS of `exception_pending`. Standalo
 (no prior) relies on the weaker `else if`, AND on this case the finalizer fires on
 the second (teardown) path that never reaches that code at all.
 
+## VERDICT (2026-06-09, ONE-CYCLE counters + provenance — STOP the trace loop): D = SWALLOW BOUNDARY
+Counters for p65 `del x`-in-function (MOLT_DEBUG_OBJECT_RC=1 + MOLT_TRACE_FIN65=1,
+FULL output — my earlier "type_id=100 never enters" was a `head -20` TRUNCATION
+artifact; the type_id=100 lines are at the END):
+* PROVENANCE: `strings bin | grep FIN65` = 3 → trace IS linked (NOT cache/linkage; A ruled out).
+* `OBJECT DEC` (type_id=100 decref) = 2; `OBJECT DEC→0 FREE` (zero transition) = 1
+  → the user object IS dec-ref'd and DOES hit refcount 0 inline (NOT missing-release B).
+* `FIN65-ENTRY type_id=100` = 1 → `maybe_run_object_finalizer` IS entered for it
+  (NOT a second path C).
+* `[FIN65] after __del__` (the post-call swallow trace at object/mod.rs:1765) = **0**,
+  yet `__del__` ran (raised) → execution LEAVES `maybe_run_object_finalizer` BETWEEN
+  `call_callable0(del_bits)` (~1755) and the swallow code (1763-1778). molt prints a
+  NORMAL unhandled-exception traceback (`File … in A.__del__ / ValueError`), NOT
+  CPython's "Exception ignored while calling deallocator" unraisable.
+
+**=> VERDICT D: the swallow boundary (object/mod.rs:1763-1778) is STRUCTURALLY
+BYPASSED.** The `__del__` exception escapes `call_callable0` before the swallow
+runs. The matrix `raise_in_del` "survives" ONLY because it fires during
+`gc.collect()`, whose downstream call site catches/clears the escaped exception —
+the finalizer's OWN swallow has never been doing the work. So #65 is NOT #58/B; the
+dispatch + drop placement are correct here.
+
+**MECHANISM (READ-confirmed, NOT panic): molt exceptions are VALUE-BASED** —
+`call/function.rs`/`dispatch.rs` use `raise_exception` (returns a sentinel) +
+`exception_pending` + `enforce_no_pending_on_success`; there is NO `catch_unwind`
+anywhere near finalizer/dunder calls. So `call_callable0(del_bits)` RETURNS when
+`__del__` raises → the after-call trace at 1765 SHOULD fire. Its absence therefore
+means, on the observed `type_id=100` finalizer entry, EITHER:
+  (b1) `del_bits == missing_bits` → the whole `if del_bits != missing_bits` block
+       (call_callable0 + the 1765 trace) is SKIPPED, and `A.__del__` actually runs
+       via a SEPARATE dispatch the trace did not cover (there is exactly ONE other
+       `type_id=100` FIN65-ENTRY-eligible site? — re-audit: the entry trace fired
+       once for type_id=100; instrument the `else { return false }` of the
+       `del_bits != missing` check AND a trace at 1752's `molt_get_attr_name_default`
+       result), OR
+  (b2) there are TWO finalizations of the SAME object (boom prints twice; OBJECT
+       DEC=2): one inert (FINALIZER_RAN path) and one that actually calls `__del__`
+       through a path that is NOT lines 1754-1759.
+=> The "swallow is bypassed" is real, but the FIX is NOT catch_unwind. The decisive
+next probe (one rebuild): trace BEFORE `call_callable0` (1755), in the `del_bits ==
+missing` else-branch, and at the `molt_get_attr_name_default` result (1752), for
+p65. That pins whether `__del__` is even invoked from THIS function for the user
+object, or from a second site.
+
+**FIX DIRECTION (verdict D, value-based):** ensure the `__del__`-raise exception is
+written-unraisable + CLEARED on EVERY channel (task slot AND global slot AND active
+exception stack) at the finalizer site, regardless of the `exception_pending` gate
+(the current `else if exception_pending { clear_exception }` is too weak — make the
+no-prior branch ALWAYS clear). Emit CPython's "Exception ignored while calling
+deallocator" header for parity. If probe shows a SECOND `__del__` call site for
+type_id=100, route THAT through the same swallow. Add a SELF-CONTAINED regression
+(matrix `raise_in_del` passes only via gc.collect composition — split it so the
+standalone `del x` case is gated). Verify native + LLVM + WASM.
+
+## (superseded — head-truncation artifact) ENTRY-TRACE "never enters" was WRONG
+The entry trace DID show one type_id=100 entry; it was below the `head -20` cut.
+Below preserved for the record only:
+
 ## ENTRY-TRACE RESULT (2026-06-09, RESOLVES "which path"): user instance NEVER enters the finalizer
 Added a SECOND trace at the TOP of `maybe_run_object_finalizer` (before the
 type_id early-return) printing `type_id`. p65 run → 21 entries, ALL builtins:
