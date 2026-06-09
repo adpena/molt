@@ -218,6 +218,21 @@ fn debug_object_rc() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_OBJECT_RC").is_ok())
 }
 
+/// Cached `MOLT_TRACE_EXC_RC` flag for tracing exception-object refcount
+/// inc/dec/resurrect/free on the hot path. Like `debug_bigint_rc`, this gates a
+/// diagnostic that prints every refcount transition of a `TYPE_ID_EXCEPTION`
+/// object — the tool that pinned the exception-heavy retention leak (#77): a
+/// raised-and-caught exception accrues 3 inc_ref but only 2 dec_ref per
+/// iteration and ends at refcount 2, never freed (see
+/// project_exception_loop_leak_baton.md). Reading the env var inline on every
+/// refcount op would take the libc environ lock per call and tax every program,
+/// so cache it once at first use — the diagnostic is exactly zero-cost when off.
+#[inline]
+fn trace_exception_rc() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_EXC_RC").as_deref() == Ok("1"))
+}
+
 #[inline]
 fn trace_decref_zero_function_all() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -1623,6 +1638,10 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
                 old + 1
             );
         }
+        if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
+            let old = (*header_ptr).ref_count.load(AtomicOrdering::Relaxed);
+            eprintln!("EXC_RC_INC ptr=0x{:x} {}→{}", ptr as usize, old, old + 1);
+        }
         let new_count = (*header_ptr)
             .ref_count
             .fetch_add(1, AtomicOrdering::Relaxed)
@@ -1795,6 +1814,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             std::process::abort();
         }
         let prev = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+        if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
+            eprintln!("EXC_RC_DEC ptr=0x{:x} {}→{}", ptr as usize, prev, prev - 1);
+        }
         if type_id == TYPE_ID_OBJECT && debug_object_rc() {
             if prev == 1 {
                 eprintln!("[OBJECT DEC→0 FREE] ptr=0x{:x}", ptr as usize);
@@ -1842,8 +1864,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             {
                 // Pending exception roots (last-exception slots / active exception stacks)
                 // must keep the object alive even if transient lowering bugs over-decref.
+                if trace_exception_rc() {
+                    eprintln!("EXC_RC_RESURRECT ptr=0x{:x} (rooted, rc 0→1)", ptr as usize);
+                }
                 (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
                 return;
+            }
+            if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
+                eprintln!("EXC_RC_FREE ptr=0x{:x} (rc hit 0, freeing)", ptr as usize);
             }
             MoltRefCount::acquire_fence();
             // RC drop-insertion substrate (design 20): the rc=1→0 transition,
