@@ -1699,8 +1699,6 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
     }
 }
 
-/// # Safety
-/// Caller must pass a valid object pointer and matching header.
 unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let header_ptr = unsafe { header_from_obj_ptr(ptr) };
     if unsafe { (*header_ptr).type_id } != TYPE_ID_OBJECT {
@@ -1752,7 +1750,27 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let del_bits = crate::molt_get_attr_name_default(self_bits, del_name_bits, missing_bits);
     dec_ref_bits(py, del_name_bits);
     if del_bits != missing_bits {
+        // Run `__del__` under a SYNTHETIC exception-handler frame so an uncaught
+        // raise inside it is recorded VALUE-BASED and swallowed below, instead of
+        // killing the process. ROOT CAUSE of #65 (definitively measured): when a
+        // raise reaches `molt_raise` with `exception_handler_active()` false (the
+        // `EXCEPTION_STACK` empty), molt's uncaught-exception terminator runs
+        // `std::process::exit(1)` (exceptions.rs). It is NOT a "native unwind"
+        // (that misdiagnosis drove the now-reverted deferral apparatus) — it is a
+        // hard process exit, which is why `catch_unwind` caught nothing and a
+        // baseline change did nothing (the baseline does not gate the terminator;
+        // an empty handler stack does). A finalizer runs at an empty handler stack
+        // unless a surrounding `try:` happens to leave a frame on it — that is the
+        // observed composition dependence. Pushing exactly one handler frame here
+        // makes `molt_raise` take the value-based path, `call_callable0` return,
+        // and the swallow run in EVERY context — CPython's implicit "ignore
+        // exceptions during finalization" boundary, in runtime form. This mirrors
+        // the compiled try-frame (`molt_exception_push`/`molt_exception_pop`); no
+        // `catch_unwind`, no backend landing pad, no deferral, and `__del__` still
+        // runs INLINE at the rc→0 point so finalization stays CPython-prompt.
+        crate::builtins::exceptions::exception_stack_push();
         let result_bits = unsafe { crate::call_callable0(py, del_bits) };
+        crate::builtins::exceptions::exception_stack_pop(py);
         if !obj_from_bits(result_bits).is_none() {
             dec_ref_bits(py, result_bits);
         }
@@ -1773,8 +1791,27 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
             crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
         }
         dec_ref_bits(py, bits);
-    } else if crate::exception_pending(py) {
-        crate::clear_exception(py);
+    } else {
+        // No surrounding exception: the finalizer's raise (if any) must become
+        // UNRAISABLE — written to stderr and CLEARED so it cannot propagate. This
+        // branch is reachable because `__del__` ran under the synthetic handler
+        // frame above, so `molt_raise` recorded the exception value-based instead
+        // of running the uncaught-exception terminator (#65).
+        if crate::exception_pending(py) {
+            if let Some(exc_bits) = crate::builtins::exceptions::exception_last_bits_noinc(py)
+                && let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
+            {
+                let formatted = crate::builtins::exceptions::format_exception_with_traceback(
+                    py, exc_ptr,
+                );
+                eprintln!("Exception ignored while calling deallocator:");
+                if !formatted.is_empty() {
+                    eprint!("{formatted}");
+                }
+            }
+            crate::clear_exception(py);
+            crate::builtins::exceptions::clear_exception_state(py);
+        }
     }
     let prev = unsafe { (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel) };
     if prev > 1 {
@@ -1951,12 +1988,19 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     name, freed_fn_ptr, ptr as usize,
                 );
             }
+            // Run a finalizer-sensitive object's `__del__` INLINE at this rc→0
+            // point, exactly as CPython finalizes at Py_DECREF→0 (prompt timing:
+            // `del x; print()` runs `__del__` before `print`). `__del__` executes
+            // under a synthetic exception-handler frame so an uncaught raise inside
+            // it is swallowed (written unraisable), never propagated and never
+            // killing the process — see `maybe_run_object_finalizer` for the #65
+            // root cause. If `__del__` RESURRECTS the object (re-increments its
+            // refcount), `maybe_run_object_finalizer` returns `true` and we abort
+            // the free here (FINALIZER_RAN stays set so it never re-runs — CPython
+            // once semantics); a later final drop re-enters and sees FINALIZER_RAN
+            // set, falling straight through to the free tail. Non-finalizer objects
+            // return `false` immediately and fall through with zero added cost.
             if maybe_run_object_finalizer(py, ptr) {
-                // `__del__` resurrected the object (its refcount is > 0 again):
-                // this dec_ref did NOT free it. Do NOT count it as a deallocation
-                // — the object is still alive and must remain in `live = alloc -
-                // dealloc`. A later final drop (when the resurrection reference is
-                // released) re-enters this path and counts it then.
                 return;
             }
             // Past the resurrection check: the object is now actually being

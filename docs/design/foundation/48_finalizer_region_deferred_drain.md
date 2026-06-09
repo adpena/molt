@@ -1,159 +1,128 @@
-# 48 — FinalizerRegion / deferred-drain: `__del__` as an effectful release event
+# 48 — `__del__` exception swallow: the uncaught-exception terminator, not a native unwind
 
-Status: ACTIVE (2026-06-09). Closes #65 (finalizer exception-swallow) structurally
-and gives #58 (finalizer ordering) a home. Council-chosen option **B** over the
-catch_unwind bridge (A).
+Status: **LANDED (2026-06-09).** Closes #65 (finalizer exception-swallow). The fix
+is runtime-only: run `__del__` INLINE at the rc→0 point (CPython-prompt) under a
+SYNTHETIC exception-handler frame. NO deferral, NO `catch_unwind`, NO backend
+landing pad. The "FinalizerRegion / deferred-drain" design that this file
+originally proposed was built on a **misdiagnosis** and has been reverted; this
+document is rewritten to record the true root cause, the falsification of the
+deferral premise, and the landed fix. The original deferral text is preserved in
+git history (commit 48418a3bf and the WIP commits on the `wt_fin` branch).
 
-## 1. Why the post-call swallow is unreachable (the falsification)
-`maybe_run_object_finalizer` calls `__del__` via `call_callable0(del_bits)` and then
-runs a swallow/clear. PROVEN (object/mod.rs probe + a full fix-attempt that never
-executed): when `__del__` raises from an **inline compiled drop** (`del x` in a
-regular function → `dec_ref_ptr` → finalizer), `call_callable0` **does not return** —
-the exception **unwinds to the nearest COMPILED landing pad** (`run()`'s), skipping
-the Rust finalizer frame where the swallow lives. Counters: `BEFORE-CALL`=1,
-`AFTER-CALL`=0, `SWALLOW`=0, exit=1. The matrix `raise_in_del` passes only because it
-fires inside `gc.collect()` — a pure-runtime call boundary with no compiled pad above
-— so the swallow runs. So the swallow site is dead-by-construction in the inline path;
-no amount of channel-clearing after the call can fix it.
+## 1. The true root cause (definitively measured)
+A raise inside `__del__` is **NOT** "molt's custom native unwind to the nearest
+compiled landing pad" (the original premise, now FALSIFIED). molt's exception
+model is fully **value-based**: `molt_raise` calls `record_exception` and then
+RETURNS `none()` bits; compiled code polls `exception_pending()` after each call
+and branches to its handler or propagates by returning. There is exactly ONE
+non-value-based exit in `molt_raise` (exceptions.rs): the **uncaught-exception
+terminator** —
 
-## 2. Why catch_unwind is rejected as the default
-`std::panic::catch_unwind` is documented as NOT a general try/catch and not
-guaranteed to catch all unwinds; the project contract rejects catch-unwind control
-flow. It would also make finalizer semantics depend on Rust unwinding internals.
-Allowed ONLY as a named, temporary, last-resort bridge under an explicit ruling, and
-removed by this tranche. The structural fix is to stop running `__del__` inline.
-
-## 3. FinalizerEvent (the scheduled record)
 ```
-PendingFinalizer { object_bits, class_bits }   // minimal Phase-2 slice
+record_exception(_py, exc_ptr);
+if exception_handler_active() { exception_context_set(...); }
+if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
+    // format traceback, eprintln, then:
+    std::process::exit(1);
+}
 ```
-Conceptually a FinalizerEvent carries: object, class, prior_exception_state,
-`resurrection_allowed=true`, `finalizer_ran` once-bit, `exception_policy=Unraisable`.
-The deep abstraction: `DecRef(v) -> ReleaseOutcome` =
-`{ Noop, Decremented, Destroyed, FinalizerScheduled, Resurrected }` — release is a
-Python semantic event, not raw `free`.
 
-## 4. Where events are SCHEDULED
-In `dec_ref_ptr`, at the rc 1→0 transition, for a **finalizer-sensitive**
-`TYPE_ID_OBJECT` (class defines `__del__`, mirrors `finalizer_alloc_roots`/the
-`HEADER_FLAG`): instead of calling `maybe_run_object_finalizer` inline, **set the
-`HEADER_FLAG_FINALIZER_RAN` once-bit, ROOT/keep the object alive (do not free the
-payload, do not clear weakrefs yet), push `PendingFinalizer`, and RETURN**. Ordinary
-(non-finalizer) objects destroy immediately on the existing fast path — unchanged.
+`exception_handler_active()` is `!EXCEPTION_STACK.is_empty()` — purely whether a
+handler frame is on the stack. When a finalizer runs at the rc→0 point of a plain
+`del x`, the handler stack is EMPTY (no surrounding `try:`), so a raise inside
+`__del__` hits `std::process::exit(1)` and **kills the process** before the Rust
+swallow code (which lives AFTER the `call_callable0` return) can run.
 
-## 5. Where events are DRAINED (the safe boundary)
-At the nearest **pure-runtime call boundary** where a callee's raise is value-based
-(the property `gc.collect()`/atexit already have), NOT inside `dec_ref_ptr`'s Rust
-frame. One authority `run_pending_finalizer_unraisable(py, event)` drains each:
-calls `__del__`, and because it runs at a value-based boundary the raise is captured;
-it writes-unraisable (sys.unraisablehook → else "Exception ignored while calling
-deallocator <method>:" + traceback) and clears/restores exception state; handles
-resurrection-once (refcount > 0 after → keep alive, `finalizer_ran` stays set); else
-completes destruction (free payload, clear weakrefs).
-Phase-1 drain trigger (smallest that fixes p65 with correct order): an extern-`C`
-`molt_drain_pending_finalizers()` invoked by the compiled code at a safe point AFTER
-the release boundary — preference order: (a) right after a finalizer-object DecRef in
-the drop lowering, else (b) the function-return trampoline. Also drained by
-`gc.collect()` and at process teardown so nothing is lost.
+This explains every prior observation:
+* `catch_unwind` caught **nothing** — a `process::exit` is not an unwind.
+* Setting `exception_stack_baseline` did **nothing** — the baseline does not gate
+  the terminator; an empty `EXCEPTION_STACK` does.
+* The behavior was **composition-dependent** — the matrix's `raise_in_del`
+  survived only because a surrounding `try:` (or a prior frame) left a handler on
+  the stack, so `molt_raise` took the value-based path and the swallow ran. A
+  lone/first standalone finalizer found an empty stack and exited.
 
-## 6. Promptness / ordering (CPython parity, NOT defer-to-exit)
-Python finalizes at rc 0 promptly; we must NOT defer arbitrarily to process exit.
-`del x; print("after")` must finalize before `print`. So the drain point is the
-nearest safe boundary after the `del`/DecRef, not "later". If post-DecRef drain is
-too invasive for Phase 1, the function-return trampoline preserves order for p65
-(`x` dies as `run()` returns, before the caller's `print`). The rule: "not inside
-`dec_ref_ptr` with compiled unwinding able to skip the swallow," NOT "late."
+## 2. The landed fix
+In `maybe_run_object_finalizer` (object/mod.rs), wrap the `__del__` invocation in a
+SYNTHETIC handler frame:
 
-## 7. Resurrection
-`run_pending_finalizer_unraisable` revives the object across the `__del__` call (inc
-then dec, as today); if rc > 1 after, the object resurrected → keep alive, do not
-free; `finalizer_ran` stays set so `__del__` never re-runs (CPython once semantics).
+```rust
+crate::builtins::exceptions::exception_stack_push();   // EXCEPTION_STACK now non-empty
+let result_bits = call_callable0(py, del_bits);        // raise -> value-based, returns
+crate::builtins::exceptions::exception_stack_pop(py);  // pop synthetic frame
+```
 
-## 8. Exceptions → unraisable
-One authority writes-unraisable + clears. No `__del__` exception ever propagates as a
-normal exception. Pre-existing (surrounding) exception is preserved/restored.
+Now `molt_raise` sees `exception_handler_active() == true`, records the exception
+value-based, and returns; `call_callable0` returns with the exception pending; the
+swallow below runs in EVERY context (standalone, composed, gc.collect). This is
+exactly CPython's implicit "ignore exceptions during finalization" boundary, in
+runtime form, mirroring the compiled try-frame (`molt_exception_push` /
+`molt_exception_pop`). `__del__` still runs INLINE at the rc→0 point, so
+finalization stays CPython-prompt (`del x; print()` finalizes before `print`).
 
-## 9. Tests that prove the slice (Phase 5)
-p65 `del x`-in-function raises → "after" printed, exit 0, unraisable not normal
-traceback; gc.collect matrix still green; ordinary `__del__` fires once; resurrection-
-once; pending-exception-before-finalizer preserved/restored; `del x` timing vs a
-following statement; non-finalizer dec_ref/free unchanged (fast path); native +
-LLVM/WASM (shared runtime path).
+The swallow itself (unchanged in shape) writes-unraisable to stderr ("Exception
+ignored while calling deallocator:" + traceback) and clears all exception channels,
+or — if a surrounding exception was active — preserves/restores it (CPython
+semantics).
 
-## CRITICAL implementation invariant (RC accounting — get this wrong → RC corruption)
-`maybe_run_object_finalizer` ASSUMES it is called with the object at **refcount 0**
-(it `inc_ref`s self→1 at entry, runs `__del__`, `fetch_sub`→0 at exit, and treats
-`prev > 1` as RESURRECTION). Therefore the SCHEDULE step must **NOT** `inc_ref`/root
-the object — leave it at refcount 0, just (a) set `HEADER_FLAG_FINALIZER_SCHEDULED`
-(new, bit `1<<18`; FINALIZER_RAN is `1<<16`, INTERNED `1<<17`, CONTAINS_REFS `1<<19`),
-(b) push the raw `ptr` into the queue, (c) **do not free** (skip the dealloc tail),
-(d) return. The object sits at refcount 0, unfreed, SCHEDULED — the moral equivalent
-of CPython's pending-finalizer/trashcan state; nothing references it so no further
-dec underflows. DRAIN reuses `maybe_run_object_finalizer` UNCHANGED (refcount-0
-context preserved → its resurrection math stays correct), then for the non-resurrected
-case performs the SAME free tail that `dec_ref_ptr` runs today (1962→end:
-DEALLOC_COUNT/bytes commit, weakref clear, payload + cold-header free). => EXTRACT
-that free tail of `dec_ref_ptr` into `fn finalize_free_object(py, ptr, type_id,
-size_class, cold_idx, dealloc_bytes)` and call it from BOTH `dec_ref_ptr` (today's
-inline non-finalizer path) AND the drain. Do NOT duplicate it. The `dec_ref_ptr`
-hook at the rc1→0 site becomes: `if schedule_object_finalizer(py, ptr) { return; }`
-(schedule sets SCHEDULED + queues + returns true for a runnable-`__del__` object that
-is neither RAN nor already SCHEDULED) `else { finalize_free_object(...) }`.
-Leak gauge stays exact: dealloc is committed only inside `finalize_free_object`
-(at true free), never at schedule.
+## 3. Why the deferral design was wrong (and reverted)
+The original design deferred `__del__` to a value-based drain boundary
+(`PENDING_FINALIZERS` queue, schedule-at-`dec_ref` / drain-at-gc/teardown), on the
+theory that the inline raise was an uncatchable native unwind. Since the real
+cause is `process::exit` on an empty handler stack — which fires identically
+whether `__del__` runs inline OR at a drain — deferral could **never** have fixed
+the swallow. Worse, it introduced a correctness regression: deferral moves `__del__`
+off the prompt rc→0 point, so `del x; print()` finalizes AFTER `print`
+(`fires_once`/`resurrect` ordering regressed), which would have required a backend
+"selective compiled safe-point drain" (the abandoned Phase 2E) just to recover
+timing that inline finalization gives for free. The synthetic-handler fix is
+strictly smaller, needs no backend change, and preserves prompt timing. All the
+deferral machinery (`schedule_object_finalizer`, `drain_pending_finalizers`,
+`PENDING_FINALIZERS`, `HEADER_FLAG_FINALIZER_SCHEDULED`, the gc.collect/teardown
+drains, the `molt_drain_pending_finalizers` extern) is deleted.
 
-## PHASE-2 IMPLEMENTATION RESULT (2026-06-09): deferral works, but the SWALLOW needs a COMPILED landing pad
-Implemented (WIP, local commits on wt_fin; patch preserved in
-`memory/recovery/takeover_20260609/finalizer_region_wip.patch`): `dec_ref_ptr`
-schedules finalizer-sensitive objects (rc 0, SCHEDULED, unfreed) via
-`schedule_object_finalizer`; `gc.collect` + teardown drain via
-`drain_pending_finalizers` → `maybe_run_object_finalizer` → re-entry free; detection
-via class-MRO lookup (never touch the dead instance — fixed a SIGSEGV); the no-prior
-swallow rewritten to write-unraisable + clear all channels; a local
-`exception_stack_baseline` around the `__del__` call.
+## 4. Two independent layers (do not conflate)
+Finalizer behavior splits into two layers; #65 is entirely in layer (2):
+* **(1) DecRef PLACEMENT** — does the compiler emit the releasing DecRef? Frontend
+  `del` lowering + `drop_insertion.rs` §1/§1b on the drop lanes (LLVM/WASM/
+  flipped-native); the value-tracking substrate on dormant-native. Gaps here
+  (e.g. #63 loop-body `for i: x=R(i); del x` on dormant-native; a child instance
+  attribute not dropped on dormant-native) mean `__del__` never runs because the
+  object never reaches rc 0. These are the round-13 / #63 arc, UPSTREAM of #65.
+* **(2) DecRef→0 EXECUTION** — when a DecRef DOES reach rc 0, does `__del__` run,
+  swallow its exception, handle resurrection-once? This is `maybe_run_object_
+  finalizer`, the single finalizer authority. #65 fixes the exception-swallow here.
 
-**What WORKS:** `finalizer_matrix.py` BYTE-IDENTICAL to CPython (all 9 sections incl.
-`raise_in_del survived`); the rewritten swallow is CORRECT when reached
-(`pending_before=true → unraisable → pending_after=false`); `p65_func` now CONTINUES
-past the `del` (deferral proven — body completes, "after del, still alive" prints).
+## 5. Verification (native, byte-identical to CPython 3.14)
+GREEN (stdout byte-identical, exit 0, unraisable to stderr): `p65_gc`, `p65_func`
+(the standalone-finalizer-raise repros — previously exit 1), `fires_once` (prompt
+timing: DEL before "after del"), `resurrect` (resurrection-once), `finalizer_
+matrix` (all 9 sections incl. `raise_in_del survived`), `stress_raise` (20000
+swallowed raises — synthetic push/pop balance holds at scale), `stress_reraise_
+active` (finalizer raises while a surrounding exception is handled — prior-exc
+preserved), `sr2_resurrect` (20000 true resurrections via the function-return drop
+path). The runtime is backend-agnostic, so the same fix applies to native / LLVM /
+WASM / Luau; LLVM is spot-checked because its drop lanes place the DecRefs that
+dormant-native's value-tracking does not (isolating layer 1 from layer 2).
 
-**What does NOT work (and WHY — definitively measured):** `p65_gc`/`p65_func` still
-exit 1; the swallow fires ZERO times for a STANDALONE finalizer. Proven by trace +
-catch_unwind experiment:
-* The object IS scheduled (`SCHED YES type_id=100`=1) and the drain DOES call
-  `maybe_run_object_finalizer`, but `call_callable0(__del__)` does NOT return — it
-  UNWINDS past the swallow.
-* The unwind is molt's CUSTOM native unwind to the nearest COMPILED landing pad:
-  `std::panic::catch_unwind` around the drain caught NOTHING (0 events); a local
-  `exception_stack_baseline_set(depth)` did NOT catch it either. So it is NEITHER a
-  Rust panic NOR baseline-controlled — it bypasses ALL Rust frames (drain, catch).
-* It is COMPOSITION-dependent: the matrix's `raise_in_del` returns value-based ONLY
-  because ~5 non-raising finalizers drained first; a lone/first raising finalizer
-  unwinds.
+KNOWN (layer-1, pre-existing, NOT #65 — each verified against the clean main
+baseline so they are NOT regressions of this change):
+* loop-body `for i: x=R(i); del x` does not fire `__del__` on dormant-native (the
+  per-iteration DecRef is not placed) — #63.
+* an object-valued instance attribute (`self.child = Leaf()` where `Leaf` defines
+  `__del__`) does not fire the child's `__del__` when the parent is freed — on
+  BOTH native AND LLVM (so NOT a dormant-native-only placement gap). Measured:
+  parent `__del__` fires for all N parents, child `__del__` fires 0 times; the
+  same result on the clean main runtime (no #65 change), proving pre-existing.
+  Filed as its own task (object-valued-attribute finalizer cascade). The parent's
+  free dec-refs `instance_dict_bits`, so the child should reach rc 0 and finalize;
+  it does not — root cause is in the attribute-drop / dict-free cascade, UPSTREAM
+  of `maybe_run_object_finalizer`.
 
-**=> Both A (catch_unwind) and B (runtime drain) are INSUFFICIENT alone.** The swallow
-needs a COMPILED landing pad above the `__del__` execution; a Rust drain frame has none.
-
-**STRONGEST LEAD for the real fix:** `atexit` swallows callback exceptions VALUE-BASED
-using the SAME `molt_call_bind` (`atexit.rs:344`, then checks `exception_pending` at
-:503 and handles a RETURNED-raised-exception sentinel via
-`callback_returned_raised_exception` at :508/:268). The finalizer's
-`call_callable0 → call_type_via_bind → molt_call_bind` on a BOUND METHOD unwinds where
-atexit's `molt_call_bind` on a FUNCTION returns. NEXT INVESTIGATION: (1) why the
-bound-method dispatch unwinds where the function dispatch returns value-based; (2)
-route `__del__` through atexit's value-based call path (or its returned-exception
-sentinel convention) — likely the actual fix, runtime-only, no catch_unwind, no
-backend landing pad. If that fails, the fix is a backend-emitted compiled try-frame
-around the drain (`molt_exception_stack_enter` + a real compiled landing pad).
-
-**Timing (separate, Phase 2E):** even once the swallow works, deferral moves `__del__`
-to gc/teardown → `fires_once`/`resurrect` ordering regresses (DEL after "end"). Needs
-the selective compiled safe-point drain after finalizer-object DecRefs (NOT every
-DecRef — perf). The WIP is therefore NOT shippable as-is.
-
-## Phase 6 — one authority, delete the rest
-After green: remove the inline `__del__` call from the `dec_ref_ptr` zero path for
-finalizer-sensitive objects; route gc.collect/atexit finalization through the same
-`run_pending_finalizer_unraisable`; delete/redirect any alternate swallow. Exactly
-ONE finalizer-unraisable authority — the TableGen/single-source principle in runtime
-form.
+## 6. One authority
+`maybe_run_object_finalizer` is the SINGLE finalizer-unraisable authority — every
+`DecRef` lowering on every backend routes rc→0 through `dec_ref_ptr` →
+`maybe_run_object_finalizer`. There is no alternate swallow and no second
+finalizer path. Finalizer ORDERING (#58) is a separate, layer-1 (drop-placement)
+concern and gets its home on the ownership lattice per the council doctrine, NOT
+here.
