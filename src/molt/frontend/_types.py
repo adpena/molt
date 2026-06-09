@@ -80,6 +80,36 @@ class MoltOp:
     end_col_offset: int | None = None
 
 
+@dataclass
+class _ClassNsScope:
+    """Active class-body namespace while the body is lowered as a block (P0 #50).
+
+    CPython executes a ``class`` body as a code object whose ``f_locals`` is the
+    (possibly custom) class namespace mapping: ``STORE_NAME`` writes ``ns[k]=v``,
+    ``LOAD_NAME`` reads ``ns[k]`` (falling through to globals/builtins on
+    KeyError), ``DELETE_NAME`` does ``del ns[k]``.  Because that mapping is the
+    single mutable home for every class-body name, arbitrary control flow
+    (for/if/while/try/with) and ``del`` work with no per-node special-casing.
+
+    Molt mirrors this: when ``ns`` is set (the class is built dynamically), each
+    class-body name store emits ``STORE_INDEX(ns, name, value)`` and each load
+    emits ``INDEX(ns, name)`` — the heap dict is loop-carried-correct without SSA
+    phi participation, the same way the module dict backs module-scope loops.
+    ``attr_values`` additionally snapshots name->MoltValue for the static
+    ``CLASS_DEF`` fast path (straight-line bodies that never need the dict).
+    ``names`` is the set of names bound in this class body; a Name not in it
+    resolves through the enclosing/global/builtin chain (CPython LOAD_NAME).
+
+    The instance is pushed/popped on ``SimpleTIRGenerator._class_ns_stack`` by
+    ``visit_ClassDef`` and consulted by ``_store_local_value`` /
+    ``_load_local_value`` / ``_emit_delete_name``.
+    """
+
+    ns: "MoltValue | None"
+    attr_values: dict[str, MoltValue]
+    names: set[str]
+
+
 @dataclass(frozen=True)
 class SCCPResult:
     in_values: dict[int, dict[str, Any]]

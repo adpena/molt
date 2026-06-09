@@ -42,6 +42,7 @@ from molt.frontend._types import (
     _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
     _next_ic_index,
     _InlineSuperFoldRequired,
+    _ClassNsScope,
     MoltValue,
     MoltOp,
     SCCPResult,
@@ -292,6 +293,22 @@ class SimpleTIRGenerator(
         # the finished class so the nested class is bound as a class-body local
         # that the enclosing loop harvests into ``class_attr_values``.
         self._class_body_depth: int = 0
+        # Class-body block-execution scope stack (P0 #50).  When the body of a
+        # ``class`` statement is lowered as a NORMAL block (so arbitrary control
+        # flow / ``del`` "just work", exactly like CPython's class-body code
+        # object), the innermost entry on this stack describes the active class
+        # namespace.  ``_store_local_value`` / ``_load_local_value`` /
+        # ``_emit_delete_name`` consult it so a class-body name binds into the
+        # namespace mapping (STORE_INDEX) and reads back from it (INDEX) — the
+        # heap-backed dict IS the mutable store, so loop-carried mutation is
+        # correct without SSA phi participation (the same mechanism the module
+        # dict provides at module scope).  ``ns`` is the namespace MoltValue when
+        # the class is built dynamically (``dynamic_build``); ``attr_values`` is
+        # the name→MoltValue snapshot the static ``CLASS_DEF`` path consumes.
+        # ``names`` is the set of names that are class-body-scoped (a Name not in
+        # this set falls through to enclosing/global/builtin resolution, matching
+        # CPython LOAD_NAME).
+        self._class_ns_stack: list[_ClassNsScope] = []
         self.locals: dict[str, MoltValue] = {}
         # Backing store for the current frame's `locals()` snapshot semantics.
         # Stored outside `self.locals` to avoid accidental shadowing/rewrites by lowering passes.
@@ -4670,6 +4687,13 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
 
     def _should_track_module_overrides(self) -> bool:
+        # Names assigned inside a class body lowered as a block (P0 #50) are
+        # class-namespace members, never module overrides — even though the
+        # outermost class may live at module scope with ``control_flow_depth``
+        # 0.  The class-ns stack being non-empty means we are emitting such a
+        # body; suppress module-override tracking for it.
+        if self._class_ns_stack:
+            return False
         return self.current_func_name == "molt_main" and self.control_flow_depth == 0
 
     @staticmethod
@@ -7239,7 +7263,100 @@ class SimpleTIRGenerator(
             if symbol in self.func_default_specs:
                 value_node.type_hint = hint
 
+    @staticmethod
+    def _is_class_body_managed_name(name: str) -> bool:
+        # Internal lowering scaffolding (loop break flags, the locals cache, any
+        # ``__molt_*`` temp) is NOT a Python-visible class-body name and must
+        # never be threaded through the namespace mapping — it is pure SSA
+        # plumbing.  Everything else (including dunders the body assigns) routes
+        # through the class namespace.
+        return not (
+            name == _MOLT_LOCALS_CACHE
+            or name == _MOLT_CLOSURE_PARAM
+            or name.startswith("__molt_")
+        )
+
+    def _active_class_ns_scope(self, name: str) -> "_ClassNsScope | None":
+        # The innermost class-body scope manages ``name`` when the body is being
+        # lowered as a block.  A nested ``class``/``def`` pushes its own scope (or
+        # a function frame), so only the top-of-stack entry — and only while we
+        # are still emitting that class's body statements (``_class_body_depth``
+        # tracks the active body) — is consulted.  Names that are loop/scaffold
+        # temps are excluded so the SSA machinery handles them unchanged.
+        if not self._class_ns_stack:
+            return None
+        if not self._is_class_body_managed_name(name):
+            return None
+        return self._class_ns_stack[-1]
+
+    def _class_ns_store(
+        self, scope: "_ClassNsScope", name: str, value: MoltValue
+    ) -> None:
+        # Bind a class-body name: snapshot the SSA value for the static fast path
+        # AND, when a runtime namespace dict exists, publish it there so the dict
+        # is the loop-carried-correct mutable home (and so a custom mapping's
+        # ``__setitem__`` observes the store, matching CPython's class body).
+        scope.names.add(name)
+        scope.attr_values[name] = value
+        if scope.ns is not None:
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[scope.ns, key_val, value],
+                    result=MoltValue("none"),
+                )
+            )
+
+    def _class_ns_load(
+        self, scope: "_ClassNsScope", name: str
+    ) -> MoltValue | None:
+        # Read a class-body name.  When a runtime namespace dict backs the body
+        # the dict is authoritative (it survives loop back-edges and reflects
+        # mutations done through control flow), so read from it via INDEX.  With
+        # no dict (a straight-line static body that never entered this path under
+        # control flow) the SSA snapshot is exact.  A name this body never bound
+        # returns None so ``visit_Name`` falls through to global/builtin
+        # resolution — CPython's ``LOAD_NAME`` KeyError fallthrough.
+        if name not in scope.names:
+            return None
+        if scope.ns is not None:
+            hint = "Any"
+            cached = scope.attr_values.get(name)
+            if cached is not None and cached.type_hint:
+                hint = cached.type_hint
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+            res = MoltValue(self.next_var(), type_hint=hint)
+            self.emit(MoltOp(kind="INDEX", args=[scope.ns, key_val], result=res))
+            return res
+        return scope.attr_values.get(name)
+
+    def _class_ns_delete(self, scope: "_ClassNsScope", name: str) -> None:
+        # ``del name`` in a class body removes the binding from the namespace.
+        # CPython raises NameError if the name is unbound; the binding-presence
+        # check is the namespace dict's own ``__delitem__`` (which raises
+        # KeyError -> NameError at the boundary).  Drop the SSA snapshot and,
+        # when a dict backs the body, DEL_INDEX it (routing a custom mapping's
+        # ``__delitem__``).
+        scope.names.discard(name)
+        scope.attr_values.pop(name, None)
+        if scope.ns is not None:
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+            self.emit(
+                MoltOp(
+                    kind="DEL_INDEX",
+                    args=[scope.ns, key_val],
+                    result=MoltValue("none"),
+                )
+            )
+
     def _load_local_value(self, name: str) -> MoltValue | None:
+        class_scope = self._active_class_ns_scope(name)
+        if class_scope is not None:
+            return self._class_ns_load(class_scope, name)
         if name in self.comp_shadow_locals:
             return self.locals.get(name)
         if self.current_func_name != "molt_main" and name in self.global_decls:
@@ -7331,6 +7448,10 @@ class SimpleTIRGenerator(
             )
 
         self._invalidate_loop_guard(name)
+        class_scope = self._active_class_ns_scope(name)
+        if class_scope is not None:
+            self._class_ns_store(class_scope, name, value)
+            return
         if name in self.comp_shadow_locals:
             self.locals[name] = value
             return
@@ -10020,6 +10141,18 @@ class SimpleTIRGenerator(
             self._emit_iter_loop(node, iterable, loop_break_flag=loop_break_flag)
 
     def _prepare_mutable_control_flow_bindings(self, names: set[str]) -> None:
+        if self._class_ns_stack:
+            # Names bound by the active class body are backed by its namespace
+            # dict (STORE_INDEX/INDEX through ``_class_ns_store``/``_class_ns_load``),
+            # which is the heap-resident, loop-carried-correct mutable home — the
+            # class-scope analogue of the module dict.  They must NOT be promoted
+            # into ``module_global_mutations`` (which would leak the binding into
+            # the enclosing module namespace and steer reads to MODULE_GET_ATTR)
+            # nor boxed into list cells.  Strip them; let any genuine
+            # surrounding-scope temps fall through to the normal handling.
+            names = {
+                n for n in names if not self._is_class_body_managed_name(n)
+            }
         if not names:
             return
         # In function scope, loop-carried values are handled natively by
@@ -12996,6 +13129,17 @@ class SimpleTIRGenerator(
             )
             return
         if isinstance(target, ast.Name):
+            # A class-body name (for-loop target, with-as target, tuple-unpack
+            # element, plain assign) binds ONLY into the class namespace mapping
+            # (P0 #50).  ``_store_local_value`` routes it there via the class-ns
+            # hook; the module/global publication side effects below (module
+            # attr-set, ``self.globals`` registration, exact-local tracking) are
+            # for module/function scope and must NOT fire — they would leak the
+            # class-body name into the enclosing namespace and steer later reads
+            # away from the class dict.  Short-circuit to the single store.
+            if self._active_class_ns_scope(target.id) is not None:
+                self._store_local_value(target.id, value_node)
+                return
             optional_intrinsic_name = (
                 self._match_optional_intrinsic_loader_expr(source_expr)
                 if source_expr is not None
@@ -13649,6 +13793,10 @@ class SimpleTIRGenerator(
         return None
 
     def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None:
+        class_scope = self._active_class_ns_scope(name)
+        if class_scope is not None:
+            self._class_ns_delete(class_scope, name)
+            return
         if self.current_func_name == "molt_main":
             if name in self.boxed_locals:
                 cell = self.boxed_locals[name]
@@ -13760,6 +13908,12 @@ class SimpleTIRGenerator(
                 raise NotImplementedError("Unsupported augmented assignment value")
             res = MoltValue(self.next_var(), type_hint=current.type_hint)
             self.emit(MoltOp(kind=op_kind, args=[current, value_node], result=res))
+            # Class-body augmented assignment binds back into the class
+            # namespace only (P0 #50); skip module/global publication so the
+            # name does not leak into the enclosing scope.
+            if self._active_class_ns_scope(node.target.id) is not None:
+                self._store_local_value(node.target.id, res)
+                return None
             if (
                 self.current_func_name != "molt_main"
                 and node.target.id in self.global_decls
@@ -14682,7 +14836,20 @@ class SimpleTIRGenerator(
         assigned.update(target_names)
         self._prepare_mutable_control_flow_bindings(assigned)
         reduction = None
-        if not self.is_async() and isinstance(node.target, ast.Name):
+        # The vector/reduction fast paths (VEC_SUM/VEC_PROD/VEC_MIN/VEC_MAX)
+        # collapse an accumulator loop into a single op and elide the
+        # per-iteration loop-target binding — sound only when that target's
+        # final value is dead after the loop.  Inside a class body the loop
+        # target is ALWAYS observable (it is bound into the class namespace, and
+        # may be read, ``del``'d, or end up as a class attribute), so these
+        # rewrites would drop a required binding.  Disable them for class-body
+        # loops; the ordinary loop lowering (which binds the target into the
+        # namespace each iteration) is used instead.  (P0 #50.)
+        if (
+            not self.is_async()
+            and isinstance(node.target, ast.Name)
+            and not self._class_ns_stack
+        ):
             reduction = self._match_indexed_vector_reduction_loop(node)
             if reduction is None:
                 reduction = self._match_indexed_vector_minmax_loop(node)
@@ -14821,11 +14988,15 @@ class SimpleTIRGenerator(
         if range_args is not None:
             start, stop, step, lowerable = range_args
             if lowerable:
+                # Vector reductions elide the per-iteration loop-target binding;
+                # in a class body that target must persist into the namespace.
+                # (P0 #50.)
+                _skip_vec = self.is_async() or bool(self._class_ns_stack)
                 vector_info = (
-                    None if self.is_async() else self._match_vector_reduction_loop(node)
+                    None if _skip_vec else self._match_vector_reduction_loop(node)
                 )
                 minmax_info = (
-                    None if self.is_async() else self._match_vector_minmax_loop(node)
+                    None if _skip_vec else self._match_vector_minmax_loop(node)
                 )
                 if vector_info is None:
                     vector_info = minmax_info
@@ -14906,10 +15077,11 @@ class SimpleTIRGenerator(
             iterable = self.visit(node.iter)
         if iterable is None:
             raise NotImplementedError("Unsupported iterable in for loop")
-        vector_info = (
-            None if self.is_async() else self._match_vector_reduction_loop(node)
-        )
-        minmax_info = None if self.is_async() else self._match_vector_minmax_loop(node)
+        # Vector reductions elide the per-iteration loop-target binding; in a
+        # class body that target must persist into the namespace.  (P0 #50.)
+        _skip_vec = self.is_async() or bool(self._class_ns_stack)
+        vector_info = None if _skip_vec else self._match_vector_reduction_loop(node)
+        minmax_info = None if _skip_vec else self._match_vector_minmax_loop(node)
         if vector_info is None:
             vector_info = minmax_info
         if (
@@ -15122,7 +15294,11 @@ class SimpleTIRGenerator(
                     self._box_local(break_name)
         counted = (
             None
-            if break_name is not None or self.current_func_name == "molt_main"
+            if break_name is not None
+            or self.current_func_name == "molt_main"
+            # In a class body the loop index name must persist into the class
+            # namespace; the counted-while fold elides it.  (P0 #50.)
+            or self._class_ns_stack
             else self._match_counted_while(node)
         )
         if counted is not None and not self.is_async():
