@@ -753,9 +753,15 @@ fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     dict_required
 }
 
-/// Returns `true` when an op is an `ObjectNewBound` allocation whose class
-/// defines a `__del__` finalizer (the frontend stamps `defines_del=true` on the
-/// op after resolving `__del__` through the class MRO, excluding `object`).
+/// Returns `true` when an op's RESULT is a finalizer-bearing instance: the
+/// frontend stamps `defines_del=true` on the allocation op after resolving
+/// `__del__` through the class MRO (excluding `object`). Two producers exist:
+/// the devirtualized `ObjectNewBound` fast path, and the generic
+/// `Call{kind=call_bind}` class instantiation (stamped at the same frontend
+/// site that DECLINES the constructor fold for finalizer classes — the fold's
+/// decline comment promises "the drop lands at the Python scope boundary",
+/// which the #58 ordering keystone makes true). The check is deliberately
+/// opcode-agnostic: the ATTR is the fact, the opcode is transport.
 ///
 /// Such an instance has a finalizer that CPython runs at the LAST reference
 /// drop. Stack-promoting it (→ `ObjectNewBoundStack`, which the runtime stamps
@@ -765,13 +771,14 @@ fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
 /// the shared mechanism behind the standing LLVM/WASM `__del__` parity hole: on
 /// every lane the escape pass classified a non-escaping finalizer-bearing
 /// instance as promotable and stripped its release.
-pub(crate) fn object_new_bound_defines_del(op: &TirOp) -> bool {
-    op.opcode == OpCode::ObjectNewBound
-        && matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
+pub(crate) fn op_result_defines_del(op: &TirOp) -> bool {
+    matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
 }
 
-/// The set of allocation ROOTS (`ObjectNewBound` results) whose class defines a
-/// `__del__` finalizer — transitively through pure SSA-move copies. This is the
+/// The set of allocation ROOTS (results of `defines_del`-stamped allocation
+/// ops: devirtualized `ObjectNewBound` AND generic `call_bind` class
+/// instantiation) whose class defines a `__del__` finalizer — transitively
+/// through pure SSA-move copies. This is the
 /// single FinalizerSensitive fact (design 27): the ONE source of truth that every
 /// fast-path / lifetime-shortening optimization must query before touching such a
 /// value's representation or refcount, so the "finalizer never runs" state is made
@@ -796,7 +803,7 @@ pub(crate) fn finalizer_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     let mut del_required: HashSet<ValueId> = HashSet::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if object_new_bound_defines_del(op) {
+            if op_result_defines_del(op) {
                 for &result in &op.results {
                     del_required.insert(result);
                 }

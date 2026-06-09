@@ -6154,11 +6154,27 @@ class CallVisitorMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint=res_hint)
                 # Route user class construction through the class object so __new__,
                 # metaclass __call__, and runtime constructor policy stay coherent.
+                #
+                # Finalizer fact (#58 ordering keystone): a `__del__`-bearing
+                # class ALWAYS takes this generic path (the constructor fold
+                # declines it precisely because lifetime-shortening
+                # optimizations mis-time its finalizer), so this is where the
+                # instance's `defines_del` fact must be stamped — the
+                # devirtualized `OBJECT_NEW_BOUND` path carries the same fact.
+                # The backend's ownership lattice consumes it to defer the
+                # instance's release (and that of any container absorbing it)
+                # to the Python lifetime boundary instead of SSA last-use.
+                call_metadata = (
+                    {"defines_del": True}
+                    if self._class_defines_finalizer(class_id)
+                    else None
+                )
                 self.emit(
                     MoltOp(
                         kind="CALL_BIND",
                         args=[class_ref, callargs],
                         result=res,
+                        metadata=call_metadata,
                     )
                 )
                 return res

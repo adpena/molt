@@ -131,6 +131,27 @@ classifier_no_heap_move = [
     "store_var",
 ]
 
+# copy_kind_absorbs_elements (ownership_lattice_min.rs, the #58 finalizer-
+# ordering keystone): Copy-lifted constructor kinds whose RESULT takes
+# (co-)ownership of its ELEMENT operands — releasing the result releases the
+# elements, so a finalizer-sensitive element makes the result finalizer-
+# sensitive (releasing `[A()]`'s list is what fires `A.__del__`). This is the
+# CONSTRUCTION-absorption axis only; mutation absorption (`store_index`,
+# `list.append`) is a later lattice rung. Over-approximation is the SAFE
+# direction (a non-finalizer value marked sensitive merely has its release
+# deferred to the Python lifetime boundary — unobservable); omission keeps the
+# pre-#58 SSA-last-use release for that shape. NB: `dict_new` / `set_new`
+# LITERALS lower as an empty constructor + per-element stores, so dict/set
+# literal absorption belongs to the mutation rung, not here; `set_new` IS
+# listed because its variadic element-operand form absorbs directly.
+classifier_absorbing_constructor = [
+    "list_fill_new",
+    "list_new",
+    "set_new",
+    "tuple_from_list",
+    "tuple_new",
+]
+
 # ===========================================================================
 # Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
 #

@@ -1092,6 +1092,18 @@ class SerializationMixin(_MixinBase):
                 result_hint = op.result.type_hint
                 if result_hint and result_hint != "Any":
                     entry["type_hint"] = result_hint
+                # Finalizer fact for the GENERIC class-instantiation path (#58
+                # ordering keystone): when the statically-resolved callee class
+                # defines `__del__` through its MRO, the call site stamps
+                # `defines_del` metadata (the same fact `object_new_bound`
+                # carries on the devirtualized path — the constructor fold
+                # DECLINES finalizer classes, so they always take CALL_BIND).
+                # The backend's SSA lift turns it into the `defines_del` TIR
+                # attr generically; `finalizer_alloc_roots` seeds on it so the
+                # ownership lattice can hold the instance (and any container
+                # absorbing it) to its Python lifetime boundary.
+                if (op.metadata or {}).get("defines_del"):
+                    entry["defines_del"] = True
                 json_ops.append(entry)
             elif op.kind == "CALL_METHOD":
                 entry = {
