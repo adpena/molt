@@ -155,6 +155,9 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    terminator_operand_is_transferred, OperandCategory, TerminatorKind,
+};
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
 use crate::tir::values::ValueId;
@@ -195,10 +198,36 @@ fn produces_stack_value(opcode: OpCode) -> bool {
     matches!(opcode, OpCode::StackAlloc | OpCode::ObjectNewBoundStack)
 }
 
-/// The values `term` passes as block args to ANY successor (these transfer
-/// ownership through the SSA phi — they are NOT dropped on that edge).
+/// The zero-cost discriminant of `term`, the key for the generated
+/// per-terminator operand-ownership authority (`terminator_operand_ownership_table`
+/// / `terminator_operand_is_transferred`, design 27 §2.4). The ownership FACT is
+/// declarative (op_kinds.toml `[[terminator]]`); only this structural shape map —
+/// which `Terminator` field carries which operand category — stays in the pass.
+fn terminator_kind(term: &Terminator) -> TerminatorKind {
+    match term {
+        Terminator::Branch { .. } => TerminatorKind::Branch,
+        Terminator::CondBranch { .. } => TerminatorKind::CondBranch,
+        Terminator::Switch { .. } => TerminatorKind::Switch,
+        Terminator::Return { .. } => TerminatorKind::Return,
+        Terminator::Unreachable => TerminatorKind::Unreachable,
+    }
+}
+
+/// The values `term` forwards as block args to a successor's phi, WHEN the
+/// generated authority classifies that terminator's `BranchArg` category as
+/// `Transferred` (design 27 §2.4: ownership moves INTO the block param on the
+/// edge — these are NOT dropped on that edge; the dual exclusion is
+/// `incoming_arg_roots` in §3). The transfer FACT is read from
+/// `terminator_operand_is_transferred` (op_kinds.toml `[[terminator]]`), not
+/// hand-coded here; this function supplies only the structural shape (which
+/// fields hold the forwarded args). Today every branching variant is
+/// `Transferred`, so the set equals the raw forwarded args; a future terminator
+/// that forwarded args WITHOUT transferring would be flipped by the table alone.
 fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
     let mut out = HashSet::new();
+    if !terminator_operand_is_transferred(terminator_kind(term), OperandCategory::BranchArg) {
+        return out;
+    }
     match term {
         Terminator::Branch { args, .. } => out.extend(args.iter().copied()),
         Terminator::CondBranch {
@@ -1518,16 +1547,43 @@ fn op_consumed_operand_root(
     None
 }
 
-/// True if the alias root `v` is consumed directly by the terminator (a Return
-/// value, a CondBranch/Switch condition), comparing in alias-root space. Branch
-/// ARGS are handled separately (they transfer ownership to the successor's block
-/// arg).
+/// True if the alias root `v` is read DIRECTLY by the terminator — i.e. `v` is
+/// still live AT the terminator and so is not dropped at its producing op's
+/// straight-line point. This fuses two distinct facts the §1/§1b drop guards
+/// treat identically as "do not drop here", but which the generated authority
+/// (op_kinds.toml `[[terminator]]`, design 27 §2.4) now classifies on the
+/// `Direct` category:
+///
+///   * `Return` values are `Transferred` (the return ABI moves `+1` to the
+///     caller; dropped NOWHERE in the callee). Read from
+///     `terminator_operand_is_transferred(kind, Direct)` — the migrated transfer
+///     carve-out, no longer a hand-coded `Return` arm.
+///   * `CondBranch`/`Switch` predicates are `Borrowed` (the branch TESTS the
+///     value; ownership does not leave, the drop is merely RELOCATED to the dying
+///     successor edge by §3). In molt's lowering the predicate is always an
+///     unboxed bool/i64 discriminant (a raw scalar — `is_raw_scalar` ⇒ NOT
+///     droppable), so this arm is never reached for a heap value today; it is
+///     retained to preserve the EXACT prior read-but-not-transfer semantics and
+///     stay correct if a future shape made the predicate heap-carrying.
+///
+/// Branch ARGS are handled separately (`terminator_branch_args`): they transfer
+/// ownership to the successor's block arg.
 fn terminator_uses_root(term: &Terminator, v: ValueId, canon: &dyn Fn(ValueId) -> ValueId) -> bool {
+    // Direct-category TRANSFER (the `Return` value), read from the generated
+    // authority rather than matched here.
+    if terminator_operand_is_transferred(terminator_kind(term), OperandCategory::Direct) {
+        if let Terminator::Return { values } = term {
+            if values.iter().any(|&x| canon(x) == v) {
+                return true;
+            }
+        }
+    }
+    // Direct-category BORROW (the still-live branch predicate) — not a transfer,
+    // but read by the terminator, so likewise not dropped at the producing op.
     match term {
-        Terminator::Return { values } => values.iter().any(|&x| canon(x) == v),
         Terminator::CondBranch { cond, .. } => canon(*cond) == v,
         Terminator::Switch { value, .. } => canon(*value) == v,
-        Terminator::Branch { .. } | Terminator::Unreachable => false,
+        Terminator::Branch { .. } | Terminator::Return { .. } | Terminator::Unreachable => false,
     }
 }
 
