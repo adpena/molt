@@ -21,8 +21,12 @@
 #                  Raw/MaybeUninit, design 27 §1.1).
 #   - [[opcode]]   — per-OpCode effect oracle (may_throw/side_effecting/purity)
 #                  PLUS the per-OpCode operand-ownership default
-#                  (`operand_ownership`, the OPERAND-side borrowed|consumed axis,
-#                  design 27 §2.1). Both are exhaustive over the enum.
+#                  (`operand_ownership`, the OPERAND-side borrowed|consumed|
+#                  interior_borrow_keepalive axis, design 27 §2.1). Both are
+#                  exhaustive over the enum. The per-position `operand_ownership`
+#                  list form classifies a single operand finer than the op
+#                  default (e.g. `Index`'s container is interior-borrowed, its
+#                  key merely borrowed).
 #   - [[kind]]     — the kind_to_opcode mapper: OpCode-equivalence groups
 #                  (canonical + aliases, the |-grouped arms).
 #   - [[consuming_kind]] — per-SPELLING operand-consume overrides (design 27
@@ -425,7 +429,17 @@ name = "LoadAttr"
 may_throw = true
 side_effecting = false
 purity = "impure"
-operand_ownership = "all_borrowed"
+# The attribute READ borrows its source object (operand 0) AND its result may be
+# an interior borrow / opaque raw-int handle INTO that source's backing store
+# (the `Counter._handle` registry-handle class). `interior_borrow_keepalive`
+# records this on operand 0 (design 27 §2.1 / §1.5 borrow-of edge): the source's
+# drop is deferred to the borrow result's last use, not the source's own
+# straight-line last use (the round-6 BLOCKER-1 UAF: dropping the wrapper after
+# `get_attr` but before `molt_counter_len(handle)` ran the finalizer and made
+# `len(Counter(...))` return 0). It is STILL borrowed (not consumed) — the op
+# frees nothing — so the consume axis (`op_consumed_operand_root`) reads it as
+# non-consuming; the keepalive is the extra liveness coupling layered on top.
+operand_ownership = ["interior_borrow_keepalive"]
 
 [[opcode]]
 name = "StoreAttr"
@@ -446,7 +460,15 @@ name = "Index"
 may_throw = true
 side_effecting = false
 purity = "impure"
-operand_ownership = "all_borrowed"
+# Subscript READ `cont[key]`: operand 0 (the container) is interior-borrowed —
+# the result may be a borrow into / an opaque handle indexing the container's
+# backing store (`c[k]` on the `Counter._handle` class lowers to
+# `h = get_attr(c,"_handle"); molt_counter_getitem(h,k)`), so the container's
+# drop is deferred to the result's last use (design 27 §1.5 borrow-of edge,
+# round-6 UAF). Operand 1 (the key) is a plain borrowed argument — the result
+# does NOT borrow into it. Per-position so only the container carries the
+# keepalive; both operands remain non-consumed (the op frees neither).
+operand_ownership = ["interior_borrow_keepalive", "borrowed"]
 
 [[opcode]]
 name = "StoreIndex"

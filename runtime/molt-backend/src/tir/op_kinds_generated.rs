@@ -591,10 +591,11 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 /// The variant set models molt's FULL operand-ownership domain so the
 /// design-27 ownership-boundary lattice (#58) and the next consumer
 /// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`
-/// seed the per-OpCode + per-spelling tables; `Transferred` seeds the
-/// per-TERMINATOR table (design 27 §2.4 transfer sites — ladder #72). The
-/// remaining two name EXISTING molt facts whose hand-lists migrate into
-/// ownership rows in follow-up tranches:
+/// seed the per-OpCode + per-spelling tables; `InteriorBorrowKeepAlive`
+/// seeds the per-position borrow-of column (ladder #73); `Transferred`
+/// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder
+/// #72). One variant still names an EXISTING molt fact whose hand-list
+/// migrates into ownership rows in a follow-up tranche:
 ///   * `Transferred` — ownership moves OUT of the function/block: a
 ///     `Return` value or a branch-arg passed into a successor block arg.
 ///     LIVE: constructed by `terminator_operand_ownership_table` and read
@@ -602,17 +603,23 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 ///   * `InteriorBorrowKeepAlive` — the round-6 interior-borrow keepalive:
 ///     the operand must stay live because the result holds an INTERIOR
 ///     reference into it (drop deferred to the interior ref's last use).
+///     LIVE: constructed by `opcode_operand_ownership_table` for the
+///     `LoadAttr`/`Index` source position and read by
+///     `opcode_borrows_source_operand` / `op_borrow_source` to build the
+///     `BorrowProvenance` relation (the `Counter._handle` UAF fix).
 ///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:
 ///     valid only on the not-exhausted edge, NEVER unconditionally
-///     droppable (stale stack garbage on the exhaustion edge).
+///     droppable (stale stack garbage on the exhaustion edge). The LONE
+///     remaining `from_str`-only variant (its consumer hand-list —
+///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).
 ///   * `NoOperandOwnership` — no ref-bearing operand in that category (a
 ///     raw lane; a terminator category absent on a variant — `Branch` has
 ///     no direct operand, `Return` forwards no branch arg).
-// `InteriorBorrowKeepAlive`/`ConditionalValidOnlyOnEdge` are seeded as
-// their consumer hand-lists migrate (the interior-borrow / iter-cond
-// tranches). The schema is kept ALIVE (not ornamental) by `ALL` +
-// `from_str`/`as_str` below: every variant is constructed and round-
-// tripped, so a dropped or renamed variant is a compile/test failure.
+// `ConditionalValidOnlyOnEdge` is the only variant still seeded solely by
+// `from_str` (awaiting the iter-cond consumer migration). The schema is
+// kept ALIVE (not ornamental) by `ALL` + `from_str`/`as_str` below: every
+// variant is constructed and round-tripped, so a dropped or renamed
+// variant is a compile/test failure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OperandOwnership {
     Borrowed,
@@ -624,13 +631,15 @@ pub(crate) enum OperandOwnership {
 }
 
 // Parse/render path for the operand-ownership vocabulary. `Transferred`
-// is now LIVE through `terminator_operand_ownership_table` (ladder #72);
-// `from_str` remains the toml-ingest path the REMAINING migrations
-// (InteriorBorrowKeepAlive / ConditionalValidOnlyOnEdge rows) read and is
-// not yet wired to a runtime caller, so `from_str`/`as_str`/`ALL` keep
-// allow(dead_code) — SCOPED to this forward-compat parse API, never the
-// enum (every variant is constructed) nor the file. `ALL` + the round-
-// trip test keep every variant constructed and live today.
+// is LIVE through `terminator_operand_ownership_table` (ladder #72) and
+// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /
+// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the
+// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`
+// row, #74) reads and is not yet wired to a runtime caller, so
+// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this
+// forward-compat parse API, never the enum (every variant is constructed)
+// nor the file. `ALL` + the round-trip test keep every variant constructed
+// and live today.
 #[allow(dead_code)]
 impl OperandOwnership {
     pub(crate) const ALL: [OperandOwnership; 6] = [
@@ -689,7 +698,7 @@ mod operand_ownership_schema_tests {
 #[inline]
 pub(crate) fn opcode_operand_ownership_table(
     opcode: OpCode,
-    _operand_idx: usize,
+    operand_idx: usize,
 ) -> OperandOwnership {
     match opcode {
         OpCode::Add => OperandOwnership::Borrowed,
@@ -730,10 +739,10 @@ pub(crate) fn opcode_operand_ownership_table(
         OpCode::ObjectNewBound => OperandOwnership::Borrowed,
         OpCode::ObjectNewBoundStack => OperandOwnership::Borrowed,
         OpCode::Free => OperandOwnership::Borrowed,
-        OpCode::LoadAttr => OperandOwnership::Borrowed,
+        OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,
         OpCode::StoreAttr => OperandOwnership::Borrowed,
         OpCode::DelAttr => OperandOwnership::Borrowed,
-        OpCode::Index => OperandOwnership::Borrowed,
+        OpCode::Index => match operand_idx { 0 => OperandOwnership::InteriorBorrowKeepAlive, _ => OperandOwnership::Borrowed },
         OpCode::StoreIndex => OperandOwnership::Borrowed,
         OpCode::DelIndex => OperandOwnership::Borrowed,
         OpCode::Call => OperandOwnership::Borrowed,
@@ -798,6 +807,29 @@ pub(crate) fn opcode_operand_ownership_table(
         OpCode::ScfWhile => OperandOwnership::Borrowed,
         OpCode::ScfYield => OperandOwnership::Borrowed,
         OpCode::Deopt => OperandOwnership::Borrowed,
+    }
+}
+
+/// The operand index whose backing store this op's result interior-borrows
+/// (design 27 §1.5 borrow-of edge): the operand position classified
+/// `OperandOwnership::InteriorBorrowKeepAlive`, or `None` if the op's result
+/// borrows into no operand. Derived from the per-OpCode `operand_ownership`
+/// row — the SINGLE declarative authority `op_borrow_source`
+/// (alias_analysis.rs) reads to build the `BorrowProvenance` keepalive
+/// relation, REPLACING the hand-coded
+/// `LoadAttr | Index` match (the round-6 `Counter._handle` UAF fix). The
+/// source object's drop is deferred to the borrow result's last use, so a
+/// finalizer that owns the backing store cannot run while the borrow lives.
+/// EXHAUSTIVE over the enum — a new interior-borrowing op is classified by a
+/// table edit, not a pass edit. At most one interior-borrow operand exists in
+/// molt's lowering today (the container/object at position 0); the first such
+/// position is returned.
+#[inline]
+pub(crate) fn opcode_borrows_source_operand(opcode: OpCode) -> Option<usize> {
+    match opcode {
+        OpCode::LoadAttr => Some(0),
+        OpCode::Index => Some(0),
+        _ => None,
     }
 }
 
