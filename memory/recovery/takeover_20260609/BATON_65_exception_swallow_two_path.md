@@ -45,7 +45,30 @@ neutralizing the `__del__` exception REGARDLESS of `exception_pending`. Standalo
 (no prior) relies on the weaker `else if`, AND on this case the finalizer fires on
 the second (teardown) path that never reaches that code at all.
 
-## NEXT TRACE (decisive, one rebuild)
+## ENTRY-TRACE RESULT (2026-06-09, RESOLVES "which path"): user instance NEVER enters the finalizer
+Added a SECOND trace at the TOP of `maybe_run_object_finalizer` (before the
+type_id early-return) printing `type_id`. p65 run → 21 entries, ALL builtins:
+type_id 200 (STRING), 206 (TUPLE), 221 (FUNCTION), 243 (CODE). `TYPE_ID_OBJECT`
+= **100** (type_ids.rs:2). NOT ONE entry is 100 → the user `A` instance NEVER
+reaches `maybe_run_object_finalizer` at all, yet `A.__del__` runs and propagates.
+Combined with: (a) `maybe_run_object_finalizer` is the ONLY `b"__del__"` lookup in
+the tree; (b) `_emit_delete_name` emits a releasing DEC_REF for `del x` ONLY in
+`molt_main` (frontend/__init__.py:13806-13851), regular functions get NO release;
+(c) `runtime_teardown_for_process_exit` (lifecycle.rs:107) clears subsystem state
+but does NOT sweep-finalize live objects. So the in-function `A` instance is
+released+finalized by a path that is NEITHER the frontend del-emit NOR
+`maybe_run_object_finalizer` NOR the teardown sweep.
+=> PRIME SUSPECT: the NATIVE value-tracking RC release (dormant-native substrate;
+round-13 baton "on dormant native the value-tracking substrate released it") lowers
+a `defines_del` object's drop to a release that invokes `__del__` as a RESOLVED
+METHOD CALL (not via the `b"__del__"` byte lookup, which is why the grep missed it)
+with NO exception isolation. Next: dump p65's TIR/native asm (MOLT_DUMP_IR /
+objdump the drop site) to find the emitted `__del__` call, OR grep the native
+backend value-tracking-RC lowering for a method-resolved finalizer call. The fix:
+that release MUST route through the finalizer-aware swallow (save/clear/restore
+unraisable), identical to `maybe_run_object_finalizer`'s tail.
+
+## (superseded) earlier NEXT TRACE plan — entry trace now done
 Instrument the TOP of `maybe_run_object_finalizer` (before the early returns at
 1706/1709/1720) AND the `del_bits == missing_bits` branch. Rebuild runtime
 (MUST set `MOLT_PROJECT_ROOT=<worktree>` — see DX note), run p65 with the trace:
