@@ -1176,3 +1176,66 @@ def test_detached_run_exec_failure_records_sentinel_rc(drv, tmp_path, capsys):
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "noexec", state_root))
     assert vrc == drv.EXIT_FAIL
     assert verdict["status"] == "done" and verdict["rc"] == 127
+
+
+# --------------------------------------------------------------------------
+# Hazard 12: split-root toolchain (difftest)
+# --------------------------------------------------------------------------
+
+
+def test_difftest_toolchain_env_roots_frontend_and_backend_together(drv, tmp_path):
+    """The hazard-12 core: ONE --root drives BOTH the frontend import path
+    (PYTHONPATH) and the runtime/backend build root (MOLT_PROJECT_ROOT), so a
+    worktree edit can never be silently compiled out of one but not the other.
+    """
+    root = tmp_path / "wt"
+    env = drv._difftest_toolchain_env(root, "sess-x", None)
+    assert env["MOLT_PROJECT_ROOT"] == str(root)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(root / "src")
+    assert env["MOLT_SESSION_ID"] == "sess-x"
+
+
+def test_difftest_toolchain_env_preserves_existing_pythonpath(drv, tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/pre/existing")
+    env = drv._difftest_toolchain_env(tmp_path, "s", None)
+    parts = env["PYTHONPATH"].split(os.pathsep)
+    assert parts[0] == str(tmp_path / "src")
+    assert "/pre/existing" in parts  # prepended, not clobbered
+
+
+def test_difftest_toolchain_env_passthrough_and_bad_kv(drv, tmp_path):
+    env = drv._difftest_toolchain_env(tmp_path, "s", ["MOLT_TRACE_X=1"])
+    assert env["MOLT_TRACE_X"] == "1"
+    with pytest.raises(drv.DriverError) as exc:
+        drv._difftest_toolchain_env(tmp_path, "s", ["NOEQUALS"])
+    assert exc.value.code == drv.EXIT_USAGE
+
+
+def _difftest_ns(drv, program, root):
+    return drv.build_parser().parse_args(
+        ["difftest", str(program), "--root", str(root)]
+    )
+
+
+def test_difftest_refuses_non_molt_root(drv, tmp_path):
+    """A --root without src/molt/cli.py is a LOUD usage refusal, never a build
+    that silently uses the canonical checkout's runtime."""
+    prog = tmp_path / "p.py"
+    prog.write_text("print('hi')\n", encoding="utf-8")
+    not_a_checkout = tmp_path / "empty"
+    not_a_checkout.mkdir()
+    with pytest.raises(drv.DriverError) as exc:
+        drv.cmd_difftest(_difftest_ns(drv, prog, not_a_checkout))
+    assert exc.value.code == drv.EXIT_USAGE
+    assert "not a molt checkout" in str(exc.value)
+
+
+def test_difftest_refuses_missing_program(drv):
+    """A missing program file refuses before any build (root is the real repo
+    so the root check passes and the program check fires)."""
+    with pytest.raises(drv.DriverError) as exc:
+        drv.cmd_difftest(
+            _difftest_ns(drv, REPO_ROOT / "does-not-exist.py", REPO_ROOT)
+        )
+    assert exc.value.code == drv.EXIT_USAGE
+    assert "not found" in str(exc.value)
