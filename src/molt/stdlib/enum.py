@@ -37,7 +37,6 @@ _enum_flag_new = _require_intrinsic("molt_enum_flag_new")
 _enum_flag_or = _require_intrinsic("molt_enum_flag_or")
 _enum_flag_xor = _require_intrinsic("molt_enum_flag_xor")
 _enum_str_value = _require_intrinsic("molt_enum_str_value")
-_enum_unique_check = _require_intrinsic("molt_enum_unique_check")
 _enum_verify_member = _require_intrinsic("molt_enum_verify_member")
 _enum_is_descriptor = _require_intrinsic("molt_enum_is_descriptor")
 _enum_is_auto = _require_intrinsic("molt_enum_is_auto")
@@ -62,24 +61,104 @@ def _is_auto_value(obj: object) -> bool:
     return bool(_enum_is_auto(obj))
 
 
+def _is_dunder(name: str) -> bool:
+    return (
+        len(name) > 4
+        and name[:2] == "__"
+        and name[-2:] == "__"
+        and name[2] != "_"
+        and name[-3] != "_"
+    )
+
+
+def _is_sunder(name: str) -> bool:
+    return (
+        len(name) > 2
+        and name[0] == "_"
+        and name[-1] == "_"
+        and name[1] != "_"
+        and name[-2] != "_"
+    )
+
+
+class _EnumDict(dict):
+    """Namespace returned by ``EnumType.__prepare__``.
+
+    Mirrors CPython's ``enum._EnumDict``: as the class body executes, every
+    candidate member assignment is captured into ``_member_names`` in
+    definition order so that ``EnumType.__new__`` sees members in source order
+    (and can therefore resolve the *first* binding of a value as the canonical
+    member and any later binding as an alias). Dunder/sunder names, descriptors,
+    and callables are normal class attributes, never members — matching the
+    filter CPython applies. Duplicate *values* are intentionally NOT detected
+    here (alias resolution belongs to ``__new__``); duplicate *names* are a
+    redefinition error, exactly as in CPython.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Ordered set of member names (dict-as-ordered-set, value ignored),
+        # excluding dunders/sunders/descriptors/callables.
+        self._member_names: dict[str, None] = {}
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if _is_sunder(key) or _is_dunder(key):
+            pass
+        elif key in self._member_names:
+            # A member name reused inside the same body is a redefinition,
+            # not an alias (aliases reuse a value under a *new* name).
+            raise TypeError(f"{key!r} already defined as {self[key]!r}")
+        elif _is_descriptor(value) or callable(value):
+            pass
+        else:
+            self._member_names[key] = None
+        super().__setitem__(key, value)
+
+
 class EnumType(type):
     _member_names_: list[str]
     _member_map_: dict[str, Any]
     _value2member_map_: dict[Any, Any]
 
+    @classmethod
+    def __prepare__(mcls, name, bases, **kwargs):
+        # Custom namespace so the class body's member assignments are captured
+        # in definition order (required to resolve canonical vs. alias members).
+        return _EnumDict()
+
     def __new__(
         mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs
     ):
-        members: list[tuple[str, Any]] = []
-        for key, value in list(namespace.items()):
-            if key.startswith("_"):
-                continue
-            if _is_descriptor(value) or callable(value):
-                continue
-            members.append((key, value))
-            namespace.pop(key, None)
-        cls = super().__new__(mcls, name, bases, dict(namespace))
+        # Member names in definition order. When the body executed under our
+        # _EnumDict (the normal `class X(Enum): ...` path) it already filtered
+        # dunders/sunders/descriptors/callables; the functional API hands us a
+        # plain dict, so reproduce the same filter as a fallback.
+        ordered_member_names = getattr(namespace, "_member_names", None)
+        if ordered_member_names is not None:
+            member_names = list(ordered_member_names)
+        else:
+            member_names = [
+                key
+                for key, value in namespace.items()
+                if not _is_sunder(key)
+                and not _is_dunder(key)
+                and not key.startswith("_")
+                and not _is_descriptor(value)
+                and not callable(value)
+            ]
+        members: list[tuple[str, Any]] = [
+            (key, namespace[key]) for key in member_names
+        ]
+        # Members must not remain as plain class attributes; they are replaced
+        # by the member objects below (and aliases by their canonical member).
+        body = dict(namespace)
+        for key in member_names:
+            body.pop(key, None)
+        cls = super().__new__(mcls, name, bases, body)
         cls._member_names_: list[str] = []
+        # _member_map_ includes aliases (name -> member), in definition order —
+        # this is what `__members__` exposes. _value2member_map_ maps each value
+        # to its CANONICAL member only.
         cls._member_map_: dict[str, Any] = {}
         cls._value2member_map_: dict[Any, Any] = {}
         flag_type = globals().get("Flag")
@@ -109,6 +188,18 @@ class EnumType(type):
                     auto_count += 1
                     raw_value = int(_enum_auto_value(auto_count - 1))
             value = raw_value
+            # Alias resolution: if this value is already bound to a canonical
+            # member, the new name aliases that member (CPython semantics).
+            # The alias is recorded in _member_map_ and as a class attribute so
+            # `Color.CRIMSON is Color.RED` and `Color.CRIMSON.name == 'RED'`,
+            # but it is NOT a distinct member: excluded from _member_names_
+            # (iteration / len) and it does not overwrite _value2member_map_
+            # (so `Color(1)` returns the canonical member).
+            canonical = cls._value2member_map_.get(value, None)
+            if canonical is not None:
+                cls._member_map_[member_name] = canonical
+                setattr(cls, member_name, canonical)
+                continue
             member = cls.__new__(cls, value)
             _enum_init_member(member, member_name, value)
             cls._member_names_.append(member_name)
@@ -126,6 +217,27 @@ class EnumType(type):
 
     def __getitem__(cls, name: str):
         return cls._member_map_[name]
+
+    @property
+    def __members__(cls):
+        # Read-only ordered view of ALL names (canonical members AND aliases)
+        # mapping to their member objects, in definition order — exactly
+        # CPython's `mappingproxy` over `_member_map_`.
+        from types import MappingProxyType
+
+        return MappingProxyType(cls._member_map_)
+
+    def __repr__(cls):
+        # CPython EnumType.__repr__: `<flag 'Name'>` for Flag subclasses,
+        # `<enum 'Name'>` otherwise (bare __name__, not module-qualified).
+        flag_type = globals().get("Flag")
+        if (
+            flag_type is not None
+            and isinstance(cls, type)
+            and issubclass(cls, flag_type)
+        ):
+            return f"<flag {cls.__name__!r}>"
+        return f"<enum {cls.__name__!r}>"
 
     def __contains__(cls, value: object) -> bool:
         try:
@@ -310,21 +422,25 @@ UNIQUE = _FlagBoundary("UNIQUE")
 
 
 def unique(enumeration: type) -> type:
-    """Class decorator for Enum ensuring unique member values."""
-    members = [
-        (name, enumeration._member_map_[name]._value_)
-        for name in enumeration._member_names_
-    ]
-    if not _enum_unique_check(members):
-        seen: dict[Any, str] = {}
-        duplicates: list[str] = []
-        for name, value in members:
-            if value in seen:
-                duplicates.append(f"{name} -> {seen[value]}")
-            else:
-                seen[value] = name
+    """Class decorator for Enum ensuring unique member values.
+
+    Mirrors CPython's ``enum.unique``: it iterates ``__members__`` (which
+    includes aliases) and rejects any entry whose namespace key differs from
+    the canonical ``member.name`` — i.e. any alias. With proper alias
+    resolution (#51) an alias is no longer a distinct member, so the duplicate
+    detection must be expressed in terms of name/canonical-name divergence,
+    not a value-collision scan over distinct members.
+    """
+    duplicates: list[tuple[str, str]] = []
+    for name, member in enumeration.__members__.items():
+        if name != member.name:
+            duplicates.append((name, member.name))
+    if duplicates:
+        alias_details = ", ".join(
+            f"{alias} -> {canonical}" for (alias, canonical) in duplicates
+        )
         raise ValueError(
-            f"duplicate values found in {enumeration!r}: " + ", ".join(duplicates)
+            f"duplicate values found in {enumeration!r}: {alias_details}"
         )
     return enumeration
 
