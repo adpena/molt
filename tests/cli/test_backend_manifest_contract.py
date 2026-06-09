@@ -279,17 +279,18 @@ def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
 
 
 def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
-    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
-    native_backend_mod = (
+    native_backend_mod_path = (
         ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "mod.rs"
     )
-    trampolines_rs = (
-        ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "trampolines.rs"
-    )
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
 
-    assert native_backend_mod.exists()
-    assert trampolines_rs.exists()
+    assert native_backend_mod_path.exists()
+    # The god-file split extracted trampoline identity OUT of the lib.rs facade
+    # and into the native_backend module (struct TrampolineKey lives in mod.rs,
+    # not a standalone trampolines.rs).  Assert the real current home so the
+    # guard pins the actual structure rather than a renamed-away filename.
     assert "struct TrampolineKey" not in lib_rs
+    assert "struct TrampolineKey" in native_backend_mod_path.read_text()
 
 
 def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
