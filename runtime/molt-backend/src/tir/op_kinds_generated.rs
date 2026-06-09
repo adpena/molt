@@ -223,6 +223,26 @@ pub(crate) fn copy_kind_is_explicit_no_heap_move_table(kind: &str) -> bool {
     )
 }
 
+/// EXACT-match arm of the ownership-lattice absorbing-constructor rule
+/// (`ownership_lattice_min.rs`): Copy-lifted constructor kinds whose RESULT
+/// takes (co-)ownership of its element operands — releasing the result
+/// releases the elements, so a finalizer-sensitive element makes the result
+/// finalizer-sensitive. Over-approximation is the SAFE direction here (a
+/// non-finalizer value marked sensitive merely has its release deferred to
+/// the Python lifetime boundary — unobservable); a missing member keeps the
+/// pre-#58 SSA-last-use release for that shape.
+#[inline]
+pub(crate) fn copy_kind_absorbs_elements_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "list_fill_new" |
+        "list_new" |
+        "set_new" |
+        "tuple_from_list" |
+        "tuple_new"
+    )
+}
+
 /// Whether an `OpCode` may raise an exception (DCE must preserve it even
 /// when its result is dead). EXHAUSTIVE over the enum — a new variant fails
 /// to compile until it is classified in op_kinds.toml.

@@ -34,7 +34,7 @@
 use std::collections::HashSet;
 
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::escape_analysis::finalizer_alloc_roots;
@@ -43,12 +43,28 @@ use super::escape_analysis::finalizer_alloc_roots;
 /// the result releases the elements. So a finalizer-sensitive element makes the
 /// result finalizer-sensitive (the release of the container is what fires the
 /// element's `__del__`). Mutation absorption (`StoreAttr`/`StoreIndex`/`list.append`)
-/// is a later rung — `c_scope` is pure construction (`[A()]` = `BuildList`).
-fn is_absorbing_constructor(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
+/// is a later rung — `c_scope` is pure construction (`[A()]`).
+///
+/// VOCABULARY (load-bearing, learned from the real `c_scope` TIR): container
+/// literals reach the backend as `Copy` ops carrying `_original_kind`
+/// (`list_new`/`tuple_new`/…) — the SimpleIR lift has no first-class
+/// `BuildList` mapping — so the REAL pipeline arm is the registry-generated
+/// `copy_kind_absorbs_elements_table` (op_kinds.toml
+/// `classifier_absorbing_constructor`). The first-class `Build*` opcode arm is
+/// kept for direct-TIR producers; matching both costs nothing.
+fn is_absorbing_constructor(op: &TirOp) -> bool {
+    if matches!(
+        op.opcode,
         OpCode::BuildList | OpCode::BuildTuple | OpCode::BuildDict | OpCode::BuildSet
-    )
+    ) {
+        return true;
+    }
+    op.opcode == OpCode::Copy
+        && matches!(
+            op.attrs.get("_original_kind"),
+            Some(AttrValue::Str(kind))
+                if crate::tir::op_kinds_generated::copy_kind_absorbs_elements_table(kind)
+        )
 }
 
 /// The minimal ownership-lattice slice for finalizer ordering (#58).
@@ -76,7 +92,7 @@ impl OwnershipLattice {
             changed = false;
             for block in func.blocks.values() {
                 for op in &block.ops {
-                    if !is_absorbing_constructor(op.opcode) {
+                    if !is_absorbing_constructor(op) {
                         continue;
                     }
                     let absorbs_sensitive = op
@@ -185,6 +201,62 @@ mod tests {
 
         let lat = OwnershipLattice::compute(&f);
         assert!(lat.finalizer_sensitive_values().is_empty());
+    }
+
+    /// The REAL `c_scope` pipeline shape (verified against the live TIR dump):
+    /// `A()` is a generic `Call{kind=call_bind, defines_del}` (the constructor
+    /// fold DECLINES finalizer classes), and `[A()]` is a `Copy` carrying
+    /// `_original_kind="list_new"` — NOT first-class `BuildList`. The lattice
+    /// must fire on this vocabulary or it is inert on every actual repro.
+    #[test]
+    fn call_bind_plus_copy_list_new_is_sensitive() {
+        let mut f = func();
+        let a = f.fresh_value();
+        let list = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        let mut call = op(OpCode::Call, vec![], vec![a]);
+        call.attrs
+            .insert("kind".into(), AttrValue::Str("call_bind".into()));
+        call.attrs.insert("defines_del".into(), AttrValue::Bool(true));
+        entry.ops.push(call);
+        let mut list_new = op(OpCode::Copy, vec![a], vec![list]);
+        list_new
+            .attrs
+            .insert("_original_kind".into(), AttrValue::Str("list_new".into()));
+        entry.ops.push(list_new);
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(
+            lat.is_finalizer_sensitive(a),
+            "generic call_bind class instantiation with defines_del must seed"
+        );
+        assert!(
+            lat.is_finalizer_sensitive(list),
+            "Copy[_original_kind=list_new] must absorb (#58 real-pipeline c_scope)"
+        );
+    }
+
+    /// An unlisted `Copy` kind (`callargs_new` builds the CallArgs buffer,
+    /// whose ownership is consumed INSIDE the call) must NOT absorb.
+    #[test]
+    fn non_absorbing_copy_kind_does_not_propagate() {
+        let mut f = func();
+        let a = f.fresh_value();
+        let args = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        entry.ops.push(del_op(a));
+        let mut callargs = op(OpCode::Copy, vec![a], vec![args]);
+        callargs.attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("callargs_new".into()),
+        );
+        entry.ops.push(callargs);
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(lat.is_finalizer_sensitive(a));
+        assert!(!lat.is_finalizer_sensitive(args));
     }
 
     #[test]
