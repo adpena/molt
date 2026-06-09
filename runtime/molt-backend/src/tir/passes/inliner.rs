@@ -86,6 +86,7 @@ use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
 use super::super::values::{TirValue, ValueId};
 use super::ip_summary::ModuleSummaries;
+use super::super::call_facts::{InlineEligibility, InlineWhyNot};
 
 /// Statistics from one [`run_inliner`] invocation over a module.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -230,13 +231,39 @@ pub fn is_inlineable(
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
 ) -> bool {
-    // Every correctness gate (recursion, exception HANDLER regions,
-    // generator/async ops, predecessor-bearing entry, closures — see
-    // [`is_inline_safe`]) PLUS the cost-model op-count budget. The split-field
-    // deforestation driver admits an over-budget-but-safe callee separately (it
-    // calls [`is_inline_safe`] directly + [`split_field_enabled_callees`]).
-    is_inline_safe(callee, call_graph)
-        && callee_op_count(callee, summaries) <= tti.inline_budget(&callee.name)
+    // The bool is exactly the eligibility verdict: `is_inlineable` is the
+    // single-point reduction of [`classify_inline_eligibility`] (which carries the
+    // typed why-not reason the CallFacts side-table records). Reducing here — not
+    // duplicating the gates — means the inliner and the CallFacts table can never
+    // disagree (doc 47 §7, single source of truth).
+    classify_inline_eligibility(callee, call_graph, summaries, tti).is_eligible()
+}
+
+/// Whether `callee` may be inlined, and if not, **why** — the typed
+/// [`InlineEligibility`] the [`CallFacts`](crate::tir::call_facts) side-table
+/// records on each static-direct call site. The single source of truth from which
+/// [`is_inlineable`]'s bool is derived (`is_inlineable ==
+/// classify_inline_eligibility(...).is_eligible()`).
+///
+/// Gate-evaluation order (the first failing gate is the reported reason, so the
+/// reason is deterministic): the [`inline_safety_gate`] correctness gates
+/// (recursion → handlers → generator → entry-predecessor → closure) first, then
+/// the cost-model op-count budget ([`InlineWhyNot::OverBudget`]). This matches the
+/// short-circuit order of the prior `is_inline_safe && within_budget` predicate
+/// exactly, so the bool is byte-identical at every call site.
+pub fn classify_inline_eligibility(
+    callee: &TirFunction,
+    call_graph: &CallGraph,
+    summaries: &ModuleSummaries,
+    tti: &TargetInfo,
+) -> InlineEligibility {
+    if let Some(reason) = inline_safety_gate(callee, call_graph) {
+        return InlineEligibility::WhyNot(reason);
+    }
+    if callee_op_count(callee, summaries) > tti.inline_budget(&callee.name) {
+        return InlineEligibility::WhyNot(InlineWhyNot::OverBudget);
+    }
+    InlineEligibility::Eligible
 }
 
 /// The callee's op count — the same metric [`ModuleSummaries`] records, with a
@@ -246,6 +273,49 @@ fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries) -> usize {
         .get(&callee.name)
         .map(|s| s.op_count)
         .unwrap_or_else(|| callee.blocks.values().map(|b| b.ops.len()).sum())
+}
+
+/// The first failing **correctness** (safety) gate for inlining `callee`, or
+/// `None` if every safety gate passes. This is the single source of truth for the
+/// safety verdict, shared by [`is_inline_safe`] (the bool the split-field driver
+/// uses) and [`classify_inline_eligibility`] (the typed reason). It deliberately
+/// EXCLUDES the cost-model budget — that is [`InlineWhyNot::OverBudget`], applied
+/// only by [`classify_inline_eligibility`].
+///
+/// Gate order is the prior `is_inline_safe` order verbatim:
+/// 1. **recursive** — a member of the call graph's recursive set (cycle, self-edge,
+///    or opaque-call function). Inlining is unbounded.
+/// 2. **exception HANDLER region** — [`TirFunction::has_exception_handlers`]
+///    (`try`/`except` or generator/async state regions); the splice does not remap
+///    handler labels. Observation-only callees (`CheckException`, no handler) are
+///    NOT excluded.
+/// 3. **generator / async** — a state-machine opcode ([`is_generator_or_async_op`]).
+/// 4. **entry block has predecessors** — the direct param→argument binding splice
+///    clones the entry as an argument-less block, valid only when no branch targets
+///    the entry.
+/// 5. **closure** — the first param is the implicit captured-env param
+///    ([`is_closure`]); the direct param→operand splice would miscompile it.
+fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<InlineWhyNot> {
+    if call_graph.recursive_set().contains(&callee.name) {
+        return Some(InlineWhyNot::Recursive);
+    }
+    if callee.has_exception_handlers() {
+        return Some(InlineWhyNot::HasHandlers);
+    }
+    if callee
+        .blocks
+        .values()
+        .any(|b| b.ops.iter().any(|op| is_generator_or_async_op(op.opcode)))
+    {
+        return Some(InlineWhyNot::Generator);
+    }
+    if entry_block_has_predecessor(callee) {
+        return Some(InlineWhyNot::EntryHasPredecessor);
+    }
+    if is_closure(callee) {
+        return Some(InlineWhyNot::Closure);
+    }
+    None
 }
 
 /// Whether `callee` is SAFE to inline — every correctness gate of
@@ -258,27 +328,12 @@ fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries) -> usize {
 /// [`split_field_enabled_callees`]). Admitting an over-budget callee here is
 /// sound for exactly the same reason every other inline is: the splice is
 /// SSA/refcount/loop-metadata preserving regardless of size.
+///
+/// Delegates to [`inline_safety_gate`] (the single source of truth for the safety
+/// verdict) so it can never drift from the typed reason
+/// [`classify_inline_eligibility`] reports.
 fn is_inline_safe(callee: &TirFunction, call_graph: &CallGraph) -> bool {
-    if call_graph.recursive_set().contains(&callee.name) {
-        return false;
-    }
-    if callee.has_exception_handlers() {
-        return false;
-    }
-    if callee
-        .blocks
-        .values()
-        .any(|b| b.ops.iter().any(|op| is_generator_or_async_op(op.opcode)))
-    {
-        return false;
-    }
-    if entry_block_has_predecessor(callee) {
-        return false;
-    }
-    if is_closure(callee) {
-        return false;
-    }
-    true
+    inline_safety_gate(callee, call_graph).is_none()
 }
 
 /// True if `op` is the `string_split_field` field-access (a `Copy`-passthrough
