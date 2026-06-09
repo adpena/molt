@@ -14360,7 +14360,14 @@ class SimpleTIRGenerator(
         try_done_label = self.next_label()
         scope.done_label = try_done_label
         self.try_end_labels.append(try_exc_label)
-        self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_START",
+                args=[],
+                result=MoltValue("none"),
+                metadata={"try_region_id": try_exc_label},
+            )
+        )
         self.context_depth += 1
         self.control_flow_depth += 1
         # See _visit_loop_body for the unbound-check snapshot rationale.
@@ -14377,7 +14384,14 @@ class SimpleTIRGenerator(
         # End the protected body region before issuing the normal __exit__ call.
         # If __exit__ itself raises, it should propagate directly rather than
         # re-entering the with-exception cleanup path and double-consuming context.
-        self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_END",
+                args=[],
+                result=MoltValue("none"),
+                metadata={"try_region_id": try_exc_label},
+            )
+        )
         none_exit = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_exit))
         exit_ok = MoltValue(self.next_var(), type_hint="Any")
@@ -14388,7 +14402,14 @@ class SimpleTIRGenerator(
         self._emit_raise_if_pending()
         self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
         self.emit(MoltOp(kind="LABEL", args=[try_exc_label], result=MoltValue("none")))
-        self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_END",
+                args=[],
+                result=MoltValue("none"),
+                metadata={"try_region_id": try_exc_label},
+            )
+        )
         prior_suppress = self.try_suppress_depth
         self.try_suppress_depth = len(self.try_end_labels)
         self.try_handler_scopes.append(scope)
@@ -14498,7 +14519,14 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_end_label = self.next_label()
         self.try_end_labels.append(try_end_label)
-        self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_START",
+                args=[],
+                result=MoltValue("none"),
+                metadata={"try_region_id": try_end_label},
+            )
+        )
         self.control_flow_depth += 1
         # async-with: see _visit_loop_body for snapshot rationale.
         unbound_snapshot = set(self.unbound_check_names)
@@ -14509,7 +14537,14 @@ class SimpleTIRGenerator(
             self.control_flow_depth -= 1
         self.try_end_labels.pop()
         self.emit(MoltOp(kind="LABEL", args=[try_end_label], result=MoltValue("none")))
-        self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="TRY_END",
+                args=[],
+                result=MoltValue("none"),
+                metadata={"try_region_id": try_end_label},
+            )
+        )
         prior_suppress = self.try_suppress_depth
         self.try_suppress_depth = len(self.try_end_labels)
 
@@ -24814,9 +24849,25 @@ class SimpleTIRGenerator(
             "TRY_START": "TRY_END",
         }
         open_for_close = {close: open_ for open_, close in close_for_open.items()}
-        control_stack: list[tuple[str, bool]] = []
+        # Stack entries are (kind, aux). For "IF", `aux` is the bool `seen_else`.
+        # For "TRY_START", `aux` carries the region id (handler label) so that the
+        # DIVERGENT `TRY_END`s a `with`/`try` legitimately emits — one on the
+        # protected-body exit path and one on the exception-handler path, sharing a
+        # `try_region_id` — pair to the SAME open frame instead of being treated as
+        # a single bracket. For "LOOP_START", `aux` is unused (None).
+        control_stack: list[tuple[str, Any]] = []
         rewritten: list[MoltOp] = []
         rewrites = 0
+
+        def try_region_id(op: MoltOp) -> Any:
+            # The region id is the try's handler label. `visit_Try`/finally carry
+            # it in `args[0]`; `with`/`async with` carry it in
+            # `metadata["try_region_id"]` (their TRY_START/TRY_END have empty args).
+            if op.metadata is not None and "try_region_id" in op.metadata:
+                return op.metadata["try_region_id"]
+            if op.args:
+                return op.args[0]
+            return None
 
         def fail(message: str) -> NoReturn:
             self.midend_stats["cfg_structural_failures"] += 1
@@ -24844,8 +24895,56 @@ class SimpleTIRGenerator(
         for idx, op in enumerate(ops):
             kind = op.kind
             if kind in {"IF", "LOOP_START", "TRY_START"}:
-                seen_else = kind != "IF"
-                control_stack.append((kind, seen_else))
+                if kind == "IF":
+                    aux: Any = False  # seen_else
+                elif kind == "TRY_START":
+                    aux = try_region_id(op)  # handler-label region id
+                else:
+                    aux = None
+                control_stack.append((kind, aux))
+                rewritten.append(op)
+                continue
+
+            if kind == "TRY_END":
+                # `TRY_END` is a DIVERGENT-PATH close, not a strict bracket: a
+                # `with`/`try` emits ONE `TRY_START` but a `TRY_END` on the normal
+                # protected-body exit AND on the exception-handler entry (after
+                # `LABEL try_exc`). When the body cannot fall through (returns /
+                # raises) only the handler-path `TRY_END` is emitted, so a region
+                # has ONE or TWO textual closes. Pairing by region id makes this
+                # exact: the FIRST `TRY_END` for a region closes its frame; any
+                # LATER `TRY_END` with the same id is a redundant divergent close
+                # and is elided WITHOUT disturbing other open frames.
+                #
+                # This is what fixes the P45 `for`-in-`with` miscompile: the inner
+                # `with`'s second (handler) `TRY_END` arrives while the enclosing
+                # `LOOP_START` is still open. The generic close logic below would
+                # synth-close that `LOOP_START` to reach the outer `TRY_START`,
+                # then elide the loop's real `LOOP_CONTINUE`/`LOOP_END` — orphaning
+                # the back-edge so the loop runs once. Region-id pairing leaves the
+                # loop untouched.
+                region_id = try_region_id(op)
+                frame_idx = None
+                for i in range(len(control_stack) - 1, -1, -1):
+                    open_kind, open_aux = control_stack[i]
+                    if open_kind == "TRY_START" and (
+                        region_id is None or open_aux == region_id
+                    ):
+                        frame_idx = i
+                        break
+                if frame_idx is None:
+                    # No open try frame for this region: a redundant divergent
+                    # close (its frame was already closed on the body path) or a
+                    # stray close. Elide it; never tear down other open frames.
+                    rewrites += 1
+                    continue
+                # Close this try frame. Any frames ABOVE it are genuinely dangling
+                # (their own close never appeared inside the try body) — repair
+                # them with synthetic closes, mirroring the END_IF/LOOP_END path.
+                while len(control_stack) - 1 > frame_idx:
+                    dangling_kind, _ = control_stack.pop()
+                    append_synthetic_close(dangling_kind)
+                control_stack.pop()
                 rewritten.append(op)
                 continue
 
