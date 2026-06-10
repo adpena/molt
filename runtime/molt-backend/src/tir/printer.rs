@@ -490,6 +490,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::TypeGuard => "type_guard",
         OpCode::IncRef => "inc_ref",
         OpCode::DecRef => "dec_ref",
+        OpCode::DelBoundary => "del_boundary",
         OpCode::BuildList => "build_list",
         OpCode::BuildDict => "build_dict",
         OpCode::BuildTuple => "build_tuple",

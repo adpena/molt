@@ -1105,6 +1105,13 @@ class SerializationMixin(_MixinBase):
                 if (op.metadata or {}).get("defines_del"):
                     entry["defines_del"] = True
                 json_ops.append(entry)
+            elif op.kind == "DEL_BOUNDARY":
+                json_ops.append(
+                    {
+                        "kind": "del_boundary",
+                        "args": [arg.name for arg in op.args],
+                    }
+                )
             elif op.kind == "CALL_METHOD":
                 entry = {
                     "kind": "call_method",

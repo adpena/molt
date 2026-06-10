@@ -52,7 +52,7 @@ use super::escape_analysis::finalizer_alloc_roots;
 /// `copy_kind_absorbs_elements_table` (op_kinds.toml
 /// `classifier_absorbing_constructor`). The first-class `Build*` opcode arm is
 /// kept for direct-TIR producers; matching both costs nothing.
-fn is_absorbing_constructor(op: &TirOp) -> bool {
+pub(crate) fn is_absorbing_constructor(op: &TirOp) -> bool {
     if matches!(
         op.opcode,
         OpCode::BuildList | OpCode::BuildTuple | OpCode::BuildDict | OpCode::BuildSet

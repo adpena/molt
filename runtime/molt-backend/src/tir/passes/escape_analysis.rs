@@ -527,6 +527,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::TypeGuard
                 | OpCode::IncRef
                 | OpCode::DecRef
+                | OpCode::DelBoundary
                 | OpCode::GetIter
                 | OpCode::IterNext
                 | OpCode::IterNextUnboxed

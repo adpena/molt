@@ -123,6 +123,18 @@ pub enum OpCode {
     // Refcount
     IncRef,
     DecRef,
+    /// Python lifetime boundary: a function-scope `del x` of a (non-closure)
+    /// local. Operand 0 is the binding's current value. The frontend emits it
+    /// so the boundary FACT survives to the backend (pre-#58 the `del` lowered
+    /// to nothing and the release timing was whatever SSA-last-use happened to
+    /// be). The terminal drop phase NORMALIZES it: rewritten in place to the
+    /// releasing `DecRef` when the root is pass-owned (droppable), deleted
+    /// otherwise (raw/param/borrowed — CPython's frame-slot decref is equally
+    /// unobservable there). On targets where the drop phase does not run (the
+    /// dormant-native value-tracking lane) codegen ignores it; its operand USE
+    /// pins the native `last_use` to the `del` statement, which IS the correct
+    /// release point for that lane. side_effecting=true so DCE keeps it.
+    DelBoundary,
     // Build containers
     BuildList,
     BuildDict,
