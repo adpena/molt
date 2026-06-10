@@ -13868,7 +13868,28 @@ class SimpleTIRGenerator(
         if name in self.closure_locals:
             self._box_local(name)
         if not allow_missing:
-            _ = self._load_local_value(name)
+            current = self._load_local_value(name)
+            # Python lifetime boundary (#58): carry the `del` as a first-class
+            # DEL_BOUNDARY op so the backend releases the binding's reference
+            # AT the del statement (CPython fires `__del__` here, not at the
+            # value's SSA last-use and not at scope exit). Non-closure locals
+            # only: a closure-boxed local's reference is owned by its cell and
+            # released through the cell store below (own arc). The backend
+            # drop phase rewrites the boundary to the releasing dec_ref when
+            # it owns RC; the native value-tracking lane consumes it as a
+            # last_use pin; codegen otherwise ignores it.
+            if (
+                name not in self.closure_locals
+                and current is not None
+                and current.name != "none"
+            ):
+                self.emit(
+                    MoltOp(
+                        kind="DEL_BOUNDARY",
+                        args=[current],
+                        result=MoltValue("none"),
+                    )
+                )
         missing = self._emit_missing_value()
         self._store_local_value(name, missing)
         self.unbound_check_names.add(name)

@@ -477,14 +477,28 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         return stats;
     }
     if func.has_exception_handlers() || func.has_state_machine() {
+        // STRIP `DelBoundary` boundary markers before bailing: this pass is
+        // the only consumer on drop-activated targets, and a bailed function
+        // inserts no drops at all (its temporaries already leak — the
+        // pre-existing handler-function class), so the boundary has nothing
+        // to bind to. Leaving it would hit backend lowerings that have no
+        // arm for it.
+        let mut stripped = 0usize;
+        for block in func.blocks.values_mut() {
+            let before = block.ops.len();
+            block.ops.retain(|op| op.opcode != OpCode::DelBoundary);
+            stripped += before - block.ops.len();
+        }
+        stats.ops_removed += stripped;
         if debug_this {
             let _ = crate::debug_artifacts::write_debug_artifact(
                 format!("drop/{}.txt", func.name),
                 format!(
-                    "[DROP] {} BAILED: exc_handlers={} state_machine={}\n",
+                    "[DROP] {} BAILED: exc_handlers={} state_machine={} del_boundaries_stripped={}\n",
                     func.name,
                     func.has_exception_handlers(),
-                    func.has_state_machine()
+                    func.has_state_machine(),
+                    stripped,
                 ),
             );
         }
@@ -617,14 +631,65 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // union-find declines to fold them — see `non_owning_copy_results`), so the
     // `r == v` rail alone would admit them; exclude them explicitly. The set is
     // keyed by the SSA result id, which IS the root for a class-3 copy.
+    //
+    // `raw_scalars` is snapshotted (not read through `live`) so this closure
+    // holds no borrow of `live` — the §0b deferral below mutates `live`'s
+    // in/out sets while `droppable` is alive. The raw-scalar set itself is
+    // immutable analysis output; the deferral only ever touches in/out.
+    let raw_scalars = live.raw_scalars.clone();
     let droppable = |v: ValueId| -> bool {
         let r = canon(v);
         r == v
-            && !live.is_raw_scalar(r)
+            && !raw_scalars.contains(&r)
             && !param_roots.contains(&r)
             && !stack_roots.contains(&r)
             && !non_owning_copy_results.contains(&r)
     };
+
+    // ── 0a. `del`-boundary normalization (#58) ────────────────────────────────
+    // The frontend carries a function-scope `del x` as `DelBoundary(v)` so the
+    // Python lifetime boundary survives optimization (it used to lower to
+    // NOTHING, leaving the release at whatever SSA-last-use happened to be —
+    // coincidentally early). This pass is the release authority on
+    // drop-activated targets, so the boundary BECOMES the release: rewrite in
+    // place to `DecRef(root)` when the root is pass-owned (droppable); delete
+    // otherwise (raw carrier / param / stack / borrowed alias — CPython's
+    // frame-slot decref is equally unobservable there). Rewritten roots are
+    // recorded in `explicit_release_roots`: §1 must never place a second drop
+    // (exactly-once — the alloc's +1 now belongs to the del), and §0b must
+    // never defer them (an explicit boundary beats scope exit; its operand also
+    // trips §0b's gate (c) DecRef rail, so the protection is doubled).
+    let mut explicit_release_roots: HashSet<ValueId> = HashSet::new();
+    {
+        let mut removed = 0usize;
+        for block in func.blocks.values_mut() {
+            let had = block.ops.len();
+            let mut rewritten: Vec<TirOp> = Vec::with_capacity(had);
+            for mut op in block.ops.drain(..) {
+                if op.opcode != OpCode::DelBoundary {
+                    rewritten.push(op);
+                    continue;
+                }
+                let Some(&v) = op.operands.first() else {
+                    continue;
+                };
+                let r = canon(v);
+                if droppable(r) {
+                    explicit_release_roots.insert(r);
+                    op.opcode = OpCode::DecRef;
+                    op.operands = vec![r];
+                    op.results.clear();
+                    rewritten.push(op);
+                }
+            }
+            removed += had - rewritten.len();
+            block.ops = rewritten;
+        }
+        // Deletions must count as changes: the caller back-converts to
+        // SimpleIR only for changed functions, and the stale SimpleIR would
+        // still carry the boundary op.
+        stats.ops_removed += removed;
+    }
 
     // The plan: per block, a list of (insert_after_op_index OR at-entry, value)
     // DecRef placements, plus per-block at-entry edge-dying drops, plus
@@ -669,6 +734,192 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         func,
         crate::tir::dominators::CfgEdgePolicy::Full,
     );
+
+    // TerminatorOnly dominance machinery — shared by the §0b deferral (below)
+    // and the §3 edge-dying DOMINANCE GUARD (see §3's soundness note: this is
+    // the SAME view the TIR verifier and codegen enforce; the Full tree would
+    // wrongly admit a value defined mid-block after a `CheckException` as
+    // "dominating" that op's handler).
+    let pred_map_term = crate::tir::dominators::build_pred_map_with(
+        func,
+        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
+    );
+    let idoms = crate::tir::dominators::compute_idoms_with(
+        func,
+        &pred_map_term,
+        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
+    );
+    let def_block: HashMap<ValueId, BlockId> = {
+        let mut m: HashMap<ValueId, BlockId> = HashMap::new();
+        for (&bid, block) in &func.blocks {
+            for arg in &block.args {
+                m.insert(arg.id, bid);
+            }
+            for op in &block.ops {
+                for &r in &op.results {
+                    m.insert(r, bid);
+                }
+            }
+        }
+        m
+    };
+
+    // ── 0b. FinalizerSensitive release deferral (#58, the ordering keystone) ──
+    // CPython releases a named local at its Python lifetime boundary (`del` /
+    // rebinding / scope exit), not at its last read. For a value whose release
+    // (transitively) fires a `__del__`, that timing is OBSERVABLE — releasing
+    // `bag = [A()]` at its SSA last-use fires `A.__del__` before the rest of
+    // the function body runs (doc 50 §A, repro c_scope). The ownership lattice
+    // names exactly those values (FinalizerSensitive: `defines_del` allocation
+    // roots closed over absorbing container constructors). For each such root
+    // this pass would otherwise release at SSA-last-use, DEFER the release to
+    // the Python lifetime boundary: §1/§1b skip it and a `DecRef` lands before
+    // the DEF BLOCK'S OWN `Terminator::Return` (merged into `plans` after §5,
+    // sorted by ValueId so multi-instance finalizer order matches CPython's
+    // creation-order frame teardown).
+    //
+    // SAME-BLOCK-ONLY (the rung-1 soundness frame). The deferred DecRef is
+    // placed exclusively before the terminator of the block that DEFINES the
+    // root, and only when that terminator is `Return`. This is provably sound
+    // by straight-line construction: the only way to execute the block's
+    // terminator is to fall through every op after the def, so the def always
+    // precedes the DecRef on every path that reaches it — no dominance
+    // analysis required. Every mid-block exception edge departs the block
+    // BEFORE the terminator, so on those paths the DecRef simply does not run
+    // (the value leaks on the exception path — the SAME fail-closed
+    // leak-not-UAF class as §3's dominance guard; per-region exception
+    // cleanup is doc 45's arc). CROSS-BLOCK placement is deliberately NOT
+    // attempted at this rung: block-granularity dominance cannot see WHERE
+    // inside a block an exception edge departs (the §3 trap), pred-map
+    // comparisons cannot see a self-pred exception edge (terminator-pred and
+    // exception-pred of the same successor dedup to one entry), and
+    // unresolved universal-check targets exist only inside the codegen
+    // drivers (observed: a module-chunk deferred DecRef in a shared Return
+    // block aborted LLVM verification with "Instruction does not dominate
+    // all uses!"). Cross-block deferral needs op-granular dominance — the
+    // ownership-boundaries rung. Python function bodies overwhelmingly lower
+    // to a single Return-terminated block, so the c_scope class is covered.
+    //
+    // FAIL-CLOSED GATES — any failure keeps the pre-#58 SSA-last-use placement
+    // for that value (never a UAF, never a NEW silent-skip class):
+    //   (a) droppable alias ROOT (heap-carrying, function-owned, own root);
+    //   (b) defined by an op (not a block arg / phi) in a block whose
+    //       terminator is `Return` (same-block-only, above);
+    //   (c) no ownership-consuming or explicit-RC use anywhere: never a
+    //       branch arg or terminator use, never consumed by an op (the
+    //       CallArgs builder), never an operand of an IncRef/DecRef/Free
+    //       already in the IR (an explicit release — a `del` boundary
+    //       rewritten by §0a, or module-scope `del` — is its own authority),
+    //       never an operand ABSORBED by a container constructor (CPython's
+    //       BUILD_LIST consumes the stack ref, so the molt temp `+1` mirrors
+    //       a ref that dies AT construction — deferring it held the element
+    //       past `container.clear()`, finalizer_matrix `container_hold`),
+    //       and the alias group never touches a NAMED-SLOT move
+    //       (`store_var`/`load_var` Copy): a slot-backed local has
+    //       `del`/rebinding boundaries the slot machinery owns. The c_scope
+    //       class is PURE-SSA locals — the frontend emits no slot for them.
+    //   (d) the function has no suspension points (resumable-frame ownership
+    //       is its own arc; lowered state machines already bail the pass).
+    let deferred: HashSet<ValueId>;
+    let mut deferred_return_placements: Vec<(BlockId, ValueId)> = Vec::new();
+    {
+        let lattice = super::ownership_lattice_min::OwnershipLattice::compute(func);
+        let sensitive_roots: HashSet<ValueId> = lattice
+            .finalizer_sensitive_values()
+            .iter()
+            .map(|&v| canon(v))
+            .filter(|&r| droppable(r))
+            .collect();
+        let has_suspension = !sensitive_roots.is_empty()
+            && func
+                .blocks
+                .values()
+                .any(|b| b.ops.iter().any(|o| is_suspension_point(o.opcode)));
+        let mut accepted: HashSet<ValueId> = HashSet::new();
+        if !sensitive_roots.is_empty() && !has_suspension {
+            // Gate (c): one scan over the whole function for disqualifying uses.
+            let mut disqualified: HashSet<ValueId> = HashSet::new();
+            for &bid in &block_ids {
+                if !reachable.contains(&bid) {
+                    continue;
+                }
+                let block = &func.blocks[&bid];
+                for v in terminator_branch_args(&block.terminator) {
+                    disqualified.insert(canon(v));
+                }
+                for &r in &sensitive_roots {
+                    if terminator_uses_root(&block.terminator, r, &canon) {
+                        disqualified.insert(r);
+                    }
+                }
+                for op in &block.ops {
+                    if matches!(
+                        op.opcode,
+                        OpCode::IncRef | OpCode::DecRef | OpCode::Free
+                    ) {
+                        for &operand in &op.operands {
+                            disqualified.insert(canon(operand));
+                        }
+                    }
+                    if let Some(r) = op_consumed_operand_root(op, &canon) {
+                        disqualified.insert(r);
+                    }
+                    // Gate (c) transfer rail: an operand ABSORBED by a
+                    // container constructor keeps its SSA-last-use release —
+                    // the CONTAINER value carries the Python scope boundary.
+                    if super::ownership_lattice_min::is_absorbing_constructor(op) {
+                        for &operand in &op.operands {
+                            disqualified.insert(canon(operand));
+                        }
+                    }
+                    // Gate (c) named-slot rail: a `store_var`/`load_var` Copy
+                    // marks the group as a slot-backed local — the slot owns
+                    // its del/rebinding release boundary.
+                    if op.opcode == OpCode::Copy
+                        && matches!(
+                            op.attrs.get("_original_kind"),
+                            Some(AttrValue::Str(k)) if k == "store_var" || k == "load_var"
+                        )
+                    {
+                        for &operand in &op.operands {
+                            disqualified.insert(canon(operand));
+                        }
+                        for &result in &op.results {
+                            disqualified.insert(canon(result));
+                        }
+                    }
+                }
+            }
+            for &r in &sensitive_roots {
+                if disqualified.contains(&r) {
+                    continue;
+                }
+                let Some(&dblk) = def_block.get(&r) else {
+                    continue;
+                };
+                // Gate (b): an op-defined root (not a phi) whose own block
+                // ends in `Return`.
+                if func.blocks[&dblk].args.iter().any(|a| a.id == r) {
+                    continue;
+                }
+                if !reachable.contains(&dblk) {
+                    continue;
+                }
+                if !matches!(
+                    func.blocks[&dblk].terminator,
+                    Terminator::Return { .. }
+                ) {
+                    continue;
+                }
+                accepted.insert(r);
+                deferred_return_placements.push((dblk, r));
+            }
+        }
+        deferred = accepted;
+    }
+    // Deterministic finalizer order: ValueId ascending == creation order ==
+    // CPython's observed frame-teardown DEL order (finalizer_matrix `many`).
+    deferred_return_placements.sort_unstable_by_key(|&(b, v)| (b.0, v.0));
 
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
@@ -724,6 +975,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         for (&v, &idx) in &last_use {
             // `v` is already a root (last_use is keyed by canon'd operands).
             if !droppable(v) {
+                continue;
+            }
+            // §0b finalizer-ordering deferral: this root's release lands at the
+            // Return boundary, not its SSA last-use.
+            if deferred.contains(&v) {
+                continue;
+            }
+            // §0a `del`-boundary: the rewritten DecRef IS this root's release —
+            // a trailing last-use drop here would be the double-free.
+            if explicit_release_roots.contains(&v) {
                 continue;
             }
             // Transferred via branch arg (root space) → no drop (successor owns).
@@ -784,6 +1045,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
                 // Already released by the §1 last-use path (some op used it).
                 if last_use.contains_key(&r) {
+                    continue;
+                }
+                // §0b finalizer-ordering deferral: released at the Return
+                // boundary instead (the c_scope zero-use container shape).
+                if deferred.contains(&r) {
                     continue;
                 }
                 if !droppable(r) {
@@ -895,29 +1161,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // FAIL-CLOSED: if V's def-block does not terminator-dominate B, we DO NOT
     // drop here (keep the +1 / accept a possible leak on that exception path) —
     // the under-release direction. Never over-release (UAF).
-    let pred_map_term = crate::tir::dominators::build_pred_map_with(
-        func,
-        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
-    );
-    let idoms = crate::tir::dominators::compute_idoms_with(
-        func,
-        &pred_map_term,
-        crate::tir::dominators::CfgEdgePolicy::TerminatorOnly,
-    );
-    let def_block: HashMap<ValueId, BlockId> = {
-        let mut m: HashMap<ValueId, BlockId> = HashMap::new();
-        for (&bid, block) in &func.blocks {
-            for arg in &block.args {
-                m.insert(arg.id, bid);
-            }
-            for op in &block.ops {
-                for &r in &op.results {
-                    m.insert(r, bid);
-                }
-            }
-        }
-        m
-    };
+    // (`pred_map_term` / `idoms` / `def_block` are built once, above §0b,
+    // which shares this exact TerminatorOnly view.)
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
             continue;
@@ -1323,6 +1568,25 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
     }
 
+    // ── 0b placements: deferred FinalizerSensitive releases at each Return ───
+    // Merged AFTER §1–§5 so they always append to (never overwrite) the
+    // per-block plans, and kept in the pre-sorted (BlockId, ValueId-ascending)
+    // order — ValueId order is creation order, matching CPython's observed
+    // frame-teardown `__del__` sequence for multiple finalizer-bearing locals.
+    for &(ret_bid, v) in &deferred_return_placements {
+        plans
+            .entry(ret_bid)
+            .or_insert_with(|| BlockPlan {
+                after_op: HashMap::new(),
+                at_entry: Vec::new(),
+                before_term: Vec::new(),
+                before_op: HashMap::new(),
+                before_term_incref: Vec::new(),
+            })
+            .before_term
+            .push(v);
+    }
+
     // ── Apply the plans ──────────────────────────────────────────────────────
     let mut inserted = 0usize;
     for (&bid, plan) in &plans {
@@ -1374,8 +1638,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 inserted += 1;
             }
         }
-        // before_term DecRefs (currently unused; kept for the documented
-        // loop-carried anchor and future edge-split upgrade).
+        // before_term DecRefs — the §0b deferred FinalizerSensitive releases
+        // at Return boundaries (and the documented loop-carried anchor /
+        // future edge-split upgrade). Insertion order is preserved: §0b
+        // pre-sorted by ValueId so multi-instance `__del__` order matches
+        // CPython's creation-order frame teardown.
         let mut term_seen: HashSet<ValueId> = HashSet::new();
         for &v in &plan.before_term {
             if term_seen.insert(v) {
@@ -1424,6 +1691,18 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     }
     if debug_this {
         let mut out = format!("[DROP] {} inserted={} blocks:\n", func.name, inserted);
+        if !deferred.is_empty() {
+            let mut d: Vec<u32> = deferred.iter().map(|v| v.0).collect();
+            d.sort_unstable();
+            out.push_str(&format!(
+                "  deferred(finalizer-sensitive→Return)={:?} placements={:?}\n",
+                d,
+                deferred_return_placements
+                    .iter()
+                    .map(|&(b, v)| (b.0, v.0))
+                    .collect::<Vec<_>>()
+            ));
+        }
         let mut bids: Vec<_> = func.blocks.keys().copied().collect();
         bids.sort_by_key(|b| b.0);
         for bid in bids {
