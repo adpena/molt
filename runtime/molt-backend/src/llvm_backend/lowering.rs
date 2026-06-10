@@ -1450,6 +1450,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.value_types.insert(op.results[0], ty);
                 }
             }
+            // `del`-boundary marker (#58): the terminal drop phase normalizes
+            // it (rewrite-to-DecRef or delete) before LLVM lowering on every
+            // path that reaches here — including the bailed handler/state
+            // functions, which strip it. Defensive no-op: the marker carries
+            // no result and lowers to nothing.
+            OpCode::DelBoundary => {}
             OpCode::DecRef => {
                 let val = self.resolve(op.operands[0]);
                 let dec_fn = self

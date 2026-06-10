@@ -1688,6 +1688,14 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 args: Some(operand_args(op)),
                 out: out_var,
                 value: attr_int(&op.attrs, "value"),
+                // Preserve the finalizer fact across the round-trip (the
+                // GENERIC class-instantiation `call_bind` carries it exactly
+                // like `object_new_bound` — #58): a re-lift must still seed
+                // `finalizer_alloc_roots` from this result, or the ownership
+                // lattice goes blind after the first SimpleIR round-trip and
+                // the deferred Return-boundary release silently degrades to
+                // SSA-last-use.
+                defines_del: attr_bool(&op.attrs, "defines_del"),
                 ..OpIR::default()
             })
         }
@@ -2068,6 +2076,16 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
         OpCode::DecRef => Some(OpIR {
             kind: "dec_ref".to_string(),
+            args: Some(operand_args(op)),
+            ..OpIR::default()
+        }),
+        // Python lifetime boundary (`del x`, #58). Normally the drop phase
+        // normalizes this away before back-conversion on drop-activated
+        // targets; on the dormant-native lane it survives so the native
+        // preanalysis can pin the local's last_use to the del statement
+        // (codegen's default arm ignores the kind).
+        OpCode::DelBoundary => Some(OpIR {
+            kind: "del_boundary".to_string(),
             args: Some(operand_args(op)),
             ..OpIR::default()
         }),

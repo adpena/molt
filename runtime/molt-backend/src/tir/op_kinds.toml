@@ -568,6 +568,20 @@ side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
 
+# Python lifetime boundary: function-scope `del x` of a non-closure local
+# (#58 ordering keystone). side_effecting=true is LOAD-BEARING: the op has no
+# results, so a pure classification would let DCE erase the boundary fact —
+# exactly the pre-#58 state this op exists to kill. The drop phase normalizes
+# it (rewrite-to-DecRef when pass-owned, delete otherwise) before codegen on
+# drop-activated targets; the dormant-native lane consumes it as a last_use
+# pin and codegen ignores it.
+[[opcode]]
+name = "DelBoundary"
+may_throw = false
+side_effecting = true
+purity = "impure"
+operand_ownership = "all_borrowed"
+
 [[opcode]]
 name = "BuildList"
 may_throw = false
@@ -1227,6 +1241,11 @@ mapper_opcode = "IncRef"
 canonical = "dec_ref"
 aliases = []
 mapper_opcode = "DecRef"
+
+[[kind]]
+canonical = "del_boundary"
+aliases = []
+mapper_opcode = "DelBoundary"
 
 [[kind]]
 canonical = "build_list"
