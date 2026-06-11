@@ -838,6 +838,17 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         let mut accepted: HashSet<ValueId> = HashSet::new();
         if !sensitive_roots.is_empty() && !has_suspension {
             // Gate (c): one scan over the whole function for disqualifying uses.
+            // Gate (b') NAMED-LOCAL proof, collected in the same scan: only a
+            // value the frontend stamped `bound_local` (its result is bound to
+            // a plain function-local NAME) carries CPython's frame-teardown
+            // boundary. An UNNAMED expression temp (`bag.append(A())`'s
+            // argument) dies at its statement exactly like CPython's consumed
+            // stack ref — deferring it held elements past `container.clear()`
+            // (finalizer_container_clear regression). The name-binding fact is
+            // otherwise ERASED by lowering — this is the named-local rung of
+            // the council lattice arriving as a carried fact, not an
+            // inference from use-shape.
+            let mut bound_roots: HashSet<ValueId> = HashSet::new();
             let mut disqualified: HashSet<ValueId> = HashSet::new();
             for &bid in &block_ids {
                 if !reachable.contains(&bid) {
@@ -853,6 +864,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     }
                 }
                 for op in &block.ops {
+                    if matches!(op.attrs.get("bound_local"), Some(AttrValue::Bool(true))) {
+                        for &result in &op.results {
+                            bound_roots.insert(canon(result));
+                        }
+                    }
                     if matches!(
                         op.opcode,
                         OpCode::IncRef | OpCode::DecRef | OpCode::Free
@@ -892,6 +908,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             }
             for &r in &sensitive_roots {
                 if disqualified.contains(&r) {
+                    continue;
+                }
+                // Gate (b'): named locals only.
+                if !bound_roots.contains(&r) {
                     continue;
                 }
                 let Some(&dblk) = def_block.get(&r) else {

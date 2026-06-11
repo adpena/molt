@@ -1696,6 +1696,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 // the deferred Return-boundary release silently degrades to
                 // SSA-last-use.
                 defines_del: attr_bool(&op.attrs, "defines_del"),
+                bound_local: attr_bool(&op.attrs, "bound_local"),
                 ..OpIR::default()
             })
         }
@@ -1776,6 +1777,10 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     container_type: attr_str(&op.attrs, "container_type"),
                     ic_index: attr_int(&op.attrs, "ic_index"),
+                    // Named-local fact (#58) — container literals (`list_new`/
+                    // `tuple_new`) ride this passthrough; losing the attr here
+                    // silently degrades the scope-boundary deferral.
+                    bound_local: attr_bool(&op.attrs, "bound_local"),
                     ..OpIR::default()
                 })
             } else if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
@@ -2123,6 +2128,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // re-lowering still sees that this instance's class defines
             // `__del__` and must not be stack-promoted / RC-stripped.
             defines_del: attr_bool(&op.attrs, "defines_del"),
+            bound_local: attr_bool(&op.attrs, "bound_local"),
             ..OpIR::default()
         }),
         OpCode::ObjectNewBoundStack => Some(OpIR {
