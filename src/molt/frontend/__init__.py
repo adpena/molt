@@ -523,6 +523,11 @@ class SimpleTIRGenerator(
         self.func_aliases: dict[str, str] = {}
         self.reserved_func_symbols: dict[str, str] = {}
         self.const_ints: dict[str, int] = {}
+        # Producing-op index (result SSA name -> MoltOp), maintained by emit().
+        # The named-local binding stamp (#58 `bound_local`) uses it to mark the
+        # op whose result a plain function local binds to. Value names are
+        # globally unique (next_var), so no per-function reset is needed.
+        self._op_by_result: dict[str, MoltOp] = {}
         self.format_token_cache: dict[
             tuple[str, int, tuple[str, ...]], list[FormatToken]
         ] = {}
@@ -896,6 +901,7 @@ class SimpleTIRGenerator(
         self.context_depth = 0
         self.control_flow_depth = 0
         self.const_ints = {}
+        self._op_by_result = {}
         self.in_generator = False
         self.async_context = False
         self.current_line = None
@@ -1228,6 +1234,8 @@ class SimpleTIRGenerator(
             and not isinstance(op.args[0], bool)
         ):
             self.const_ints[op.result.name] = op.args[0]
+        if op.result is not None and op.result.name not in ("none", ""):
+            self._op_by_result[op.result.name] = op
         self.current_ops.append(op)
         if (
             self.try_suppress_depth is not None
@@ -1993,6 +2001,7 @@ class SimpleTIRGenerator(
         self.context_depth = 0
         self.control_flow_depth = 0
         self.const_ints = {}
+        self._op_by_result = {}
         self._module_cache_values = {}
         self.in_generator = False
         self.async_context = False
@@ -7551,6 +7560,24 @@ class SimpleTIRGenerator(
         else:
             self.bytearray_len_hints.pop(name, None)
         self.locals[name] = value
+        # Named-local fact (#58 ordering keystone): stamp `bound_local` on the
+        # op that PRODUCED the bound value. CPython holds a named local in the
+        # frame until `del`/rebinding/scope exit, so a finalizer-sensitive
+        # value bound to a name must not be released at its SSA last-use; an
+        # UNNAMED expression temp (e.g. `bag.append(A())`'s argument) dies at
+        # the statement like CPython's stack ref. The IR otherwise erases this
+        # distinction. Same condition as the named-local STORE_VAR below —
+        # this is metadata on an already-emitted op, not a new op.
+        if (
+            self.current_func_name != "molt_main"
+            and name in self.scope_assigned
+            and value.name not in ("none", "")
+        ):
+            producer = self._op_by_result.get(value.name)
+            if producer is not None:
+                if producer.metadata is None:
+                    producer.metadata = {}
+                producer.metadata["bound_local"] = True
         # Emit explicit store_var for non-boxed function locals so TIR can
         # track variable mutations through loop iterations via SSA phis.
         if (
