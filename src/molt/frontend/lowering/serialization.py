@@ -1104,6 +1104,8 @@ class SerializationMixin(_MixinBase):
                 # absorbing it) to its Python lifetime boundary.
                 if (op.metadata or {}).get("defines_del"):
                     entry["defines_del"] = True
+                if (op.metadata or {}).get("bound_local"):
+                    entry["bound_local"] = True
                 json_ops.append(entry)
             elif op.kind == "DEL_BOUNDARY":
                 json_ops.append(
@@ -1406,6 +1408,8 @@ class SerializationMixin(_MixinBase):
                     )
                     if _del_info is not None and _del_owner != "object":
                         _onb_op["defines_del"] = True
+                if (op.metadata or {}).get("bound_local"):
+                    _onb_op["bound_local"] = True
                 json_ops.append(_onb_op)
             elif op.kind == "CLASSMETHOD_NEW":
                 json_ops.append(
@@ -2567,14 +2571,18 @@ class SerializationMixin(_MixinBase):
                     }
                 )
             elif op.kind == "LIST_NEW":
-                json_ops.append(
-                    {
-                        "kind": "list_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "list",
-                    }
-                )
+                _list_op: dict[str, Any] = {
+                    "kind": "list_new",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                    "type_hint": "list",
+                }
+                # Named-local fact (#58): a container literal bound to a local
+                # carries the Python scope boundary for any finalizer-bearing
+                # element it absorbs.
+                if (op.metadata or {}).get("bound_local"):
+                    _list_op["bound_local"] = True
+                json_ops.append(_list_op)
             elif op.kind == "LIST_INT_NEW":
                 # Specialized flat i64 list: args are [count, fill_value]
                 json_ops.append(
@@ -2610,14 +2618,15 @@ class SerializationMixin(_MixinBase):
                     }
                 )
             elif op.kind == "TUPLE_NEW":
-                json_ops.append(
-                    {
-                        "kind": "tuple_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "tuple",
-                    }
-                )
+                _tuple_op: dict[str, Any] = {
+                    "kind": "tuple_new",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                    "type_hint": "tuple",
+                }
+                if (op.metadata or {}).get("bound_local"):
+                    _tuple_op["bound_local"] = True
+                json_ops.append(_tuple_op)
             elif op.kind == "LIST_APPEND":
                 json_ops.append(
                     {
